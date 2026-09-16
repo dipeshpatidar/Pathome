@@ -4,6 +4,7 @@ import { Home } from './components/Home';
 import { NotificationProvider } from './context/NotificationContext';
 import { NotificationToastContainer } from './components/NotificationToastContainer';
 import { NotificationCenterDrawer } from './components/NotificationCenterDrawer';
+import { AppErrorDialog } from './components/AppErrorDialog';
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Router>
         <NotificationToastContainer />
         <NotificationCenterDrawer />
+        <AppErrorDialog />
         <Routes>
           <Route path="/*" element={<Home />} />
         </Routes>

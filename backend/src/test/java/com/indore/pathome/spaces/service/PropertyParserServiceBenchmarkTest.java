@@ -13,7 +13,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
@@ -38,8 +37,6 @@ public class PropertyParserServiceBenchmarkTest {
         Locality palasia = new Locality("Indore", "Palasia", "palasiaa", 100, 28000.0);
 
         when(localityRepository.findAll()).thenReturn(List.of(nandaNagar, vijayNagar, saketNagar, bhawarkua, palasia));
-        when(localityRepository.save(any(Locality.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
         propertyParserService = new PropertyParserService(localityRepository);
         propertyParserService.initCache();
     }

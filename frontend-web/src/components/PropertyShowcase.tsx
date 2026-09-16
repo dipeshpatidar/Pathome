@@ -6,6 +6,7 @@ import {
   CheckCircle2, ShieldCheck, Sparkles, ArrowRight, ChevronDown, ChevronUp,
   Camera, Maximize
 } from 'lucide-react';
+import { useNotification } from '../context/NotificationContext';
 
 interface PropertyShowcaseProps {
   properties: Property[];
@@ -30,6 +31,7 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
   onOpenMediaModal,
   selectedSectorFilter
 }) => {
+  const { notifySuccess } = useNotification();
   const [activeImageIndex, setActiveImageIndex] = useState<Record<number, number>>({});
   const [slideDirection, setSlideDirection] = useState<Record<number, 'left' | 'right'>>({});
   const [activeSectorTab, setActiveSectorTab] = useState<string>('ALL');
@@ -229,7 +231,7 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
                             <motion.button
                               whileHover={{ scale: 1.2, rotate: 15 }}
                               whileTap={{ scale: 0.85 }}
-                              onClick={(e) => { e.stopPropagation(); alert(`Saved ${prop.title} to bookmarks!`); }}
+                              onClick={(e) => { e.stopPropagation(); notifySuccess('Saved to bookmarks', `${prop.title} is available in your saved properties.`); }}
                               className="w-9 h-9 rounded-full bg-slate-900/80 hover:bg-emerald-600 text-white flex items-center justify-center backdrop-blur-md border border-white/25 shadow-lg transition-all text-xs"
                             >
                               ★

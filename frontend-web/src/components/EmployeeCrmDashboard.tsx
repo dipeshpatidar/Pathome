@@ -5,6 +5,7 @@ import {
   MapPin, ShieldAlert, Award, Phone, Check, X, ArrowRight, UserCheck
 } from 'lucide-react';
 import { UserProfile } from '../types';
+import { useNotification } from '../context/NotificationContext';
 
 interface EmployeeCrmDashboardProps {
   user: UserProfile | null;
@@ -22,6 +23,7 @@ const mockMyLeaves = [
 ];
 
 export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user }) => {
+  const { notifyInfo, notifySuccess } = useNotification();
   const [clockedIn, setClockedIn] = useState(true);
   const [isLocating, setIsLocating] = useState(false);
   const [punchLocation, setPunchLocation] = useState<{
@@ -60,7 +62,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
           });
           setClockedIn(true);
           setIsLocating(false);
-          alert(`📍 GPS Geofenced Punch-In Successful!\nCoordinates: ${latitude.toFixed(4)}° N, ${longitude.toFixed(4)}° E\nTimestamp: ${nowTime}`);
+          notifySuccess('Check-in confirmed', `Location confirmed at ${nowTime}.`, `Coordinates: ${latitude.toFixed(4)}° N, ${longitude.toFixed(4)}° E`);
         },
         (error) => {
           console.warn('GPS location request warning, falling back to sector landmark geofence:', error);
@@ -73,14 +75,14 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
           });
           setClockedIn(true);
           setIsLocating(false);
-          alert(`📍 Geofenced Punch-In Verified!\nSector Landmark: Vijay Nagar Hub (22.7533° N, 75.8937° E)\nTimestamp: ${nowTime}`);
+          notifyInfo('Check-in confirmed', `Location confirmation was completed at ${nowTime}.`, 'Vijay Nagar Hub');
         },
         { enableHighAccuracy: true, timeout: 6000 }
       );
     } else {
       setClockedIn(true);
       setIsLocating(false);
-      alert('📍 Punch-In Verified at Vijay Nagar Sector Hub (22.7533° N, 75.8937° E)');
+      notifyInfo('Check-in confirmed', 'Location confirmation was completed at Vijay Nagar Sector Hub.');
     }
   };
 
@@ -100,7 +102,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
     setNewStartDate('');
     setNewEndDate('');
     setNewReason('');
-    alert('🎉 Leave application submitted to Admin for approval!');
+    notifySuccess('Leave request submitted', 'Your leave request has been sent for approval.');
   };
 
   return (
@@ -157,7 +159,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
-                  onClick={() => { setClockedIn(false); alert('🔴 Shift Ended: Punched Out Duty.'); }}
+                  onClick={() => { setClockedIn(false); notifyInfo('Shift ended', 'You have been checked out for today.'); }}
                   className="ml-2 px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-[11px] font-semibold transition-all"
                 >
                   Punch Out
@@ -263,7 +265,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
                       <span className="font-mono font-bold text-cyan-400">{visit.securityOtp}</span>
                     </div>
                     <button 
-                      onClick={() => alert(`Calling Tenant ${visit.tenantName} at ${visit.tenantPhone}`)}
+                      onClick={() => notifyInfo('Tenant contact', `${visit.tenantName}: ${visit.tenantPhone}`)}
                       className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5"
                     >
                       <Phone className="w-3.5 h-3.5" /> Call Tenant

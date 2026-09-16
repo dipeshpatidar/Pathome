@@ -8,6 +8,13 @@ export interface ToastAction {
   onClick: () => void;
 }
 
+export interface ErrorDialogOptions {
+  title: string;
+  message: string;
+  details?: string;
+  action?: ToastAction;
+}
+
 export interface ToastNotification {
   id: string;
   type: NotificationType;
@@ -42,6 +49,9 @@ interface NotificationContextType {
   notifyInfo: (title: string, message: string, details?: string, category?: NotificationCategory) => string;
   notifyWarning: (title: string, message: string, details?: string, category?: NotificationCategory) => string;
   notifyAiMagic: (title: string, message: string, details?: string, category?: NotificationCategory) => string;
+  errorDialog: ErrorDialogOptions | null;
+  showErrorDialog: (error: ErrorDialogOptions) => void;
+  dismissErrorDialog: () => void;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
@@ -50,6 +60,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
   const [history, setHistory] = useState<NotificationHistoryItem[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
+  const [errorDialog, setErrorDialog] = useState<ErrorDialogOptions | null>(null);
 
   // Helper to fetch current active role from localStorage session
   const getActiveRole = useCallback((): string => {
@@ -149,6 +160,14 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return showNotification({ type: 'ai_magic', title, message, details, category });
   }, [showNotification]);
 
+  const showErrorDialog = useCallback((error: ErrorDialogOptions) => {
+    setErrorDialog(error);
+  }, []);
+
+  const dismissErrorDialog = useCallback(() => {
+    setErrorDialog(null);
+  }, []);
+
   const clearHistory = useCallback(() => {
     setHistory([]);
   }, []);
@@ -190,7 +209,10 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       notifyError,
       notifyInfo,
       notifyWarning,
-      notifyAiMagic
+      notifyAiMagic,
+      errorDialog,
+      showErrorDialog,
+      dismissErrorDialog
     }}>
       {children}
     </NotificationContext.Provider>

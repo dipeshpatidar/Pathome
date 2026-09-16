@@ -1,11 +1,12 @@
 import { Property, PropertyMediaAsset, RoomTag } from '../types';
+import { ApiRequestError, createApiRequestError } from './apiError';
 
 const API_BASE_URL = 'http://localhost:8080/api/v1/properties';
 
 const getAdminAuthorizationHeader = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
   if (!token) {
-    throw new Error('Your admin session has expired. Please sign in again before changing property listings.');
+    throw new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
   }
   return { Authorization: `Bearer ${token}` };
 };
@@ -26,7 +27,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Server returned status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to load properties. Please try again.');
     }
 
     const listings = await response.json();
@@ -73,7 +74,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to create property in PostgreSQL DB: status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to create this property. Please try again.');
     }
 
     return await response.json();
@@ -112,7 +113,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to upload tagged media to Cloudinary');
+      throw await createApiRequestError(response, 'Unable to upload this media file. Please try again.');
     }
 
     return await response.json();
@@ -146,7 +147,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to upload photos to Cloudinary');
+      throw await createApiRequestError(response, 'Unable to upload the selected photos. Please try again.');
     }
 
     const data = await response.json();
@@ -167,7 +168,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to upload video walkthrough to Cloudinary');
+      throw await createApiRequestError(response, 'Unable to upload the walkthrough video. Please try again.');
     }
 
     const data = await response.json();
@@ -189,7 +190,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to parse prompt on backend: status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to read the property details. Please try again.');
     }
 
     return await response.json();
@@ -210,7 +211,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to create property from parsed DTO: status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to publish this property. Please try again.');
     }
 
     return await response.json();
@@ -231,7 +232,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to parse batch prompts: status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to read the property details. Please try again.');
     }
 
     return await response.json();
@@ -252,7 +253,7 @@ export const propertyService = {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to create batch properties: status ${response.status}`);
+      throw await createApiRequestError(response, 'Unable to publish the selected properties. Please try again.');
     }
 
     return await response.json();

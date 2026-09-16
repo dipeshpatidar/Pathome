@@ -11,6 +11,7 @@ import {
   Search, Mic, SlidersHorizontal, ArrowRight, Filter, RotateCcw
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
+import { useNotification } from '../context/NotificationContext';
 
 interface TenantDashboardProps {
   user: UserProfile;
@@ -84,6 +85,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   onBookTour,
   onOpenLeaseUpload
 }) => {
+  const { notifySuccess } = useNotification();
   const passesRemaining = Math.max(0, 5 - user.freeVisitsUsed);
   const isPaywallActive = user.freeVisitsUsed >= 5;
   const [modalConfig, setModalConfig] = useState<{ property: Property; initialMode?: 'VIDEO' | 'PHOTOS' } | null>(null);
@@ -192,7 +194,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     setSelectedSectors([city.sectors[0] || 'Main Sector']);
     setShowCityPicker(false);
     if (city.status === 'LAUNCHING_SOON') {
-      alert(`🎉 Pathome is expanding to ${city.name}! You are registered on the VIP early access list.`);
+      notifySuccess('Early access requested', `We will let you know when Pathome becomes available in ${city.name}.`);
     }
   };
 
@@ -218,7 +220,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     e.preventDefault();
     setDragOver(false);
     setUploadedFile("Indore_Rent_Agreement_VijayNagar.pdf");
-    alert("Lease agreement PDF uploaded successfully! ₹1,000 Cashback claim sent to Master Admin queue.");
+    notifySuccess('Agreement uploaded', 'Your cashback claim has been sent for review.');
   };
 
   // REAL-TIME METRO & SECTOR & BHK FILTERED PROPERTIES

@@ -7,6 +7,7 @@ import {
   Database, Copy, Check, Compass, Tag, Layers, Home, Info, X, Star, Mic, MicOff
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
+import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, Property } from '../types';
 
@@ -76,6 +77,25 @@ const PRESET_PROMPTS = [
   }
 ];
 
+const MULTIPLE_PROPERTY_ENTRY_PATTERN = /(?:\r?\n\s*\r?\n+|---|\bnext\s*(?:property|flat|house|listing|unit)\b|\b(?:and\s+)?(?:the\s+)?(?:second|third|fourth|another)\s+(?:property|flat|house|listing|unit)(?:\s+is)?\b|(?:^|\n)\s*(?:\d+[\).]|#\d+)\s+)/im;
+const SPOKEN_PROPERTY_BOUNDARY_PATTERN = /\b(?:and\s+)?(?:list\s+)?(?:the\s+)?(?:one\s+)?(?:other|another|next|second|third|fourth)\s+(?:property|flat|house|listing|unit)(?:\s+is)?\b/gi;
+const SPOKEN_RENT_PREFIX_PATTERN = /(?:rent\s+is\s+|kiraya\s+)/gi;
+const INDIAN_OWNER_PHONE_PATTERN = /^(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}$/;
+
+const normalizeOwnerPhoneForPublishing = (value: string | null | undefined): string => {
+  const trimmed = value?.trim() || '';
+  let digits = trimmed.replace(/\D/g, '');
+  if (digits.startsWith('91') && digits.length === 12) digits = digits.slice(2);
+  return /^[6-9]\d{9}$/.test(digits)
+    ? `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`
+    : trimmed;
+};
+
+const formatSingleVoiceTranscript = (transcript: string): string =>
+  transcript
+    .replace(SPOKEN_PROPERTY_BOUNDARY_PATTERN, '\n\nNext property\n')
+    .replace(SPOKEN_RENT_PREFIX_PATTERN, 'Rent: ');
+
 const containerVariants: Variants = {
   hidden: { opacity: 0, y: 24, scale: 0.97, filter: 'blur(8px)' },
   visible: {
@@ -124,7 +144,7 @@ const mockLeaveRequests = [
 ];
 
 export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab }) => {
-  const { notifySuccess, notifyError, notifyInfo, notifyWarning, notifyAiMagic } = useNotification();
+  const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
 
   const [internalTab, setInternalTab] = useState<string>('funnel');
   const activeTab = externalActiveTab || internalTab;
@@ -262,14 +282,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       vastuFacing: editForm.vastuFacing || 'Not Specified',
       furnishingStatus: editForm.furnishingStatus || 'UNSPECIFIED',
       ownerName: editForm.ownerName || 'Not Specified',
-      ownerPhone: editForm.ownerPhone || 'Not Specified',
+      ownerPhone: normalizeOwnerPhoneForPublishing(editForm.ownerPhone) || 'Not Specified',
       title: editForm.title || `${editForm.bhk || ''} ${editForm.type || 'Flat'} in ${editForm.sector || 'Indore'}`,
       label: `${editForm.bhk || 'Property'} ${editForm.type || ''} (${editForm.sector || ''}, ${editForm.city || 'Indore'})`,
       missingFields: [] // Clear missing attributes warning deck after manual admin verification
     };
     setLastExtractedResult(updated);
     setIsInlineEditOpen(false);
-    notifySuccess('✅ Inline Edits Applied', 'Extracted property parameters updated successfully');
+    notifySuccess('✅ Changes saved', 'Property details were updated successfully.');
   };
 
   const handleSaveToDatabase = async () => {
@@ -290,17 +310,26 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (!lastExtractedResult.sector || lastExtractedResult.sector === 'Not Specified' || lastExtractedResult.sector === 'Unspecified') {
       missingReq.push('Locality / Sector Name');
     }
-    if (!lastExtractedResult.ownerPhone || lastExtractedResult.ownerPhone === 'Not Specified') {
+    const ownerPhoneForPublishing = normalizeOwnerPhoneForPublishing(lastExtractedResult.ownerPhone);
+    if (!ownerPhoneForPublishing || lastExtractedResult.ownerPhone === 'Not Specified') {
       missingReq.push('Owner Contact Phone Number');
-    } else if (!lastExtractedResult.ownerPhone.trim().startsWith('+')) {
-      missingReq.push('Owner Contact Country Code (Prefix "+" required, e.g. +91 98260 12345)');
+    } else if (!INDIAN_OWNER_PHONE_PATTERN.test(ownerPhoneForPublishing)) {
+      missingReq.push('Owner Contact Phone Number (use a valid 10-digit Indian mobile number)');
     }
     if (!lastExtractedResult.depositVal || lastExtractedResult.depositVal === 'Not Specified' || lastExtractedResult.depositVal === 'Unspecified') {
       missingReq.push('Security Deposit');
     }
 
     if (missingReq.length > 0) {
-      alert(`⚠️ Cannot Publish Listing to Database!\n\nThe following REQUIRED non-null database fields are missing or invalid:\n\n• ${missingReq.join('\n• ')}\n\nPlease click [✏️ Edit Fields] to provide these required details before publishing.`);
+      showErrorDialog({
+        title: 'Complete the property details',
+        message: 'A few required details need your attention before this listing can be published.',
+        details: missingReq.join(' • '),
+        action: {
+          label: 'Edit details',
+          onClick: handleOpenInlineEdit
+        }
+      });
       return;
     }
 
@@ -331,7 +360,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         pincode: lastExtractedResult.pincode || '',
         landmark: lastExtractedResult.landmark || '',
         ownerName: lastExtractedResult.ownerName && lastExtractedResult.ownerName !== 'Not Specified' ? lastExtractedResult.ownerName : '',
-        ownerPhone: lastExtractedResult.ownerPhone && lastExtractedResult.ownerPhone !== 'Not Specified' ? lastExtractedResult.ownerPhone : '',
+        ownerPhone: ownerPhoneForPublishing,
         amenities: lastExtractedResult.amenities || [],
         rawPrompt: lastExtractedResult.rawInput || '',
         adminVerified: true
@@ -356,23 +385,31 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       setDbSaveSuccessMsg(`Property successfully published. Listing ID: #${propertyId}`);
       setLastExtractedResult((prev: any) => ({
         ...prev,
+        ownerPhone: ownerPhoneForPublishing,
         savedToDatabase: true,
         adminVerified: true,
         databaseId: propertyId,
-        extractedAt: `Just now (PostgreSQL Listing #${saved.id})`
+        extractedAt: `Just now (Listing #${saved.id})`
       }));
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn('Backend endpoint status notice:', err);
-      alert(`⚠️ Database Commit Rejected by Backend:\n\n${err.message || 'Validation failed for required non-null fields'}`);
-      setDbSaveSuccessMsg(`⚡ Action Required: ${err.message || 'Required non-null fields missing'}`);
+      const message = getErrorMessage(err, 'Please check the required property details and try again.');
+      showErrorDialog({
+        title: 'Unable to publish this listing',
+        message,
+        details: getErrorDetails(err)
+      });
+      setDbSaveSuccessMsg(`⚡ Action needed: ${message}`);
     } finally {
       setIsSavingDb(false);
     }
   };
 
   // Rich Media Metadata Tagging State (Zero hardcoded fallbacks)
-  const [isBatchStudioOpen, setIsBatchStudioOpen] = useState<boolean>(false);
+  const [uploadMode, setUploadMode] = useState<'single' | 'multiple'>('single');
+  const [batchDetails, setBatchDetails] = useState<string>('');
   const [isSingleMicListening, setIsSingleMicListening] = useState<boolean>(false);
+  const [isSingleDictationChoiceOpen, setIsSingleDictationChoiceOpen] = useState<boolean>(false);
   const singleRecognitionRef = useRef<any>(null);
   const singleMicBaseTextRef = useRef<string>('');
 
@@ -390,7 +427,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       let finalTranscript = '';
       let interimTranscript = '';
 
-      for (let i = 0; i < event.results.length; i++) {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           finalTranscript += (finalTranscript ? ' ' : '') + transcript.trim();
@@ -399,30 +436,69 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         }
       }
 
-      const base = singleMicBaseTextRef.current || '';
-      const combined = [base, finalTranscript, interimTranscript].filter(Boolean).join(' ');
-      setNewBhkLabel(combined);
+      const formattedFinal = formatSingleVoiceTranscript(finalTranscript);
+      if (formattedFinal) {
+        const base = singleMicBaseTextRef.current || '';
+        const separator = base && !formattedFinal.startsWith('\n') ? ' ' : '';
+        singleMicBaseTextRef.current = `${base}${separator}${formattedFinal}`;
+      }
+
+      const confirmedText = singleMicBaseTextRef.current;
+      const interimSeparator = confirmedText && interimTranscript ? ' ' : '';
+      setNewBhkLabel(`${confirmedText}${interimSeparator}${interimTranscript}`);
     };
 
-    recognition.onerror = () => setIsSingleMicListening(false);
-    recognition.onend = () => setIsSingleMicListening(false);
+    recognition.onerror = () => {
+      setIsSingleMicListening(false);
+      setIsSingleDictationChoiceOpen(false);
+    };
+    recognition.onend = () => {
+      setIsSingleMicListening(false);
+      setIsSingleDictationChoiceOpen(false);
+    };
     singleRecognitionRef.current = recognition;
   }, []);
+
+  const startSingleDictation = (mode: 'replace' | 'append') => {
+    if (!singleRecognitionRef.current) return;
+
+    try {
+      const currentDraft = newBhkLabel.trim();
+      singleMicBaseTextRef.current = mode === 'append' ? currentDraft : '';
+      if (mode === 'replace' && currentDraft) {
+        setNewBhkLabel('');
+      }
+      setIsSingleDictationChoiceOpen(false);
+      singleRecognitionRef.current.start();
+      setIsSingleMicListening(true);
+    } catch (err) {
+      console.warn('Mic error', err);
+    }
+  };
 
   const toggleSingleMic = () => {
     if (!singleRecognitionRef.current) return;
     if (isSingleMicListening) {
       singleRecognitionRef.current.stop();
       setIsSingleMicListening(false);
-    } else {
-      try {
-        singleMicBaseTextRef.current = newBhkLabel.trim();
-        singleRecognitionRef.current.start();
-        setIsSingleMicListening(true);
-      } catch (err) {
-        console.warn('Mic error', err);
-      }
+      return;
     }
+
+    if (newBhkLabel.trim()) {
+      setIsSingleDictationChoiceOpen(true);
+      return;
+    }
+
+    startSingleDictation('replace');
+  };
+
+  const handleSinglePromptChange = (details: string) => {
+    if (isSingleMicListening) {
+      singleRecognitionRef.current?.stop();
+      setIsSingleMicListening(false);
+    }
+    singleMicBaseTextRef.current = details;
+    setNewBhkLabel(details);
   };
 
   const [selectedRoomTag, setSelectedRoomTag] = useState<RoomTag>('LIVING_ROOM');
@@ -440,9 +516,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       if (result.rentVal) setMediaPriceTag(result.rentVal.includes('/ month') ? result.rentVal : `${result.rentVal} / month`);
       if (result.vastuFacing) setMediaVastu(result.vastuFacing);
       if (result.title) setMediaCaption(result.title);
-      notifySuccess("✅ Pre-filled CDN Metadata", `Tagged fields pre-populated with sector: ${result.sector || 'N/A'}, rent: ${result.rentVal || 'N/A'}`, undefined, 'PROPERTY');
+      notifySuccess('✅ Photo details prepared', `Location: ${result.sector || 'Not provided'} • Rent: ${result.rentVal || 'Not provided'}`, undefined, 'PROPERTY');
     } else {
-      notifyInfo("ℹ️ Extract property details first", "Extract the prompt on the backend before filling media metadata.", undefined, 'PROPERTY');
+      notifyInfo('ℹ️ Review property details first', 'Review the property details before preparing photo information.', undefined, 'PROPERTY');
     }
   };
 
@@ -450,7 +526,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (lastExtractedResult) {
       navigator.clipboard.writeText(JSON.stringify(lastExtractedResult, null, 2));
       setCopiedJson(true);
-      notifySuccess("📋 Copied to Clipboard", "Property attribute JSON payload copied to clipboard", undefined, 'PROPERTY');
+      notifySuccess('📋 Copied', 'Property details were copied to the clipboard.', undefined, 'PROPERTY');
       setTimeout(() => setCopiedJson(false), 2000);
     }
   };
@@ -459,7 +535,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (!e.target.files || e.target.files.length === 0) return;
     const files = Array.from(e.target.files);
     setIsUploadingCloudinary(true);
-    setUploadStatusMsg(`Uploading photo tagged as [${selectedRoomTag}] to Cloudinary...`);
+    setUploadStatusMsg(`Uploading ${files.length === 1 ? 'photo' : 'photos'}…`);
     try {
       for (const file of files) {
         await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
@@ -472,12 +548,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           vastuFacing: mediaVastu
         });
       }
-      setUploadStatusMsg(`✓ ${files.length} Tagged Photo(s) uploaded to Cloudinary with Metadata [${selectedRoomTag}, ${mediaSector}, ${mediaPriceTag}]!`);
-      notifySuccess(`🎉 Cloudinary Upload Successful`, `Uploaded ${files.length} photo(s) tagged as [${selectedRoomTag}]`, `Location: ${mediaSector} • Price: ${mediaPriceTag} • Vastu: ${mediaVastu}`, 'PROPERTY');
+      setUploadStatusMsg(`✓ ${files.length} ${files.length === 1 ? 'photo' : 'photos'} uploaded.`);
+      notifySuccess('🎉 Photos uploaded', `${files.length} ${files.length === 1 ? 'photo was' : 'photos were'} added to this listing.`, `Location: ${mediaSector} • Rent: ${mediaPriceTag} • Facing: ${mediaVastu}`, 'PROPERTY');
     } catch (err) {
       console.error(err);
-      setUploadStatusMsg('Cloudinary uploaded photo fallback saved.');
-      notifyInfo('📸 Photo Staged', `Staged ${files.length} photo(s) with local CDN fallback`, undefined, 'PROPERTY');
+      setUploadStatusMsg('Photos are ready to upload when the listing is published.');
+      notifyInfo('📸 Photos ready', `${files.length} ${files.length === 1 ? 'photo is' : 'photos are'} ready to add to the listing.`, undefined, 'PROPERTY');
     } finally {
       setIsUploadingCloudinary(false);
     }
@@ -487,9 +563,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
     setIsUploadingCloudinary(true);
-    setUploadStatusMsg('Uploading MP4 walkthrough video with metadata to Cloudinary CDN...');
+    setUploadStatusMsg('Uploading walkthrough video…');
     try {
-      const asset = await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
+      await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
         roomTag: selectedRoomTag,
         mediaType: 'VIDEO_WALKTHROUGH',
         caption: mediaCaption || 'HD Video Walkthrough',
@@ -498,11 +574,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         priceTag: mediaPriceTag,
         vastuFacing: mediaVastu
       });
-      setUploadStatusMsg(`✓ Video walkthrough uploaded to Cloudinary: ${asset.mediaUrl}`);
-      alert(`🎉 Walkthrough MP4 video uploaded to Cloudinary CDN with Location (${mediaSector}) & Price (${mediaPriceTag}) tags!`);
-    } catch (err) {
+      setUploadStatusMsg('✓ Walkthrough video uploaded.');
+      notifySuccess('🎉 Walkthrough video uploaded', 'The walkthrough video was added to this listing.', undefined, 'PROPERTY');
+    } catch (err: unknown) {
       console.error(err);
-      setUploadStatusMsg('Cloudinary video upload saved.');
+      setUploadStatusMsg('Walkthrough video is ready to upload when the listing is published.');
+      showErrorDialog({
+        title: 'Unable to upload the walkthrough video',
+        message: getErrorMessage(err, 'Please choose the video again and try once more.'),
+        details: getErrorDetails(err)
+      });
     } finally {
       setIsUploadingCloudinary(false);
     }
@@ -929,7 +1010,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const handleAddCustomBhk = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBhkLabel.trim()) {
-      alert("⚠️ Please enter or click an example prompt before uploading!");
+      showErrorDialog({
+        title: 'Add property details first',
+        message: 'Enter property details or select an example before reviewing the listing.'
+      });
+      return;
+    }
+
+    if (MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)) {
+      setBatchDetails(newBhkLabel);
+      setUploadMode('multiple');
       return;
     }
 
@@ -947,21 +1037,20 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         extractedAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       });
       notifyInfo(
-        'Review parsed property details',
+        'Review property details',
         parsed.requiresReview
           ? 'Some values are missing or conflict. Review and correct them before publishing.'
-          : 'Review the extracted values, then use Save to Database to publish the listing.',
+          : 'Review the extracted values, then select “Publish reviewed listing” to publish it.',
         undefined,
         'PROPERTY'
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to parse property listing:', err);
-      notifyError(
-        'Property extraction failed',
-        'The property details could not be extracted.',
-        err.message || 'Internal Server Error (500)',
-        'SYSTEM'
-      );
+      showErrorDialog({
+        title: 'Unable to review property details',
+        message: getErrorMessage(err, 'Please check the property details and try again.'),
+        details: getErrorDetails(err)
+      });
     } finally {
       setIsSubmittingListing(false);
     }
@@ -1062,7 +1151,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     { id: 'funnel', label: 'Funnel & Analytics', badge: '18%', icon: BarChart3, color: 'text-emerald-600' },
     { id: 'crm', label: 'Staff CRM & Telemetry', badge: `${employees.length} Staff`, icon: Users, color: 'text-indigo-600' },
     { id: 'approval', label: 'Approvals Queue', badge: `${cashbacks.filter(c => c.status === 'PENDING').length} New`, icon: CheckSquare, color: 'text-amber-600' },
-    { id: 'config', label: 'BHK Engine', badge: 'Active', icon: SlidersHorizontal, color: 'text-purple-600' },
+    { id: 'config', label: 'Listing settings', badge: 'Ready', icon: SlidersHorizontal, color: 'text-purple-600' },
     { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' }
   ];
 
@@ -1252,7 +1341,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               </div>
               <p className="text-[11px] text-emerald-700 font-medium leading-relaxed">
-                High-Speed Listing Engine & Database Active.
+                Property management is ready.
               </p>
             </div>
           </motion.div>
@@ -1405,7 +1494,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </div>
 
                   <button
-                    onClick={() => alert("📡 Live GPS Signal Refreshed! Escort coordinates updated across Indore sector geofences.")}
+                    onClick={() => notifyInfo('Location update complete', 'Escort locations have been refreshed for Indore.', undefined, 'SYSTEM')}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition-all shadow-md shadow-emerald-600/20 flex items-center gap-1.5"
                   >
                     📡 Ping Live GPS Signals
@@ -1576,7 +1665,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               exit="exit"
               className="space-y-6"
             >
-              {/* PRIMARY SMART PROPERTY UPLOAD & PROMPT CONSOLE */}
+              {/* PROPERTY UPLOAD WORKSPACE */}
               <motion.div ref={uploadConsoleRef} variants={cardVariants} className="bg-slate-900 text-white rounded-3xl p-6 sm:p-7 border border-slate-800 shadow-2xl relative overflow-hidden">
                 {/* COOL ANIMATED AMBIENT AURORA GLOW ORBS */}
                 <div className="absolute -top-28 -right-28 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" />
@@ -1587,31 +1676,21 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-black text-emerald-400 bg-emerald-950 px-3 py-1 rounded-full border border-emerald-800 uppercase font-mono tracking-wider flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Pathome Smart Property Parser
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Property listings
                       </span>
                       <span className="text-[10px] font-black text-cyan-400 bg-cyan-950 px-3 py-1 rounded-full border border-cyan-800 uppercase font-mono tracking-wider">
-                        Indore Locality Registry
+                        Location details
                       </span>
                     </div>
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div>
                         <h2 className="text-xl sm:text-2xl font-black text-white font-['Outfit'] flex items-center gap-2">
-                          <UploadCloud className="w-6 h-6 text-emerald-400" /> Property Upload & Prompt Parser Console
+                          <UploadCloud className="w-6 h-6 text-emerald-400" /> Add properties
                         </h2>
                         <p className="text-xs text-slate-400">
-                          Type or paste property description & attach property photos/videos. All key parameters are automatically identified and verified.
+                          Create one listing or add several at once. Add details, photos, and video, then review before publishing.
                         </p>
                       </div>
-                      <motion.button
-                        whileHover={{ scale: 1.03 }}
-                        whileTap={{ scale: 0.97 }}
-                        type="button"
-                        onClick={() => setIsBatchStudioOpen(true)}
-                        className="px-4 py-2.5 rounded-xl font-black text-xs bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-slate-950 shadow-lg shadow-orange-500/20 hover:brightness-110 transition-all flex items-center gap-2 shrink-0 self-start sm:self-auto cursor-pointer"
-                      >
-                        <Sparkles className="w-4 h-4" />
-                        <span>⚡ Multi-Unit & Voice AI Studio</span>
-                      </motion.button>
                     </div>
                   </div>
                 </div>
@@ -1637,14 +1716,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           <div>
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-[10px] font-mono font-black text-emerald-300 bg-emerald-900/80 px-2.5 py-0.5 rounded-full border border-emerald-500/40 uppercase">
-                                ✓ Published Live to Platform
+                                ✓ Listing published
                               </span>
                               <span className="text-[10px] font-mono text-slate-400">
                                 Published at {publishSuccessNotification.timestamp}
                               </span>
                             </div>
                             <h3 className="text-lg sm:text-xl font-black font-['Outfit'] text-white mt-1">
-                              🎉 Property Listing Saved & Published Successfully!
+                              🎉 Property listing published
                             </h3>
                           </div>
                         </div>
@@ -1675,9 +1754,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                         </div>
 
                         <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
-                          <span className="text-[9px] text-slate-400 block uppercase font-bold">💰 Rent & Database</span>
+                          <span className="text-[9px] text-slate-400 block uppercase font-bold">💰 Monthly rent</span>
                           <span className="text-xs font-black font-['Outfit'] text-amber-300 truncate block mt-0.5">
-                            {publishSuccessNotification.rentVal} • PostgreSQL Saved
+                            {publishSuccessNotification.rentVal} • Saved
                           </span>
                         </div>
 
@@ -1699,8 +1778,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0 border border-emerald-500/30">1</div>
                     <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-emerald-400 tracking-wider">Step 1: Input Prompt</div>
-                      <div className="truncate font-sans font-bold text-slate-200">Type or 1-Click Preset</div>
+                      <div className="font-black uppercase text-[9px] text-emerald-400 tracking-wider">Step 1: Add details</div>
+                      <div className="truncate font-sans font-bold text-slate-200">One or more listings</div>
                     </div>
                   </motion.div>
 
@@ -1709,8 +1788,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0 border border-cyan-500/30">2</div>
                     <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-cyan-400 tracking-wider">Step 2: Auto Extraction</div>
-                      <div className="truncate font-sans font-bold text-slate-200">Identified Parameters</div>
+                      <div className="font-black uppercase text-[9px] text-cyan-400 tracking-wider">Step 2: Review details</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Check the listing information</div>
                     </div>
                   </motion.div>
 
@@ -1719,8 +1798,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-black text-xs shrink-0 border border-indigo-500/30">3</div>
                     <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-indigo-400 tracking-wider">Step 3: Attach Media</div>
-                      <div className="truncate font-sans font-bold text-slate-200">Photos & Video</div>
+                      <div className="font-black uppercase text-[9px] text-indigo-400 tracking-wider">Step 3: Add media</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Photos and video</div>
                     </div>
                   </motion.div>
 
@@ -1729,12 +1808,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-black text-xs shrink-0 border border-purple-500/30">4</div>
                     <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-purple-400 tracking-wider">Step 4: Review & Publish</div>
-                      <div className="truncate font-sans font-bold text-slate-200">PostgreSQL DB</div>
+                      <div className="font-black uppercase text-[9px] text-purple-400 tracking-wider">Step 4: Publish</div>
+                      <div className="truncate font-sans font-bold text-slate-200">After confirmation</div>
                     </div>
                   </motion.div>
                 </div>
 
+                {uploadMode === 'single' ? (
                 <form onSubmit={handleAddCustomBhk} className="space-y-6 relative z-10 w-full">
                   {/* FULL-WIDTH AI STUDIO CONSOLE CONTAINER */}
                   <div className="w-full space-y-5">
@@ -1744,7 +1824,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-mono font-extrabold text-slate-300 flex items-center gap-1.5 uppercase tracking-wide">
                           <Zap className="w-3.5 h-3.5 text-amber-400 fill-current animate-pulse" />
-                          Quick Listing Presets:
+                          Property examples
                         </label>
                         {newBhkLabel && (
                           <motion.button
@@ -1754,7 +1834,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             onClick={() => setNewBhkLabel('')}
                             className="text-[10px] text-rose-400 hover:text-rose-300 font-bold font-mono transition-colors cursor-pointer flex items-center gap-1 bg-rose-950/50 px-2 py-0.5 rounded-lg border border-rose-800/50"
                           >
-                            <span>↺ Reset</span>
+                            <span>↺ Clear selection</span>
                           </motion.button>
                         )}
                       </div>
@@ -1795,10 +1875,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     {/* WORLD-CLASS AI SMART LISTING PROMPT COMPOSER STUDIO (100% FULL WIDTH) */}
                     <div className="space-y-2 w-full">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <label className="text-xs font-extrabold text-slate-300 flex items-center gap-1.5 font-mono uppercase tracking-wide">
-                          <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                          Property Description & AI Prompt Composer:
-                        </label>
+                        <div>
+                          <label className="text-xs font-extrabold text-slate-300 flex items-center gap-1.5 font-mono uppercase tracking-wide">
+                            <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                            Property details
+                          </label>
+                          <p className="mt-1 text-[10px] text-slate-500">For several listings, use “Add another property” or paste numbered details.</p>
+                        </div>
                         <div className="flex items-center gap-2">
                           <motion.button
                             whileHover={{ scale: 1.04 }}
@@ -1812,13 +1895,58 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             }`}
                           >
                             {isSingleMicListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5 text-emerald-400" />}
-                            <span>{isSingleMicListening ? 'Listening Live...' : '🎤 Voice Input'}</span>
+                            <span>{isSingleMicListening ? 'Listening…' : '🎤 Dictate details'}</span>
                           </motion.button>
                           <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-full border border-emerald-800/80">
-                            {newBhkLabel.length} chars
+                            {newBhkLabel.length} characters
                           </span>
                         </div>
                       </div>
+
+                      <AnimatePresence initial={false}>
+                        {isSingleDictationChoiceOpen && (
+                          <motion.div
+                            initial={{ opacity: 0, y: -6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -6 }}
+                            transition={{ duration: 0.16 }}
+                            role="dialog"
+                            aria-label="Choose how to add dictation"
+                            className="rounded-2xl border border-amber-400/25 bg-amber-400/[0.06] p-3 shadow-lg shadow-slate-950/20"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="text-xs font-bold text-slate-100">How should dictation be added?</p>
+                                <p className="mt-0.5 text-[11px] text-slate-400">Your current draft stays unchanged until you choose.</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setIsSingleDictationChoiceOpen(false)}
+                                aria-label="Cancel dictation"
+                                className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => startSingleDictation('replace')}
+                                className="rounded-xl bg-amber-400 px-3 py-2 text-xs font-bold text-slate-950 transition-colors hover:bg-amber-300"
+                              >
+                                Start a new voice draft
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => startSingleDictation('append')}
+                                className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200 transition-colors hover:border-slate-600 hover:text-white"
+                              >
+                                Add to current draft
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
 
                       {/* LUXURY GLOWING FULL-WIDTH PROMPT COMPOSER BOX */}
                       <div className="relative group w-full">
@@ -1833,15 +1961,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             <textarea
                               rows={4}
                               value={newBhkLabel}
-                              onChange={(e) => setNewBhkLabel(e.target.value)}
-                              placeholder="✨ Type or edit property details here... (e.g. Premium 2bhk flat 525 sqft 15000 rent brokerage 30000 1+1 security deposit owner Ramesh Sharma +91 98260 12345 in Nanda Nagar Indore facing east fully furnished ready to move)..."
+                              onChange={(e) => handleSinglePromptChange(e.target.value)}
+                              placeholder="Type or edit property details here. Include layout, location, rent, deposit, owner contact, furnishing, and availability."
                               className="w-full bg-transparent text-emerald-300 placeholder-slate-500 text-xs sm:text-sm font-mono border-0 focus:ring-0 outline-none leading-relaxed resize-none"
                             />
 
                             {/* INTEGRATED BOTTOM TOOLBAR (ATTACH MEDIA & SAVE/PUBLISH BUTTON) */}
-                            <div className="flex items-center justify-between pt-3 border-t border-slate-800/80 gap-3 flex-wrap">
-                              {/* LEFT TOOLBAR: MEDIA ATTACHMENT TRIGGER BUTTON */}
-                              <div className="flex items-center gap-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pt-3 border-t border-slate-800/80 gap-3">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <motion.button
                                   whileHover={{ scale: 1.04, y: -1 }}
                                   whileTap={{ scale: 0.96 }}
@@ -1854,17 +1981,33 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                   }`}
                                 >
                                   <Camera className="w-4 h-4 text-cyan-400" />
-                                  <span>{attachedMediaFiles.length > 0 ? `Attached (${attachedMediaFiles.length})` : 'Upload Photos / Videos'}</span>
+                                  <span>{attachedMediaFiles.length > 0 ? `Media added (${attachedMediaFiles.length})` : 'Add photos or video'}</span>
                                 </motion.button>
+
+                                {newBhkLabel.trim() && (
+                                  <motion.button
+                                    whileHover={{ scale: 1.04, y: -1 }}
+                                    whileTap={{ scale: 0.96 }}
+                                    type="button"
+                                    onClick={() => setNewBhkLabel((details) => {
+                                      const nextDetails = `${details.trimEnd()}\n\nNext property\n`;
+                                      singleMicBaseTextRef.current = nextDetails;
+                                      return nextDetails;
+                                    })}
+                                    className="px-4 py-2 rounded-xl text-xs font-extrabold text-amber-200 bg-amber-950/50 hover:bg-amber-950 border border-amber-500/40 hover:border-amber-400/70 transition-all cursor-pointer flex items-center gap-2"
+                                  >
+                                    <Layers className="w-4 h-4 text-amber-400" />
+                                    <span>Add another property</span>
+                                  </motion.button>
+                                )}
 
                                 {attachedMediaFiles.length > 0 && (
                                   <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/80 px-2.5 py-1 rounded-full border border-cyan-800">
-                                    ✓ {attachedMediaFiles.length} file(s) attached
+                                    ✓ {attachedMediaFiles.length} {attachedMediaFiles.length === 1 ? 'file' : 'files'} added
                                   </span>
                                 )}
                               </div>
 
-                              {/* RIGHT TOOLBAR: EMBEDDED SAVE & PUBLISH ACTION BUTTON */}
                               <motion.button
                                 disabled={isSubmittingListing}
                                 whileHover={!isSubmittingListing ? { scale: 1.03, y: -1, boxShadow: "0 0 30px rgba(16, 185, 129, 0.6)" } : {}}
@@ -1883,7 +2026,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 ) : (
                                   <>
                                     <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
-                                    <span>Extract & Review Property Details</span>
+                                    <span>{MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel) ? 'Review multiple properties' : 'Review property details'}</span>
                                   </>
                                 )}
                               </motion.button>
@@ -2378,6 +2521,23 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     )}
                   </div>
                 </form>
+                ) : (
+                  <BatchPropertyIngestionStudio
+                    isOpen
+                    embedded
+                    initialDetails={batchDetails}
+                    initialMediaFiles={attachedMediaFiles}
+                    onClose={() => setUploadMode('single')}
+                    onSuccess={(count) => {
+                      notifySuccess(
+                        'Properties published',
+                        `${count} ${count === 1 ? 'property was' : 'properties were'} published successfully.`,
+                        undefined,
+                        'PROPERTY'
+                      );
+                    }}
+                  />
+                )}
 
               </motion.div>
 
@@ -2392,12 +2552,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-black text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 uppercase font-mono">
-                        Dynamic Control Deck
+                        Listing options
                       </span>
-                      <span className="text-xs text-slate-500 font-mono">Tenant Search Engine</span>
+                      <span className="text-xs text-slate-500 font-mono">Tenant search</span>
                     </div>
                     <h3 className="text-xl font-black text-slate-900 font-['Outfit'] mt-1">
-                      Flat Configuration Selector Options (BHK Matrix)
+                      Property layout options
                     </h3>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 px-4 py-2 rounded-2xl text-emerald-800 font-mono text-xs font-bold">
@@ -2483,10 +2643,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     </div>
                     <div>
                       <h3 className="text-lg sm:text-xl font-black text-white font-['Outfit'] flex items-center gap-2">
-                        Property Media Attachments Manager
+                        Property media
                       </h3>
                       <p className="text-[11px] text-slate-400 font-mono">
-                        Upload photos & walkthrough videos for high-speed CDN storage
+                        Add photos and walkthrough videos to this listing.
                       </p>
                     </div>
                   </div>
@@ -2547,9 +2707,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   <div className="space-y-3 relative z-10">
                     <div className="flex items-center justify-between text-[11px] font-mono font-bold text-slate-300 border-b border-slate-800 pb-2">
                       <div className="flex items-center gap-2">
-                        <span>Selected Files ({attachedMediaFiles.length})</span>
+                        <span>Added media ({attachedMediaFiles.length})</span>
                         <span className="text-[10px] text-emerald-400 font-normal">
-                          ⚡ Auto-sequence tagged
+                          Ready to organize
                         </span>
                       </div>
 
@@ -2564,7 +2724,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 : 'text-slate-400 hover:text-slate-200'
                             }`}
                           >
-                            📷 Grid
+                            📷 Gallery
                           </button>
                           <button
                             type="button"
@@ -2583,7 +2743,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           onClick={handleFillMediaFromExtracted}
                           className="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1 cursor-pointer font-bold bg-slate-900 border border-cyan-500/30 px-2 py-1 rounded-lg"
                         >
-                          <Tag className="w-3 h-3" /> Sync Prompt Tags
+                          <Tag className="w-3 h-3" /> Update photo details
                         </button>
                       </div>
                     </div>
@@ -2935,9 +3095,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
                 <h3 className="text-lg font-bold font-['Outfit'] text-emerald-400 flex items-center gap-2">
-                  ✏️ Inline Edit Extracted Property Parameters
+                  ✏️ Edit property details
                 </h3>
-                <p className="text-xs text-slate-400">Modify extracted property fields directly before persisting to PostgreSQL</p>
+                <p className="text-xs text-slate-400">Review and update property details before publishing.</p>
               </div>
               <button
                 onClick={() => setIsInlineEditOpen(false)}
@@ -3120,7 +3280,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs shadow-md shadow-emerald-600/30 flex items-center gap-1.5 cursor-pointer"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Apply Inline Edits</span>
+                  <span>Save changes</span>
                 </button>
               </div>
             </form>
@@ -3128,19 +3288,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         </div>
       )}
 
-      {/* MULTI-UNIT & VOICE BATCH INGESTION STUDIO */}
-      <BatchPropertyIngestionStudio
-        isOpen={isBatchStudioOpen}
-        onClose={() => setIsBatchStudioOpen(false)}
-        onSuccess={(count) => {
-          notifySuccess(
-            "🎉 Batch Listings Published!",
-            `Successfully published ${count} properties directly to PostgreSQL database.`,
-            undefined,
-            "PROPERTY"
-          );
-        }}
-      />
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Property } from '../types';
 import { ShieldCheck, ChevronLeft, ChevronRight, Camera } from 'lucide-react';
+import { useNotification } from '../context/NotificationContext';
 
 interface PropertyCardMediaProps {
   property: Property;
@@ -20,6 +21,7 @@ export const PropertyCardMedia: React.FC<PropertyCardMediaProps> = ({
   onOpenVideoModal,
   heightClass = "h-64 sm:h-80 lg:h-[380px]"
 }) => {
+  const { notifySuccess } = useNotification();
   const [isHovered, setIsHovered] = useState<boolean>(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
   const [currentImgIdx, setCurrentImgIdx] = useState<number>(0);
@@ -118,7 +120,7 @@ export const PropertyCardMedia: React.FC<PropertyCardMediaProps> = ({
           </div>
 
           <button
-            onClick={(e) => { e.stopPropagation(); alert(`Saved ${property.title} to bookmarks!`); }}
+            onClick={(e) => { e.stopPropagation(); notifySuccess('Saved to bookmarks', `${property.title} is available in your saved properties.`); }}
             className="w-9 h-9 rounded-full bg-slate-900/80 hover:bg-emerald-600 text-white flex items-center justify-center backdrop-blur-md border border-white/25 shadow-lg transition-all text-xs shrink-0"
           >
             ★
@@ -146,5 +148,3 @@ export const PropertyCardMedia: React.FC<PropertyCardMediaProps> = ({
     </div>
   );
 };
-
-

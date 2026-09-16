@@ -20,6 +20,7 @@ import { WfhAdminDashboard } from './WfhAdminDashboard';
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { propertyService } from '../services/propertyService';
+import { useNotification } from '../context/NotificationContext';
 
 const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   try {
@@ -681,6 +682,7 @@ const mockPropertyList: Property[] = [
 export const Home: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { notifySuccess } = useNotification();
 
   const initialSession = getInitialSession();
   const [role, setRole] = useState<UserRole>(initialSession.role);
@@ -797,7 +799,7 @@ export const Home: React.FC = () => {
     } else {
       const updatedVisits = currentVisits + 1;
       setUser(prev => prev ? { ...prev, freeVisitsUsed: updatedVisits } : null);
-      alert(`Property tour requested for ${property.title}! Pass #${updatedVisits} activated (Free Pass ${updatedVisits}/5). Ground Boy assigned for on-site escort.`);
+      notifySuccess('Property tour requested', `Your visit pass ${updatedVisits} of 5 is active for ${property.title}.`, 'An on-site escort will be assigned before your visit.');
     }
   };
 
@@ -1003,7 +1005,7 @@ export const Home: React.FC = () => {
                 whileTap={{ scale: 0.97 }}
                 transition={{ type: 'spring', stiffness: 450, damping: 25 }}
                 onClick={() => {
-                  alert("₹100 UPI Deposit authorized! Pass #6 activated.");
+                  notifySuccess('Visit pass activated', 'Your additional visit pass is now active.');
                   setShowDepositModal(false);
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-xs shadow-md shadow-emerald-600/20 transition-all"

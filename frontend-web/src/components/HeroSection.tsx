@@ -4,6 +4,7 @@ import {
   Search, MapPin, ShieldCheck, Check, Sparkles, Building2, Map, Home, 
   ChevronDown, Mic, Compass, Zap, Globe, Rocket, ArrowRight
 } from 'lucide-react';
+import { useNotification } from '../context/NotificationContext';
 
 interface HeroSectionProps {
   onSearch: (sector: string) => void;
@@ -75,6 +76,7 @@ const HERO_BANNERS = [
 ];
 
 export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch }) => {
+  const { notifySuccess } = useNotification();
   const [selectedCityId, setSelectedCityId] = useState<string>('INDORE');
   const [activeTab, setActiveTab] = useState<'RENT' | 'PLOT' | 'COMMERCIAL' | 'PG'>('RENT');
   const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
@@ -116,7 +118,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch }) => {
     setSelectedSectors([city.sectors[0] || 'Main Sector']);
     setShowCityPicker(false);
     if (city.status === 'LAUNCHING_SOON') {
-      alert(`🎉 Pathome is expanding to ${city.name}! You are registered on the VIP early access list.`);
+      notifySuccess('Early access requested', `We will let you know when Pathome becomes available in ${city.name}.`);
     }
   };
 

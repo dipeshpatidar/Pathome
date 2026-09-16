@@ -4,6 +4,7 @@ import {
   MessageSquare, Users, AlertCircle, Sparkles, CheckCircle2, 
   Send, Shield, MapPin, Search, ArrowUpRight, Clock, UserCheck
 } from 'lucide-react';
+import { useNotification } from '../context/NotificationContext';
 
 interface WfhAdminDashboardProps {
   activeTab: string;
@@ -36,6 +37,7 @@ const cardVariants = {
 };
 
 export const WfhAdminDashboard: React.FC<WfhAdminDashboardProps> = ({ activeTab }) => {
+  const { notifyInfo, notifySuccess } = useNotification();
   const [waText, setWaText] = useState('');
   const [posts, setPosts] = useState(mockWhatsAppPosts);
   const [leads, setLeads] = useState(mockUnmappedLeads);
@@ -56,7 +58,7 @@ export const WfhAdminDashboard: React.FC<WfhAdminDashboardProps> = ({ activeTab 
 
     setPosts([newPost, ...posts]);
     setWaText('');
-    alert("WhatsApp post parsed! Extracted sector & added to Ground Boy queue.");
+    notifySuccess('Property message added', 'The property details were added to the review queue.');
   };
 
   const handleAssignLead = (leadId: string, boyName: string) => {
@@ -165,7 +167,7 @@ export const WfhAdminDashboard: React.FC<WfhAdminDashboardProps> = ({ activeTab 
                     <motion.button
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
-                      onClick={() => alert(`Verified & Published snippet #${post.id}`)}
+                      onClick={() => notifySuccess('Listing published', `Listing ${post.id} has been verified and published.`)}
                       className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-3.5 py-2 rounded-xl shrink-0"
                     >
                       Publish Listing
@@ -236,7 +238,7 @@ export const WfhAdminDashboard: React.FC<WfhAdminDashboardProps> = ({ activeTab 
                           )}
                         </td>
                         <td className="py-3.5 px-3 text-right">
-                          <button onClick={() => alert(`Inspecting listings for ${broker.name}`)} className="text-xs font-bold text-emerald-600 hover:underline">
+                          <button onClick={() => notifyInfo('Broker listings', `Showing listings from ${broker.name}.`)} className="text-xs font-bold text-emerald-600 hover:underline">
                             Inspect
                           </button>
                         </td>

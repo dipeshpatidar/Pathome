@@ -141,7 +141,8 @@ public class PropertyParserServiceTest {
         assertEquals("525 sqft", dto.getAreaSqFt());
         assertEquals("1+1 Security Deposit", dto.getDepositVal());
         assertEquals("Piyushi Saha", dto.getOwnerName());
-        assertEquals("+91 458888248", dto.getOwnerPhone());
+        assertEquals("Not Specified", dto.getOwnerPhone());
+        assertTrue(dto.getMissingFields().contains("Owner Contact Number"));
         assertEquals("Not Specified", dto.getVastuFacing());
     }
 
@@ -190,7 +191,8 @@ public class PropertyParserServiceTest {
         assertEquals("₹22,500", dto.getBrokerageVal());
         assertEquals("1800 sqft", dto.getAreaSqFt());
         assertEquals("John Doe", dto.getOwnerName());
-        assertEquals("+91 12345 67890", dto.getOwnerPhone());
+        assertEquals("Not Specified", dto.getOwnerPhone());
+        assertTrue(dto.getMissingFields().contains("Owner Contact Number"));
         assertEquals("North-East Facing", dto.getVastuFacing());
         assertEquals("Fully Furnished", dto.getFurnishingStatus());
         assertEquals("Ready To Move", dto.getPossessionDate());
@@ -302,6 +304,17 @@ public class PropertyParserServiceTest {
         ParsedPropertyDTO dtoContiguous = propertyParserService.parseAndSave(promptContiguous);
         assertEquals("Anita", dtoContiguous.getOwnerName());
         assertEquals("+91 91234 56789", dtoContiguous.getOwnerPhone());
+    }
+
+    @Test
+    public void testAreaFollowingBrokerageDaysIsNotUsedAsMonthlyRent() {
+        ParsedPropertyDTO dto = propertyParserService.parse(
+                "2 BHK in Nanda Nagar 15 days rent 1200 square feet rent is 25000 owner +91 98260 12345");
+
+        assertEquals(25000.0, dto.getRentAmount());
+        assertEquals("1200 sqft", dto.getAreaSqFt());
+        assertEquals("15 Days", dto.getBrokerageDays());
+        assertFalse(dto.getDescription().contains("Listing Status: null"));
     }
 
     @Test

@@ -6,9 +6,14 @@ import com.indore.pathome.spaces.repository.LocalityRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -31,6 +36,7 @@ public class PropertyParserService {
             "(?m)(?:^[\\s]*(?:property|flat|listing|house|unit)\\s*#?\\d+[:\\.\\-]?\\s*)|" +
             "(?m)(?:^[\\s]*(?:\\[?\\d+[\\]\\)\\.\\:\\-]|#\\d+)\\s+)|" +
             "(?i)\\b(?:next\\s*(?:property|flat|house|listing|unit|one)|agli\\s*property|dusra\\s*flat)\\b|" +
+            "(?i)\\b(?:and\\s+)?(?:the\\s+)?(?:second|third|fourth|another)\\s+(?:property|flat|house|listing|unit)(?:\\s+is)?\\b|" +
             "(?:\\r?\\n\\s*\\r?\\n+)"
     );
     private static final Pattern HINDI_HAZAR_RENT_PATTERN = Pattern.compile(
@@ -68,14 +74,20 @@ public class PropertyParserService {
     private static final Pattern TYPO_NIPANIA_PATTERN = Pattern.compile("\\b(nipaniya|nipaniyaa)\\b");
 
     private static final Pattern NUM_BHK_PATTERN = Pattern.compile(
-            "\\b([1-9](?:\\.5)?|10)\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\\b", Pattern.CASE_INSENSITIVE);
+            "\\b([1-9](?:\\.5)?|10)\\s*(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern REV_BHK_PATTERN = Pattern.compile(
-            "\\b(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\\b\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?([1-9](?:\\.5)?|10)\\b", Pattern.CASE_INSENSITIVE);
+            "\\b(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\\s*([1-9](?:\\.5)?|10)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WORD_BHK_PATTERN = Pattern.compile(
-            "\\b(one|two|three|four|five|six|seven|eight|nine|ten)\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk)\\b",
+            "\\b(one|two|three|four|five|six|seven|eight|nine|ten)\\s*(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern BATHROOMS_PATTERN = Pattern.compile(
             "\\b([1-9]|10)\\b\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\b|\\b(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\b\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?([1-9]|10)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern WORD_BATHROOMS_PATTERN = Pattern.compile(
+            "\\b(one|two|three|four|five|six|seven|eight|nine|ten)\\b\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\b|\\b(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\b\\s*(?:[a-zA-Z0-9\\-\\_]{1,30}\\s+){0,10}?(one|two|three|four|five|six|seven|eight|nine|ten)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern BATHROOMS_TO_SPEECH_TYPO_PATTERN = Pattern.compile(
+            "\\b(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\s+(?:is|are)\\s+(?:to|too)\\b",
             Pattern.CASE_INSENSITIVE);
 
     // Immediate & High-Precision Forward/Reverse Rent Patterns (Strict word boundaries & zero cross-field bleeding)
@@ -101,6 +113,9 @@ public class PropertyParserService {
     private static final Pattern SQFT_PATTERN = Pattern.compile(
             "\\b(\\d{1,3}(?:,\\d{3})+|\\d{3,5})\\s*(?:[a-zA-Z\\-\\_]{1,30}\\s+){0,5}?(?:sqft|sq\\.ft|sq\\s*ft|sqfeet|square\\s*feet|sq\\s*meters|sqm)\\b|\\b(?:sqft|sq\\.ft|sq\\s*ft|sqfeet|square\\s*feet|sq\\s*meters|sqm)\\b\\s*(?:[a-zA-Z\\-\\_]{1,30}\\s+){0,5}?(\\d{1,3}(?:,\\d{3})+|\\d{3,5})\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern AREA_UNIT_AFTER_NUMBER_PATTERN = Pattern.compile(
+            "\\s*(?:sqft|sq\\.\\s*ft|sqfeet|square\\s*feet|sq\\s*meters|sqm)\\b",
+            Pattern.CASE_INSENSITIVE);
 
     // Explicit Forward & Reverse Security Deposit Patterns (Supports typos "securuity", "is 1+1 60000")
     private static final Pattern FWD_DEPOSIT_PATTERN = Pattern.compile(
@@ -116,6 +131,28 @@ public class PropertyParserService {
     private static final Pattern POSSESSION_PATTERN = Pattern.compile(
             "\\b(?:ready\\s*to\\s*move|immediate[\\s\\-]?possession|available\\s*from\\s*[a-zA-Z0-9\\s]{3,15}|possession\\s*date|possession)\\b(?:\\s+(?:is|on|from|by)){0,2}\\s*[:\\-]?\\s*(\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?\\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\\s+\\d{4})?|\\d{1,2}[-\\/]\\d{1,2}[-\\/]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|ready\\s*to\\s*move|immediate|available\\s*[a-zA-Z0-9\\s]{3,15})\\b|\\b(ready\\s*to\\s*move|immediate[\\s\\-]?possession|immediate)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern RELATIVE_POSSESSION_PATTERN = Pattern.compile(
+            "\\b(?:(?:available|availability|possession|ready(?:\\s*to\\s*move)?|move\\s*in)\\s*(?:is\\s*)?(?:after|in|from)\\s*|(?:after|in)\\s+)(\\d{1,2})\\s*(days?|weeks?|months?|years?|mahina|mahine)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern HINGLISH_RELATIVE_POSSESSION_PATTERN = Pattern.compile(
+            "\\b(?:(?:available|availability|possession|ready(?:\\s*to\\s*move)?|move\\s*in)\\s*(?:is\\s*)?)?(\\d{1,2})\\s*(days?|weeks?|months?|years?|mahina|mahine)\\s+(?:ke\\s+)?baad\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern DIWALI_POSSESSION_PATTERN = Pattern.compile(
+            "\\b(?:post|after)\\s+(?:diwali|deepavali|deepawali)(?:\\s+(\\d{4}))?\\b|\\b(?:diwali|deepavali|deepawali)(?:\\s+(\\d{4}))?\\s+(?:ke\\s+)?baad\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern NON_POSSESSION_INTERVAL_CONTEXT_PATTERN = Pattern.compile(
+            "\\b(?:deposit|brokerage|lease|agreement|notice|tenure)(?:\\s+[a-z]+){0,4}\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final DateTimeFormatter RESOLVED_POSSESSION_DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH);
+    private static final Map<Integer, LocalDate> DIWALI_DATES = Map.ofEntries(
+            Map.entry(2025, LocalDate.of(2025, 10, 20)),
+            Map.entry(2026, LocalDate.of(2026, 11, 8)),
+            Map.entry(2027, LocalDate.of(2027, 10, 29)),
+            Map.entry(2028, LocalDate.of(2028, 10, 17)),
+            Map.entry(2029, LocalDate.of(2029, 11, 5)),
+            Map.entry(2030, LocalDate.of(2030, 10, 26)),
+            Map.entry(2031, LocalDate.of(2031, 11, 14)));
 
     // Address, State, Pincode & Landmark Patterns
     private static final Pattern STATE_PATTERN = Pattern.compile(
@@ -135,7 +172,8 @@ public class PropertyParserService {
     private static final Pattern REV_OWNER_NAME_PATTERN = Pattern.compile(
             "\\b([A-Za-z]{2,20}(?:\\s+[A-Za-z]{2,20}){0,3})\\s+(?:owner|contact)\\b",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern PHONE_PATTERN = Pattern.compile("(?:\\+?91[\\-\\s]?)?([1-9](?:[\\-\\s]?\\d){7,10})");
+    private static final Pattern PHONE_PATTERN = Pattern.compile(
+            "(?<![+\\d])(?:\\+?91[\\-\\s]?)?([6-9](?:[\\-\\s]?\\d){9})\\b");
 
     private static final Pattern NUM_PRICE_PATTERN = Pattern.compile("\\b(\\d{4,6})\\b(?!\\s*(?:sqft|sq|feet|square|meters|days|day|bhk|baths|bed|pin|pincode|deposit|security))", Pattern.CASE_INSENSITIVE);
     private static final Pattern K_PRICE_PATTERN = Pattern.compile("\\b(\\d{1,2})k\\b", Pattern.CASE_INSENSITIVE);
@@ -179,23 +217,33 @@ public class PropertyParserService {
             "jaipur", "surat", "lucknow", "chandigarh", "goa", "dewas", "ratlam", "dhar"
     );
 
-    // Known Core Indore Sector & Locality Master Set for O(1) locality-to-city hard-binding
-    private static final Set<String> KNOWN_INDORE_SECTORS = Set.of(
+    // Longest names come first so a precise locality wins when names share a prefix.
+    // This fixed-size list is also scanned from the end of the prompt: in a phrase such as
+    // "near Opal Homes Chikatsak Nagar Mahalaxmi Nagar", the final stated locality is the
+    // property locality while the earlier one is part of the route or landmark.
+    private static final List<String> KNOWN_INDORE_SECTORS = List.of(
             "vijay nagar", "nanda nagar", "palasia", "old palasia", "saket nagar", "nipania",
-            "bhawarkua", "mahalakshmi nagar", "mahalaxmi nagar", "mahalaxmi", "chikatsak nagar", "chikatsak",
+            "bhawarkua", "mahalakshmi nagar", "mahalaxmi nagar", "chikatsak nagar", "chikatsak",
             "rau", "mhow", "lig colony", "sukhlia", "khajrana", "bypass road", "annapurna", "sudama nagar",
             "khandwa road", "ab road", "bicholi mardana", "kanadia road", "rajendra nagar", "chandan nagar",
             "scheme 54", "scheme 78", "scheme 74", "scheme 140", "scheme 114", "tilak nagar", "manorama ganj", "race course road"
-    );
+    ).stream().sorted((first, second) -> Integer.compare(second.length(), first.length())).toList();
 
     private final LocalityRepository localityRepository;
+    private final Clock clock;
 
     // High-Speed $O(1)$ Concurrent L1 In-Memory Caches
     private final Map<String, Locality> localityCache = new ConcurrentHashMap<>();
     private final Set<String> cityCache = ConcurrentHashMap.newKeySet();
 
+    @Autowired
     public PropertyParserService(LocalityRepository localityRepository) {
+        this(localityRepository, Clock.system(ZoneId.of("Asia/Kolkata")));
+    }
+
+    PropertyParserService(LocalityRepository localityRepository, Clock clock) {
         this.localityRepository = localityRepository;
+        this.clock = clock;
     }
 
     /**
@@ -352,6 +400,18 @@ public class PropertyParserService {
                 bathrooms = bCount + " Baths";
             }
         }
+        if (bathrooms == null) {
+            Matcher wordBathMatcher = WORD_BATHROOMS_PATTERN.matcher(input);
+            if (wordBathMatcher.find()) {
+                String bCount = wordBathMatcher.group(1) != null
+                        ? wordBathMatcher.group(1)
+                        : wordBathMatcher.group(2);
+                bathrooms = toNumericBathroomCount(bCount) + " Baths";
+            }
+        }
+        if (bathrooms == null && BATHROOMS_TO_SPEECH_TYPO_PATTERN.matcher(input).find()) {
+            bathrooms = "2 Baths";
+        }
 
         // 2. Property Type Extractor (Penthouse prioritized to prevent 'house' substring collision)
         String type = null;
@@ -408,13 +468,9 @@ public class PropertyParserService {
             if (rawDigits.startsWith("91") && rawDigits.length() > 10) {
                 rawDigits = rawDigits.substring(2);
             }
-            if (rawDigits.length() >= 8) {
+            if (rawDigits.length() == 10) {
                 if (pincode == null || !rawDigits.equals(pincode)) {
-                    if (rawDigits.length() == 10) {
-                        ownerPhone = "+91 " + rawDigits.substring(0, 5) + " " + rawDigits.substring(5);
-                    } else {
-                        ownerPhone = "+91 " + rawDigits;
-                    }
+                    ownerPhone = "+91 " + rawDigits.substring(0, 5) + " " + rawDigits.substring(5);
                 }
             }
         }
@@ -454,6 +510,7 @@ public class PropertyParserService {
                     String cleanRent = rawRent.replace(",", "");
                     if (pincode != null && pincode.equals(cleanRent)) continue;
                     if (ownerPhone != null && ownerPhone.contains(cleanRent)) continue;
+                    if (isAreaUnitImmediatelyAfter(normalized, fwdRent.end(1))) continue;
 
                     String nearestKeyword = findNearestPrecedingKeyword(normalized, fwdRent.start(1));
                     if ("BROKERAGE".equals(nearestKeyword) || "DEPOSIT".equals(nearestKeyword)) {
@@ -569,14 +626,16 @@ public class PropertyParserService {
             furnishingStatus = capitalizeWords(furnMatcher.group(1));
         }
 
-        String possessionDate = null;
-        Matcher possMatcher = POSSESSION_PATTERN.matcher(input);
-        if (possMatcher.find()) {
-            String rawP = possMatcher.group(1) != null ? possMatcher.group(1) : possMatcher.group(0);
-            if (rawP.toLowerCase().contains("ready to move") || rawP.toLowerCase().contains("immediate")) {
-                possessionDate = "Ready To Move";
-            } else {
-                possessionDate = capitalizeWords(rawP.trim());
+        String possessionDate = resolveRelativePossessionDate(normalized);
+        if (possessionDate == null) {
+            Matcher possMatcher = POSSESSION_PATTERN.matcher(input);
+            if (possMatcher.find()) {
+                String rawP = possMatcher.group(1) != null ? possMatcher.group(1) : possMatcher.group(0);
+                if (rawP.toLowerCase().contains("ready to move") || rawP.toLowerCase().contains("immediate")) {
+                    possessionDate = "Ready To Move";
+                } else {
+                    possessionDate = capitalizeWords(rawP.trim());
+                }
             }
         }
 
@@ -632,26 +691,22 @@ public class PropertyParserService {
         // Step 4A: Resolve an explicit known city before using locality data.
         city = resolveKnownCity(cleanLower);
 
-        // Step 4B: Match cached localities only when the city is explicit or
-        // the sector name is unique across the cache.
-        Locality cachedLocality = resolveCachedLocality(cleanLower, city);
-        if (cachedLocality != null) {
-            sector = cachedLocality.getSectorName();
-            if (city.isBlank()) {
-                city = cachedLocality.getCity();
-            }
+        // Step 4B: Prefer the final explicit known Indore locality. This prevents an
+        // earlier landmark/locality reference from overriding the property locality.
+        String knownSector = resolveLastKnownIndoreSector(cleanLower);
+        if (!knownSector.isBlank()) {
+            sector = capitalizeWords(knownSector);
+            city = "Indore";
         }
 
-        // Step 4C: Check Known Core Indore Sectors (Hard-bind locality to Indore, sort by length descending)
+        // Step 4C: Match a database-backed locality when no known core locality was supplied.
+        // The cache supports newly added areas without overriding an explicit, unambiguous one.
         if (sector.isBlank()) {
-            List<String> sortedSectors = KNOWN_INDORE_SECTORS.stream()
-                    .sorted((a, b) -> Integer.compare(b.length(), a.length()))
-                    .toList();
-            for (String knownSec : sortedSectors) {
-                if (cleanLower.contains(knownSec)) {
-                    sector = capitalizeWords(knownSec);
-                    city = "Indore";
-                    break;
+            Locality cachedLocality = resolveCachedLocality(cleanLower, city);
+            if (cachedLocality != null) {
+                sector = cachedLocality.getSectorName();
+                if (city.isBlank()) {
+                    city = cachedLocality.getCity();
                 }
             }
         }
@@ -837,7 +892,9 @@ public class PropertyParserService {
             if (ownerPhone != null && !ownerPhone.equals("Not Specified")) descBuilder.append(" (").append(ownerPhone).append(")");
             descBuilder.append(".");
         }
-        descBuilder.append(" Listing Status: ").append(status).append(".");
+        if (status != null && !status.isBlank()) {
+            descBuilder.append(" Listing Status: ").append(status).append(".");
+        }
 
         String synthesizedDescription = descBuilder.toString();
 
@@ -934,6 +991,71 @@ public class PropertyParserService {
         }
     }
 
+    /**
+     * Resolves relative availability statements against Indian local time. A date is only
+     * produced when the interval is clearly about availability, never when it describes
+     * a deposit, brokerage, lease, or notice period.
+     */
+    private String resolveRelativePossessionDate(String normalizedPrompt) {
+        Matcher diwaliMatcher = DIWALI_POSSESSION_PATTERN.matcher(normalizedPrompt);
+        if (diwaliMatcher.find()) {
+            String yearValue = diwaliMatcher.group(1) != null ? diwaliMatcher.group(1) : diwaliMatcher.group(2);
+            LocalDate diwaliDate = resolveDiwaliDate(yearValue);
+            return diwaliDate == null ? null : formatResolvedPossessionDate(diwaliDate.plusDays(1));
+        }
+
+        String resolvedDate = resolveRelativeInterval(normalizedPrompt, RELATIVE_POSSESSION_PATTERN.matcher(normalizedPrompt));
+        if (resolvedDate != null) {
+            return resolvedDate;
+        }
+        return resolveRelativeInterval(normalizedPrompt, HINGLISH_RELATIVE_POSSESSION_PATTERN.matcher(normalizedPrompt));
+    }
+
+    private String resolveRelativeInterval(String normalizedPrompt, Matcher relativeMatcher) {
+        while (relativeMatcher.find()) {
+            if (hasNonPossessionIntervalContext(normalizedPrompt, relativeMatcher.start())) {
+                continue;
+            }
+
+            int amount = Integer.parseInt(relativeMatcher.group(1));
+            LocalDate baseDate = LocalDate.now(clock);
+            LocalDate resolvedDate = switch (relativeMatcher.group(2).toLowerCase(Locale.ROOT)) {
+                case "day", "days" -> baseDate.plusDays(amount);
+                case "week", "weeks" -> baseDate.plusWeeks(amount);
+                case "year", "years" -> baseDate.plusYears(amount);
+                default -> baseDate.plusMonths(amount);
+            };
+            return formatResolvedPossessionDate(resolvedDate);
+        }
+        return null;
+    }
+
+    private LocalDate resolveDiwaliDate(String explicitYear) {
+        if (explicitYear != null) {
+            try {
+                return DIWALI_DATES.get(Integer.parseInt(explicitYear));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+
+        LocalDate today = LocalDate.now(clock);
+        return DIWALI_DATES.values().stream()
+                .filter(date -> !date.isBefore(today))
+                .min(Comparator.naturalOrder())
+                .orElse(null);
+    }
+
+    private boolean hasNonPossessionIntervalContext(String prompt, int matchStart) {
+        int contextStart = Math.max(0, matchStart - 48);
+        String precedingText = prompt.substring(contextStart, matchStart);
+        return NON_POSSESSION_INTERVAL_CONTEXT_PATTERN.matcher(precedingText).find();
+    }
+
+    private String formatResolvedPossessionDate(LocalDate date) {
+        return date.format(RESOLVED_POSSESSION_DATE_FORMATTER);
+    }
+
     private String normalizeTypos(String value) {
         String normalized = TYPO_FLAT_PATTERN.matcher(value).replaceAll("flat");
         normalized = TYPO_HOUSE_PATTERN.matcher(normalized).replaceAll("house");
@@ -957,6 +1079,22 @@ public class PropertyParserService {
         return TYPO_NIPANIA_PATTERN.matcher(normalized).replaceAll("nipania");
     }
 
+    private String toNumericBathroomCount(String value) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "one" -> "1";
+            case "two" -> "2";
+            case "three" -> "3";
+            case "four" -> "4";
+            case "five" -> "5";
+            case "six" -> "6";
+            case "seven" -> "7";
+            case "eight" -> "8";
+            case "nine" -> "9";
+            case "ten" -> "10";
+            default -> value;
+        };
+    }
+
     private String resolveKnownCity(String normalizedPrompt) {
         for (String cachedCity : cityCache) {
             if (MASTER_INDIAN_CITIES.contains(cachedCity) && normalizedPrompt.contains(cachedCity)) {
@@ -969,6 +1107,25 @@ public class PropertyParserService {
             }
         }
         return "";
+    }
+
+    private String resolveLastKnownIndoreSector(String normalizedPrompt) {
+        String selectedSector = "";
+        int selectedPosition = -1;
+        for (String knownSector : KNOWN_INDORE_SECTORS) {
+            int position = normalizedPrompt.lastIndexOf(knownSector);
+            if (position > selectedPosition) {
+                selectedSector = knownSector;
+                selectedPosition = position;
+            }
+        }
+        return selectedSector;
+    }
+
+    private boolean isAreaUnitImmediatelyAfter(String text, int numberEnd) {
+        Matcher areaUnitMatcher = AREA_UNIT_AFTER_NUMBER_PATTERN.matcher(text);
+        areaUnitMatcher.region(numberEnd, text.length());
+        return areaUnitMatcher.lookingAt();
     }
 
     private Locality resolveCachedLocality(String normalizedPrompt, String resolvedCity) {
