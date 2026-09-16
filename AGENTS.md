@@ -29,4 +29,8 @@ When developing features for Pathome Spaces (Backend Spring Boot & Frontend Web/
    - Every single user-facing text string, header, label, badge, tooltip, button CTA, and notification message across the frontend (Web/Mobile) MUST be clean, production-ready, customer-centric, and meaningful.
    - Never include developer notes, layout indicators, debug tags (e.g. no "(100% Full Width)", no "(Extracted in Real-Time)"), placeholder junk, or arbitrary filler text.
 
+7. **Mandatory AI Change Log**:
+   - Before completing every substantive task, append a dated entry to the appropriate repository-root change log file (`antigravity_changes` for Antigravity, `chat_gpt_changes` for ChatGPT/Cursor). Never overwrite or remove previous entries.
+   - Each entry must use the current India date and time, state why the work was requested, list the exact files or areas changed, summarize the outcome, record relevant verification, and note commit/push status when applicable.
+   - Log investigations and fixes alike so another AI can safely continue the work. Do not record credentials, tokens, connection strings, or other secrets; describe sensitive configuration only at a high level.
 

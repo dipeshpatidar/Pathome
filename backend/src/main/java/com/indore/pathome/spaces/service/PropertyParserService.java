@@ -29,6 +29,11 @@ import java.util.regex.Pattern;
 public class PropertyParserService {
 
     private static final Logger log = LoggerFactory.getLogger(PropertyParserService.class);
+    private static final String TARGET_PROPERTY_INDEX_REGEX =
+            "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|" +
+            "eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|" +
+            "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|" +
+            "seventeen|eighteen|nineteen|twenty|\\d{1,3}(?:st|nd|rd|th)?";
 
     // Pre-compiled Thread-Safe Static RegEx Patterns (Zero runtime recompilation overhead)
     private static final Pattern MULTI_PROMPT_SPLIT_PATTERN = Pattern.compile(
@@ -36,9 +41,28 @@ public class PropertyParserService {
             "(?m)(?:^[\\s]*(?:property|flat|listing|house|unit)\\s*#?\\d+[:\\.\\-]?\\s*)|" +
             "(?m)(?:^[\\s]*(?:\\[?\\d+[\\]\\)\\.\\:\\-]|#\\d+)\\s+)|" +
             "(?i)\\b(?:next\\s*(?:property|flat|house|listing|unit|one)|agli\\s*property|dusra\\s*flat)\\b|" +
-            "(?i)\\b(?:and\\s+)?(?:the\\s+)?(?:second|third|fourth|another)\\s+(?:property|flat|house|listing|unit)(?:\\s+is)?\\b|" +
+            "(?i)\\b(?:and\\s+)?(?:the\\s+)?(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|" +
+            "eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|another)" +
+            "\\s+(?:property|flat|house|listing|unit)(?:\\s+is)?\\b|" +
             "(?:\\r?\\n\\s*\\r?\\n+)"
     );
+    private static final Pattern TARGETED_AMENDMENT_PREFIX_PATTERN = Pattern.compile(
+            "\\b(?:and\\s+)?(?:in|for|to|about|regarding)\\s+(?:the\\s+)?(?:" +
+            "(" + TARGET_PROPERTY_INDEX_REGEX + ")\\s+(?:property|flat|house|listing|unit)|" +
+            "(?:property|flat|house|listing|unit)\\s*(?:number\\s*)?(" + TARGET_PROPERTY_INDEX_REGEX + "))" +
+            "\\b\\s*[,;:\\-]?\\s*(?:please\\s+)?(?:add|set|keep|change|update|make|put|include)?\\s*",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TARGETED_AMENDMENT_DIRECT_PATTERN = Pattern.compile(
+            "\\b(?:and\\s+)?(?:" +
+            "(" + TARGET_PROPERTY_INDEX_REGEX + ")\\s+(?:property|flat|house|listing|unit)|" +
+            "(?:property|flat|house|listing|unit)\\s*(?:number\\s*)?(" + TARGET_PROPERTY_INDEX_REGEX + "))" +
+            "\\b\\s*[,;:\\-]?\\s*(?:please\\s+)?(?:add|set|keep|change|update|make|put|include|should\\s+be)\\s+",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TARGETED_AMENDMENT_ACTION_FIRST_PATTERN = Pattern.compile(
+            "\\b(?:add|set|keep|change|update|put|include)\\s+([^\\n.!?]{2,160}?)\\s+(?:in|for|to)\\s+(?:the\\s+)?(?:" +
+            "(" + TARGET_PROPERTY_INDEX_REGEX + ")\\s+(?:property|flat|house|listing|unit)|" +
+            "(?:property|flat|house|listing|unit)\\s*(?:number\\s*)?(" + TARGET_PROPERTY_INDEX_REGEX + "))\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern HINDI_HAZAR_RENT_PATTERN = Pattern.compile(
             "\\b(\\d{1,3}(?:\\.\\d+)?)\\s*(?:hazar|hzaar|hzar)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern HINDI_LAKH_RENT_PATTERN = Pattern.compile(
@@ -63,11 +87,11 @@ public class PropertyParserService {
     private static final Pattern TYPO_SOUTH_FACING_PATTERN = Pattern.compile("\\b(suth\\s*facing|south\\s*faceing|south\\s*dacing)\\b");
     private static final Pattern TYPO_RENT_PATTERN = Pattern.compile("\\b(rnt|ren|mothly\\s*rent|pm|p\\.m\\.)\\b");
     private static final Pattern TYPO_DEPOSIT_PATTERN = Pattern.compile(
-            "\\b(depost|deposite|diposite|diposit|scurity\\s*deposit|scurity\\s*dep|securuity\\s*deposit|securuity)\\b");
+            "\\b(deposits|depost|deposite|diposite|diposit|scurity\\s*deposit|scurity\\s*dep|securuity\\s*deposit|securuity)\\b");
     private static final Pattern TYPO_NEAR_PATTERN = Pattern.compile("\\b(near\\s*by|nearby|near\\s*to|opp\\s*to|infront\\s*of)\\b");
     private static final Pattern TYPO_BROKERAGE_PATTERN = Pattern.compile("\\b(brokraj|brokrage|brookerage|brokerg|brokorage|commission)\\b");
     private static final Pattern TYPO_SAKET_NAGAR_PATTERN = Pattern.compile("\\b(saket\\s*nagr|saketnagar)\\b");
-    private static final Pattern TYPO_VIJAY_NAGAR_PATTERN = Pattern.compile("\\b(vijay\\s*nagr|vijayngr|vijaynagar)\\b");
+    private static final Pattern TYPO_VIJAY_NAGAR_PATTERN = Pattern.compile("\\b(vijay\\s*nagr|vijayngr|vijaynagar|vijayanagar)\\b");
     private static final Pattern TYPO_NANDA_NAGAR_PATTERN = Pattern.compile("\\b(nanda\\s*nagr|nandanagar)\\b");
     private static final Pattern TYPO_BHAWARKUA_PATTERN = Pattern.compile("\\b(bhawarkwa|bhawar\\s*kua)\\b");
     private static final Pattern TYPO_PALASIA_PATTERN = Pattern.compile("\\b(palasiaa)\\b");
@@ -92,7 +116,7 @@ public class PropertyParserService {
 
     // Immediate & High-Precision Forward/Reverse Rent Patterns (Strict word boundaries & zero cross-field bleeding)
     private static final Pattern FWD_RENT_PATTERN = Pattern.compile(
-            "\\b(?:monthly\\s*rent|rent|per\\s*month|/month|pm|rnt|ren)\\b(?:\\s+(?:is|of|amount|fee|charge|rs)){0,3}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
+            "\\b(?:monthly\\s*rent|rent|per\\s*month|/month|pm|rnt|ren)\\b(?:\\s+(?:is|of|amount|fee|charge|rs|around|about|approximately|approx|roughly|the)){0,5}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern REV_RENT_PATTERN = Pattern.compile(
             "\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*(?:rent|per\\s*month|/month|pm|rnt|ren|monthly\\s*rent)\\b",
@@ -100,7 +124,7 @@ public class PropertyParserService {
 
     // Explicit Forward & Reverse Brokerage Patterns (Supports typos "brokraj", "brokrage", "brookerage")
     private static final Pattern FWD_BROKERAGE_PATTERN = Pattern.compile(
-            "\\b(?:brokerage|brokraj|brokrage|brookerage|brokerg|broker\\s*fee|commission)\\b(?:\\s+(?:fee|fees|is|of|amount|charge|charges|=|-)){0,3}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
+            "\\b(?:brokerage|brokraj|brokrage|brookerage|brokerg|broker\\s*fee|commission)\\b(?:\\s+(?:fee|fees|is|of|amount|charge|charges|around|about|approximately|approx|roughly|the|=|-)){0,6}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern REV_BROKERAGE_PATTERN = Pattern.compile(
             "\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*(?:fee|fees|is|of|amount|charge|charges)?\\s*(?:brokerage|brokraj|brokrage|brookerage|brokerg|broker\\s*fee|commission)\\b",
@@ -119,7 +143,7 @@ public class PropertyParserService {
 
     // Explicit Forward & Reverse Security Deposit Patterns (Supports typos "securuity", "is 1+1 60000")
     private static final Pattern FWD_DEPOSIT_PATTERN = Pattern.compile(
-            "\\b(?:security\\s*deposit|deposit|dep|depost|deposite|diposite|scurity|securuity)\\b(?:\\s+(?:is|amount|of|=|-)){0,3}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b([1-3]\\+[1-3]\\s*\\d{4,6}|[1-3]\\+[1-3]|\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
+            "\\b(?:security\\s*deposit|deposit|dep|depost|deposite|diposite|scurity|securuity)\\b(?:\\s+(?:is|amount|of|around|about|approximately|approx|roughly|the|=|-)){0,5}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b([1-3]\\+[1-3]\\s*\\d{4,6}|[1-3]\\+[1-3]|\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern REV_DEPOSIT_PATTERN = Pattern.compile(
             "\\b([1-3]\\+[1-3]\\s*\\d{4,6}|[1-3]\\+[1-3]|\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*(?:is|amount)?\\s*(?:security\\s*deposit|deposit|dep|depost|deposite|diposite|scurity|securuity)\\b",
@@ -160,8 +184,14 @@ public class PropertyParserService {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern PINCODE_PATTERN = Pattern.compile("\\b([1-9]\\d{5})\\b");
     private static final Pattern LANDMARK_PATTERN = Pattern.compile(
-            "\\b(?:landmark|near\\s*by|nearby|near\\s*to|near|opposite|opp|behind|next\\s+to|adjacent\\s+to)\\s+([A-Za-z0-9\\s]{2,30}?)(?=\\s+for|\\s+rent|\\s+\\d|\\.|,|\\$)",
+            "\\b(?:landmark|near\\s*by|nearby|near\\s*to|near|opposite|opp|behind|next\\s+to|adjacent\\s+to|in\\s+front\\s+of|infront\\s+of)\\s+" +
+            "([A-Za-z0-9][A-Za-z0-9\\s]{1,60}?)(?=\\s+(?:and\\s+)?(?:in\\s+front\\s+of|infront\\s+of|near\\s*by|nearby|near\\s+to|near|" +
+            "opposite|opp|behind|next\\s+to|adjacent\\s+to|with|having|rent|brokerage|deposit|owner|contact|facing|available|possession|" +
+            "next\\s+(?:property|flat|listing)|add\\b|keep\\b|change\\b|update\\b)|\\s+[1-9]\\d{5}\\b|" +
+            "\\s+(?:[1-9]|10)\\s+(?:bath|baths|bathroom|bathrooms|toilet|washroom)\\b|[.,;]|$)",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern TRAILING_LANDMARK_NOISE_PATTERN = Pattern.compile(
+            "\\s+(?:and\\s+)?(?:add|list|keep|change|update|set|include)\\s*$", Pattern.CASE_INSENSITIVE);
 
     // Listing Status & Owner Patterns
     private static final Pattern STATUS_PATTERN = Pattern.compile("\\b(live|pending|sold|expired|rented|removed)\\b",
@@ -209,6 +239,25 @@ public class PropertyParserService {
     private static final Pattern SECTOR_LONG_NUMBER_PATTERN = Pattern.compile(".*\\b\\d{4,}\\b.*");
     private static final Pattern LEADING_BATCH_MARKER_PATTERN = Pattern.compile("^(?:\\[?\\d+[\\]\\)\\.\\:\\-]|#\\d+)\\s*");
     private static final Pattern MEDIA_URL_EXTENSION_PATTERN = Pattern.compile(".*\\.(jpg|jpeg|png|webp|mp4|gif).*", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PRECEDING_MONETARY_AMOUNT_PATTERN = Pattern.compile(
+            "(?:\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\s*$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_RENT_CUE_PATTERN = Pattern.compile("\\b(?:monthly\\s+rent|rent|kiraya|rnt)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_BROKERAGE_CUE_PATTERN = Pattern.compile("\\b(?:brokerage|commission|broker\\s+fee)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_DEPOSIT_CUE_PATTERN = Pattern.compile("\\b(?:security\\s+deposit|deposit|deposits|security)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_OWNER_PHONE_CUE_PATTERN = Pattern.compile(
+            "\\b(?:owner\\s+(?:phone|mobile|contact|number)|phone|mobile|contact\\s+number)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_OWNER_NAME_CUE_PATTERN = Pattern.compile("\\bowner\\s+name\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_BATHROOM_CUE_PATTERN = Pattern.compile("\\b(?:bath|baths|bathroom|bathrooms|toilet|washroom)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_LAYOUT_CUE_PATTERN = Pattern.compile("\\b(?:bhk|rk|bedroom|bedrooms|layout)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_TYPE_CUE_PATTERN = Pattern.compile("\\b(?:flat|apartment|house|villa|plot|penthouse|studio)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_AREA_CUE_PATTERN = Pattern.compile("\\b(?:area|sqft|sq\\.?\\s*ft|square\\s+feet|sqm)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_FURNISHING_CUE_PATTERN = Pattern.compile("\\b(?:furnished|unfurnished|furnishing)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_POSSESSION_CUE_PATTERN = Pattern.compile("\\b(?:available|availability|possession|ready\\s+to\\s+move|move\\s+in)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_FACING_CUE_PATTERN = Pattern.compile("\\b(?:facing|north|south|east|west)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_STATUS_CUE_PATTERN = Pattern.compile("\\b(?:status|live|pending|sold|expired|rented|removed)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_LOCATION_CUE_PATTERN = Pattern.compile("\\b(?:locality|location|sector|city|address|in|at)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_LANDMARK_CUE_PATTERN = Pattern.compile("\\b(?:landmark|near|opposite|behind|in\\s+front\\s+of)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_PINCODE_CUE_PATTERN = Pattern.compile("\\b(?:pincode|pin\\s+code|postal\\s+code)\\b", Pattern.CASE_INSENSITIVE);
 
     // Master Indian Cities & Tier-1/Tier-2 Metros Allow-list for fail-safe extraction
     private static final Set<String> MASTER_INDIAN_CITIES = Set.of(
@@ -535,7 +584,8 @@ public class PropertyParserService {
                 String cleanVal = rawVal.replace(",", "");
                 if ((pincode == null || !pincode.equals(cleanVal)) && (ownerPhone == null || !ownerPhone.contains(cleanVal))) {
                     String nearestKeyword = findNearestPrecedingKeyword(normalized, revBrokerage.start(1));
-                    if ("RENT".equals(nearestKeyword) || "DEPOSIT".equals(nearestKeyword)) {
+                    if (("RENT".equals(nearestKeyword) || "DEPOSIT".equals(nearestKeyword))
+                            && !hasAmountImmediatelyBefore(normalized, revBrokerage.start(1))) {
                         continue;
                     }
 
@@ -554,6 +604,8 @@ public class PropertyParserService {
                 if (rawVal != null) {
                     String cleanVal = rawVal.replace(",", "");
                     if ((pincode == null || !pincode.equals(cleanVal)) && (ownerPhone == null || !ownerPhone.contains(cleanVal))) {
+                        if (isSameAmountMatchedBy(normalized, fwdBrokerage.start(1), fwdBrokerage.end(1),
+                                REV_RENT_PATTERN, REV_DEPOSIT_PATTERN)) continue;
                         String nearestKeyword = findNearestPrecedingKeyword(normalized, fwdBrokerage.start(1));
                         if ("RENT".equals(nearestKeyword) || "DEPOSIT".equals(nearestKeyword)) {
                             continue;
@@ -612,6 +664,8 @@ public class PropertyParserService {
                 if (depRaw != null) {
                     String cleanDep = depRaw.replace(",", "");
                     if ((pincode == null || !pincode.equals(cleanDep)) && (ownerPhone == null || !ownerPhone.contains(cleanDep))) {
+                        if (isSameAmountMatchedBy(normalized, fwdDeposit.start(1), fwdDeposit.end(1),
+                                REV_RENT_PATTERN, REV_BROKERAGE_PATTERN)) continue;
                         depositVal = depRaw + " Security Deposit";
                         break;
                     }
@@ -646,11 +700,7 @@ public class PropertyParserService {
             state = capitalizeWords(stateMatcher.group(1));
         }
 
-        String landmark = null;
-        Matcher lmMatcher = LANDMARK_PATTERN.matcher(input);
-        if (lmMatcher.find()) {
-            landmark = capitalizeWords(lmMatcher.group(1).trim());
-        }
+        String landmark = extractLandmarks(normalized);
         if (!rentFound) {
             Matcher numMatcher = NUM_PRICE_PATTERN.matcher(input);
             while (numMatcher.find()) {
@@ -689,11 +739,11 @@ public class PropertyParserService {
         String city = "";
 
         // Step 4A: Resolve an explicit known city before using locality data.
-        city = resolveKnownCity(cleanLower);
+        city = resolveKnownCity(normalized);
 
         // Step 4B: Prefer the final explicit known Indore locality. This prevents an
         // earlier landmark/locality reference from overriding the property locality.
-        String knownSector = resolveLastKnownIndoreSector(cleanLower);
+        String knownSector = resolveLastKnownIndoreSector(normalized);
         if (!knownSector.isBlank()) {
             sector = capitalizeWords(knownSector);
             city = "Indore";
@@ -702,7 +752,7 @@ public class PropertyParserService {
         // Step 4C: Match a database-backed locality when no known core locality was supplied.
         // The cache supports newly added areas without overriding an explicit, unambiguous one.
         if (sector.isBlank()) {
-            Locality cachedLocality = resolveCachedLocality(cleanLower, city);
+            Locality cachedLocality = resolveCachedLocality(normalized, city);
             if (cachedLocality != null) {
                 sector = cachedLocality.getSectorName();
                 if (city.isBlank()) {
@@ -816,7 +866,7 @@ public class PropertyParserService {
             amenities.add("Balcony & City View");
         if (cleanLower.contains("garden"))
             amenities.add("Private Garden");
-        if (cleanLower.contains("furnished"))
+        if ("Fully Furnished".equalsIgnoreCase(furnishingStatus))
             amenities.add("Fully Furnished");
         if (cleanLower.contains("parking"))
             amenities.add("Covered Parking");
@@ -829,74 +879,11 @@ public class PropertyParserService {
         if (cleanLower.contains("swimming") || cleanLower.contains("pool"))
             amenities.add("Swimming Pool");
 
-        // 8. Missing Attributes Detection Telemetry
-        List<String> missingFields = new ArrayList<>();
-        if (!rentFound)
-            missingFields.add("Monthly Rent");
-        if ("Unspecified".equalsIgnoreCase(bhk))
-            missingFields.add("BHK Layout");
-        if (type == null)
-            missingFields.add("Property Type");
-        if (sector.equalsIgnoreCase("Not Specified"))
-            missingFields.add("Locality / Sector");
-        if (ownerPhone == null)
-            missingFields.add("Owner Contact Number");
-        if (bathrooms == null)
-            missingFields.add("Bathrooms Count");
-        if (areaSqFt == null)
-            missingFields.add("Carpet Area (sqft)");
-        if (pincode == null)
-            missingFields.add("Pincode");
-        if (possessionDate == null)
-            missingFields.add("Possession Date / Readiness");
-        if (vastuFacing.equalsIgnoreCase("Not Specified"))
-            missingFields.add("Vastu Facing Direction");
-        if (furnishingStatus == null)
-            missingFields.add("Furnishing Status");
-        if (depositVal == null)
-            missingFields.add("Security Deposit");
         List<String> conflicts = detectConflicts(normalized);
 
         // 9. Parsing must not persist inferred localities. The publish workflow
         // persists a confirmed locality in the same transaction as its listing.
         boolean newlySaved = false;
-
-        String locationPart = !isMissingValue(city) ? sector + ", " + city : sector;
-        String fullLocation = !colony.isBlank() ? locationPart + " (" + colony + ")" : locationPart;
-        String title = bhk + " " + type + " in " + (!colony.isBlank() ? colony + ", " : "") + locationPart
-                + (!vastuFacing.equals("Not Specified") ? " (" + vastuFacing + ")" : "");
-        String label = bhk + " " + type + " (" + fullLocation + ")";
-        String address = sector + (!isMissingValue(city) ? ", " + city : "") + (state != null ? ", " + state : "")
-                + (pincode != null ? " - " + pincode : "");
-
-        StringBuilder descBuilder = new StringBuilder();
-        descBuilder.append(bhk).append(" ").append(type).append(" available for rent in ").append(sector);
-        if (city != null && !city.isBlank()) descBuilder.append(", ").append(city);
-        if (state != null && !state.isBlank()) descBuilder.append(", ").append(state);
-        if (pincode != null && !pincode.isBlank() && !pincode.equals("Not Specified")) descBuilder.append(" (Pincode: ").append(pincode).append(")");
-        descBuilder.append(".");
-
-        if (colony != null && !colony.isBlank()) descBuilder.append(" Located in ").append(colony).append(".");
-        if (landmark != null && !landmark.isBlank() && !landmark.equals("Not Specified")) descBuilder.append(" Landmark: ").append(landmark).append(".");
-        if (areaSqFt != null && !areaSqFt.equals("Not Specified")) descBuilder.append(" Carpet Area: ").append(areaSqFt).append(".");
-        if (bathrooms != null && !bathrooms.equals("Not Specified")) descBuilder.append(" Bathrooms: ").append(bathrooms).append(".");
-        if (vastuFacing != null && !vastuFacing.equals("Not Specified")) descBuilder.append(" Vastu Facing: ").append(vastuFacing).append(".");
-        if (furnishingStatus != null && !furnishingStatus.equalsIgnoreCase("UNSPECIFIED")) descBuilder.append(" Furnishing: ").append(furnishingStatus).append(".");
-        descBuilder.append(" Monthly Rent: ").append(rentVal).append(".");
-        if (depositVal != null && !depositVal.equals("Not Specified")) descBuilder.append(" Security Deposit: ").append(depositVal).append(".");
-        if (brokerageVal != null && !brokerageVal.equalsIgnoreCase("Unmentioned")) descBuilder.append(" Brokerage Fee: ").append(brokerageVal).append(".");
-        if (possessionDate != null) descBuilder.append(" Possession: ").append(possessionDate).append(".");
-        if (amenities != null && !amenities.isEmpty()) descBuilder.append(" Key Amenities: ").append(String.join(", ", amenities)).append(".");
-        if (ownerName != null && !ownerName.equals("Not Specified")) {
-            descBuilder.append(" Contact Owner: ").append(ownerName);
-            if (ownerPhone != null && !ownerPhone.equals("Not Specified")) descBuilder.append(" (").append(ownerPhone).append(")");
-            descBuilder.append(".");
-        }
-        if (status != null && !status.isBlank()) {
-            descBuilder.append(" Listing Status: ").append(status).append(".");
-        }
-
-        String synthesizedDescription = descBuilder.toString();
 
         ParsedPropertyDTO dto = new ParsedPropertyDTO();
         dto.setBhk(bhk);
@@ -914,25 +901,102 @@ public class PropertyParserService {
         dto.setBathrooms(bathrooms != null ? bathrooms : "Not Specified");
         dto.setFurnishingStatus(furnishingStatus);
         dto.setPossessionDate(possessionDate);
-        dto.setAddress(address);
         dto.setState(state);
         dto.setPincode(pincode != null ? pincode : "Not Specified");
         dto.setLandmark(landmark != null ? landmark : "Not Specified");
-        dto.setDescription(synthesizedDescription);
         dto.setOwnerName(ownerName != null ? ownerName : "Not Specified");
         dto.setOwnerPhone(ownerPhone != null ? ownerPhone : "Not Specified");
         dto.setVastuFacing(vastuFacing);
         dto.setAmenities(amenities);
-        dto.setMissingFields(missingFields);
-        dto.setTitle(title);
-        dto.setLabel(label);
         dto.setSavedToDatabase(newlySaved);
         dto.setRawPrompt(input);
         dto.setConflicts(conflicts);
-        dto.setRequiresReview(!missingFields.isEmpty() || !conflicts.isEmpty());
-        dto.setSourceSnippets(buildSourceSnippets(rentVal, brokerageVal, depositVal, ownerPhone, sector));
+        refreshDerivedFields(dto);
 
         return dto;
+    }
+
+    private void refreshDerivedFields(ParsedPropertyDTO dto) {
+        String layout = isMissingValue(dto.getBhk()) ? "" : dto.getBhk().trim();
+        String propertyType = isMissingValue(dto.getType()) ? "" : dto.getType().trim();
+        String baseName;
+        if (!layout.isBlank() && !propertyType.isBlank()
+                && !layout.toLowerCase(Locale.ROOT).contains(propertyType.toLowerCase(Locale.ROOT))) {
+            baseName = layout + " " + propertyType;
+        } else if (!layout.isBlank()) {
+            baseName = layout;
+        } else if (!propertyType.isBlank()) {
+            baseName = propertyType;
+        } else {
+            baseName = "Property";
+        }
+
+        List<String> locationParts = new ArrayList<>();
+        if (!isMissingValue(dto.getSector())) locationParts.add(dto.getSector());
+        if (!isMissingValue(dto.getCity())) locationParts.add(dto.getCity());
+        String location = String.join(", ", locationParts);
+
+        StringBuilder title = new StringBuilder(baseName);
+        if (!location.isBlank()) title.append(" in ").append(location);
+        dto.setTitle(title.toString());
+        dto.setLabel(title.toString());
+
+        List<String> addressParts = new ArrayList<>(locationParts);
+        if (!isMissingValue(dto.getState())) addressParts.add(dto.getState());
+        String address = String.join(", ", addressParts);
+        if (!isMissingValue(dto.getPincode())) {
+            address = address.isBlank() ? dto.getPincode() : address + " - " + dto.getPincode();
+        }
+        dto.setAddress(address);
+
+        StringBuilder description = new StringBuilder(baseName).append(" available for rent");
+        if (!location.isBlank()) description.append(" in ").append(location);
+        description.append(".");
+        if (!isMissingValue(dto.getColony())) description.append(" Society or colony: ").append(dto.getColony()).append(".");
+        if (!isMissingValue(dto.getLandmark())) description.append(" Landmark: ").append(dto.getLandmark()).append(".");
+        if (!isMissingValue(dto.getAreaSqFt())) description.append(" Carpet area: ").append(dto.getAreaSqFt()).append(".");
+        if (!isMissingValue(dto.getBathrooms())) description.append(" Bathrooms: ").append(dto.getBathrooms()).append(".");
+        if (!isMissingValue(dto.getVastuFacing())) description.append(" Facing: ").append(dto.getVastuFacing()).append(".");
+        if (!isMissingValue(dto.getFurnishingStatus())) description.append(" Furnishing: ").append(dto.getFurnishingStatus()).append(".");
+        if (dto.getRentAmount() != null && dto.getRentAmount() > 0 && !isMissingValue(dto.getRentVal())) {
+            description.append(" Monthly rent: ").append(dto.getRentVal()).append(".");
+        }
+        if (!isMissingValue(dto.getDepositVal())) description.append(" Security deposit: ").append(dto.getDepositVal()).append(".");
+        if (!isMissingValue(dto.getBrokerageVal()) && !"Unmentioned".equalsIgnoreCase(dto.getBrokerageVal())) {
+            description.append(" Brokerage: ").append(dto.getBrokerageVal()).append(".");
+        }
+        if (!isMissingValue(dto.getPossessionDate())) description.append(" Availability: ").append(dto.getPossessionDate()).append(".");
+        if (dto.getAmenities() != null && !dto.getAmenities().isEmpty()) {
+            description.append(" Amenities: ").append(String.join(", ", dto.getAmenities())).append(".");
+        }
+        if (!isMissingValue(dto.getOwnerName())) {
+            description.append(" Owner: ").append(dto.getOwnerName());
+            if (!isMissingValue(dto.getOwnerPhone())) description.append(" (").append(dto.getOwnerPhone()).append(")");
+            description.append(".");
+        } else if (!isMissingValue(dto.getOwnerPhone())) {
+            description.append(" Owner contact: ").append(dto.getOwnerPhone()).append(".");
+        }
+        if (!isMissingValue(dto.getStatus())) description.append(" Listing status: ").append(dto.getStatus()).append(".");
+        dto.setDescription(description.toString());
+
+        List<String> missingFields = new ArrayList<>();
+        if (dto.getRentAmount() == null || dto.getRentAmount() <= 0) missingFields.add("Monthly Rent");
+        if (isMissingValue(dto.getBhk())) missingFields.add("BHK Layout");
+        if (isMissingValue(dto.getType())) missingFields.add("Property Type");
+        if (isMissingValue(dto.getSector())) missingFields.add("Locality / Sector");
+        if (isMissingValue(dto.getOwnerPhone())) missingFields.add("Owner Contact Number");
+        if (isMissingValue(dto.getBathrooms())) missingFields.add("Bathrooms Count");
+        if (isMissingValue(dto.getAreaSqFt())) missingFields.add("Carpet Area (sqft)");
+        if (isMissingValue(dto.getPincode())) missingFields.add("Pincode");
+        if (isMissingValue(dto.getPossessionDate())) missingFields.add("Possession Date / Readiness");
+        if (isMissingValue(dto.getVastuFacing())) missingFields.add("Vastu Facing Direction");
+        if (isMissingValue(dto.getFurnishingStatus())) missingFields.add("Furnishing Status");
+        if (isMissingValue(dto.getDepositVal())) missingFields.add("Security Deposit");
+        dto.setMissingFields(missingFields);
+        dto.setConflicts(dto.getConflicts());
+        dto.setRequiresReview(!missingFields.isEmpty() || !dto.getConflicts().isEmpty());
+        dto.setSourceSnippets(buildSourceSnippets(
+                dto.getRentVal(), dto.getBrokerageVal(), dto.getDepositVal(), dto.getOwnerPhone(), dto.getSector()));
     }
 
     private List<String> detectConflicts(String normalized) {
@@ -1122,10 +1186,57 @@ public class PropertyParserService {
         return selectedSector;
     }
 
+    private String extractLandmarks(String normalizedPrompt) {
+        LinkedHashSet<String> landmarks = new LinkedHashSet<>();
+        Matcher matcher = LANDMARK_PATTERN.matcher(normalizedPrompt);
+        while (matcher.find()) {
+            String candidate = cleanLandmarkCandidate(matcher.group(1));
+            if (!candidate.isBlank()) {
+                landmarks.add(capitalizeWords(candidate));
+            }
+        }
+        return landmarks.isEmpty() ? null : String.join(", ", landmarks);
+    }
+
+    private String cleanLandmarkCandidate(String rawCandidate) {
+        String candidate = TRAILING_LANDMARK_NOISE_PATTERN.matcher(rawCandidate.trim()).replaceFirst("").trim();
+        String lowerCandidate = candidate.toLowerCase(Locale.ROOT);
+        for (String knownSector : KNOWN_INDORE_SECTORS) {
+            if (lowerCandidate.equals(knownSector)) {
+                return "";
+            }
+            String suffix = " " + knownSector;
+            if (lowerCandidate.endsWith(suffix)) {
+                return candidate.substring(0, candidate.length() - suffix.length()).trim();
+            }
+        }
+        return candidate;
+    }
+
     private boolean isAreaUnitImmediatelyAfter(String text, int numberEnd) {
         Matcher areaUnitMatcher = AREA_UNIT_AFTER_NUMBER_PATTERN.matcher(text);
         areaUnitMatcher.region(numberEnd, text.length());
         return areaUnitMatcher.lookingAt();
+    }
+
+    private boolean hasAmountImmediatelyBefore(String text, int amountStart) {
+        int contextStart = Math.max(0, amountStart - 24);
+        return PRECEDING_MONETARY_AMOUNT_PATTERN.matcher(text.substring(contextStart, amountStart)).find();
+    }
+
+    private boolean isSameAmountMatchedBy(
+            String text, int amountStart, int amountEnd, Pattern firstPattern, Pattern secondPattern) {
+        return isSameAmountMatchedBy(text, amountStart, amountEnd, firstPattern)
+                || isSameAmountMatchedBy(text, amountStart, amountEnd, secondPattern);
+    }
+
+    private boolean isSameAmountMatchedBy(String text, int amountStart, int amountEnd, Pattern pattern) {
+        Matcher matcher = pattern.matcher(text);
+        while (matcher.find()) {
+            if (matcher.start(1) == amountStart && matcher.end(1) == amountEnd) return true;
+            if (matcher.start(1) > amountStart) return false;
+        }
+        return false;
     }
 
     private Locality resolveCachedLocality(String normalizedPrompt, String resolvedCity) {
@@ -1206,7 +1317,9 @@ public class PropertyParserService {
             return Collections.emptyList();
         }
 
-        String[] chunks = MULTI_PROMPT_SPLIT_PATTERN.split(multiPrompt.trim());
+        BatchAmendmentExtraction amendmentExtraction = extractTargetedAmendments(multiPrompt.trim());
+        String promptWithoutAmendments = amendmentExtraction.promptWithoutAmendments();
+        String[] chunks = MULTI_PROMPT_SPLIT_PATTERN.split(promptWithoutAmendments);
         List<ParsedPropertyDTO> results = new ArrayList<>();
         int index = 1;
 
@@ -1235,12 +1348,287 @@ public class PropertyParserService {
             }
         }
 
-        if (results.isEmpty() && !multiPrompt.isBlank()) {
-            ParsedPropertyDTO single = parse(multiPrompt.trim());
+        if (results.isEmpty() && !promptWithoutAmendments.isBlank()) {
+            ParsedPropertyDTO single = parse(promptWithoutAmendments.trim());
             single.setPromptIndex(1);
             results.add(single);
         }
 
+        applyTargetedAmendments(results, amendmentExtraction.amendments());
+
         return results;
     }
+
+    private BatchAmendmentExtraction extractTargetedAmendments(String prompt) {
+        BatchAmendmentExtraction actionFirst = extractActionFirstAmendments(prompt);
+        return extractTargetFirstAmendments(actionFirst.promptWithoutAmendments(), actionFirst.amendments());
+    }
+
+    private BatchAmendmentExtraction extractActionFirstAmendments(String prompt) {
+        Matcher matcher = TARGETED_AMENDMENT_ACTION_FIRST_PATTERN.matcher(prompt);
+        List<TargetedAmendment> amendments = new ArrayList<>();
+        List<TextRange> ranges = new ArrayList<>();
+        while (matcher.find()) {
+            int targetIndex = parseTargetIndex(firstNonBlank(matcher.group(2), matcher.group(3)));
+            String payload = matcher.group(1).trim();
+            if (targetIndex > 0 && !payload.isBlank()) {
+                amendments.add(new TargetedAmendment(targetIndex, matcher.group().trim(), payload));
+                ranges.add(new TextRange(matcher.start(), matcher.end()));
+            }
+        }
+        return new BatchAmendmentExtraction(removeTextRanges(prompt, ranges), amendments);
+    }
+
+    private BatchAmendmentExtraction extractTargetFirstAmendments(
+            String prompt, List<TargetedAmendment> existingAmendments) {
+        List<AmendmentMarker> markers = new ArrayList<>();
+        collectAmendmentMarkers(markers, TARGETED_AMENDMENT_PREFIX_PATTERN.matcher(prompt));
+        collectAmendmentMarkers(markers, TARGETED_AMENDMENT_DIRECT_PATTERN.matcher(prompt));
+        markers.sort(Comparator.comparingInt(AmendmentMarker::start));
+
+        List<AmendmentMarker> distinctMarkers = new ArrayList<>();
+        for (AmendmentMarker marker : markers) {
+            boolean overlapsPrefix = distinctMarkers.stream()
+                    .anyMatch(existing -> marker.start() >= existing.start() && marker.start() < existing.payloadStart());
+            if (!overlapsPrefix) {
+                distinctMarkers.add(marker);
+            }
+        }
+
+        List<TargetedAmendment> amendments = new ArrayList<>(existingAmendments);
+        List<TextRange> ranges = new ArrayList<>();
+        for (int markerIndex = 0; markerIndex < distinctMarkers.size(); markerIndex++) {
+            AmendmentMarker marker = distinctMarkers.get(markerIndex);
+            int candidateEnd = markerIndex + 1 < distinctMarkers.size()
+                    ? distinctMarkers.get(markerIndex + 1).start()
+                    : prompt.length();
+            int payloadEnd = findNextBatchBoundary(prompt, marker.payloadStart(), candidateEnd);
+            String payload = prompt.substring(marker.payloadStart(), payloadEnd).trim();
+            if (marker.targetIndex() > 0 && !payload.isBlank()) {
+                String source = prompt.substring(marker.start(), payloadEnd).trim();
+                amendments.add(new TargetedAmendment(marker.targetIndex(), source, payload));
+                ranges.add(new TextRange(marker.start(), payloadEnd));
+            }
+        }
+        return new BatchAmendmentExtraction(removeTextRanges(prompt, ranges), amendments);
+    }
+
+    private void collectAmendmentMarkers(List<AmendmentMarker> markers, Matcher matcher) {
+        while (matcher.find()) {
+            int targetIndex = parseTargetIndex(firstNonBlank(matcher.group(1), matcher.group(2)));
+            if (targetIndex > 0) {
+                markers.add(new AmendmentMarker(matcher.start(), matcher.end(), targetIndex));
+            }
+        }
+    }
+
+    private int findNextBatchBoundary(String prompt, int searchStart, int candidateEnd) {
+        Matcher boundaryMatcher = MULTI_PROMPT_SPLIT_PATTERN.matcher(prompt);
+        boundaryMatcher.region(searchStart, candidateEnd);
+        return boundaryMatcher.find() ? boundaryMatcher.start() : candidateEnd;
+    }
+
+    private String removeTextRanges(String prompt, List<TextRange> ranges) {
+        if (ranges.isEmpty()) return prompt;
+        ranges.sort(Comparator.comparingInt(TextRange::start).reversed());
+        StringBuilder cleaned = new StringBuilder(prompt);
+        for (TextRange range : ranges) {
+            cleaned.replace(range.start(), range.end(), " ");
+        }
+        return cleaned.toString().trim();
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    private int parseTargetIndex(String rawIndex) {
+        if (rawIndex == null || rawIndex.isBlank()) return -1;
+        String normalizedIndex = rawIndex.toLowerCase(Locale.ROOT);
+        String digits = NON_DIGIT_PATTERN.matcher(normalizedIndex).replaceAll("");
+        if (!digits.isBlank()) {
+            try {
+                return Integer.parseInt(digits);
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return switch (normalizedIndex) {
+            case "one", "first" -> 1;
+            case "two", "second" -> 2;
+            case "three", "third" -> 3;
+            case "four", "fourth" -> 4;
+            case "five", "fifth" -> 5;
+            case "six", "sixth" -> 6;
+            case "seven", "seventh" -> 7;
+            case "eight", "eighth" -> 8;
+            case "nine", "ninth" -> 9;
+            case "ten", "tenth" -> 10;
+            case "eleven", "eleventh" -> 11;
+            case "twelve", "twelfth" -> 12;
+            case "thirteen", "thirteenth" -> 13;
+            case "fourteen", "fourteenth" -> 14;
+            case "fifteen", "fifteenth" -> 15;
+            case "sixteen", "sixteenth" -> 16;
+            case "seventeen", "seventeenth" -> 17;
+            case "eighteen", "eighteenth" -> 18;
+            case "nineteen", "nineteenth" -> 19;
+            case "twenty", "twentieth" -> 20;
+            default -> -1;
+        };
+    }
+
+    private void applyTargetedAmendments(List<ParsedPropertyDTO> results, List<TargetedAmendment> amendments) {
+        for (TargetedAmendment amendment : amendments) {
+            if (amendment.targetIndex() < 1 || amendment.targetIndex() > results.size()) {
+                if (!results.isEmpty()) {
+                    ParsedPropertyDTO lastProperty = results.get(results.size() - 1);
+                    addConflict(lastProperty,
+                            "Later correction refers to property " + amendment.targetIndex()
+                                    + ", but only " + results.size() + " properties were detected");
+                    refreshDerivedFields(lastProperty);
+                }
+                continue;
+            }
+
+            ParsedPropertyDTO target = results.get(amendment.targetIndex() - 1);
+            ParsedPropertyDTO patch = parse(amendment.payload());
+            int appliedFieldCount = applyExplicitAmendmentFields(target, patch, amendment.payload());
+            if (appliedFieldCount > 0) {
+                List<String> appliedAmendments = new ArrayList<>(target.getAppliedAmendments());
+                appliedAmendments.add(amendment.sourceText());
+                target.setAppliedAmendments(appliedAmendments);
+                target.setRawPrompt(target.getRawPrompt() + "\n\nLater correction: " + amendment.sourceText());
+            } else {
+                addConflict(target, "Later correction could not be applied safely: " + amendment.sourceText());
+            }
+            refreshDerivedFields(target);
+        }
+    }
+
+    private int applyExplicitAmendmentFields(ParsedPropertyDTO target, ParsedPropertyDTO patch, String payload) {
+        int applied = 0;
+        if (AMENDMENT_RENT_CUE_PATTERN.matcher(payload).find()
+                && patch.getRentAmount() != null && patch.getRentAmount() > 0) {
+            target.setRentAmount(patch.getRentAmount());
+            target.setRentVal(patch.getRentVal());
+            replaceFieldConflicts(target, patch, "Monthly Rent");
+            applied++;
+        }
+        if (AMENDMENT_BROKERAGE_CUE_PATTERN.matcher(payload).find()
+                && !isMissingValue(patch.getBrokerageVal()) && !"Unmentioned".equalsIgnoreCase(patch.getBrokerageVal())) {
+            target.setBrokerageVal(patch.getBrokerageVal());
+            replaceFieldConflicts(target, patch, "Brokerage");
+            applied++;
+        }
+        if (AMENDMENT_DEPOSIT_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getDepositVal())) {
+            target.setDepositVal(patch.getDepositVal());
+            replaceFieldConflicts(target, patch, "Security Deposit");
+            applied++;
+        }
+        if (AMENDMENT_OWNER_PHONE_CUE_PATTERN.matcher(payload).find()) {
+            if (!isMissingValue(patch.getOwnerPhone())) {
+                target.setOwnerPhone(patch.getOwnerPhone());
+                removeMissingField(target, "Owner Contact Number");
+                applied++;
+            } else {
+                addConflict(target, "Owner phone in the later correction is not a valid 10-digit Indian mobile number");
+            }
+        }
+        if (AMENDMENT_OWNER_NAME_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getOwnerName())) {
+            target.setOwnerName(patch.getOwnerName());
+            applied++;
+        }
+        if (AMENDMENT_BATHROOM_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getBathrooms())) {
+            target.setBathrooms(patch.getBathrooms());
+            applied++;
+        }
+        if (AMENDMENT_LAYOUT_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getBhk())) {
+            target.setBhk(patch.getBhk());
+            applied++;
+        }
+        if (AMENDMENT_TYPE_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getType())) {
+            target.setType(patch.getType());
+            applied++;
+        }
+        if (AMENDMENT_AREA_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getAreaSqFt())) {
+            target.setAreaSqFt(patch.getAreaSqFt());
+            applied++;
+        }
+        if (AMENDMENT_FURNISHING_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getFurnishingStatus())) {
+            target.setFurnishingStatus(patch.getFurnishingStatus());
+            replaceFieldConflicts(target, patch, "Furnishing");
+            applied++;
+        }
+        if (AMENDMENT_POSSESSION_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getPossessionDate())) {
+            target.setPossessionDate(patch.getPossessionDate());
+            applied++;
+        }
+        if (AMENDMENT_FACING_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getVastuFacing())) {
+            target.setVastuFacing(patch.getVastuFacing());
+            replaceFieldConflicts(target, patch, "Facing Direction");
+            applied++;
+        }
+        if (AMENDMENT_STATUS_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getStatus())) {
+            target.setStatus(patch.getStatus());
+            applied++;
+        }
+        if (AMENDMENT_LOCATION_CUE_PATTERN.matcher(payload).find()) {
+            if (!isMissingValue(patch.getSector())) {
+                target.setSector(patch.getSector());
+                applied++;
+            }
+            if (!isMissingValue(patch.getCity())) {
+                target.setCity(patch.getCity());
+                applied++;
+            }
+            if (!isMissingValue(patch.getState())) target.setState(patch.getState());
+        }
+        if (AMENDMENT_LANDMARK_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getLandmark())) {
+            target.setLandmark(patch.getLandmark());
+            applied++;
+        }
+        if (AMENDMENT_PINCODE_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getPincode())) {
+            target.setPincode(patch.getPincode());
+            applied++;
+        }
+        if (patch.getAmenities() != null && !patch.getAmenities().isEmpty()) {
+            LinkedHashSet<String> amenities = new LinkedHashSet<>(target.getAmenities());
+            if (amenities.addAll(patch.getAmenities())) applied++;
+            target.setAmenities(new ArrayList<>(amenities));
+        }
+        return applied;
+    }
+
+    private void replaceFieldConflicts(ParsedPropertyDTO target, ParsedPropertyDTO patch, String field) {
+        List<String> retained = new ArrayList<>();
+        for (String conflict : target.getConflicts()) {
+            if (!conflict.startsWith(field)) retained.add(conflict);
+        }
+        for (String conflict : patch.getConflicts()) {
+            if (conflict.startsWith(field)) retained.add(conflict);
+        }
+        target.setConflicts(retained);
+    }
+
+    private void addConflict(ParsedPropertyDTO dto, String conflict) {
+        List<String> conflicts = new ArrayList<>(dto.getConflicts());
+        if (!conflicts.contains(conflict)) conflicts.add(conflict);
+        dto.setConflicts(conflicts);
+    }
+
+    private void removeMissingField(ParsedPropertyDTO dto, String field) {
+        List<String> missingFields = new ArrayList<>(dto.getMissingFields());
+        missingFields.remove(field);
+        dto.setMissingFields(missingFields);
+    }
+
+    private record TargetedAmendment(int targetIndex, String sourceText, String payload) {}
+
+    private record BatchAmendmentExtraction(
+            String promptWithoutAmendments, List<TargetedAmendment> amendments) {}
+
+    private record AmendmentMarker(int start, int payloadStart, int targetIndex) {}
+
+    private record TextRange(int start, int end) {}
 }

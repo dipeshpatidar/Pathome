@@ -26,6 +26,7 @@ import { useNotification } from '../context/NotificationContext';
 
 interface StagedProperty {
   id: string;
+  learningExampleId: string;
   promptIndex: number;
   rawPrompt: string;
   title: string;
@@ -55,6 +56,7 @@ interface StagedProperty {
   description: string;
   parserMissingFields: string[];
   conflicts: string[];
+  appliedAmendments: string[];
   mediaUrls: string[];
   localPhotos: File[];
   localPhotoPreviews: string[];
@@ -90,6 +92,16 @@ const isProvided = (value: string | null | undefined): boolean =>
 
 const toEditableValue = (value: string | null | undefined): string =>
   isProvided(value) ? value!.trim() : '';
+
+const getPropertyTabLabel = (card: StagedProperty): string => {
+  const layout = isProvided(card.bhk) ? card.bhk : 'Property';
+  const context = isProvided(card.sector)
+    ? card.sector
+    : isProvided(card.type)
+      ? card.type
+      : 'Details needed';
+  return `${layout} ${context}`;
+};
 
 const normalizeOwnerPhone = (value: string | null | undefined): string => {
   const trimmed = value?.trim() || '';
@@ -244,6 +256,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const rawPromptsRef = useRef<string>('');
   const parsedPromptsRef = useRef<string>('');
   const parseRequestIdRef = useRef(0);
+  const inputSourceRef = useRef<'TYPED' | 'DICTATED' | 'MIXED'>('TYPED');
 
   const updateRawPrompts = useCallback((details: string) => {
     rawPromptsRef.current = details;
@@ -254,6 +267,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       setActiveCardId(null);
     }
   }, []);
+
+  const handleTypedPromptChange = useCallback((details: string) => {
+    inputSourceRef.current = !details.trim()
+      ? 'TYPED'
+      : inputSourceRef.current === 'DICTATED'
+        ? 'MIXED'
+        : inputSourceRef.current;
+    updateRawPrompts(details);
+  }, [updateRawPrompts]);
 
   // Live Delimiter Property Counting
   useEffect(() => {
@@ -330,6 +352,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
     try {
       const currentDraft = rawPromptsRef.current.trim();
+      inputSourceRef.current = mode === 'append' && currentDraft ? 'MIXED' : 'DICTATED';
       batchSpeechBaseTextRef.current = mode === 'append' ? currentDraft : '';
       if (mode === 'replace' && currentDraft) {
         updateRawPrompts('');
@@ -365,10 +388,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     initialMediaAddedRef.current = false;
 
     try {
-      const dtos = await propertyService.parseBatchPrompts(details);
+      const dtos = await propertyService.parseBatchPrompts(details, inputSourceRef.current);
       const mapped: StagedProperty[] = dtos.map((dto: any, idx: number) => {
         const card: StagedProperty = {
           id: `staged-${idx}-${Date.now()}`,
+          learningExampleId: dto.learningExampleId || '',
           promptIndex: dto.promptIndex || idx + 1,
           rawPrompt: dto.rawPrompt || details,
           title: dto.title || 'Untitled property',
@@ -398,6 +422,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           description: toEditableValue(dto.description),
           parserMissingFields: Array.isArray(dto.missingFields) ? dto.missingFields : [],
           conflicts: Array.isArray(dto.conflicts) ? dto.conflicts : [],
+          appliedAmendments: Array.isArray(dto.appliedAmendments) ? dto.appliedAmendments : [],
           mediaUrls: dto.mediaUrls || [],
           localPhotos: [],
           localPhotoPreviews: [],
@@ -434,6 +459,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
     importedDetailsRef.current = initialDetails;
     updateRawPrompts(initialDetails);
+    inputSourceRef.current = 'TYPED';
     void parseBatchDetails(initialDetails);
   }, [initialDetails, parseBatchDetails, updateRawPrompts]);
 
@@ -549,6 +575,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
     try {
       const payloadListings = validCards.map((c) => ({
+        learningExampleId: c.learningExampleId,
+        promptIndex: c.promptIndex,
         rawPrompt: c.rawPrompt,
         title: c.title,
         description: c.description,
@@ -581,12 +609,28 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       const res = await propertyService.createBatchProperties(payloadListings);
 
+      const createdResults = Array.isArray(res.createdListings)
+        ? res.createdListings.filter((item: any) =>
+            Number.isInteger(item?.requestIndex)
+            && item.requestIndex >= 0
+            && item.requestIndex < validCards.length
+            && Number.isFinite(Number(item?.id)))
+        : [];
+      const uniqueRequestIndexes = new Set(
+        createdResults.map((item: any) => item.requestIndex)
+      );
+      if (createdResults.length !== Number(res.successCount || 0)
+          || uniqueRequestIndexes.size !== createdResults.length) {
+        throw new Error('The publish response could not be matched safely to the submitted properties.');
+      }
+      const publishedIdsByCardId = new Map<string, number>();
+
       // Upload media only after its listing exists, preserving the selected images and videos.
       const mediaUploadErrors: string[] = [];
-      if (res.createdIds && Array.isArray(res.createdIds)) {
-        for (let i = 0; i < res.createdIds.length; i++) {
-          const propId = res.createdIds[i];
-          const card = validCards[i];
+      for (const created of createdResults) {
+          const propId = Number(created.id);
+          const card = validCards[created.requestIndex];
+          publishedIdsByCardId.set(card.id, propId);
           if (card && card.localPhotos.length > 0) {
             try {
               const imageFiles = card.localPhotos.filter((file) => file.type.startsWith('image/'));
@@ -599,22 +643,21 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
               }
             } catch (mediaErr) {
               console.warn(`Media upload failed for property ${propId}:`, mediaErr);
-              mediaUploadErrors.push(`Property ${i + 1}: ${getErrorMessage(mediaErr, 'Media could not be uploaded.')}`);
+              mediaUploadErrors.push(
+                `Property ${card.promptIndex}: ${getErrorMessage(mediaErr, 'Media could not be uploaded.')}`
+              );
             }
           }
-        }
       }
 
       window.dispatchEvent(new Event('pathome_property_published'));
       const publishedCount = res.successCount || 0;
-      setStagedCards((current) => {
-        let publishedIndex = 0;
-        return current.map((card) => {
-          if (!card.isValid || card.publishedId || publishedIndex >= publishedCount) return card;
-          const publishedId = res.createdIds?.[publishedIndex++];
-          return { ...card, publishedId, isValid: false, isConfirmed: true };
-        });
-      });
+      setStagedCards((current) => current.map((card) => {
+        const publishedId = publishedIdsByCardId.get(card.id);
+        return publishedId === undefined
+          ? card
+          : { ...card, publishedId, isValid: false, isConfirmed: true };
+      }));
       onSuccess(publishedCount);
 
       if (mediaUploadErrors.length > 0) {
@@ -784,7 +827,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 <textarea
                   ref={textareaRef}
                   value={rawPrompts}
-                  onChange={(e) => updateRawPrompts(e.target.value)}
+                  onChange={(e) => handleTypedPromptChange(e.target.value)}
                   placeholder={`Type, paste, or dictate property details here.\n\nTo add another property, write “next property” on a new line.\n\nExample:\n2 BHK in Vijay Nagar, rent 18,000, owner 98260 12345\n\nnext property\n3 BHK in Palasia, rent 35,000, owner 98260 54321`}
                   className="w-full h-full min-h-[260px] p-4 text-xs font-mono bg-slate-950/80 border border-slate-700/80 rounded-2xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500/80 focus:ring-2 focus:ring-amber-500/20 transition-all resize-none shadow-inner"
                 />
@@ -855,7 +898,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                             }`}
                           >
                             <span className="font-mono">#{idx + 1}</span>
-                            <span>{card.bhk || 'Property'} {card.sector || 'details'}</span>
+                            <span>{getPropertyTabLabel(card)}</span>
                             <span className="px-1.5 py-0.2 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
                               {mediaCount} media
                             </span>
@@ -913,6 +956,19 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                               )}
                             </div>
                           </div>
+
+                          {card.appliedAmendments.length > 0 && (
+                            <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
+                              <div className="flex items-center gap-1.5 font-bold text-emerald-300">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Later dictation added to this property
+                              </div>
+                              <ul className="mt-1 space-y-1 text-emerald-100/80">
+                                {card.appliedAmendments.map((amendment, amendmentIndex) => (
+                                  <li key={`${card.id}-amendment-${amendmentIndex}`}>“{amendment}”</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
 
                           {card.conflicts.length > 0 && (
                             <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">

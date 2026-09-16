@@ -15,6 +15,7 @@ class JwtUtilsTest {
         jwtUtils = new JwtUtils();
         ReflectionTestUtils.setField(jwtUtils, "jwtSecret", "PathomeSpacesSuperSecretKeyForJWTAuthTokenGeneration2026!");
         ReflectionTestUtils.setField(jwtUtils, "jwtExpirationMs", 3600000L);
+        jwtUtils.validateConfiguration();
     }
 
     @Test
@@ -32,5 +33,15 @@ class JwtUtilsTest {
     @Test
     void testInvalidTokenValidation() {
         assertFalse(jwtUtils.validateToken("invalid.jwt.token"));
+    }
+
+    @Test
+    void rejectsWeakSigningSecretAtStartup() {
+        ReflectionTestUtils.setField(jwtUtils, "jwtSecret", "too-short");
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class, jwtUtils::validateConfiguration);
+
+        assertTrue(error.getMessage().contains("at least 32 bytes"));
     }
 }

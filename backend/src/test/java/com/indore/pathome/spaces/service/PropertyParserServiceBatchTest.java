@@ -114,6 +114,86 @@ class PropertyParserServiceBatchTest {
     }
 
     @Test
+    @DisplayName("Should parse the reported noisy dictation without inventing values or leaking a late correction")
+    void testReportedNoisyDictationAndInvalidLateCorrection() {
+        String voicePrompt = "list the property with 2BHK having rent of 18000 and brokerage of around the 8000 "
+                + "and deposits of 32000 with two bathrooms and it is near by Bombay Hospital Vijayanagar "
+                + "and in front of radiation blue and add\n\nNext property\n\n"
+                + "that is 3 BHK flat with 32000 rent 15000 and 32000 15000 brokerage and and 60000 deposit "
+                + "having two bathrooms in front of Bombay hospital nearby Bombay chemist and owner number is "
+                + "+91 1234567890 and in the first property keep the owner number as 0987 6542";
+
+        List<ParsedPropertyDTO> results = parserService.parseBatch(voicePrompt);
+
+        assertEquals(2, results.size());
+
+        ParsedPropertyDTO first = results.get(0);
+        assertEquals("2 BHK", first.getBhk());
+        assertEquals(18000.0, first.getRentAmount());
+        assertEquals("₹8,000", first.getBrokerageVal());
+        assertEquals("32000 Security Deposit", first.getDepositVal());
+        assertEquals("2 Baths", first.getBathrooms());
+        assertEquals("Vijay Nagar", first.getSector());
+        assertEquals("Indore", first.getCity());
+        assertEquals("Bombay Hospital, Radiation Blue", first.getLandmark());
+        assertEquals("Not Specified", first.getType(), "A property type must not be invented from BHK alone");
+        assertEquals("Not Specified", first.getOwnerPhone(), "An eight-digit late correction must remain invalid");
+        assertFalse(first.getDescription().toLowerCase().contains("null"));
+        assertTrue(first.getConflicts().stream().anyMatch(conflict -> conflict.contains("valid 10-digit")));
+
+        ParsedPropertyDTO second = results.get(1);
+        assertEquals("3 BHK", second.getBhk());
+        assertEquals("Flat", second.getType());
+        assertEquals(32000.0, second.getRentAmount());
+        assertEquals("₹15,000", second.getBrokerageVal());
+        assertEquals("60000 Security Deposit", second.getDepositVal());
+        assertEquals("2 Baths", second.getBathrooms());
+        assertEquals("Bombay Hospital, Bombay Chemist", second.getLandmark());
+        assertEquals("Not Specified", second.getOwnerPhone(), "A number beginning with 1 is not a valid Indian mobile number");
+        assertTrue(second.getConflicts().stream().anyMatch(conflict -> conflict.startsWith("Monthly Rent")));
+        assertFalse(second.getRawPrompt().contains("first property keep"),
+                "A correction targeting property one must not remain in property two's source text");
+    }
+
+    @Test
+    @DisplayName("Should apply valid late dictation only to the explicitly named earlier property")
+    void testValidLateCorrectionTargetsEarlierProperty() {
+        String voicePrompt = "2 BHK flat in Vijay Nagar rent 18000 deposit 36000 next property "
+                + "3 BHK flat in Palasia rent 32000 deposit 64000 owner phone 9123456789 "
+                + "and in the first property keep the owner number as 9876543210 and make it fully furnished";
+
+        List<ParsedPropertyDTO> results = parserService.parseBatch(voicePrompt);
+
+        assertEquals(2, results.size());
+        ParsedPropertyDTO first = results.get(0);
+        ParsedPropertyDTO second = results.get(1);
+
+        assertEquals("+91 98765 43210", first.getOwnerPhone());
+        assertEquals("Fully Furnished", first.getFurnishingStatus());
+        assertEquals(1, first.getAppliedAmendments().size());
+        assertTrue(first.getRawPrompt().contains("Later correction:"));
+
+        assertEquals("+91 91234 56789", second.getOwnerPhone());
+        assertNull(second.getFurnishingStatus());
+        assertTrue(second.getAppliedAmendments().isEmpty());
+        assertFalse(second.getRawPrompt().contains("first property"));
+    }
+
+    @Test
+    @DisplayName("Should understand action-first corrections for an earlier property")
+    void testActionFirstLateCorrectionTargetsEarlierProperty() {
+        String voicePrompt = "2 BHK flat in Vijay Nagar rent 18000 deposit 36000 next property "
+                + "3 BHK flat in Palasia rent 32000 deposit 64000 add owner phone 9876543210 to the first property";
+
+        List<ParsedPropertyDTO> results = parserService.parseBatch(voicePrompt);
+
+        assertEquals(2, results.size());
+        assertEquals("+91 98765 43210", results.get(0).getOwnerPhone());
+        assertEquals("Not Specified", results.get(1).getOwnerPhone());
+        assertEquals(1, results.get(0).getAppliedAmendments().size());
+    }
+
+    @Test
     @DisplayName("Should correctly normalize Hinglish rent terms (hazar and lakh)")
     void testHinglishRentNormalization() {
         String prompt = "3 BHK in Saket Nagar rent 25 hazar deposit 2 mahina owner +91 98260 99999";

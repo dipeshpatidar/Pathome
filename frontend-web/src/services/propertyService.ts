@@ -1,7 +1,8 @@
 import { Property, PropertyMediaAsset, RoomTag } from '../types';
 import { ApiRequestError, createApiRequestError } from './apiError';
 
-const API_BASE_URL = 'http://localhost:8080/api/v1/properties';
+const API_ROOT_URL = 'http://localhost:8080/api/v1';
+const API_BASE_URL = `${API_ROOT_URL}/properties`;
 
 const getAdminAuthorizationHeader = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
@@ -178,7 +179,7 @@ export const propertyService = {
   /**
    * Calls Spring Boot backend REST API to produce a read-only, reviewable parsing result.
    */
-  async parsePropertyPrompt(prompt: string): Promise<any> {
+  async parsePropertyPrompt(prompt: string, source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED'): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/parse-prompt`, {
       method: 'POST',
       headers: {
@@ -186,7 +187,7 @@ export const propertyService = {
         'Accept': 'application/json',
         ...getAdminAuthorizationHeader()
       },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, source })
     });
 
     if (!response.ok) {
@@ -220,7 +221,7 @@ export const propertyService = {
   /**
    * High-Performance Multi-Prompt & Voice Batch Parser API
    */
-  async parseBatchPrompts(prompts: string): Promise<any[]> {
+  async parseBatchPrompts(prompts: string, source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED'): Promise<any[]> {
     const response = await fetch(`${API_BASE_URL}/parse-batch`, {
       method: 'POST',
       headers: {
@@ -228,7 +229,7 @@ export const propertyService = {
         'Accept': 'application/json',
         ...getAdminAuthorizationHeader()
       },
-      body: JSON.stringify({ prompts })
+      body: JSON.stringify({ prompts, source })
     });
 
     if (!response.ok) {
@@ -256,6 +257,71 @@ export const propertyService = {
       throw await createApiRequestError(response, 'Unable to publish the selected properties. Please try again.');
     }
 
+    return await response.json();
+  },
+
+  async getParserLearningStats(): Promise<any> {
+    const response = await fetch(`${API_ROOT_URL}/parser-learning/stats`, {
+      headers: {
+        'Accept': 'application/json',
+        ...getAdminAuthorizationHeader()
+      }
+    });
+    if (!response.ok) {
+      throw await createApiRequestError(response, 'Unable to load the learning review summary.');
+    }
+    return await response.json();
+  },
+
+  async getPendingParserLearningExamples(page = 0, size = 50): Promise<any> {
+    const response = await fetch(
+      `${API_ROOT_URL}/parser-learning/examples/pending?page=${page}&size=${size}`,
+      {
+        headers: {
+          'Accept': 'application/json',
+          ...getAdminAuthorizationHeader()
+        }
+      }
+    );
+    if (!response.ok) {
+      throw await createApiRequestError(response, 'Unable to load examples awaiting learning review.');
+    }
+    return await response.json();
+  },
+
+  async approveParserLearningExample(id: string): Promise<any> {
+    const response = await fetch(
+      `${API_ROOT_URL}/parser-learning/examples/${encodeURIComponent(id)}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          ...getAdminAuthorizationHeader()
+        }
+      }
+    );
+    if (!response.ok) {
+      throw await createApiRequestError(response, 'This example could not be approved for learning.');
+    }
+    return await response.json();
+  },
+
+  async rejectParserLearningExample(id: string, reason: string): Promise<any> {
+    const response = await fetch(
+      `${API_ROOT_URL}/parser-learning/examples/${encodeURIComponent(id)}/reject`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...getAdminAuthorizationHeader()
+        },
+        body: JSON.stringify({ reason })
+      }
+    );
+    if (!response.ok) {
+      throw await createApiRequestError(response, 'This example could not be excluded from learning.');
+    }
     return await response.json();
   }
 };

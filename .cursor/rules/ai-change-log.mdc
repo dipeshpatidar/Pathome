@@ -1,0 +1,24 @@
+---
+description: Keep an append-only, safe handoff log for every substantive task.
+alwaysApply: true
+---
+
+# Mandatory AI Change Log
+
+Before finishing every substantive task, append an entry to the appropriate repository-root change log:
+- **Antigravity** → append to `antigravity_changes`
+- **ChatGPT / Cursor** → append to `chat_gpt_changes`
+
+Never rewrite or delete existing log history.
+
+Each entry MUST include ALL of the following fields in this order:
+
+1. **Date & Time** — current India date and time (Asia/Kolkata, IST).
+2. **Why** — why the work was requested.
+3. **Root Cause** — the underlying technical reason the issue existed or the gap that prompted the work. For investigations with no code change, state what was found. For new features, state what was missing.
+4. **Files affected** — exact files or product areas changed.
+5. **What changed** — concise description of what was done.
+6. **Verification** — test commands run and their results, or manual verification steps taken.
+7. **Commit/push status** — whether changes are committed, pushed, or pending.
+
+Record investigations as well as implementation work so another AI can safely continue. Never include credentials, API keys, tokens, connection strings, or other secrets; use a high-level description for sensitive configuration.

@@ -18,3 +18,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+__pycache__/
+*.pyc
+local-nlp/.venv/
+local-nlp/data/
+local-nlp/models/

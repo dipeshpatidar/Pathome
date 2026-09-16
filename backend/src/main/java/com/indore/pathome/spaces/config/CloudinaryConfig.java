@@ -20,11 +20,20 @@ public class CloudinaryConfig {
 
     @Bean
     public Cloudinary cloudinary() {
+        requireConfigured(cloudName, "CLOUDINARY_CLOUD_NAME");
+        requireConfigured(apiKey, "CLOUDINARY_API_KEY");
+        requireConfigured(apiSecret, "CLOUDINARY_API_SECRET");
         return new Cloudinary(ObjectUtils.asMap(
                 "cloud_name", cloudName,
                 "api_key", apiKey,
                 "api_secret", apiSecret,
                 "secure", true
         ));
+    }
+
+    private void requireConfigured(String value, String environmentName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException(environmentName + " must be configured");
+        }
     }
 }

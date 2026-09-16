@@ -56,6 +56,9 @@ public class GlobalExceptionHandlerTest {
         assertNotNull(response);
         assertEquals(500, response.getStatusCode().value());
         assertEquals("Internal Server Error", response.getBody().getError());
-        assertEquals("Database connection timeout", response.getBody().getMessage());
+        assertEquals(
+                "We could not complete this request right now. Please try again shortly.",
+                response.getBody().getMessage());
+        assertFalse(response.getBody().getMessage().contains("Database"));
     }
 }

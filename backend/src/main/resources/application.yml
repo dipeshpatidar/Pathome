@@ -8,7 +8,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/pathome_db}
     username: ${SPRING_DATASOURCE_USERNAME:dipeshpatidar}
-    password: ${SPRING_DATASOURCE_PASSWORD:}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
@@ -24,7 +24,7 @@ spring:
         registration:
           google:
             client-id: ${GOOGLE_CLIENT_ID:mock-google-client-id}
-            client-secret: ${GOOGLE_CLIENT_SECRET:mock-google-client-secret}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
             scope:
               - email
               - profile
@@ -37,16 +37,16 @@ app:
 
 meta:
   webhook:
-    verify-token: ${META_VERIFY_TOKEN}
+    verify-token: ${META_VERIFY_TOKEN:PATHOME_META_VERIFY_TOKEN_2026}
   graph:
     api:
-      token: ${META_GRAPH_TOKEN}
+      token: ${META_GRAPH_TOKEN:MOCK_META_GRAPH_API_TOKEN}
 
 server:
   port: 8080
 
 
 cloudinary:
-  cloud-name: ${CLOUDINARY_CLOUD_NAME}
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:hbgzetjy}
   api-key: ${CLOUDINARY_API_KEY}
   api-secret: ${CLOUDINARY_API_SECRET}

@@ -33,7 +33,9 @@ export const createApiRequestError = async (response: Response, fallback: string
   }
 
   const message = messageForStatus(response.status, payload?.message || fallback);
-  const details = payload?.message && payload.message !== message ? payload.message : undefined;
+  const details = response.status < 500 && payload?.message && payload.message !== message
+    ? payload.message
+    : undefined;
   return new ApiRequestError(message, response.status, details);
 };
 

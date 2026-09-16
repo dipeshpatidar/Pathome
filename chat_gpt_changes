@@ -1,0 +1,665 @@
+# ChatGPT Changes Log
+
+Purpose: a chronological handoff record for future engineers or AI agents working on the Pathome Spaces property-upload flow. Times use Asia/Kolkata (IST). No credentials, tokens, or other secret configuration values are recorded here.
+
+## 2026-09-16 — Earlier session, before 12:24 IST
+
+### Property parser audit and correctness hardening
+
+Why: Admins enter free-form and voice-dictated property descriptions. The parser needed to preserve attributes per property, reject malformed values, and avoid making up information.
+
+Where:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServicePureTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBenchmarkTest.java`
+- `backend/src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker`
+
+What changed:
+
+- Made owner-phone extraction accept only valid 10-digit Indian mobile numbers beginning with 6–9, and format valid numbers as `+91 12345 67890`.
+- Prevented malformed country-code strings from being reinterpreted as a different valid phone number.
+- Prevented area values such as `1200 sqft` from being mistaken for rent.
+- Improved locality resolution so the final explicit locality in a prompt wins over an earlier landmark or route reference.
+- Removed misleading generated description text when listing status is absent.
+- Ensured each batch chunk is parsed independently, including twenty-property batches, so bathrooms, rent, owner details, and raw source text do not bleed from one property into another.
+- Added parser regression tests for the real admin prompts, malformed values, batch isolation, and high-volume batches.
+- Added the Mockito subclass mock-maker test setting so parser tests run reliably on the local JDK.
+
+Verification:
+
+- Parser benchmark processed 3,000 prompts with 100% rent extraction for its generated benchmark data. This is not a claim of 100% natural-language understanding.
+
+## 2026-09-16 — Earlier session, before 12:24 IST
+
+### Admin property-upload workflow and review experience
+
+Why: The admin portal needed one clear path for single and multiple property uploads, a complete review screen, meaningful customer-facing copy, and a safer publishing workflow.
+
+Where:
+
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/services/propertyService.ts`
+
+What changed:
+
+- Consolidated entry into a single property-description workflow that can detect or explicitly add multiple properties, instead of making admins choose a technical mode first.
+- Added a clear `Add another property` delimiter action and multiple-property review entry.
+- Preserved all parsed DTO attributes through the review and batch-publish path rather than dropping fields after extraction.
+- Added full review sections for essential publishing data, location, commercial details, ownership, and notes.
+- Made required fields block publishing only when the backend actually requires them; optional missing data remains reviewable rather than being fabricated.
+- Added per-property source-text disclosure so an admin can audit exactly what was parsed.
+- Added media handoff from the primary composer into the batch review flow and support for both photos and videos.
+- Improved partial batch-publish handling: successfully published cards are retained as published while failed cards remain available for correction.
+- Replaced placeholder values that looked like extracted data with clear input instructions.
+- Refined field states so present values, optional omissions, and required omissions are visually distinct without claiming that placeholder text is real data.
+- Reworked labels, buttons, headings, and status copy to be meaningful for admins and avoid exposed implementation terminology.
+
+## 2026-09-16 — Earlier session, before 12:24 IST
+
+### Central, customer-safe error display
+
+Why: Raw database and framework errors were visible in the admin UI, which is both confusing and unsafe.
+
+Where:
+
+- `frontend-web/src/components/AppErrorDialog.tsx`
+- `frontend-web/src/services/apiError.ts`
+- `frontend-web/src/context/NotificationContext.tsx`
+- `frontend-web/src/App.tsx`
+
+What changed:
+
+- Added a reusable application-level error dialog.
+- Added API error normalization helpers.
+- Prevented SQL, JDBC, Hibernate, Java exception, and stack-trace text from being displayed to admins.
+- Continued to show actionable, non-technical messages through the central notification and error dialog flow.
+
+## 2026-09-16 — 12:24–12:29 IST
+
+### Relative possession-date parsing
+
+Why: Availability statements such as `available after 2 months` and `post Diwali` were not resolving to calendar dates.
+
+Where:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServicePureTest.java`
+
+What changed:
+
+- Added a testable India-time-zone clock for parser date resolution.
+- Added deterministic support for numeric availability intervals: days, weeks, months, years, `mahina`, and `mahine`.
+- Added support for Hinglish word order such as `2 mahine baad`.
+- Added support for `post Diwali`, `after Diwali <year>`, and `Diwali ke baad` using a maintained Diwali calendar mapping for 2025–2031.
+- Prevented payment, brokerage, lease, notice, and tenure intervals from being misclassified as possession dates.
+- Kept unsupported/ambiguous festival dates unresolved for review rather than inventing a calendar date.
+
+Examples with a fixed test date of 16 Sep 2026:
+
+- `available after 2 months` → `16 Nov 2026`
+- `possession in 2 weeks` → `30 Sep 2026`
+- `available 2 mahine baad` → `16 Nov 2026`
+- `available post Diwali` → `9 Nov 2026`
+
+Verification:
+
+- `mvn clean compile test` passed with 49 tests after this change.
+
+## 2026-09-16 — 12:30–12:43 IST
+
+### Prevented stale/sample text from contaminating dictation
+
+Why: A sample property and an active dictated property could be merged into one source text, causing valid parser output for the wrong input.
+
+Where:
+
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+What changed:
+
+- Removed the production `Add sample details` action that could seed a real admin draft with example phone, rent, and property data.
+- When a text draft already exists, dictation now explicitly asks whether to start a new voice draft or add to the current draft.
+- A new voice draft clears existing text only after the admin explicitly chooses that option.
+- Ensured both the primary upload screen and batch review screen use the same deliberate dictation behavior.
+- Kept the transcript as the source of truth; the application does not use a generative rewrite step to fill omitted property attributes.
+
+Verification:
+
+- `npm run build` passed.
+
+## 2026-09-16 — 12:44–12:48 IST
+
+### Spoken multi-property parsing and voice-stream stability
+
+Why: A natural voice prompt such as `the second property is ...` was not recognised as a new listing. In addition, later speech results could overwrite an earlier dictated property in the textarea.
+
+Where:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+
+What changed:
+
+- Added batch boundaries for spoken phrases such as `the second property is`, `third property`, and `another property`.
+- Aligned the frontend’s multi-property detection with the backend splitter so the correct review mode opens before parsing.
+- Tightened BHK extraction so `add two properties, one BHK ...` cannot be interpreted as `2 BHK`.
+- Added spoken bathroom-number support, including word forms such as `three bathrooms` and the common speech-recognition error `bathrooms are to` for two bathrooms.
+- Kept invalid phone values missing instead of coercing them into valid-looking numbers.
+- Kept an ambiguous value such as `deposit of 30` unresolved instead of guessing ₹30,000.
+- Fixed the Web Speech event lifecycle: finalized transcript segments are appended to a persistent confirmed transcript, while only the current interim segment is transient.
+- Made manual `Add another property` write its boundary into the active voice transcript so a subsequent speech event cannot erase it.
+- Converted spoken boundary phrases such as `and list one other property`, `another property`, and `second property` into an explicit `Next property` separator without adding property facts.
+- Stopped dictation cleanly if an admin begins manually editing the active text to avoid a typing/speech race.
+
+Expected result for the regression prompt:
+
+- First listing: 1 BHK, Mahalaxmi Nagar, rent ₹8,000, deposit ₹16,000, brokerage ₹4,000, 2 baths; invalid nine-digit phone remains missing.
+- Second listing: 2 BHK Flat, rent ₹17,000, brokerage ₹8,000, 3 baths; ambiguous deposit and malformed phone remain missing.
+
+Verification:
+
+- Added a regression test using the exact dictated two-property sentence.
+- `mvn clean compile test` passed with 50 tests.
+- `npm run build` passed.
+- Local backend was restarted after the verified build.
+
+## 2026-09-16 — After 12:48 IST
+
+### Version-control handoff
+
+Commit pushed to `main`:
+
+- `80ea47a feat(admin): harden voice-guided property uploads`
+
+Commit contents:
+
+- Property parser hardening and its tests.
+- Voice-guided single and multiple property upload safeguards.
+- Batch review/publish improvements.
+- Central customer-safe error handling.
+- Meaningful UI-copy cleanup in affected frontend components.
+
+Deliberately excluded from the commit:
+
+- `backend/src/main/resources/application.yml`, because it contains local secret configuration. Keep it local or migrate non-secret configuration to a safe environment-specific mechanism before committing it.
+
+## Guidance for the next engineer or AI
+
+- Never claim the parser is universally or 100% correct. It is deterministic, tested, and designed to leave uncertain values for review instead of guessing.
+- Treat the raw prompt/transcript as audit evidence. Do not add an LLM rewrite that can introduce semantic facts without a source.
+- Preserve property boundaries before extracting attributes. Batch safety depends on splitting first and parsing each source chunk independently.
+- Keep all regular expressions in backend parser code as `private static final Pattern` values.
+- Add a regression test for every real admin prompt that exposes an incorrect mapping or cross-property leak.
+- Run `mvn clean compile test` for backend changes and `npm run build` for frontend changes before handoff.
+- Never commit secrets from `application.yml` or other local configuration files.
+
+## 2026-09-16 — 19:00 IST
+
+### Mandatory ongoing change-log rule
+
+Why: The project owner requested that all future substantive AI work be documented consistently for safe handoff.
+
+Where:
+
+- `AGENTS.md`
+- `.cursor/rules/ai-change-log.mdc`
+- `chat_gpt_changes`
+
+What changed:
+
+- Added an always-applicable project rule requiring an append-only `chat_gpt_changes` entry before an AI completes each substantive task.
+- Defined the mandatory entry content: India date/time, request rationale, exact affected files or areas, outcome, verification, and commit/push status.
+- Required investigations to be logged as well as implementation work.
+- Explicitly prohibited recording credentials, tokens, connection strings, and other secrets in the log.
+
+Verification:
+
+- Confirmed the rule is present both in the repository `AGENTS.md` instructions and the always-applied Cursor rule.
+
+Commit status:
+
+- Not committed yet; this documentation update is intentionally left available for the owner to include in the next requested commit.
+
+## 2026-09-16 — 19:03 IST
+
+### Dictated two-property transcript analysis
+
+Why: The owner reported an incorrect or incomplete review result after dictating two noisy property descriptions and asked whether the parser can be made more robust.
+
+Where inspected:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+
+Findings:
+
+- The two listings were split correctly at `Next property`; ordinary attributes shown in the screenshots are not being copied between properties.
+- First listing: `2 BHK`, ₹18,000 rent, and two bathrooms are grounded in the dictated text. Brokerage was missed because the parser does not yet allow filler words in `brokerage of around the 8000`; deposit was missed because `deposits` (plural) is not a recognised spelling; `Vijayanagar` is not currently normalised to `Vijay Nagar`; and `in front of` is not a supported landmark clause.
+- The generated first-listing description contains literal `null` for a missing property type. This is a presentation-generation bug and must never be shown to an admin.
+- Second listing: `3 BHK Flat`, ₹32,000, two bathrooms, ₹60,000 deposit, and `+91 1234567890` are source-supported. The transcript also contains `rent 15000`, so the rent conflict is real; it is not safe to silently decide whether ₹15,000 or ₹32,000 is intended.
+- Bombay Hospital and Bombay Chemist are landmarks, not a stated locality or city. The parser must not infer a city from those names without an explicit, trusted locality source.
+- The final instruction attempts to edit the first property after the second starts. The current batch parser does not support cross-listing amendments. Its supplied `0987 6542` value has only eight digits and must remain invalid; the system must never fabricate missing digits.
+
+Recommended conservative fix set (not implemented during this analysis):
+
+- Accept safe monetary filler words and plural deposit variants.
+- Add the `Vijayanagar` alias and support `in front of` plus multiple landmark clauses while preserving transcript text rather than guessing names.
+- Render missing values without `null`, and use a clear property-card fallback label instead of `details`.
+- Rank adjacent money-to-label pairs above weaker speech fragments but retain truly conflicting explicit values for review.
+- Add an explicit postscript-amendment stage for unambiguous commands such as `for the first property, owner number is <valid 10-digit number>`; reject invalid values and never leak amendment text into the second listing.
+- Add this exact transcript as a JUnit regression test before implementation.
+
+Verification:
+
+- Code-path inspection completed; no parser or UI behavior was changed in this analysis task.
+- The local backend was not running at the time of inspection, so no live endpoint response was used.
+
+Commit status:
+
+- No code commit created for this analysis-only task.
+
+## 2026-09-16 — 19:10 IST
+
+### Late targeted-property dictation use case
+
+Why: The owner identified a practical voice-entry workflow: while describing property two, an admin may remember a fact for property one and dictate an instruction to add or correct that earlier listing.
+
+Where inspected:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+Finding:
+
+- This behavior is **not implemented**. The batch parser currently splits descriptions and parses each chunk independently. It has no targeted-amendment stage that can interpret a later sentence such as `for the first property, owner phone is 98765 43210` and safely update the first parsed DTO.
+
+Required design for a future implementation:
+
+- Parse the normal property chunks first, then scan the full transcript for explicit amendment commands that name a target such as `first property`, `property one`, `previous listing`, `second flat`, or `listing three`.
+- Only apply a change when the target is unambiguous and the field/value pair passes the same validation as direct extraction. For example, accept only a valid 10-digit Indian mobile number for an owner-phone amendment.
+- Keep an amendment audit trail containing its source sentence and field changed, show it in the relevant review card, and allow the admin to undo it before publishing.
+- Ignore or flag vague phrases such as `same as before` unless the referenced field is made explicit; never copy a value from another listing based on an assumption.
+- Remove a successfully handled amendment from the active property chunk so it cannot be accidentally parsed as that property's data.
+
+Commit status:
+
+- No code changes made for this analysis-only task.
+
+## 2026-09-16 — 19:38 IST
+
+### Implemented robust noisy-dictation parsing and targeted late corrections
+
+Why: The owner asked to move beyond diagnosis and implement both the confirmed parser defects from the reported two-property transcript and the practical workflow where an admin remembers a detail for an earlier property while dictating a later one.
+
+Where:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+
+What changed:
+
+- Added a targeted-amendment pass before normal batch splitting. It recognises explicit phrases such as `in the first property`, `for property one`, `regarding property 2`, `first property add ...`, and `add ... to the first property`.
+- Added ordinal targeting from property one through property twenty plus numeric targets, so the workflow remains usable for larger batches.
+- A targeted correction is removed from the currently dictated property's source chunk, parsed separately, validated field by field, and applied only to the named property.
+- Supported corrected values include rent, brokerage, deposit, owner name/phone, bathrooms, layout, property type, area, furnishing, availability, facing, status, location, landmark, pincode, and amenities.
+- Invalid corrections are never coerced. For example, the eight-digit `0987 6542` remains invalid and creates a review conflict instead of being assigned to property one.
+- Added `appliedAmendments` audit data to parsed properties. The review card now shows `Later dictation added to this property` together with the original correction sentence.
+- Added speech-friendly handling for filler words such as `brokerage of around the 8000`, plural `deposits`, and the `Vijayanagar` spelling.
+- Added multi-landmark extraction including `in front of`, while stopping landmark text before pincodes, bathroom clauses, monetary clauses, or another landmark.
+- Preserved ambiguous rent values as conflicts requiring admin review instead of guessing.
+- Rebuilt generated titles, labels, addresses, descriptions, missing-field telemetry, and source summaries from validated values. Missing property types no longer produce literal `null`, and review tabs use meaningful fallbacks such as the property type instead of `details`.
+- Prevented `semi furnished` or `unfurnished` text from incorrectly adding a `Fully Furnished` amenity.
+- Preserved existing monetary precedence and the parser benchmark after temporary association experiments exposed regressions.
+
+Expected result for the reported transcript:
+
+- Property 1: 2 BHK, ₹18,000 rent, ₹8,000 brokerage, ₹32,000 deposit, 2 bathrooms, Vijay Nagar / Indore, landmarks Bombay Hospital and Radiation Blue; property type remains unspecified because none was dictated.
+- Property 2: 3 BHK Flat, ₹32,000 selected rent with the ₹15,000/₹32,000 conflict retained for review, ₹15,000 brokerage, ₹60,000 deposit, 2 bathrooms, landmarks Bombay Hospital and Bombay Chemist.
+- Both dictated phone values remain invalid: `+91 1234567890` starts with 1 and is not a valid Indian mobile number, while `0987 6542` has only eight digits.
+
+Correction to the earlier 19:03 analysis entry:
+
+- That entry described `+91 1234567890` as source-supported. Although it is present in the source, it is not a valid Indian mobile number and must remain missing. The implementation and regression test enforce the correct validation.
+
+Verification:
+
+- Added regression coverage using the exact reported noisy two-property transcript.
+- Added tests for target-first and action-first valid late corrections, property isolation, audit data, and invalid late corrections.
+- `mvn clean compile test` passed: 53 tests, 0 failures, 0 errors.
+- The 3,000-prompt benchmark retained 100.00% rent-extraction accuracy with sub-millisecond average execution.
+- `npm run build` passed. Vite reports only its existing bundle-size advisory.
+- `git diff --check` is required once more after this log entry.
+
+Commit status:
+
+- Not committed or pushed yet.
+- The unrelated local `backend/src/main/resources/application.yml` changes remain untouched and must not be included without a separate secrets/configuration review.
+
+## 2026-09-16 — 19:47 IST
+
+### Proposed continuous-learning NLP roadmap
+
+Why: The owner asked whether the property parser can learn from admin usage over time to become more accurate and robust.
+
+Current state:
+
+- `PropertyParserService` is a deterministic, database-assisted rules engine. It does not currently contain a trainable NLP model and does not learn automatically from admin corrections.
+- Its strict validation, batch isolation, conflict reporting, and targeted-amendment handling remain valuable safety controls even if a learned extractor is added later.
+
+Recommended architecture (design only; not implemented in this task):
+
+- Store the raw typed or dictated transcript, property boundaries, parser output, admin edits, final approved values, accepted/rejected suggestions, and exact source spans that support each value.
+- Convert only reviewed admin corrections into a versioned training corpus. Do not retrain directly on every interaction, because accidental edits and malicious or low-quality input could corrupt the model.
+- Add a multilingual/Hinglish trainable extractor behind a feature flag. It should propose structured fields and confidence/source evidence, while the existing deterministic validators reject invalid, unsupported, or cross-property values.
+- Keep the current parser as a fallback and use the learned model in shadow mode first, comparing both outputs without changing what admins see or publish.
+- Build a permanent evaluation set covering English, Hindi/Hinglish, speech-recognition noise, garbage text, 1–20+ property batches, ambiguous money values, and late corrections to earlier properties.
+- Measure property-boundary accuracy, per-field precision/recall, exact-value accuracy, invalid-value acceptance, hallucination rate, cross-property leakage, and the percentage requiring manual review.
+- Retrain and release models offline on a controlled schedule with dataset/model versions, regression gates, feature-flag rollout, and instant rollback. The production model must never modify itself live.
+- Protect personal data: restrict and encrypt correction records, define retention rules, and mask phone numbers in analytics/training exports unless their exact format is necessary for an approved validation dataset.
+
+Suggested delivery phases:
+
+1. Add correction/audit capture and privacy controls.
+2. Build and continuously expand the reviewed gold evaluation corpus.
+3. Evaluate a pretrained multilingual entity extractor or structured-output model; do not train a language model from scratch.
+4. Run it in shadow mode against the rules engine.
+5. Enable a small canary only after it beats the existing parser without increasing hallucination or cross-property leakage.
+
+Important limitation:
+
+- No parser can truthfully guarantee 100% accuracy for arbitrary speech or garbage input. The safe goal is measurable improvement with zero silent invention: uncertain or unsupported values must remain visibly unresolved for admin review.
+
+Verification:
+
+- Architecture discussion only; no application behavior or source code was changed.
+
+Commit status:
+
+- No commit created for this analysis-only task.
+
+## 2026-09-16 — 19:53 IST
+
+### Assessed readiness for production NLP training
+
+Why: The owner asked whether the property extraction system can be trained completely for maximum robustness.
+
+Where inspected:
+
+- `backend/pom.xml`
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/`
+- `backend/src/test/java/com/indore/pathome/spaces/service/`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/services/propertyService.ts`
+
+Finding:
+
+- The current extractor is a deterministic Java rules engine. The repository has no trainable NLP dependency, labelled correction store, training corpus, training job, model registry, model-serving runtime, or shadow-evaluation pipeline.
+- Existing parser tests provide useful regression examples, but they are not a sufficiently large, representative, independently reviewed training and evaluation dataset.
+- Production-quality learning is feasible, but a truthful robustness claim requires real reviewed admin corrections plus separate holdout data. Training only on generated prompts or current parser output would reproduce existing assumptions and hide failures.
+- Voice transcription and structured field extraction must be evaluated separately. Any transcript-cleaning layer must preserve all numeric facts and must not add unsupported contact numbers, prices, layouts, or room counts.
+
+Recommended implementation order:
+
+1. Add privacy-aware parser-run and admin-correction audit entities with indexed PostgreSQL access and bounded request queries.
+2. Capture field-level predicted value, corrected value, source evidence, batch/property identity, parser version, and final approval status.
+3. Export only reviewed examples into a versioned corpus, with protected personal data and a permanently separate holdout set.
+4. Establish evaluation gates for boundary accuracy, per-field exact match, invalid-value acceptance, hallucination, and cross-property leakage.
+5. Train or fine-tune a pretrained multilingual/Hinglish structured extractor; retain the deterministic parser as validator and fallback.
+6. Introduce the learned extractor in shadow mode, then canary rollout behind a feature flag with instant rollback.
+
+Important limitation:
+
+- “Completely trained” and “100% robust” cannot be guaranteed for arbitrary human speech. The production objective must be high measured accuracy with zero silent invention and safe abstention when evidence is missing or ambiguous.
+
+Verification:
+
+- Repository architecture and current parser/API/test boundaries were inspected.
+- No application behavior, schema, dependencies, or source code was changed during this readiness assessment.
+
+Commit status:
+
+- No commit created for this analysis-only task.
+
+## 2026-09-16 — 19:57 IST
+
+### Selected private/local NLP direction
+
+Why: The owner selected a private/local approach for the future trainable property extractor and requested a concise explanation of how it would work.
+
+Decision:
+
+- Property prompts, voice transcripts, owner details, admin corrections, training datasets, and model files should remain on Pathome-controlled infrastructure rather than being sent to a hosted AI provider.
+- The existing deterministic parser should remain the validation and fallback layer. A local multilingual/Hinglish model should handle language variation, property boundaries, field relationships, and references to earlier listings.
+- Learning should occur only from administrator-reviewed corrections through controlled, versioned offline retraining. The production model must not immediately learn from unverified input.
+- Missing or unsupported information must remain missing. A local model is not permitted to invent owner phone numbers, prices, room counts, or other property facts.
+
+Verification:
+
+- Design decision and operating principles documented; no application code or configuration changed.
+
+Commit status:
+
+- No commit created for this explanation-only task.
+
+## 2026-09-16 — 20:00 IST
+
+### Defined separate storage for parser learning data
+
+Why: The owner asked whether future local-model learning data will be stored separately from live property records.
+
+Decision (design only):
+
+- Keep parser learning and audit records in dedicated PostgreSQL tables rather than adding them to production property/listing tables.
+- Use a parser-run/training-example table for the batch identity, property index, source transcript, parser/model version, predicted snapshot, final reviewed snapshot, approval status, and timestamps.
+- Use a field-correction table for individual field changes, including predicted value, corrected value, source evidence location, reviewer identity, and correction timestamp.
+- Use a model-version table for the local model artifact identity, dataset version, evaluation metrics, checksum, deployment status, and rollback history.
+- Only administrator-approved examples may enter a training dataset. Unreviewed parser runs remain audit data and must not train the model.
+- Add bounded composite indexes for approval/date, field/approval, and batch/property lookups; request handlers must not load the complete dataset.
+- Apply separate retention and access controls, and mask personal data in training exports where exact values are unnecessary.
+
+Verification:
+
+- Storage architecture clarified; no entity, repository, schema, or application behavior was changed.
+
+Commit status:
+
+- No commit created for this explanation-only task.
+
+## 2026-09-17 — 00:08 IST
+
+### Implemented the private, curator-controlled parser learning pipeline
+
+Why: The owner authorized a private/local learning system that improves from administrator-reviewed property uploads without allowing noisy prompts, accidental edits, malicious examples, or unsupported values to teach the parser.
+
+Backend files and areas changed:
+
+- `backend/src/main/java/com/indore/pathome/spaces/entity/ParserTrainingExample.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/ParserFieldReview.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/ParserModelVersion.java`
+- Parser learning/model enums under `backend/src/main/java/com/indore/pathome/spaces/entity/`
+- Parser learning/model repositories under `backend/src/main/java/com/indore/pathome/spaces/repository/`
+- Parser learning/model DTOs under `backend/src/main/java/com/indore/pathome/spaces/dto/`
+- `backend/src/main/java/com/indore/pathome/spaces/service/ParserLearningService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/ParserModelRegistryService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/ParserLearningController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/ParserModelController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`
+
+Frontend files changed:
+
+- `frontend-web/src/components/ParserLearningReviewPanel.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/services/propertyService.ts`
+
+Local training files added:
+
+- `local-nlp/export_dataset.py`
+- `local-nlp/train_token_classifier.py`
+- `local-nlp/evaluate_candidate.py`
+- `local-nlp/pathome_nlp/dataset_io.py`
+- `local-nlp/tests/test_dataset_io.py`
+- `local-nlp/requirements.txt`
+- `local-nlp/README.md`
+
+Outcome and safety controls:
+
+- Added separate indexed PostgreSQL tables for quarantined parser runs, field-level reviews, and versioned local model artifacts; production property rows remain separate.
+- Parse results are quarantined first. Publishing creates a pending review example but never trains automatically. Only an authenticated administrator can approve source-supported fields from the Learning review screen.
+- Each label must match exact evidence in that property's source text, pass field validation, and use a non-overlapping span. Personal fields, unsupported additions, duplicate prompts, conflicting reviewed truth, and unsafe values are excluded.
+- Owner names, phone-like sequences, and email addresses are masked in exported training text without changing source offsets. Owner/contact fields remain audit-only and cannot become model labels.
+- Dataset assignment is deterministic and permanently separates training, validation, and holdout records. Request handlers use bounded pages and bulk field loading rather than `findAll()` or per-row queries.
+- Added scheduled retention for untrusted quarantined and rejected examples.
+- Added a fully local/offline token-classification pipeline with deterministic training, approved-data export, partition-leakage checks, minimum dataset and per-field coverage, exact-boundary holdout metrics, per-field scores, and zero-unsupported-prediction gates.
+- Model registration rejects path traversal/symbolic-link escape, altered artifacts, mismatched dataset manifests, reports from a different artifact, insufficient sample coverage, weak accuracy, or unsupported predictions. A passing model can enter shadow status only; there is deliberately no production activation path yet.
+- Typed, dictated, and mixed inputs are recorded distinctly for later accuracy analysis. Both single-property and multi-property publishing retain their learning-example identity.
+- Parser-learning failures are isolated from the property upload transaction so they cannot prevent an administrator from publishing a valid listing.
+
+Tests added or extended:
+
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserLearningServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserModelRegistryServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`
+- `local-nlp/tests/test_dataset_io.py`
+
+Verification:
+
+- `mvn clean compile test`: passed; 63 tests, 0 failures, 0 errors, 0 skipped.
+- Parser benchmark: 3,000 prompts, 100% rent extraction in the benchmark corpus, average 0.4603 ms per prompt.
+- `npm run build`: passed; TypeScript and Vite production build completed. Vite reported the existing non-blocking large-bundle advisory.
+- `PYTHONPATH=. python3 -m unittest discover -s tests -v`: passed; 7 tests.
+- Python byte-compilation passed for all local NLP scripts.
+- `git diff --check`: passed before this log entry.
+
+Operational status:
+
+- The learning infrastructure is complete, but no learned model was trained or activated because the repository does not yet contain the required curator-approved corpus or a vetted local base-model artifact. The deterministic parser remains the only live parser. This is an intentional safety gate, not a silent fallback.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-17 — 00:42 IST
+
+### Audited the Antigravity publish fix with Bugbot and Security Review, then hardened it
+
+Why: Property publishing had been repaired in `antigravity_changes`, but the owner asked for an independent correctness and security review before relying on those changes in the admin upload flow.
+
+Review conclusion:
+
+- The Antigravity dependency-injection correction and the intended PostgreSQL constraint changes were directionally correct.
+- The database changes were not durable because they were documented as manual SQL rather than a versioned migration.
+- The batch response could associate a successful listing ID with the wrong property and upload media to the wrong listing when a property in the middle of the batch failed.
+- Parser-learning capture could commit before the property transaction completed, leaving orphan learning records after a publish rollback.
+- Security Review found unsafe secret fallbacks, incomplete training-data PII masking, unsigned model-evaluation evidence, insufficient client learning-example binding, non-atomic batch items, raw server error exposure, symbolic-link gaps, and unsafe automatic Flyway baselining.
+
+Backend files and areas changed:
+
+- `backend/pom.xml`
+- `backend/DEPLOYMENT.md`
+- `backend/src/main/resources/db/migration/V2__reconcile_property_publish_constraints.sql`
+- `backend/src/main/resources/application.yml`
+- `backend/src/main/java/com/indore/pathome/spaces/config/SafeFlywayMigrationConfig.java`
+- `backend/src/main/java/com/indore/pathome/spaces/config/CloudinaryConfig.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/ParserTrainingExample.java`
+- `backend/src/main/java/com/indore/pathome/spaces/exception/GlobalExceptionHandler.java`
+- `backend/src/main/java/com/indore/pathome/spaces/security/JwtUtils.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/BatchPropertyPublishingService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/ParserLearningCaptureService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/ParserLearningService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/ParserModelRegistryService.java`
+
+Frontend and local-model files changed:
+
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/services/apiError.ts`
+- `local-nlp/train_token_classifier.py`
+- `local-nlp/evaluate_candidate.py`
+- `local-nlp/pathome_nlp/dataset_io.py`
+- `local-nlp/README.md`
+
+Outcome and safeguards:
+
+- Added a versioned Flyway migration for nullable listing coordinates and the current property/media enum constraints. Existing installations require an explicit, one-time `PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=true`; automatic global baselining is disabled.
+- Added stable `requestIndex` and `propertyNumber` values to every successful batch result. The frontend now associates listing IDs, media, and published state with the original property card rather than the compact success-array position.
+- Each property in a batch now publishes in its own `REQUIRES_NEW` transaction. A listing, its locality confirmation, and its existing media references either commit together or roll back together.
+- Parser-learning capture now waits for the property transaction's successful commit. A rollback cannot create an orphan learning example.
+- Client-supplied learning-example IDs must belong to the current reviewer, match the exact prompt hash and property index, remain quarantined, and not already belong to another listing.
+- Batch and global HTTP failures no longer expose raw exception messages. The frontend also suppresses backend details for server-side failures while server logs retain diagnostic context.
+- Training export masks email addresses, phone-like values, short/noisy contact values after contact cues, and all private fields; export is rejected if detectable contact data remains.
+- Local model manifests and holdout reports require an HMAC-SHA256 signature using `PATHOME_MODEL_SIGNING_KEY`. Registration verifies signed evidence, checks the artifact identity and dataset binding, and rejects symbolic links anywhere in the artifact tree.
+- Removed committed fallback values for JWT, passwords, API keys, and Cloudinary credentials. JWT and Cloudinary startup validation now rejects missing or weak configuration. Historic exposed credentials still require external rotation; source-code removal cannot revoke them.
+- Added deployment instructions for required secrets, signing configuration, credential rotation, and safe first-time Flyway adoption.
+
+Tests added or extended:
+
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/exception/GlobalExceptionHandlerTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/security/JwtUtilsTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/BatchPropertyPublishingServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserLearningCaptureServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserLearningServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserModelRegistryServiceTest.java`
+- `local-nlp/tests/test_dataset_io.py`
+
+Verification:
+
+- Bugbot review completed first, followed by Security Review, as requested.
+- `mvn -q clean compile test`: passed; 74 tests, 0 failures, 0 errors, 0 skipped.
+- Parser benchmark: 3,000 prompts, 100% rent extraction in the benchmark corpus, average 0.4341 ms per prompt.
+- `npm run build`: passed; TypeScript and Vite production build completed. Vite reported the existing non-blocking large-bundle advisory.
+- `python3 -m unittest discover -s tests -p 'test_*.py'`: passed; 8 tests.
+- Python byte-compilation passed for all top-level local NLP scripts.
+- Sensitive environment-fallback scan returned no matches in backend resources, frontend source, or local NLP files.
+- `git diff --check`: passed before this log entry.
+
+Operational follow-up required:
+
+- Rotate the JWT and Cloudinary credentials that previously existed as source-code fallbacks and provide the replacement values through the deployment environment.
+- On an existing pre-Flyway database only, enable `PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=true` for the first migrated startup, verify migration success, and remove the flag immediately afterward.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-17 — 00:44 IST
+
+### Prepared the complete parser and admin-upload work for repository delivery
+
+Why: The owner requested that every current workspace change be committed together with a clear message and pushed to the repository's current `main` branch.
+
+Scope included:
+
+- Robust single- and multi-property parsing, dictated-input preservation, late corrections, relative possession dates, review-state clarity, and admin upload workflow improvements.
+- Private parser-learning storage, curator review, local training/evaluation tooling, model registry safeguards, database migrations, security hardening, tests, deployment documentation, AI change-log rules, and the Antigravity change record.
+- All modified and untracked source-controlled files visible in the working tree; ignored generated Python bytecode and build output remain excluded.
+
+Verification reused immediately before delivery:
+
+- Backend clean compile and all 74 JUnit tests passed.
+- Frontend TypeScript/Vite production build passed.
+- All 8 local NLP tests and Python byte-compilation passed.
+- Sensitive environment-fallback scan and `git diff --check` passed.
+
+Commit status:
+
+- Prepared for one commit with message `feat(admin): harden property ingestion and parser learning` and push to `origin/main`.

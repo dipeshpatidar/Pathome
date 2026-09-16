@@ -5,7 +5,12 @@ import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
+import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.ParserLearningCaptureService;
+import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +28,8 @@ import java.util.*;
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class PropertyController {
 
+    private static final Logger log = LoggerFactory.getLogger(PropertyController.class);
+
     private static final java.util.regex.Pattern NUMERIC_DEPOSIT_PATTERN = java.util.regex.Pattern.compile("(\\d{4,6})");
     private static final java.util.regex.Pattern MONTHS_DEPOSIT_PATTERN = java.util.regex.Pattern.compile("(\\d+)\\s*(?:month|mahina)", java.util.regex.Pattern.CASE_INSENSITIVE);
     private static final java.util.regex.Pattern ONE_PLUS_ONE_PATTERN = java.util.regex.Pattern.compile("\\b([1-3])\\s*\\+\\s*([1-3])\\b");
@@ -34,16 +41,27 @@ public class PropertyController {
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final CloudinaryService cloudinaryService;
     private final PropertyParserService propertyParserService;
+    private final ParserLearningService parserLearningService;
+    private final ParserLearningCaptureService parserLearningCaptureService;
+    private final BatchPropertyPublishingService batchPropertyPublishingService;
 
     public PropertyController(
             ListingRepository listingRepository,
             PropertyMediaAssetRepository mediaAssetRepository,
             CloudinaryService cloudinaryService,
-            PropertyParserService propertyParserService) {
+            PropertyParserService propertyParserService,
+            ParserLearningService parserLearningService,
+            ParserLearningCaptureService parserLearningCaptureService,
+            BatchPropertyPublishingService batchPropertyPublishingService) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
         this.propertyParserService = Objects.requireNonNull(propertyParserService, "PropertyParserService must not be null");
+        this.parserLearningService = Objects.requireNonNull(parserLearningService, "ParserLearningService must not be null");
+        this.parserLearningCaptureService = Objects.requireNonNull(
+                parserLearningCaptureService, "ParserLearningCaptureService must not be null");
+        this.batchPropertyPublishingService = Objects.requireNonNull(
+                batchPropertyPublishingService, "BatchPropertyPublishingService must not be null");
     }
 
     /**
@@ -243,6 +261,7 @@ public class PropertyController {
             return ResponseEntity.badRequest().build();
         }
         ParsedPropertyDTO result = propertyParserService.parse(request.get("prompt"));
+        quarantineParserResults(List.of(result), ParserInputSource.from(request.get("source")));
         return ResponseEntity.ok(result);
     }
 
@@ -257,6 +276,7 @@ public class PropertyController {
         RentalDetails listing = buildRentalDetailsFromDTO(dto);
         Listing saved = listingRepository.save(listing);
         propertyParserService.confirmLocality(listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
+        recordPublishedParserReview(dto, saved.getId());
 
         return ResponseEntity.ok(Map.of(
                 "status", "SUCCESS",
@@ -279,6 +299,7 @@ public class PropertyController {
             return ResponseEntity.ok(Collections.emptyList());
         }
         List<ParsedPropertyDTO> results = propertyParserService.parseBatch(prompt);
+        quarantineParserResults(results, ParserInputSource.from(request.get("source")));
         return ResponseEntity.ok(results);
     }
 
@@ -307,35 +328,23 @@ public class PropertyController {
                 }
 
                 RentalDetails listing = buildRentalDetailsFromDTO(dto);
-                if (dto.getMediaUrls() != null && !dto.getMediaUrls().isEmpty()) {
-                    listing.setMediaGalleryUrls(String.join(",", dto.getMediaUrls()));
-                }
-                Listing saved = listingRepository.save(listing);
-                propertyParserService.confirmLocality(
-                        listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
-
-                if (dto.getMediaUrls() != null) {
-                    for (String url : dto.getMediaUrls()) {
-                        PropertyMediaAsset asset = new PropertyMediaAsset(saved.getId(), url, MediaType.IMAGE, RoomTag.GENERAL, "Batch ingestion photo");
-                        asset.setSector(saved.getSector());
-                        asset.setCity(saved.getCity());
-                        asset.setPriceTag(monthlyRentPriceTag(listing));
-                        asset.setVastuFacing(saved.getVastuFacing());
-                        mediaAssetRepository.save(asset);
-                    }
-                }
+                Listing saved = batchPropertyPublishingService.publish(listing, dto.getMediaUrls());
+                recordPublishedParserReview(dto, saved.getId());
 
                 createdIds.add(saved.getId());
                 createdListings.add(Map.of(
                         "id", saved.getId(),
+                        "requestIndex", i,
+                        "propertyNumber", i + 1,
                         "title", saved.getTitle(),
                         "sector", saved.getSector(),
                         "status", "CREATED"
                 ));
             } catch (Exception e) {
+                log.error("Batch property {} could not be published", i + 1, e);
                 failedListings.add(Map.of(
                         "index", i + 1,
-                        "error", e.getMessage() != null ? e.getMessage() : "Validation Error"
+                        "error", "Review this property's required details and try publishing it again."
                 ));
             }
         }
@@ -353,6 +362,9 @@ public class PropertyController {
     private ParsedPropertyDTO convertMapToParsedDTO(Map<String, Object> map) {
         ParsedPropertyDTO dto = new ParsedPropertyDTO();
         dto.setRawPrompt(readString(map, "rawPrompt"));
+        dto.setLearningExampleId(readString(map, "learningExampleId"));
+        Double promptIndex = readDouble(map.get("promptIndex"));
+        dto.setPromptIndex(promptIndex == null ? 1 : Math.max(1, promptIndex.intValue()));
         dto.setTitle(readString(map, "title"));
         dto.setDescription(readString(map, "description"));
         dto.setBhk(readString(map, "bhk"));
@@ -399,6 +411,18 @@ public class PropertyController {
             dto.setAmenities(amenities);
         }
         return dto;
+    }
+
+    private void quarantineParserResults(List<ParsedPropertyDTO> results, ParserInputSource inputSource) {
+        try {
+            parserLearningService.quarantinePredictions(results, inputSource);
+        } catch (RuntimeException exception) {
+            log.warn("Parser learning capture unavailable; parsing will continue safely: {}", exception.getMessage());
+        }
+    }
+
+    private void recordPublishedParserReview(ParsedPropertyDTO dto, Long listingId) {
+        parserLearningCaptureService.captureAfterSuccessfulPublish(dto, listingId);
     }
 
     private void validateRequiredFields(String ownerPhone, String sector, Object rentObj, String bhkCount) {

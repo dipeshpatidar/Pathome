@@ -41,6 +41,8 @@ public class ParsedPropertyDTO {
     private boolean adminVerified;
     private List<String> conflicts = new ArrayList<>();
     private Map<String, String> sourceSnippets = new LinkedHashMap<>();
+    private List<String> appliedAmendments = new ArrayList<>();
+    private String learningExampleId;
 
     public ParsedPropertyDTO() {
     }
@@ -358,5 +360,21 @@ public class ParsedPropertyDTO {
 
     public void setSourceSnippets(Map<String, String> sourceSnippets) {
         this.sourceSnippets = sourceSnippets != null ? sourceSnippets : new LinkedHashMap<>();
+    }
+
+    public List<String> getAppliedAmendments() {
+        return appliedAmendments;
+    }
+
+    public void setAppliedAmendments(List<String> appliedAmendments) {
+        this.appliedAmendments = appliedAmendments != null ? appliedAmendments : new ArrayList<>();
+    }
+
+    public String getLearningExampleId() {
+        return learningExampleId;
+    }
+
+    public void setLearningExampleId(String learningExampleId) {
+        this.learningExampleId = learningExampleId;
     }
 }

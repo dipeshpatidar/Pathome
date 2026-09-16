@@ -16,6 +16,7 @@ import { FunnelStepGraph } from './analytics/FunnelStepGraph';
 import { SectorPerformanceBarChart } from './analytics/SectorPerformanceBarChart';
 import { BhkDemandGaugeGrid } from './analytics/BhkDemandGaugeGrid';
 import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
+import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 
 interface MasterAdminDashboardProps {
   activeTab: string;
@@ -337,6 +338,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     setDbSaveSuccessMsg(null);
     try {
       const payload = {
+        learningExampleId: lastExtractedResult.learningExampleId || '',
+        promptIndex: lastExtractedResult.promptIndex || 1,
         title: lastExtractedResult.title || `${lastExtractedResult.bhk || ''} Property`,
         description: lastExtractedResult.description || lastExtractedResult.rawInput || lastExtractedResult.title,
         bhk: lastExtractedResult.bhk || '',
@@ -412,6 +415,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isSingleDictationChoiceOpen, setIsSingleDictationChoiceOpen] = useState<boolean>(false);
   const singleRecognitionRef = useRef<any>(null);
   const singleMicBaseTextRef = useRef<string>('');
+  const singleInputSourceRef = useRef<'TYPED' | 'DICTATED' | 'MIXED'>('TYPED');
 
   useEffect(() => {
     const SpeechRecognition =
@@ -464,6 +468,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     try {
       const currentDraft = newBhkLabel.trim();
+      singleInputSourceRef.current = mode === 'append' && currentDraft ? 'MIXED' : 'DICTATED';
       singleMicBaseTextRef.current = mode === 'append' ? currentDraft : '';
       if (mode === 'replace' && currentDraft) {
         setNewBhkLabel('');
@@ -497,6 +502,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       singleRecognitionRef.current?.stop();
       setIsSingleMicListening(false);
     }
+    singleInputSourceRef.current = !details.trim()
+      ? 'TYPED'
+      : singleInputSourceRef.current === 'DICTATED'
+        ? 'MIXED'
+        : singleInputSourceRef.current;
     singleMicBaseTextRef.current = details;
     setNewBhkLabel(details);
   };
@@ -1029,7 +1039,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     try {
       // Parsing is read-only. The administrator must review the canonical backend
       // result before the separate publish action can create a listing.
-      const parsed = await propertyService.parsePropertyPrompt(newBhkLabel);
+      const parsed = await propertyService.parsePropertyPrompt(newBhkLabel, singleInputSourceRef.current);
       setLastExtractedResult({
         ...parsed,
         rawInput: newBhkLabel,
@@ -1151,6 +1161,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     { id: 'funnel', label: 'Funnel & Analytics', badge: '18%', icon: BarChart3, color: 'text-emerald-600' },
     { id: 'crm', label: 'Staff CRM & Telemetry', badge: `${employees.length} Staff`, icon: Users, color: 'text-indigo-600' },
     { id: 'approval', label: 'Approvals Queue', badge: `${cashbacks.filter(c => c.status === 'PENDING').length} New`, icon: CheckSquare, color: 'text-amber-600' },
+    { id: 'learning', label: 'Learning review', badge: 'Private', icon: ShieldCheck, color: 'text-emerald-600' },
     { id: 'config', label: 'Listing settings', badge: 'Ready', icon: SlidersHorizontal, color: 'text-purple-600' },
     { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' }
   ];
@@ -1655,6 +1666,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             </motion.div>
           )}
 
+          {activeTab === 'learning' && <ParserLearningReviewPanel />}
+
           {/* TAB 4: BHK ENGINE & CLOUDINARY MEDIA CDN */}
           {(activeTab === 'config' || activeTab === 'media') && (
             <motion.div
@@ -1831,7 +1844,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             whileHover={{ scale: 1.05 }}
                             whileTap={{ scale: 0.95 }}
                             type="button"
-                            onClick={() => setNewBhkLabel('')}
+                            onClick={() => handleSinglePromptChange('')}
                             className="text-[10px] text-rose-400 hover:text-rose-300 font-bold font-mono transition-colors cursor-pointer flex items-center gap-1 bg-rose-950/50 px-2 py-0.5 rounded-lg border border-rose-800/50"
                           >
                             <span>↺ Clear selection</span>
@@ -1850,7 +1863,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                               whileHover={{ scale: 1.02, y: -1 }}
                               whileTap={{ scale: 0.97 }}
                               transition={{ type: "spring", stiffness: 450, damping: 18 }}
-                              onClick={() => setNewBhkLabel(preset.text)}
+                              onClick={() => {
+                                singleInputSourceRef.current = 'TYPED';
+                                handleSinglePromptChange(preset.text);
+                              }}
                               className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1.5 ${
                                 isSelected
                                   ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200 shadow-lg shadow-emerald-950/80 ring-1 ring-emerald-500/50'
