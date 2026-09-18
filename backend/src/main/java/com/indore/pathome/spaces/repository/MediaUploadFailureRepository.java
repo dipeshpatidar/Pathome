@@ -22,4 +22,9 @@ public interface MediaUploadFailureRepository extends JpaRepository<MediaUploadF
 
     /** Count of unresolved (FAILED + RETRYING) failures for badge display. */
     long countByStatusIn(List<String> statuses);
+
+    /** Atomic status transition FAILED -> RETRYING to prevent concurrent retry races. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("UPDATE MediaUploadFailure m SET m.status = 'RETRYING', m.updatedAt = CURRENT_TIMESTAMP WHERE m.id = :id AND m.status = 'FAILED'")
+    int markRetryingIfFailed(@org.springframework.data.repository.query.Param("id") Long id);
 }

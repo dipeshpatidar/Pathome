@@ -9,11 +9,13 @@ import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
 import com.indore.pathome.spaces.service.FailedUploadService;
+import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +28,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Controller providing RESTful endpoints for property listings, media assets, and AI natural language parsing.
@@ -57,7 +60,11 @@ public class PropertyController {
     private final ParserLearningService parserLearningService;
     private final ParserLearningCaptureService parserLearningCaptureService;
     private final BatchPropertyPublishingService batchPropertyPublishingService;
+    private final MediaStagingService mediaStagingService;
 
+    private static final Pattern SAFE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
+
+    @Autowired
     public PropertyController(
             ListingRepository listingRepository,
             PropertyMediaAssetRepository mediaAssetRepository,
@@ -66,7 +73,8 @@ public class PropertyController {
             PropertyParserService propertyParserService,
             ParserLearningService parserLearningService,
             ParserLearningCaptureService parserLearningCaptureService,
-            BatchPropertyPublishingService batchPropertyPublishingService) {
+            BatchPropertyPublishingService batchPropertyPublishingService,
+            MediaStagingService mediaStagingService) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
@@ -77,6 +85,21 @@ public class PropertyController {
                 parserLearningCaptureService, "ParserLearningCaptureService must not be null");
         this.batchPropertyPublishingService = Objects.requireNonNull(
                 batchPropertyPublishingService, "BatchPropertyPublishingService must not be null");
+        this.mediaStagingService = mediaStagingService;
+    }
+
+    public PropertyController(
+            ListingRepository listingRepository,
+            PropertyMediaAssetRepository mediaAssetRepository,
+            CloudinaryService cloudinaryService,
+            FailedUploadService failedUploadService,
+            PropertyParserService propertyParserService,
+            ParserLearningService parserLearningService,
+            ParserLearningCaptureService parserLearningCaptureService,
+            BatchPropertyPublishingService batchPropertyPublishingService) {
+        this(listingRepository, mediaAssetRepository, cloudinaryService, failedUploadService,
+                propertyParserService, parserLearningService, parserLearningCaptureService,
+                batchPropertyPublishingService, failedUploadService.getMediaStagingService());
     }
 
     /**
@@ -99,9 +122,11 @@ public class PropertyController {
      */
     @GetMapping("/{id}")
     public ResponseEntity<?> getPropertyById(@PathVariable Long id) {
-        return listingRepository.findById(id)
-                .<ResponseEntity<?>>map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body("Property listing not found"));
+        Listing listing = listingRepository.findById(id).orElse(null);
+        if (listing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Property listing not found");
+        }
+        return ResponseEntity.ok(listing);
     }
 
     /**
@@ -157,8 +182,51 @@ public class PropertyController {
             }
         }
 
+        CloudinaryService.CloudinaryUploadResult uploadResult;
         try {
-            String cdnUrl = uploadMediaToCloudinary(file, mediaType, normalizedUploadRequestId);
+            uploadResult = uploadMediaToCloudinaryResult(file, mediaType, normalizedUploadRequestId);
+        } catch (MediaUploadException mue) {
+            String stagedKey = null;
+            java.time.LocalDateTime stagingExpiresAt = null;
+
+            boolean stageEligible = (mue.getCategory() == null || mue.getCategory().isStagingEligible())
+                    && mue.getStage() != MediaUploadException.Stage.VALIDATION;
+
+            if (stageEligible && mediaStagingService != null) {
+                try {
+                    String sanitizedFilename = sanitizeFilename(file.getOriginalFilename());
+                    String key = "staging/" + (normalizedUploadRequestId != null ? normalizedUploadRequestId : UUID.randomUUID().toString()) + "/" + sanitizedFilename;
+                    stagedKey = mediaStagingService.stage(key, file.getInputStream(), file.getSize(), file.getContentType());
+                    stagingExpiresAt = java.time.LocalDateTime.now().plusDays(7);
+                } catch (Exception stagingEx) {
+                    log.warn("Failed to stage media binary after upload failure (non-critical): {}", stagingEx.getMessage());
+                }
+            }
+
+            failedUploadService.recordFailure(new FailedUploadService.UploadFailureContext(
+                    id,
+                    normalizedUploadRequestId,
+                    mediaType.name(),
+                    file.getOriginalFilename() != null ? file.getOriginalFilename() : "",
+                    file.getSize(),
+                    roomTag.name(),
+                    mue.getStage(),
+                    mue.getSafeReason(),
+                    mue.getDiagnostic(),
+                    null,
+                    null,
+                    stagedKey,
+                    stagingExpiresAt,
+                    mue.getCategory() != null ? mue.getCategory().name() : null,
+                    mue.getProviderStatusCode()
+            ));
+            throw mue;
+        }
+
+        String cdnUrl = uploadResult.secureUrl();
+        String publicId = uploadResult.publicId();
+
+        try {
             PropertyMediaAsset savedAsset = saveMediaAsset(
                     id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
                     sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
@@ -170,8 +238,15 @@ public class PropertyController {
                         .ifPresent(fid -> failedUploadService.recordResolution(fid, cdnUrl));
             }
             return ResponseEntity.status(HttpStatus.CREATED).body(savedAsset);
-
-        } catch (MediaUploadException mue) {
+        } catch (Exception dbEx) {
+            MediaUploadException mue = new MediaUploadException(
+                    MediaUploadException.Stage.DB_PERSIST,
+                    "Media was uploaded to storage, but could not be saved to the property. Please retry from Failed Uploads.",
+                    MediaUploadException.diagnosticFrom(dbEx),
+                    cdnUrl,
+                    publicId,
+                    dbEx
+            );
             failedUploadService.recordFailure(new FailedUploadService.UploadFailureContext(
                     id,
                     normalizedUploadRequestId,
@@ -181,9 +256,15 @@ public class PropertyController {
                     roomTag.name(),
                     mue.getStage(),
                     mue.getSafeReason(),
-                    mue.getDiagnostic()
+                    mue.getDiagnostic(),
+                    cdnUrl,
+                    publicId,
+                    null,
+                    null,
+                    null,
+                    null
             ));
-            throw mue; // GlobalExceptionHandler converts this to 502
+            throw mue;
         }
     }
 
@@ -708,9 +789,30 @@ public class PropertyController {
             MultipartFile file,
             MediaType mediaType,
             String uploadRequestId) {
-        return (mediaType == MediaType.VIDEO_WALKTHROUGH)
-                ? cloudinaryService.uploadVideo(file, uploadRequestId)
-                : cloudinaryService.uploadImage(file, uploadRequestId);
+        return uploadMediaToCloudinaryResult(file, mediaType, uploadRequestId).secureUrl();
+    }
+
+    private CloudinaryService.CloudinaryUploadResult uploadMediaToCloudinaryResult(
+            MultipartFile file,
+            MediaType mediaType,
+            String uploadRequestId) {
+        if (mediaType == MediaType.VIDEO_WALKTHROUGH) {
+            CloudinaryService.CloudinaryUploadResult res = cloudinaryService.uploadVideoResult(file, uploadRequestId);
+            if (res != null) return res;
+            String url = cloudinaryService.uploadVideo(file, uploadRequestId);
+            return new CloudinaryService.CloudinaryUploadResult(url, uploadRequestId, "video");
+        } else {
+            CloudinaryService.CloudinaryUploadResult res = cloudinaryService.uploadImageResult(file, uploadRequestId);
+            if (res != null) return res;
+            String url = cloudinaryService.uploadImage(file, uploadRequestId);
+            return new CloudinaryService.CloudinaryUploadResult(url, uploadRequestId, "image");
+        }
+    }
+
+    private String sanitizeFilename(String filename) {
+        if (filename == null || filename.isBlank()) return "media_file";
+        String sanitized = SAFE_FILENAME_PATTERN.matcher(filename).replaceAll("_");
+        return sanitized.length() > 80 ? sanitized.substring(sanitized.length() - 80) : sanitized;
     }
 
     private PropertyMediaAsset saveMediaAsset(

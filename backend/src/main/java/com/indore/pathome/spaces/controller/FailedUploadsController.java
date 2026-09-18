@@ -9,10 +9,12 @@ import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.FailedUploadService;
+import com.indore.pathome.spaces.service.MediaStagingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -24,10 +26,11 @@ import java.util.Optional;
 /**
  * Admin REST controller for viewing, retrying, and dismissing failed media upload records.
  *
- * <p>All endpoints require a valid admin JWT (enforced by the Spring Security filter chain).</p>
+ * <p>All endpoints require a valid admin JWT (enforced by the Spring Security filter chain and method security).</p>
  */
 @RestController
 @RequestMapping("/api/v1/admin/failed-uploads")
+@PreAuthorize("hasAnyRole('ADMIN', 'SUB_ADMIN')")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class FailedUploadsController {
 
@@ -40,16 +43,28 @@ public class FailedUploadsController {
     private final CloudinaryService cloudinaryService;
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final ListingRepository listingRepository;
+    private final MediaStagingService mediaStagingService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FailedUploadsController(
+            FailedUploadService failedUploadService,
+            CloudinaryService cloudinaryService,
+            PropertyMediaAssetRepository mediaAssetRepository,
+            ListingRepository listingRepository,
+            MediaStagingService mediaStagingService) {
+        this.failedUploadService = Objects.requireNonNull(failedUploadService);
+        this.cloudinaryService = Objects.requireNonNull(cloudinaryService);
+        this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository);
+        this.listingRepository = Objects.requireNonNull(listingRepository);
+        this.mediaStagingService = mediaStagingService;
+    }
 
     public FailedUploadsController(
             FailedUploadService failedUploadService,
             CloudinaryService cloudinaryService,
             PropertyMediaAssetRepository mediaAssetRepository,
             ListingRepository listingRepository) {
-        this.failedUploadService = Objects.requireNonNull(failedUploadService);
-        this.cloudinaryService = Objects.requireNonNull(cloudinaryService);
-        this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository);
-        this.listingRepository = Objects.requireNonNull(listingRepository);
+        this(failedUploadService, cloudinaryService, mediaAssetRepository, listingRepository, failedUploadService.getMediaStagingService());
     }
 
     /**
@@ -98,14 +113,17 @@ public class FailedUploadsController {
 
     /**
      * POST /api/v1/admin/failed-uploads/{id}/retry
-     * Re-attempts the upload for a failed record.
+     * Re-attempts recovery for a failed upload.
      *
-     * <p>If a {@code file} multipart param is provided, it is uploaded to Cloudinary using
-     * the original {@code uploadRequestId} (idempotent, {@code overwrite=true}).
-     * The existing {@code PropertyMediaAsset} row is upserted and the failure marked RESOLVED.</p>
+     * <p>If {@code file} is null or empty, this is a ONE-CLICK AUTOMATIC RETRY (no file picker):
+     * <ul>
+     *   <li>For DB_PERSIST: reconciles database without re-uploading to Cloudinary.</li>
+     *   <li>For STAGED_MEDIA_RETRY: streams original binary from private temporary object storage.</li>
+     *   <li>If staged media is missing/expired: returns 400 Bad Request indicating Replace File is required.</li>
+     * </ul>
      *
-     * <p>If no file is provided and the original upload already reached Cloudinary but failed
-     * at the DB-persist stage, the controller returns a descriptive error asking for a file.</p>
+     * <p>If {@code file} is provided, this is a MANUAL REPLACEMENT:
+     * uploads the replacement file to Cloudinary with {@code overwrite=true} using original {@code uploadRequestId}.</p>
      */
     @PostMapping("/{id}/retry")
     public ResponseEntity<?> retry(
@@ -123,53 +141,102 @@ public class FailedUploadsController {
             return ResponseEntity.ok(Map.of("message", "This upload has already been resolved"));
         }
 
-        // Concurrent retry guard
+        // Automatic retry (no file passed) vs Replace File (file passed)
+        if (file == null || file.isEmpty()) {
+            return handleAutomaticRetry(id, failure);
+        } else {
+            return handleReplaceFile(id, failure, file);
+        }
+    }
+
+    private ResponseEntity<?> handleAutomaticRetry(Long id, MediaUploadFailure failure) {
+        String strategy = failure.getRecoveryStrategy();
+
+        if ("DATABASE_RECONCILIATION".equals(strategy)) {
+            // Atomic state lock
+            boolean locked = failedUploadService.markRetrying(id);
+            if (!locked) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of("message", "A retry is already in progress for this upload"));
+            }
+            try {
+                return reconcileDatabase(failure);
+            } catch (Exception e) {
+                String diagnostic = MediaUploadException.diagnosticFrom(e);
+                log.warn("Database reconciliation failed [failureId={}]: {}", id, diagnostic);
+                failedUploadService.recordRetryFailure(id,
+                        "Could not reconcile property database record. Please try again.",
+                        diagnostic);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("message", "Could not reconcile property database record. Please try again."));
+            }
+        }
+
+        if ("STAGED_MEDIA_RETRY".equals(strategy)) {
+            String stagingKey = failure.getStagingObjectKey();
+            if (mediaStagingService == null || !mediaStagingService.exists(stagingKey)) {
+                // Staged object expired or missing — do not increment retry count, return clear explanation
+                return ResponseEntity.badRequest()
+                        .body(Map.of("message", "The original staged media file has expired or is unavailable. Please use 'Replace File' to upload a new file."));
+            }
+
+            // Atomic state lock
+            boolean locked = failedUploadService.markRetrying(id);
+            if (!locked) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of("message", "A retry is already in progress for this upload"));
+            }
+
+            try {
+                return retryFromStagedMedia(failure);
+            } catch (MediaUploadException mue) {
+                failedUploadService.recordRetryFailure(id, mue.getSafeReason(), mue.getDiagnostic());
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(Map.of("message", mue.getSafeReason()));
+            } catch (Exception e) {
+                String diagnostic = MediaUploadException.diagnosticFrom(e);
+                log.warn("Staged media retry failed [failureId={}]: {}", id, diagnostic);
+                failedUploadService.recordRetryFailure(id,
+                        "The retry could not be completed. Please try again.",
+                        diagnostic);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("message", "The retry could not be completed. Please try again."));
+            }
+        }
+
+        // Recovery strategy is REPLACE_FILE_REQUIRED
+        return ResponseEntity.badRequest()
+                .body(Map.of("message", "This upload cannot be retried automatically. Please use 'Replace File' to provide a replacement file."));
+    }
+
+    private ResponseEntity<?> handleReplaceFile(Long id, MediaUploadFailure failure, MultipartFile file) {
+        // Atomic state lock
         boolean locked = failedUploadService.markRetrying(id);
         if (!locked) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(Map.of("message", "A retry is already in progress for this upload"));
         }
 
-        // If file is not supplied and listing is known, we need a file
-        if ((file == null || file.isEmpty()) && !"DB_PERSIST".equals(failure.getFailureStage())) {
-            failedUploadService.recordRetryFailure(id,
-                    "A replacement file is required to retry this upload.",
-                    "No file supplied and stage is not DB_PERSIST");
-            return ResponseEntity.badRequest()
-                    .body(Map.of("message", "Please select a replacement file to retry this upload"));
-        }
-
         try {
-            return executeRetry(failure, file);
+            return executeRetryWithFile(failure, file);
         } catch (MediaUploadException mue) {
             failedUploadService.recordRetryFailure(id, mue.getSafeReason(), mue.getDiagnostic());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(Map.of("message", mue.getSafeReason()));
         } catch (Exception e) {
             String diagnostic = MediaUploadException.diagnosticFrom(e);
-            log.warn("Unexpected error during media retry [failureId={}]: {}", id, diagnostic);
+            log.warn("Replace file upload failed [failureId={}]: {}", id, diagnostic);
             failedUploadService.recordRetryFailure(id,
-                    "The retry could not be completed. Please try again.",
+                    "The replacement upload could not be completed. Please try again.",
                     diagnostic);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "The retry could not be completed. Please try again."));
+                    .body(Map.of("message", "The replacement upload could not be completed. Please try again."));
         }
     }
 
-    // ---- Private helpers ----
-
-    private ResponseEntity<?> executeRetry(MediaUploadFailure failure, MultipartFile file) {
+    private ResponseEntity<?> reconcileDatabase(MediaUploadFailure failure) {
         Long listingId = failure.getListingId();
-        if (listingId == null) {
-            failedUploadService.recordRetryFailure(failure.getId(),
-                    "This failure has no associated property. Please publish the property first.",
-                    "listingId is null");
-            return ResponseEntity.badRequest()
-                    .body(Map.of("message", "This failure has no associated property. Please publish the property first."));
-        }
-
-        // Validate listing still exists
-        if (listingRepository.findById(listingId).isEmpty()) {
+        if (listingId == null || listingRepository.findById(listingId).isEmpty()) {
             failedUploadService.recordRetryFailure(failure.getId(),
                     "The associated property could not be found.",
                     "listingId=" + listingId + " not found");
@@ -177,7 +244,77 @@ public class FailedUploadsController {
                     .body(Map.of("message", "The associated property could not be found."));
         }
 
-        // Upload to Cloudinary with the original idempotency key (overwrite=true in CloudinaryService)
+        String cdnUrl = failure.getStorageUrl();
+        MediaType mediaType = safeParseMediaType(failure.getMediaType());
+        RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
+
+        // Upsert PropertyMediaAsset without calling Cloudinary again
+        upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_RECONCILED");
+
+        failedUploadService.recordResolution(failure.getId(), cdnUrl);
+
+        return ResponseEntity.ok(Map.of(
+                "message", "Media reconciled and saved to property successfully",
+                "mediaUrl", cdnUrl,
+                "listingId", listingId
+        ));
+    }
+
+    private ResponseEntity<?> retryFromStagedMedia(MediaUploadFailure failure) throws Exception {
+        Long listingId = failure.getListingId();
+        if (listingId == null || listingRepository.findById(listingId).isEmpty()) {
+            failedUploadService.recordRetryFailure(failure.getId(),
+                    "The associated property could not be found.",
+                    "listingId=" + listingId + " not found");
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "The associated property could not be found."));
+        }
+
+        boolean isVideo = "VIDEO_WALKTHROUGH".equalsIgnoreCase(failure.getMediaType());
+
+        CloudinaryService.CloudinaryUploadResult uploadResult;
+        try (java.io.InputStream stream = mediaStagingService.retrieve(failure.getStagingObjectKey())) {
+            uploadResult = cloudinaryService.uploadStreamResult(stream, isVideo, failure.getUploadRequestId());
+        }
+
+        String cdnUrl = uploadResult.secureUrl();
+        MediaType mediaType = safeParseMediaType(failure.getMediaType());
+        RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
+
+        try {
+            upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_RETRY");
+            failedUploadService.recordResolution(failure.getId(), cdnUrl);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Media automatically recovered and uploaded successfully",
+                    "mediaUrl", cdnUrl,
+                    "listingId", listingId
+            ));
+        } catch (Exception dbEx) {
+            String dbDiagnostic = MediaUploadException.diagnosticFrom(dbEx);
+            log.error("Cloudinary succeeded during staged retry but DB persistence failed [failureId={}]: {}", failure.getId(), dbDiagnostic);
+            failedUploadService.transitionToDbPersistFailure(
+                    failure.getId(),
+                    cdnUrl,
+                    uploadResult.publicId(),
+                    "Media uploaded successfully to storage but failed to save to property records.",
+                    dbDiagnostic
+            );
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Media uploaded to storage but could not be saved to property records. Please retry to reconcile."));
+        }
+    }
+
+    private ResponseEntity<?> executeRetryWithFile(MediaUploadFailure failure, MultipartFile file) {
+        Long listingId = failure.getListingId();
+        if (listingId == null || listingRepository.findById(listingId).isEmpty()) {
+            failedUploadService.recordRetryFailure(failure.getId(),
+                    "The associated property could not be found.",
+                    "listingId=" + listingId + " not found");
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "The associated property could not be found."));
+        }
+
         MediaType mediaType = safeParseMediaType(failure.getMediaType());
         String cdnUrl;
         if (mediaType == MediaType.VIDEO_WALKTHROUGH) {
@@ -186,23 +323,53 @@ public class FailedUploadsController {
             cdnUrl = cloudinaryService.uploadImage(file, failure.getUploadRequestId());
         }
 
-        // Upsert PropertyMediaAsset (idempotency key prevents duplicate row)
         RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
+        try {
+            upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_REPLACE");
+            failedUploadService.recordResolution(failure.getId(), cdnUrl);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Replacement media uploaded successfully",
+                    "mediaUrl", cdnUrl,
+                    "listingId", listingId
+            ));
+        } catch (Exception dbEx) {
+            String dbDiagnostic = MediaUploadException.diagnosticFrom(dbEx);
+            log.error("Cloudinary succeeded during replace upload but DB persistence failed [failureId={}]: {}", failure.getId(), dbDiagnostic);
+            failedUploadService.transitionToDbPersistFailure(
+                    failure.getId(),
+                    cdnUrl,
+                    failure.getUploadRequestId(),
+                    "Replacement media uploaded successfully to storage but failed to save to property records.",
+                    dbDiagnostic
+            );
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Media uploaded to storage but could not be saved to property records. Please retry to reconcile."));
+        }
+    }
+
+    private void upsertMediaAssetAndGallery(
+            Long listingId,
+            String uploadRequestId,
+            String cdnUrl,
+            MediaType mediaType,
+            RoomTag roomTag,
+            String verificationStatus) {
+
         PropertyMediaAsset asset = mediaAssetRepository
-                .findByListingIdAndUploadRequestId(listingId, failure.getUploadRequestId())
+                .findByListingIdAndUploadRequestId(listingId, uploadRequestId)
                 .orElseGet(() -> {
                     PropertyMediaAsset newAsset = new PropertyMediaAsset();
                     newAsset.setListingId(listingId);
-                    newAsset.setUploadRequestId(failure.getUploadRequestId());
+                    newAsset.setUploadRequestId(uploadRequestId);
                     return newAsset;
                 });
         asset.setMediaUrl(cdnUrl);
         asset.setMediaType(mediaType);
         asset.setRoomTag(roomTag);
-        asset.setVerificationStatus("ADMIN_RETRY");
+        asset.setVerificationStatus(verificationStatus);
         mediaAssetRepository.save(asset);
 
-        // Append URL to gallery (dedup guard is inside updateListingGallery in PropertyController)
         listingRepository.findById(listingId).ifPresent(listing -> {
             String existing = listing.getMediaGalleryUrls();
             if (existing == null || !List.of(existing.split(",")).contains(cdnUrl)) {
@@ -211,14 +378,6 @@ public class FailedUploadsController {
                 listingRepository.save(listing);
             }
         });
-
-        failedUploadService.recordResolution(failure.getId(), cdnUrl);
-
-        return ResponseEntity.ok(Map.of(
-                "message", "Media uploaded successfully",
-                "mediaUrl", cdnUrl,
-                "listingId", listingId
-        ));
     }
 
     private MediaType safeParseMediaType(String value) {

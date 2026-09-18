@@ -18,12 +18,14 @@ import static org.mockito.Mockito.*;
 class FailedUploadServiceTest {
 
     private MediaUploadFailureRepository repository;
+    private MediaStagingService mediaStagingService;
     private FailedUploadService service;
 
     @BeforeEach
     void setUp() {
         repository = mock(MediaUploadFailureRepository.class);
-        service = new FailedUploadService(repository);
+        mediaStagingService = mock(MediaStagingService.class);
+        service = new FailedUploadService(repository, mediaStagingService);
     }
 
     private FailedUploadService.UploadFailureContext makeContext(String uploadRequestId) {
@@ -83,26 +85,28 @@ class FailedUploadServiceTest {
     }
 
     @Test
-    void markRetrying_returnsFalseWhenAlreadyRetrying() {
-        MediaUploadFailure failure = new MediaUploadFailure();
-        failure.setStatus("RETRYING");
-        when(repository.findById(1L)).thenReturn(Optional.of(failure));
+    void markRetrying_returnsFalseWhenAlreadyRetryingOrResolved() {
+        when(repository.markRetryingIfFailed(1L)).thenReturn(0);
 
         boolean result = service.markRetrying(1L);
-        assertFalse(result, "Should not allow retrying a record already in RETRYING state");
-        verify(repository, never()).saveAndFlush(any());
+        assertFalse(result, "Should not allow retrying a record not in FAILED state");
+        verify(repository).markRetryingIfFailed(1L);
     }
 
     @Test
     void markRetrying_returnsTrueAndTransitionsStatus() {
-        MediaUploadFailure failure = new MediaUploadFailure();
-        failure.setStatus("FAILED");
-        when(repository.findById(1L)).thenReturn(Optional.of(failure));
-        when(repository.saveAndFlush(any())).thenReturn(failure);
+        when(repository.markRetryingIfFailed(1L)).thenReturn(1);
 
         boolean result = service.markRetrying(1L);
         assertTrue(result);
-        assertEquals("RETRYING", failure.getStatus());
+        verify(repository).markRetryingIfFailed(1L);
+    }
+
+    @Test
+    void markRetrying_withNullId_returnsFalse() {
+        boolean result = service.markRetrying(null);
+        assertFalse(result);
+        verify(repository, never()).markRetryingIfFailed(any());
     }
 
     @Test
@@ -146,5 +150,48 @@ class FailedUploadServiceTest {
     void countUnresolved_delegatesToRepository() {
         when(repository.countByStatusIn(FailedUploadService.UNRESOLVED_STATUSES)).thenReturn(7L);
         assertEquals(7L, service.countUnresolved());
+    }
+
+    @Test
+    void recordResolution_proactivelyDeletesStagedMedia() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("FAILED");
+        failure.setStagingObjectKey("staging/req-123/img.webp");
+        when(repository.findById(10L)).thenReturn(Optional.of(failure));
+        when(repository.saveAndFlush(any())).thenReturn(failure);
+
+        service.recordResolution(10L, "https://cdn.example/resolved.webp");
+
+        assertEquals("RESOLVED", failure.getStatus());
+        verify(mediaStagingService).delete("staging/req-123/img.webp");
+    }
+
+    @Test
+    void dismiss_proactivelyDeletesStagedMedia() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("FAILED");
+        failure.setStagingObjectKey("staging/req-456/vid.mp4");
+        when(repository.findById(11L)).thenReturn(Optional.of(failure));
+        when(repository.saveAndFlush(any())).thenReturn(failure);
+
+        service.dismiss(11L);
+
+        assertEquals("DISMISSED", failure.getStatus());
+        verify(mediaStagingService).delete("staging/req-456/vid.mp4");
+    }
+
+    @Test
+    void recordResolution_cleanupFailure_doesNotThrowOrUndoResolution() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("FAILED");
+        failure.setStagingObjectKey("staging/req-789/img.webp");
+        when(repository.findById(12L)).thenReturn(Optional.of(failure));
+        when(repository.saveAndFlush(any())).thenReturn(failure);
+
+        doThrow(new RuntimeException("S3 network timeout during delete"))
+                .when(mediaStagingService).delete("staging/req-789/img.webp");
+
+        assertDoesNotThrow(() -> service.recordResolution(12L, "https://cdn.example/resolved.webp"));
+        assertEquals("RESOLVED", failure.getStatus());
     }
 }

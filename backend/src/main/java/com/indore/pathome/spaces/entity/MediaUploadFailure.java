@@ -1,5 +1,6 @@
 package com.indore.pathome.spaces.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
@@ -53,6 +54,7 @@ public class MediaUploadFailure {
     private String failureReason;
 
     /** ExceptionClass: message — never exposed in HTTP responses. */
+    @JsonIgnore
     @Column(name = "internal_diagnostic", columnDefinition = "TEXT")
     private String internalDiagnostic;
 
@@ -67,6 +69,26 @@ public class MediaUploadFailure {
     @Column(name = "resolved_media_url", length = 1000)
     private String resolvedMediaUrl;
 
+    @Column(name = "storage_url", length = 1000)
+    private String storageUrl;
+
+    @Column(name = "storage_public_id", length = 200)
+    private String storagePublicId;
+
+    /** Private object key in temporary staging storage — never exposed to client. */
+    @JsonIgnore
+    @Column(name = "staging_object_key", length = 300)
+    private String stagingObjectKey;
+
+    @Column(name = "staging_expires_at")
+    private LocalDateTime stagingExpiresAt;
+
+    @Column(name = "cloudinary_failure_category", length = 50)
+    private String cloudinaryFailureCategory;
+
+    @Column(name = "provider_status_code")
+    private Integer providerStatusCode;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -79,6 +101,42 @@ public class MediaUploadFailure {
     }
 
     public MediaUploadFailure() {}
+
+    /**
+     * Determines whether one-click automatic retry (without file picker) is available.
+     */
+    public boolean isAutoRetryAvailable() {
+        if ("RESOLVED".equals(status) || "DISMISSED".equals(status)) {
+            return false;
+        }
+        if ("DB_PERSIST".equals(failureStage)) {
+            return storageUrl != null && !storageUrl.isBlank();
+        }
+        if ("CLOUDINARY_UPLOAD".equals(failureStage)) {
+            if ("MEDIA_REJECTED".equals(cloudinaryFailureCategory)) {
+                return false;
+            }
+            if (stagingObjectKey != null && !stagingObjectKey.isBlank()) {
+                return stagingExpiresAt == null || stagingExpiresAt.isAfter(LocalDateTime.now());
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Recovery strategy: DATABASE_RECONCILIATION, STAGED_MEDIA_RETRY, or REPLACE_FILE_REQUIRED.
+     */
+    public String getRecoveryStrategy() {
+        if ("DB_PERSIST".equals(failureStage) && storageUrl != null && !storageUrl.isBlank()) {
+            return "DATABASE_RECONCILIATION";
+        }
+        if (stagingObjectKey != null && !stagingObjectKey.isBlank()
+                && !"MEDIA_REJECTED".equals(cloudinaryFailureCategory)
+                && (stagingExpiresAt == null || stagingExpiresAt.isAfter(LocalDateTime.now()))) {
+            return "STAGED_MEDIA_RETRY";
+        }
+        return "REPLACE_FILE_REQUIRED";
+    }
 
     // ---- Getters and Setters ----
 
@@ -119,6 +177,24 @@ public class MediaUploadFailure {
 
     public String getResolvedMediaUrl() { return resolvedMediaUrl; }
     public void setResolvedMediaUrl(String resolvedMediaUrl) { this.resolvedMediaUrl = resolvedMediaUrl; }
+
+    public String getStorageUrl() { return storageUrl; }
+    public void setStorageUrl(String storageUrl) { this.storageUrl = storageUrl; }
+
+    public String getStoragePublicId() { return storagePublicId; }
+    public void setStoragePublicId(String storagePublicId) { this.storagePublicId = storagePublicId; }
+
+    public String getStagingObjectKey() { return stagingObjectKey; }
+    public void setStagingObjectKey(String stagingObjectKey) { this.stagingObjectKey = stagingObjectKey; }
+
+    public LocalDateTime getStagingExpiresAt() { return stagingExpiresAt; }
+    public void setStagingExpiresAt(LocalDateTime stagingExpiresAt) { this.stagingExpiresAt = stagingExpiresAt; }
+
+    public String getCloudinaryFailureCategory() { return cloudinaryFailureCategory; }
+    public void setCloudinaryFailureCategory(String cloudinaryFailureCategory) { this.cloudinaryFailureCategory = cloudinaryFailureCategory; }
+
+    public Integer getProviderStatusCode() { return providerStatusCode; }
+    public void setProviderStatusCode(Integer providerStatusCode) { this.providerStatusCode = providerStatusCode; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

@@ -16,6 +16,10 @@ export interface FailedUpload {
   retryCount: number;
   status: 'FAILED' | 'RETRYING' | 'RESOLVED' | 'DISMISSED';
   resolvedMediaUrl: string | null;
+  autoRetryAvailable: boolean;
+  recoveryStrategy: 'DATABASE_RECONCILIATION' | 'STAGED_MEDIA_RETRY' | 'REPLACE_FILE_REQUIRED' | string;
+  cloudinaryFailureCategory?: string | null;
+  providerStatusCode?: number | null;
   createdAt: string;
   updatedAt: string;
 }

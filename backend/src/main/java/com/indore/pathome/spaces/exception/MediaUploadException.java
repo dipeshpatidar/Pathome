@@ -21,19 +21,56 @@ public class MediaUploadException extends RuntimeException {
     private final Stage stage;
     private final String safeReason;
     private final String diagnostic;
+    private final CloudinaryFailureCategory category;
+    private final Integer providerStatusCode;
+    private final String storageUrl;
+    private final String storagePublicId;
 
     public MediaUploadException(Stage stage, String safeReason, String diagnostic, Throwable cause) {
+        this(stage, safeReason, diagnostic, null, null, null, null, cause);
+    }
+
+    public MediaUploadException(Stage stage, String safeReason, String diagnostic) {
+        this(stage, safeReason, diagnostic, null, null, null, null, null);
+    }
+
+    public MediaUploadException(
+            Stage stage,
+            String safeReason,
+            String diagnostic,
+            CloudinaryFailureCategory category,
+            Integer providerStatusCode,
+            Throwable cause) {
+        this(stage, safeReason, diagnostic, category, providerStatusCode, null, null, cause);
+    }
+
+    public MediaUploadException(
+            Stage stage,
+            String safeReason,
+            String diagnostic,
+            String storageUrl,
+            String storagePublicId,
+            Throwable cause) {
+        this(stage, safeReason, diagnostic, null, null, storageUrl, storagePublicId, cause);
+    }
+
+    public MediaUploadException(
+            Stage stage,
+            String safeReason,
+            String diagnostic,
+            CloudinaryFailureCategory category,
+            Integer providerStatusCode,
+            String storageUrl,
+            String storagePublicId,
+            Throwable cause) {
         super(safeReason, cause);
         this.stage = stage;
         this.safeReason = safeReason;
         this.diagnostic = diagnostic;
-    }
-
-    public MediaUploadException(Stage stage, String safeReason, String diagnostic) {
-        super(safeReason);
-        this.stage = stage;
-        this.safeReason = safeReason;
-        this.diagnostic = diagnostic;
+        this.category = category;
+        this.providerStatusCode = providerStatusCode;
+        this.storageUrl = storageUrl;
+        this.storagePublicId = storagePublicId;
     }
 
     public Stage getStage() {
@@ -48,6 +85,22 @@ public class MediaUploadException extends RuntimeException {
     /** Exception class name + message for internal diagnostic logs. Never exposed in HTTP responses. */
     public String getDiagnostic() {
         return diagnostic;
+    }
+
+    public CloudinaryFailureCategory getCategory() {
+        return category;
+    }
+
+    public Integer getProviderStatusCode() {
+        return providerStatusCode;
+    }
+
+    public String getStorageUrl() {
+        return storageUrl;
+    }
+
+    public String getStoragePublicId() {
+        return storagePublicId;
     }
 
     /** Build a diagnostic string from any throwable without including the stack trace. */

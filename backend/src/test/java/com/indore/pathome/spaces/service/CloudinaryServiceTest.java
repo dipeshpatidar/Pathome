@@ -104,7 +104,7 @@ class CloudinaryServiceTest {
         MockMultipartFile image = new MockMultipartFile(
                 "file", "bedroom.webp", "image/webp", new byte[]{1});
         when(uploader.upload(any(byte[].class), anyMap()))
-                .thenThrow(new IOException("connection interrupted"));
+                .thenThrow(new java.net.SocketTimeoutException("Read timed out"));
 
         MediaUploadException exception = assertThrows(
                 MediaUploadException.class,
@@ -112,8 +112,31 @@ class CloudinaryServiceTest {
 
         assertEquals(MediaUploadException.Stage.CLOUDINARY_UPLOAD, exception.getStage());
         assertTrue(exception.getSafeReason().contains("temporarily unavailable"));
-        assertTrue(exception.getDiagnostic().contains("IOException"));
-        verify(uploader).upload(any(byte[].class), anyMap());
+        assertTrue(exception.getDiagnostic().contains("SocketTimeoutException"));
+        // Verifies bounded Level 1 immediate retry occurred before giving up
+        verify(uploader, atLeast(2)).upload(any(byte[].class), anyMap());
+    }
+
+    @Test
+    void transientFailureSucceedsOnImmediateRetry() throws Exception {
+        MockMultipartFile image = new MockMultipartFile(
+                "file", "bedroom.webp", "image/webp", new byte[]{1});
+
+        Map<String, Object> successMap = Map.of(
+                "secure_url", "https://cdn.example/retry-success.webp",
+                "public_id", "media-20-retry",
+                "resource_type", "image"
+        );
+
+        // First attempt fails with transient timeout, second succeeds
+        when(uploader.upload(any(byte[].class), anyMap()))
+                .thenThrow(new java.net.SocketTimeoutException("Read timed out"))
+                .thenReturn(successMap);
+
+        String url = service.uploadImage(image, "media-20-retry");
+
+        assertEquals("https://cdn.example/retry-success.webp", url);
+        verify(uploader, times(2)).upload(any(byte[].class), anyMap());
     }
 
     @Test

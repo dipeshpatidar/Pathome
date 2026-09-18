@@ -419,10 +419,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     setFailedMediaUploads(failedItems);
 
     if (failedItems.length > 0) {
-      setUploadStatusMsg(`${failedItems.length} ${failedItems.length === 1 ? 'file needs' : 'files need'} another attempt.`);
+      setUploadStatusMsg(`${failedItems.length} of ${pendingItems.length} ${pendingItems.length === 1 ? 'file' : 'files'} could not be uploaded.`);
       showErrorDialog({
         title: 'Property published, but some media needs attention',
-        message: `Listing #${targetPropertyId} is already published. Retry only the failed media; the property will not be created again.`,
+        message: `${failedItems.length} of ${pendingItems.length} media files could not be uploaded for listing #${targetPropertyId}. You can retry only the failed media; successful uploads have been preserved.`,
         details: failureMessages.join(' • '),
         action: {
           label: 'Retry failed media',

@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.repository.MediaUploadFailureRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -45,16 +46,59 @@ public class FailedUploadService {
             String roomTag,
             MediaUploadException.Stage stage,
             String safeReason,
-            String diagnostic
-    ) {}
+            String diagnostic,
+            String storageUrl,
+            String storagePublicId,
+            String stagingObjectKey,
+            java.time.LocalDateTime stagingExpiresAt,
+            String cloudinaryFailureCategory,
+            Integer providerStatusCode
+    ) {
+        /** Backward-compatible constructor for existing callers and tests. */
+        public UploadFailureContext(
+                Long listingId,
+                String uploadRequestId,
+                String mediaType,
+                String originalFilename,
+                Long fileSizeBytes,
+                String roomTag,
+                MediaUploadException.Stage stage,
+                String safeReason,
+                String diagnostic
+        ) {
+            this(listingId, uploadRequestId, mediaType, originalFilename, fileSizeBytes,
+                    roomTag, stage, safeReason, diagnostic, null, null, null, null, null, null);
+        }
+    }
 
     private final MediaUploadFailureRepository repository;
+    private final MediaStagingService mediaStagingService;
+
+    private static final int MAX_CACHE_ENTRIES = 5000;
 
     /** uploadRequestId → failure primary key (L1 cache, cleared on resolution). */
     private final ConcurrentHashMap<String, Long> cache = new ConcurrentHashMap<>();
 
-    public FailedUploadService(MediaUploadFailureRepository repository) {
+    @Autowired
+    public FailedUploadService(MediaUploadFailureRepository repository, MediaStagingService mediaStagingService) {
         this.repository = Objects.requireNonNull(repository);
+        this.mediaStagingService = mediaStagingService;
+    }
+
+    public FailedUploadService(MediaUploadFailureRepository repository) {
+        this(repository, null);
+    }
+
+    public MediaStagingService getMediaStagingService() {
+        return mediaStagingService;
+    }
+
+    private void putInCache(String uploadRequestId, Long failureId) {
+        if (uploadRequestId == null || failureId == null) return;
+        if (cache.size() >= MAX_CACHE_ENTRIES) {
+            cache.clear();
+        }
+        cache.put(uploadRequestId, failureId);
     }
 
     /**
@@ -70,12 +114,12 @@ public class FailedUploadService {
             if (ctx.uploadRequestId() != null) {
                 Long cachedId = cache.get(ctx.uploadRequestId());
                 if (cachedId != null) {
-                    return incrementRetryAndReset(cachedId, ctx.safeReason(), ctx.diagnostic());
+                    return incrementRetryAndReset(cachedId, ctx);
                 }
                 Optional<MediaUploadFailure> existing = repository.findByUploadRequestId(ctx.uploadRequestId());
                 if (existing.isPresent()) {
-                    cache.put(ctx.uploadRequestId(), existing.get().getId());
-                    return incrementRetryAndReset(existing.get().getId(), ctx.safeReason(), ctx.diagnostic());
+                    putInCache(ctx.uploadRequestId(), existing.get().getId());
+                    return incrementRetryAndReset(existing.get().getId(), ctx);
                 }
             }
 
@@ -89,11 +133,17 @@ public class FailedUploadService {
             failure.setFailureStage(ctx.stage() != null ? ctx.stage().name() : "CLOUDINARY_UPLOAD");
             failure.setFailureReason(ctx.safeReason());
             failure.setInternalDiagnostic(ctx.diagnostic());
+            failure.setStorageUrl(ctx.storageUrl());
+            failure.setStoragePublicId(ctx.storagePublicId());
+            failure.setStagingObjectKey(ctx.stagingObjectKey());
+            failure.setStagingExpiresAt(ctx.stagingExpiresAt());
+            failure.setCloudinaryFailureCategory(ctx.cloudinaryFailureCategory());
+            failure.setProviderStatusCode(ctx.providerStatusCode());
             failure.setStatus("FAILED");
             MediaUploadFailure saved = repository.saveAndFlush(failure);
 
             if (ctx.uploadRequestId() != null) {
-                cache.put(ctx.uploadRequestId(), saved.getId());
+                putInCache(ctx.uploadRequestId(), saved.getId());
             }
             return saved;
         } catch (Exception e) {
@@ -103,27 +153,21 @@ public class FailedUploadService {
     }
 
     /**
-     * Sets status = RETRYING before a retry attempt.
-     * Concurrent callers that also try to retry see RETRYING and should abort.
+     * Sets status = RETRYING before a retry attempt using an atomic database update.
+     * Concurrent callers that also try to retry see 0 rows updated and abort.
      *
      * @return true if the transition succeeded (caller should proceed with upload),
-     *         false if the record is already RETRYING or RESOLVED.
+     *         false if the record is already RETRYING, RESOLVED, or DISMISSED.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markRetrying(Long failureId) {
-        Optional<MediaUploadFailure> opt = repository.findById(failureId);
-        if (opt.isEmpty()) return false;
-        MediaUploadFailure failure = opt.get();
-        if ("RETRYING".equals(failure.getStatus()) || "RESOLVED".equals(failure.getStatus())) {
-            return false;
-        }
-        failure.setStatus("RETRYING");
-        repository.saveAndFlush(failure);
-        return true;
+        if (failureId == null) return false;
+        return repository.markRetryingIfFailed(failureId) > 0;
     }
 
     /**
      * Records a successful resolution after a retry or a re-upload.
+     * Proactively cleans up any staged media binary.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordResolution(Long failureId, String resolvedUrl) {
@@ -134,6 +178,7 @@ public class FailedUploadService {
             if (failure.getUploadRequestId() != null) {
                 cache.remove(failure.getUploadRequestId());
             }
+            cleanupStagedMedia(failure.getStagingObjectKey());
         });
     }
 
@@ -149,15 +194,18 @@ public class FailedUploadService {
 
     /**
      * Admin dismiss — marks record as DISMISSED so it no longer appears in the default view.
+     * Proactively cleans up any staged media binary.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void dismiss(Long failureId) {
         repository.findById(failureId).ifPresent(failure -> {
+            if ("RESOLVED".equals(failure.getStatus())) return; // Do not overwrite terminal RESOLVED status
             failure.setStatus("DISMISSED");
             repository.saveAndFlush(failure);
             if (failure.getUploadRequestId() != null) {
                 cache.remove(failure.getUploadRequestId());
             }
+            cleanupStagedMedia(failure.getStagingObjectKey());
         });
     }
 
@@ -167,7 +215,33 @@ public class FailedUploadService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordRetryFailure(Long failureId, String newReason, String newDiagnostic) {
         repository.findById(failureId).ifPresent(failure -> {
+            if ("RESOLVED".equals(failure.getStatus())) return; // Do not overwrite terminal RESOLVED status
             failure.setStatus("FAILED");
+            failure.setRetryCount(failure.getRetryCount() + 1);
+            failure.setFailureReason(newReason);
+            failure.setInternalDiagnostic(newDiagnostic);
+            repository.saveAndFlush(failure);
+        });
+    }
+
+    /**
+     * Transitions a failure record to DB_PERSIST stage after a successful storage upload
+     * where subsequent database persistence failed. Preserves authoritative storage URL
+     * and public ID so the next retry can reconcile the database without re-uploading to Cloudinary.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void transitionToDbPersistFailure(
+            Long failureId,
+            String storageUrl,
+            String storagePublicId,
+            String newReason,
+            String newDiagnostic) {
+        repository.findById(failureId).ifPresent(failure -> {
+            if ("RESOLVED".equals(failure.getStatus())) return; // Do not overwrite terminal RESOLVED status
+            failure.setStatus("FAILED");
+            failure.setFailureStage("DB_PERSIST");
+            failure.setStorageUrl(storageUrl);
+            failure.setStoragePublicId(storagePublicId);
             failure.setRetryCount(failure.getRetryCount() + 1);
             failure.setFailureReason(newReason);
             failure.setInternalDiagnostic(newDiagnostic);
@@ -202,14 +276,35 @@ public class FailedUploadService {
         return repository.findById(failureId);
     }
 
+    /** Proactively cleans up staged media object without failing if deletion fails. */
+    public void cleanupStagedMedia(String stagingObjectKey) {
+        if (stagingObjectKey == null || stagingObjectKey.isBlank() || mediaStagingService == null) {
+            return;
+        }
+        try {
+            mediaStagingService.delete(stagingObjectKey);
+        } catch (Exception e) {
+            log.warn("Failed to delete staged object [{}] (non-fatal): {}", stagingObjectKey, e.getMessage());
+        }
+    }
+
     // ---- Private helpers ----
 
-    private MediaUploadFailure incrementRetryAndReset(Long id, String newReason, String newDiagnostic) {
+    private MediaUploadFailure incrementRetryAndReset(Long id, UploadFailureContext ctx) {
         MediaUploadFailure failure = repository.findById(id).orElseThrow();
         failure.setStatus("FAILED");
         failure.setRetryCount(failure.getRetryCount() + 1);
-        failure.setFailureReason(newReason);
-        failure.setInternalDiagnostic(newDiagnostic);
+        failure.setFailureReason(ctx.safeReason());
+        failure.setInternalDiagnostic(ctx.diagnostic());
+        if (ctx.storageUrl() != null) failure.setStorageUrl(ctx.storageUrl());
+        if (ctx.storagePublicId() != null) failure.setStoragePublicId(ctx.storagePublicId());
+        if (ctx.stagingObjectKey() != null) {
+            failure.setStagingObjectKey(ctx.stagingObjectKey());
+            failure.setStagingExpiresAt(ctx.stagingExpiresAt());
+        }
+        if (ctx.cloudinaryFailureCategory() != null) failure.setCloudinaryFailureCategory(ctx.cloudinaryFailureCategory());
+        if (ctx.providerStatusCode() != null) failure.setProviderStatusCode(ctx.providerStatusCode());
         return repository.saveAndFlush(failure);
     }
 }
+

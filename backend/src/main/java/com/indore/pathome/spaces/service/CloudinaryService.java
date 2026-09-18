@@ -27,12 +27,29 @@ public class CloudinaryService {
         this.cloudinary = Objects.requireNonNull(cloudinary, "Cloudinary must not be null");
     }
 
+    /**
+     * Authoritative metadata returned by Cloudinary upon successful upload.
+     */
+    public record CloudinaryUploadResult(
+            String secureUrl,
+            String publicId,
+            String resourceType
+    ) {}
+
+    private static final int MAX_IMMEDIATE_ATTEMPTS = 2;
+    private static final long TRANSIENT_BACKOFF_MS = 300L;
+    private static final long RATE_LIMIT_BACKOFF_MS = 600L;
+
     /** Uploads photo file to Cloudinary under pathome/properties/images */
     public String uploadImage(MultipartFile file) {
         return uploadImage(file, null);
     }
 
     public String uploadImage(MultipartFile file, String uploadRequestId) {
+        return uploadImageResult(file, uploadRequestId).secureUrl();
+    }
+
+    public CloudinaryUploadResult uploadImageResult(MultipartFile file, String uploadRequestId) {
         validateFile(file, MAX_IMAGE_BYTES, "Property image", "10 MB", "image/");
         Map<String, Object> options = new HashMap<>(ObjectUtils.asMap(
                 "folder", "pathome/properties/images",
@@ -43,7 +60,7 @@ public class CloudinaryService {
                 "unique_filename", uploadRequestId == null
         ));
         if (uploadRequestId != null) options.put("public_id", uploadRequestId);
-        return upload(file, options, false, "Property image");
+        return uploadWithImmediateRetry(file, options, false, "Property image");
     }
 
     /** Uploads video walkthrough MP4 file to Cloudinary under pathome/properties/videos */
@@ -52,6 +69,10 @@ public class CloudinaryService {
     }
 
     public String uploadVideo(MultipartFile file, String uploadRequestId) {
+        return uploadVideoResult(file, uploadRequestId).secureUrl();
+    }
+
+    public CloudinaryUploadResult uploadVideoResult(MultipartFile file, String uploadRequestId) {
         validateFile(file, MAX_VIDEO_BYTES, "Property video", "100 MB", "video/");
         Map<String, Object> options = new HashMap<>(ObjectUtils.asMap(
                 "folder", "pathome/properties/videos",
@@ -61,46 +82,132 @@ public class CloudinaryService {
                 "unique_filename", uploadRequestId == null
         ));
         if (uploadRequestId != null) options.put("public_id", uploadRequestId);
-        return upload(file, options, true, "Property video");
+        return uploadWithImmediateRetry(file, options, true, "Property video");
     }
 
-    private String upload(
+    /**
+     * Uploads media stream directly from staging storage to Cloudinary without loading into JVM heap.
+     */
+    public CloudinaryUploadResult uploadStreamResult(
+            InputStream inputStream,
+            boolean isVideo,
+            String uploadRequestId) {
+
+        Objects.requireNonNull(inputStream, "inputStream must not be null");
+        String folder = isVideo ? "pathome/properties/videos" : "pathome/properties/images";
+        String resourceType = isVideo ? "video" : "image";
+        String label = isVideo ? "Property video" : "Property image";
+
+        Map<String, Object> options = new HashMap<>(ObjectUtils.asMap(
+                "folder", folder,
+                "resource_type", resourceType,
+                "quality", "auto",
+                "overwrite", true,
+                "unique_filename", uploadRequestId == null
+        ));
+        if (!isVideo) {
+            options.put("format", "webp");
+        }
+        if (uploadRequestId != null) options.put("public_id", uploadRequestId);
+
+        try {
+            Map<?, ?> uploadResult = isVideo
+                    ? cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES)
+                    : cloudinary.uploader().upload(inputStream, options);
+
+            return extractResult(uploadResult, label);
+        } catch (Exception e) {
+            CloudinaryErrorClassifier.ClassificationResult cr = CloudinaryErrorClassifier.classify(e);
+            logger.warn("Staged stream upload failed [{}]: {}", cr.category(), cr.sanitizedDiagnostic());
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                    cr.safeReason(),
+                    cr.sanitizedDiagnostic(),
+                    cr.category(),
+                    cr.statusCode(),
+                    e
+            );
+        }
+    }
+
+    private CloudinaryUploadResult uploadWithImmediateRetry(
             MultipartFile file,
             Map<String, Object> options,
             boolean chunked,
             String mediaLabel) {
-        try {
-            Map<?, ?> uploadResult;
-            if (chunked) {
-                try (InputStream inputStream = file.getInputStream()) {
-                    uploadResult = cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES);
-                }
-            } else {
-                uploadResult = cloudinary.uploader().upload(file.getBytes(), options);
-            }
 
-            String secureUrl = Objects.toString(uploadResult.get("secure_url"), "");
-            if (secureUrl.isBlank()) {
-                throw new MediaUploadException(
-                        MediaUploadException.Stage.CLOUDINARY_UPLOAD,
-                        "The storage service did not return a valid URL. Please try again.",
-                        "Cloudinary response missing secure_url"
-                );
+        int attempt = 0;
+        Exception lastException = null;
+
+        while (attempt < MAX_IMMEDIATE_ATTEMPTS) {
+            attempt++;
+            try {
+                Map<?, ?> uploadResult;
+                if (chunked) {
+                    try (InputStream inputStream = file.getInputStream()) {
+                        uploadResult = cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES);
+                    }
+                } else {
+                    uploadResult = cloudinary.uploader().upload(file.getBytes(), options);
+                }
+                return extractResult(uploadResult, mediaLabel);
+            } catch (MediaUploadException mue) {
+                throw mue;
+            } catch (Exception exception) {
+                lastException = exception;
+                CloudinaryErrorClassifier.ClassificationResult cr = CloudinaryErrorClassifier.classify(exception);
+
+                // Check Level 1 retry eligibility
+                if (attempt < MAX_IMMEDIATE_ATTEMPTS && cr.shouldRetryImmediately()) {
+                    long backoff = (cr.category() == com.indore.pathome.spaces.exception.CloudinaryFailureCategory.RATE_LIMITED)
+                            ? RATE_LIMIT_BACKOFF_MS
+                            : TRANSIENT_BACKOFF_MS;
+                    logger.info("Immediate retry attempt {} for {} after {} ms [category={}]",
+                            attempt, mediaLabel, backoff, cr.category());
+                    try {
+                        Thread.sleep(backoff);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+
+                // If not retryable or max attempts exhausted, break and throw
+                break;
             }
-            logger.info("Successfully uploaded {} to Cloudinary", mediaLabel.toLowerCase());
-            return secureUrl;
-        } catch (MediaUploadException mue) {
-            logger.warn("{} upload failed [{}]: {}", mediaLabel, mue.getStage(), mue.getDiagnostic());
-            throw mue;
-        } catch (Exception exception) {
-            logger.warn("{} upload failed: {}", mediaLabel, exception.getMessage());
+        }
+
+        // Failure handling after immediate retry exhaustion or non-retryable error
+        CloudinaryErrorClassifier.ClassificationResult cr = CloudinaryErrorClassifier.classify(lastException);
+        logger.warn("{} upload failed [category={}]: {}", mediaLabel, cr.category(), cr.sanitizedDiagnostic());
+        throw new MediaUploadException(
+                MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                cr.safeReason(),
+                cr.sanitizedDiagnostic(),
+                cr.category(),
+                cr.statusCode(),
+                lastException
+        );
+    }
+
+    private CloudinaryUploadResult extractResult(Map<?, ?> uploadResult, String mediaLabel) {
+        String secureUrl = Objects.toString(uploadResult.get("secure_url"), "");
+        String publicId = Objects.toString(uploadResult.get("public_id"), "");
+        String resourceType = Objects.toString(uploadResult.get("resource_type"), "");
+
+        if (secureUrl.isBlank()) {
             throw new MediaUploadException(
                     MediaUploadException.Stage.CLOUDINARY_UPLOAD,
-                    "Media upload could not be completed because the storage service is temporarily unavailable. Please try again.",
-                    MediaUploadException.diagnosticFrom(exception),
-                    exception
+                    "The storage service did not return a valid URL. Please try again.",
+                    "Cloudinary response missing secure_url",
+                    com.indore.pathome.spaces.exception.CloudinaryFailureCategory.UNKNOWN,
+                    null,
+                    null
             );
         }
+        logger.info("Successfully uploaded {} to Cloudinary (publicId={})", mediaLabel.toLowerCase(), publicId);
+        return new CloudinaryUploadResult(secureUrl, publicId, resourceType);
     }
 
     private void validateFile(

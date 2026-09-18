@@ -53,11 +53,11 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
   const [failures, setFailures] = useState<FailedUpload[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionInProgress, setActionInProgress] = useState<Record<number, 'retrying' | 'dismissing'>>({});
+  const [actionInProgress, setActionInProgress] = useState<Record<number, 'retrying' | 'replacing' | 'dismissing'>>({});
   const [actionError, setActionError] = useState<Record<number, string>>({});
   const [actionSuccess, setActionSuccess] = useState<Record<number, string>>({});
-  const retryFileInputRef = useRef<HTMLInputElement>(null);
-  const [pendingRetryId, setPendingRetryId] = useState<number | null>(null);
+  const replaceFileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingReplaceId, setPendingReplaceId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -91,24 +91,39 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
     }
   };
 
-  const handleRetry = async (id: number, file?: File) => {
+  /** One-click automatic recovery without opening a file picker. */
+  const handleAutoRetry = async (id: number) => {
     setActionInProgress(prev => ({ ...prev, [id]: 'retrying' }));
     setActionError(prev => ({ ...prev, [id]: '' }));
     try {
-      await failedUploadService.retry(id, file);
-      setActionSuccess(prev => ({ ...prev, [id]: 'Uploaded successfully' }));
+      await failedUploadService.retry(id);
+      setActionSuccess(prev => ({ ...prev, [id]: 'Recovered successfully' }));
       setTimeout(() => {
         setFailures(prev => prev.filter(f => f.id !== id));
         onCountChange?.();
       }, 1000);
     } catch (err) {
-      const msg = getErrorMessage(err, 'Unable to retry this upload.');
+      const msg = getErrorMessage(err, 'Unable to automatically recover this upload.');
       setActionError(prev => ({ ...prev, [id]: msg }));
-      // If file was needed, prompt the user to select one
-      if (msg.toLowerCase().includes('replacement file') || msg.toLowerCase().includes('select')) {
-        setPendingRetryId(id);
-        retryFileInputRef.current?.click();
-      }
+    } finally {
+      setActionInProgress(prev => { const next = { ...prev }; delete next[id]; return next; });
+    }
+  };
+
+  /** Manual replacement using an admin-selected file. */
+  const handleReplaceFile = async (id: number, file: File) => {
+    setActionInProgress(prev => ({ ...prev, [id]: 'replacing' }));
+    setActionError(prev => ({ ...prev, [id]: '' }));
+    try {
+      await failedUploadService.retry(id, file);
+      setActionSuccess(prev => ({ ...prev, [id]: 'File replaced successfully' }));
+      setTimeout(() => {
+        setFailures(prev => prev.filter(f => f.id !== id));
+        onCountChange?.();
+      }, 1000);
+    } catch (err) {
+      const msg = getErrorMessage(err, 'Unable to replace file for this upload.');
+      setActionError(prev => ({ ...prev, [id]: msg }));
     } finally {
       setActionInProgress(prev => { const next = { ...prev }; delete next[id]; return next; });
     }
@@ -116,18 +131,18 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
 
   const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && pendingRetryId !== null) {
-      handleRetry(pendingRetryId, file);
+    if (file && pendingReplaceId !== null) {
+      handleReplaceFile(pendingReplaceId, file);
     }
     e.target.value = '';
-    setPendingRetryId(null);
+    setPendingReplaceId(null);
   };
 
   return (
     <div className="space-y-6">
-      {/* Hidden file input for replacement file selection */}
+      {/* Hidden file input for manual replacement file selection */}
       <input
-        ref={retryFileInputRef}
+        ref={replaceFileInputRef}
         type="file"
         accept="image/*,video/*"
         className="hidden"
@@ -241,6 +256,21 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
                       Listing #{failure.listingId}
                     </span>
                   )}
+                  {failure.recoveryStrategy === 'DATABASE_RECONCILIATION' && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg">
+                      Reconciliation Ready
+                    </span>
+                  )}
+                  {failure.recoveryStrategy === 'STAGED_MEDIA_RETRY' && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-lg">
+                      Original File Preserved
+                    </span>
+                  )}
+                  {failure.recoveryStrategy === 'REPLACE_FILE_REQUIRED' && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg">
+                      Replacement Required
+                    </span>
+                  )}
                   <span className="inline-flex items-center gap-1 text-[10px] text-slate-400">
                     <Clock className="w-3 h-3" />
                     {formatRelativeTime(failure.createdAt)}
@@ -276,29 +306,45 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
 
               {/* Action Footer */}
               <div className="px-5 pb-5 flex items-center gap-2 flex-wrap">
-                {/* Retry */}
+                {/* One-Click Automatic Retry (NO file picker) */}
+                {failure.autoRetryAvailable ? (
+                  <button
+                    id={`retry-failed-upload-${failure.id}`}
+                    onClick={() => handleAutoRetry(failure.id)}
+                    disabled={isActing}
+                    title="Automatically recover original upload without choosing a file"
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl hover:from-emerald-700 hover:to-teal-700 active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+                  >
+                    {actionInProgress[failure.id] === 'retrying'
+                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      : <UploadCloud className="w-3.5 h-3.5" />}
+                    {actionInProgress[failure.id] === 'retrying' ? 'Retrying…' : 'Retry'}
+                  </button>
+                ) : null}
+
+                {/* Explicit Manual Replace File (Opens OS file picker) */}
                 <button
-                  id={`retry-failed-upload-${failure.id}`}
-                  onClick={() => handleRetry(failure.id)}
+                  id={`replace-file-${failure.id}`}
+                  onClick={() => { setPendingReplaceId(failure.id); replaceFileInputRef.current?.click(); }}
                   disabled={isActing}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl hover:from-emerald-700 hover:to-teal-700 active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+                  title="Choose a new replacement file for this upload"
+                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl active:scale-95 transition-all disabled:opacity-50 cursor-pointer ${
+                    failure.autoRetryAvailable
+                      ? 'text-slate-700 bg-white border border-slate-200 hover:bg-slate-50'
+                      : 'text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 shadow-sm'
+                  }`}
                 >
-                  {actionInProgress[failure.id] === 'retrying'
+                  {actionInProgress[failure.id] === 'replacing'
                     ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    : <UploadCloud className="w-3.5 h-3.5" />}
-                  {actionInProgress[failure.id] === 'retrying' ? 'Retrying…' : 'Retry upload'}
+                    : <RotateCcw className="w-3.5 h-3.5" />}
+                  {actionInProgress[failure.id] === 'replacing' ? 'Replacing…' : 'Replace file'}
                 </button>
 
-                {/* Retry with replacement file */}
-                <button
-                  id={`retry-with-file-${failure.id}`}
-                  onClick={() => { setPendingRetryId(failure.id); retryFileInputRef.current?.click(); }}
-                  disabled={isActing}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  Replace file
-                </button>
+                {!failure.autoRetryAvailable && (
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    Original file expired or invalid
+                  </span>
+                )}
 
                 {/* Open property */}
                 {failure.listingId && (

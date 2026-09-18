@@ -626,3 +626,150 @@ Commit status:
 
 - **Commit Status**: Changes ready to commit.
 
+---
+
+## 2026-09-18 — 15:30 IST
+
+### Production Review & Verification of Failed Upload Management Pipeline
+
+- **Why Work Was Requested**:
+  - Comprehensive end-to-end production review and verification of the newly committed Failed Upload Management feature across backend and frontend.
+
+- **Problems Discovered & Root Causes**:
+  1. **Admin Security Gap**: `/api/v1/admin/failed-uploads` endpoints were not explicitly restricted to `ROLE_ADMIN` in `SecurityConfig.java` or guarded with `@PreAuthorize("hasRole('ADMIN')")`, meaning non-admin authenticated users (e.g. tenants) could access admin failure lists and retry endpoints.
+  2. **Internal Diagnostic Data Leakage**: `internalDiagnostic` field on `MediaUploadFailure` was serialized into JSON responses when returning failure lists/records to the frontend, exposing exception class names and messages.
+  3. **Storage vs Database Consistency (Stage DB_PERSIST)**: In `PropertyController.uploadTaggedMediaAsset`, database persistence (`saveMediaAsset` + `updateListingGallery`) was not protected by a try-catch translating database errors into `MediaUploadException(Stage.DB_PERSIST)`. Database failures after successful Cloudinary upload were never recorded in `media_upload_failures`, leading to untracked orphaned media.
+  4. **Concurrent Retry Race Condition & Counter Inconsistency**: `markRetrying` used non-atomic read-then-write logic, allowing two concurrent requests to both enter RETRYING state. Furthermore, calling `retry` without a replacement file marked the record as RETRYING and falsely incremented `retry_count`.
+  5. **Unbounded In-Memory Cache**: `ConcurrentHashMap` in `FailedUploadService` had no entry limit or eviction mechanism, presenting an unbounded memory growth risk under high volume.
+  6. **Lifecycle Overwrite Risk**: Calling `dismiss` or failed retry could potentially overwrite a terminal `RESOLVED` state.
+  7. **Partial Upload UI Copy**: UI message displayed generic wording rather than exact "X of Y files" count when partial media failed.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java`: Added `.requestMatchers("/api/v1/admin/**").hasRole("ADMIN")`.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/FailedUploadsController.java`: Added `@PreAuthorize("hasRole('ADMIN')")`; validated file presence prior to `markRetrying` to prevent false retry count increments.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/MediaUploadFailure.java`: Added `@JsonIgnore` to `internalDiagnostic`.
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/MediaUploadFailureRepository.java`: Added atomic `@Modifying @Query` method `markRetryingIfFailed(id)`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java`: Bounded cache with `MAX_CACHE_ENTRIES = 5000`; used atomic `markRetryingIfFailed`; added lifecycle protections preserving `RESOLVED` status in `dismiss` and `recordRetryFailure`.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`: Wrapped media database persistence in try-catch to record `Stage.DB_PERSIST` failures in `uploadTaggedMediaAsset`.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`: Formatted explicit partial failure message ("X of Y files could not be uploaded...").
+  - `backend/src/test/java/com/indore/pathome/spaces/service/FailedUploadServiceTest.java`: Updated tests to verify atomic `markRetrying`.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/FailedUploadsControllerTest.java`: Added tests for security annotation, replacement file retry flow, 404 listing handling, and Bad Gateway error mapping.
+
+- **Relevant Verification**:
+  - Backend test suite: `mvn test` executed 113 tests with 0 failures, 0 errors, 0 skipped.
+  - Frontend build: `npm run build` completed cleanly with 0 TypeScript errors and Vite bundle generation in 1.86s.
+
+- **Commit Status**: Changes in working tree for user review prior to commit/push.
+
+---
+
+## 2026-09-18 — 17:20 IST
+
+### Smart / Stage-Aware Failed Media Recovery Architecture Implementation
+
+- **Why Work Was Requested**:
+  - Implement the approved 3-level stage-aware recovery architecture allowing one-click automatic Retry without file picker for recoverable images and videos, while keeping Replace File available for manual replacement.
+  - Implement centralized Cloudinary error classification, Level 1 bounded immediate in-flight retry for transient errors, Level 2 durable private temporary object storage staging for original media binaries, and database reconciliation for `DB_PERSIST` failures without Cloudinary re-upload.
+
+- **Exact Files & Areas Changed**:
+  - `backend/pom.xml`: Added `software.amazon.awssdk:s3:2.25.16` for S3-compatible object storage staging.
+  - `backend/src/main/resources/db/migration/V6__smart_retry_support.sql`: Created Flyway migration adding `storage_url`, `storage_public_id`, `staging_object_key`, `staging_expires_at`, `cloudinary_failure_category`, and `provider_status_code` columns with indexes on `staging_object_key` and `staging_expires_at`.
+  - `backend/src/main/java/com/indore/pathome/spaces/exception/CloudinaryFailureCategory.java`: Enum defining `TRANSIENT`, `RATE_LIMITED`, `AUTHENTICATION_OR_CONFIGURATION`, `INVALID_REQUEST`, `MEDIA_REJECTED`, `ACCOUNT_OR_QUOTA`, and `UNKNOWN`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryErrorClassifier.java`: Centralized error classifier using strict priority order (typed exceptions -> status codes -> conservative messages -> UNKNOWN), credential scrubbing regexes, and safe user operational messages.
+  - `backend/src/main/java/com/indore/pathome/spaces/exception/MediaUploadException.java`: Enhanced with category, status code, and authoritative storage metadata.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/MediaUploadFailure.java`: Mapped V6 columns, marked `stagingObjectKey` with `@JsonIgnore` to prevent private key exposure, and added derived `isAutoRetryAvailable()` and `getRecoveryStrategy()`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/MediaStagingService.java`: Pluggable interface for private object storage (`stage`, `retrieve`, `exists`, `delete`, `isConfigured`).
+  - `backend/src/main/java/com/indore/pathome/spaces/service/S3MediaStagingService.java`: S3-compatible staging service supporting AWS S3, Cloudflare R2, and MinIO with streaming.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FileSystemMediaStagingService.java`: Secure local filesystem staging fallback for development and test environments without cloud credentials.
+  - `backend/src/main/java/com/indore/pathome/spaces/config/MediaStagingConfig.java`: Spring `@Configuration` providing `MediaStagingService` bean.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryService.java`: Implemented Level 1 bounded immediate retry for `TRANSIENT` and `RATE_LIMITED`, added `CloudinaryUploadResult`, and added stream-based upload methods.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java`: Updated `UploadFailureContext` with staging and storage metadata, updated `recordFailure` and `incrementRetryAndReset`, and added proactive staged media cleanup on resolution and dismissal.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`: Staged original media to `MediaStagingService` on staging-eligible Cloudinary failure; captured authoritative `storage_url` and `storage_public_id` on Cloudinary success for `DB_PERSIST` failures.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/FailedUploadsController.java`: Implemented one-click automatic retry without file picker (`DATABASE_RECONCILIATION` and `STAGED_MEDIA_RETRY`), separate manual Replace File action, and expired staging handling.
+  - `frontend-web/src/services/failedUploadService.ts`: Updated `FailedUpload` interface with `autoRetryAvailable`, `recoveryStrategy`, and optional category fields.
+  - `frontend-web/src/components/FailedUploadsPanel.tsx`: Separated one-click **[ Retry ]** (automatic, no file picker) and **[ Replace file ]** (opens file picker), displaying contextual recovery badges.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryErrorClassifierTest.java`: Added tests for all failure categories, immediate retry flags, and credential scrubbing.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/MediaStagingServiceTest.java`: Added tests for staging, existence, stream retrieval, deletion, and path traversal prevention.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryServiceTest.java`: Verified Level 1 immediate retry behavior and retry success.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/FailedUploadServiceTest.java`: Added tests for proactive staged media deletion on resolution/dismissal and error resilience.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/FailedUploadsControllerTest.java`: Added tests for one-click automatic retry (`DATABASE_RECONCILIATION`, `STAGED_MEDIA_RETRY`), expired staging handling, and idempotent DB reconciliation.
+
+- **Relevant Verification**:
+  - Full backend test suite: `mvn test` passed all 134 tests with 0 failures, 0 errors, 0 skipped.
+  - Backend compile: `mvn clean compile` completed successfully in 2.29s.
+  - Frontend build: `npm run build` completed cleanly in 1.99s with 0 TypeScript errors.
+
+- **Commit Status**: Changes in working tree for review (NOT committed, NOT pushed).
+
+---
+
+## 2026-09-18 — 18:27 IST
+
+### Hardened Smart Retry Implementation: Narrowed Transient IO, Production Staging Guard, Staged Retry DB Failure Recovery, and Admin + Sub Admin Authorization
+
+- **Why**: Follow-up targeted fixes addressing findings from the strict compliance audit and confirmed business requirements:
+  1. Narrowed transient IO classification so local filesystem/programming errors (`FileNotFoundException`, `FileSystemException`, generic non-network `IOException`) are not incorrectly classified as `TRANSIENT` and do not trigger pointless immediate retries; instead they conservatively fall back to `UNKNOWN` (staging-eligible, durable admin retry preserved).
+  2. Prevented silent fallback to ephemeral `/tmp` filesystem staging in production profiles (`prod`, `production`, or `pathome.staging.require-durable=true`), failing fast at startup with an informative configuration error.
+  3. Corrected staged retry recovery state: when Cloudinary upload succeeds during staged retry but subsequent database persistence fails, the failure record transitions into `DB_PERSIST` retaining authoritative `storage_url` and `storage_public_id`; the next Admin Retry triggers `DATABASE_RECONCILIATION` with zero Cloudinary re-upload.
+  4. Implemented full `ADMIN` and `SUB_ADMIN` dual authorization at both `SecurityConfig` route matcher boundaries and `FailedUploadsController` method-level `@PreAuthorize("hasAnyRole('ADMIN', 'SUB_ADMIN')")`, while strictly protecting unrelated `/api/v1/admin/**` routes as `ADMIN`-only.
+  5. Added `ROLE_SUB_ADMIN` to `com.indore.pathome.spaces.entity.Role` and normalized authority prefixes in `JwtAuthenticationFilter`.
+  6. Resolved AWS SDK v2 classpath conflict with Cloudinary Apache HttpClient 4.4 by adopting `software.amazon.awssdk:url-connection-client` with zero third-party transport dependencies.
+
+- **Exact Files Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryErrorClassifier.java`: Excluded local filesystem exceptions and narrowed typed transient exceptions to genuine network/transport types.
+  - `backend/src/main/java/com/indore/pathome/spaces/config/MediaStagingConfig.java`: Added production profile check throwing `IllegalStateException` when durable S3-compatible configuration is absent.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java`: Added `transitionToDbPersistFailure(...)` preserving authoritative storage metadata upon DB save failure.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/FailedUploadsController.java`: Updated `@PreAuthorize("hasAnyRole('ADMIN', 'SUB_ADMIN')")`, added `@Autowired` to constructor, and transitioned staged/replace retry DB failures to `DB_PERSIST`.
+  - `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java`: Configured specific matcher ordering for `/api/v1/admin/failed-uploads/**` and `/api/v1/properties/**` allowing `ADMIN` and `SUB_ADMIN`, while `/api/v1/admin/**` remains `ADMIN`-only.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/Role.java`: Added `ROLE_SUB_ADMIN`.
+  - `backend/src/main/java/com/indore/pathome/spaces/security/JwtAuthenticationFilter.java`: Normalized role claim authority with `ROLE_` prefix.
+  - `backend/pom.xml`: Excluded `apache-client` from AWS S3 dependency, added `url-connection-client`, and added `spring-security-test`.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryErrorClassifierTest.java`: Added tests for local `FileNotFoundException`, local non-network `IOException`, and root-cause network exceptions.
+  - `backend/src/test/java/com/indore/pathome/spaces/config/MediaStagingConfigTest.java`: New unit tests for production safety guard and non-production fallback.
+  - `backend/src/test/java/com/indore/pathome/spaces/security/FailedUploadsSecurityTest.java`: New security integration tests verifying `ADMIN` and `SUB_ADMIN` permissions, unauthenticated/unauthorized blocking, and protection of unrelated admin routes.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/FailedUploadsControllerTest.java`: Added test for staged retry Cloudinary success + DB persistence failure transition to `DB_PERSIST` and subsequent non-Cloudinary reconciliation.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryServiceTest.java`: Updated transient failure test to use `SocketTimeoutException`.
+
+- **Verification Results**:
+  - `mvn test`: 154 / 154 tests passed (0 failures, 0 errors, 0 skipped).
+  - `mvn clean compile`: BUILD SUCCESS in 2.34s.
+  - `npm run build`: built in 1.89s with 0 errors.
+
+- **Commit Status**: Kept in working tree for review (NOT committed, NOT pushed).
+
+---
+
+## 2026-09-18 — 19:13 IST
+
+### S3-Compatible Durable Staging Provider Configuration & Live Integration Verification
+
+- **Why**: User requested configuration and live end-to-end verification of the real S3-compatible durable staging bucket for the Smart Failed Upload / Retry architecture, ensuring zero credential leakage and zero regression to existing architecture.
+
+- **Exact Files Changed**:
+  - `backend/src/main/resources/application.yml`: Added `pathome.staging` section mapping `PATHOME_STAGING_S3_*` and `PATHOME_STAGING_REQUIRE_DURABLE` with full fallback support.
+  - `backend/src/main/java/com/indore/pathome/spaces/config/MediaStagingConfig.java`: Updated default region and bound both `pathome.staging.s3.path-style-access` and its alias `pathome.staging.s3.path-style`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/S3MediaStagingService.java`:
+    - Added `normalizeKey` to enforce the strict `staging/` prefix and strip any leading slashes (`/staging/...` -> `staging/...`).
+    - Configured `S3Configuration` with `chunkedEncodingEnabled(false)` and `checksumValidationEnabled(false)` for Backblaze B2 S3 API compatibility.
+    - Added `cleanKey` to defensively strip accidental quotes around credentials.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java`: Added `@Autowired` to the primary two-argument constructor to resolve Spring BeanCreationException.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`: Added `@Autowired` to the primary constructor to eliminate constructor ambiguity and resolve startup failure.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/MediaStagingServiceTest.java`: Added unit tests verifying `S3MediaStagingService` leading-slash normalization for PUT, HEAD, and DELETE operations.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/BackblazeB2LiveIntegrationTest.java`: Standalone live integration smoke test exercising PUT, HEAD/EXISTS, GET, CONTENT VERIFICATION, DELETE, and POST-DELETE HEAD against the real Backblaze B2 bucket under `staging/integration-test/`, with JUnit 5 `assumeTrue(...)` CI safety to gracefully skip when credentials are not configured.
+
+- **Outcome & Verification Results**:
+  - **Live B2 Smoke Test**: All 6 operations passed against real configured durable staging bucket:
+    - PUT: PASS
+    - HEAD / EXISTS: PASS
+    - GET: PASS
+    - CONTENT MATCH: PASS
+    - DELETE: PASS
+    - POST-DELETE HEAD: PASS
+  - **run-app.sh**: Resolved startup constructor failure; both backend (8080) and frontend (5173) boot cleanly and health checks pass.
+  - **Backend Test Suite**: `mvn test` ran 156 tests with 0 failures, 0 errors, 0 skipped.
+  - **Backend Compile**: `mvn clean compile` succeeded (86 classes compiled).
+  - **Frontend Build**: `npm run build` succeeded (0 TypeScript errors).
+  - **Secret Security Audit**: Verified `.env.local` is ignored and untracked. Zero credentials in Git history, diff, logs, or API responses.
+
+- **Commit Status**: Kept in working tree for review (NOT committed, NOT pushed).
+

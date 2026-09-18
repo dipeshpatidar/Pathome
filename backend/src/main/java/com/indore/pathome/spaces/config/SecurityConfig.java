@@ -53,7 +53,9 @@ public class SecurityConfig {
                     "/swagger-ui/**"
                 ).permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/properties/**").permitAll()
-                .requestMatchers("/api/v1/properties/**").hasRole("ADMIN")
+                .requestMatchers("/api/v1/properties/**").hasAnyRole("ADMIN", "SUB_ADMIN")
+                .requestMatchers("/api/v1/admin/failed-uploads/**").hasAnyRole("ADMIN", "SUB_ADMIN")
+                .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
             .exceptionHandling(exception -> exception
