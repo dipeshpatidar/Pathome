@@ -5,8 +5,10 @@ import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
@@ -50,6 +52,7 @@ public class PropertyController {
     private final ListingRepository listingRepository;
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final CloudinaryService cloudinaryService;
+    private final FailedUploadService failedUploadService;
     private final PropertyParserService propertyParserService;
     private final ParserLearningService parserLearningService;
     private final ParserLearningCaptureService parserLearningCaptureService;
@@ -59,6 +62,7 @@ public class PropertyController {
             ListingRepository listingRepository,
             PropertyMediaAssetRepository mediaAssetRepository,
             CloudinaryService cloudinaryService,
+            FailedUploadService failedUploadService,
             PropertyParserService propertyParserService,
             ParserLearningService parserLearningService,
             ParserLearningCaptureService parserLearningCaptureService,
@@ -66,6 +70,7 @@ public class PropertyController {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
+        this.failedUploadService = Objects.requireNonNull(failedUploadService, "FailedUploadService must not be null");
         this.propertyParserService = Objects.requireNonNull(propertyParserService, "PropertyParserService must not be null");
         this.parserLearningService = Objects.requireNonNull(parserLearningService, "ParserLearningService must not be null");
         this.parserLearningCaptureService = Objects.requireNonNull(
@@ -109,6 +114,11 @@ public class PropertyController {
 
     /**
      * POST /api/v1/properties/{id}/tagged-media - Upload single photo/video with metadata.
+     *
+     * <p>On success: if a prior failure record exists for the same {@code uploadRequestId},
+     * it is automatically resolved.
+     * On failure: the failure is persisted in {@code media_upload_failures} before propagating,
+     * so the admin panel can display and retry it even after a page reload.</p>
      */
     @PostMapping("/{id}/tagged-media")
     public ResponseEntity<?> uploadTaggedMediaAsset(
@@ -135,22 +145,46 @@ public class PropertyController {
         MediaType mediaType = parseMediaType(mediaTypeStr);
         String normalizedUploadRequestId = normalizeUploadRequestId(uploadRequestId);
 
+        // Idempotency: return existing asset if already uploaded successfully
         if (normalizedUploadRequestId != null) {
             Optional<PropertyMediaAsset> existingAsset = mediaAssetRepository
                     .findByListingIdAndUploadRequestId(id, normalizedUploadRequestId);
             if (existingAsset.isPresent()) {
+                // Also resolve any lingering failure record for this idempotency key
+                failedUploadService.findFailureIdByUploadRequestId(normalizedUploadRequestId)
+                        .ifPresent(fid -> failedUploadService.recordResolution(fid, existingAsset.get().getMediaUrl()));
                 return ResponseEntity.ok(existingAsset.get());
             }
         }
 
-        String cdnUrl = uploadMediaToCloudinary(file, mediaType, normalizedUploadRequestId);
-        PropertyMediaAsset savedAsset = saveMediaAsset(
-                id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
-                sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
+        try {
+            String cdnUrl = uploadMediaToCloudinary(file, mediaType, normalizedUploadRequestId);
+            PropertyMediaAsset savedAsset = saveMediaAsset(
+                    id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
+                    sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
+            updateListingGallery(listing, cdnUrl);
 
-        updateListingGallery(listing, cdnUrl);
+            // Resolve any prior failure record for this idempotency key
+            if (normalizedUploadRequestId != null) {
+                failedUploadService.findFailureIdByUploadRequestId(normalizedUploadRequestId)
+                        .ifPresent(fid -> failedUploadService.recordResolution(fid, cdnUrl));
+            }
+            return ResponseEntity.status(HttpStatus.CREATED).body(savedAsset);
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(savedAsset);
+        } catch (MediaUploadException mue) {
+            failedUploadService.recordFailure(new FailedUploadService.UploadFailureContext(
+                    id,
+                    normalizedUploadRequestId,
+                    mediaType.name(),
+                    file.getOriginalFilename() != null ? file.getOriginalFilename() : "",
+                    file.getSize(),
+                    roomTag.name(),
+                    mue.getStage(),
+                    mue.getSafeReason(),
+                    mue.getDiagnostic()
+            ));
+            throw mue; // GlobalExceptionHandler converts this to 502
+        }
     }
 
     /**

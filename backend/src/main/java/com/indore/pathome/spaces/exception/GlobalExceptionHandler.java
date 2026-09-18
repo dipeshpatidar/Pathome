@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.exception;
 
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
+import com.indore.pathome.spaces.exception.MediaUploadException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -70,6 +71,18 @@ public class GlobalExceptionHandler {
                 request.getRequestURI()
         );
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(error);
+    }
+
+    @ExceptionHandler(MediaUploadException.class)
+    public ResponseEntity<ErrorResponseDTO> handleMediaUpload(MediaUploadException ex, HttpServletRequest request) {
+        log.warn("Media Upload Exception [{}]: {} | Path: {}", ex.getStage(), ex.getDiagnostic(), request.getRequestURI());
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.BAD_GATEWAY.value(),
+                "Media Upload Failed",
+                ex.getSafeReason(),
+                request.getRequestURI()
+        );
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(error);
     }
 
     @ExceptionHandler(Exception.class)

@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.cloudinary.Cloudinary;
 import com.cloudinary.Uploader;
+import com.indore.pathome.spaces.exception.MediaUploadException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
@@ -11,16 +12,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class CloudinaryServiceTest {
 
@@ -42,11 +36,12 @@ class CloudinaryServiceTest {
         when(oversizedImage.isEmpty()).thenReturn(false);
         when(oversizedImage.getSize()).thenReturn(CloudinaryService.MAX_IMAGE_BYTES + 1L);
 
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
+        MediaUploadException exception = assertThrows(
+                MediaUploadException.class,
                 () -> service.uploadImage(oversizedImage, "media-20-image"));
 
-        assertTrue(exception.getMessage().contains("10 MB"));
+        assertEquals(MediaUploadException.Stage.VALIDATION, exception.getStage());
+        assertTrue(exception.getSafeReason().contains("10 MB"));
         verify(cloudinary, times(0)).uploader();
     }
 
@@ -56,11 +51,12 @@ class CloudinaryServiceTest {
         when(oversizedVideo.isEmpty()).thenReturn(false);
         when(oversizedVideo.getSize()).thenReturn(CloudinaryService.MAX_VIDEO_BYTES + 1L);
 
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
+        MediaUploadException exception = assertThrows(
+                MediaUploadException.class,
                 () -> service.uploadVideo(oversizedVideo, "media-20-video"));
 
-        assertTrue(exception.getMessage().contains("100 MB"));
+        assertEquals(MediaUploadException.Stage.VALIDATION, exception.getStage());
+        assertTrue(exception.getSafeReason().contains("100 MB"));
         verify(cloudinary, times(0)).uploader();
     }
 
@@ -69,24 +65,25 @@ class CloudinaryServiceTest {
         MockMultipartFile textFile = new MockMultipartFile(
                 "file", "notes.txt", "text/plain", new byte[]{1});
 
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
+        MediaUploadException exception = assertThrows(
+                MediaUploadException.class,
                 () -> service.uploadImage(textFile, "media-20-notes"));
 
-        assertTrue(exception.getMessage().contains("unsupported file type"));
+        assertEquals(MediaUploadException.Stage.VALIDATION, exception.getStage());
+        assertTrue(exception.getSafeReason().contains("not supported"));
     }
 
     @Test
     void uploadsImageWithStablePublicIdentifier() throws Exception {
         MockMultipartFile image = new MockMultipartFile(
                 "file", "living-room.webp", "image/webp", new byte[]{1, 2, 3});
-        when(uploader.upload(any(InputStream.class), anyMap()))
+        when(uploader.upload(any(byte[].class), anyMap()))
                 .thenReturn(Map.of("secure_url", "https://cdn.example/property.webp"));
 
         String url = service.uploadImage(image, "media-20-image");
 
         assertEquals("https://cdn.example/property.webp", url);
-        verify(uploader).upload(any(InputStream.class), anyMap());
+        verify(uploader).upload(any(byte[].class), anyMap());
     }
 
     @Test
@@ -103,17 +100,32 @@ class CloudinaryServiceTest {
     }
 
     @Test
-    void reportsInterruptedCloudinaryUpload() throws Exception {
+    void reportsInterruptedCloudinaryUploadAsMediaUploadException() throws Exception {
         MockMultipartFile image = new MockMultipartFile(
                 "file", "bedroom.webp", "image/webp", new byte[]{1});
-        when(uploader.upload(any(InputStream.class), anyMap()))
+        when(uploader.upload(any(byte[].class), anyMap()))
                 .thenThrow(new IOException("connection interrupted"));
 
-        IllegalStateException exception = assertThrows(
-                IllegalStateException.class,
+        MediaUploadException exception = assertThrows(
+                MediaUploadException.class,
                 () -> service.uploadImage(image, "media-20-bedroom"));
 
-        assertTrue(exception.getMessage().contains("could not be completed"));
-        verify(uploader).upload(any(InputStream.class), anyMap());
+        assertEquals(MediaUploadException.Stage.CLOUDINARY_UPLOAD, exception.getStage());
+        assertTrue(exception.getSafeReason().contains("temporarily unavailable"));
+        assertTrue(exception.getDiagnostic().contains("IOException"));
+        verify(uploader).upload(any(byte[].class), anyMap());
+    }
+
+    @Test
+    void diagnosticFromExtractsExceptionClassAndMessage() {
+        IOException cause = new IOException("read timeout");
+        String diagnostic = MediaUploadException.diagnosticFrom(cause);
+        assertTrue(diagnostic.contains("IOException"));
+        assertTrue(diagnostic.contains("read timeout"));
+    }
+
+    @Test
+    void diagnosticFromHandlesNull() {
+        assertEquals("unknown", MediaUploadException.diagnosticFrom(null));
     }
 }

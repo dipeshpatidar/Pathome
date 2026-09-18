@@ -2,6 +2,66 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+---
+
+## 2026-09-18 (IST) — Failed Upload Management Feature
+
+### Why this work was requested
+Upload failures (Cloudinary timeouts, size validation errors, partial multi-file uploads) were being lost on page reload because they were only stored in React component state. The admin had no persistent view of what failed, no way to retry after a session ended, and no audit trail of media upload issues. The request was to build a durable, end-to-end failure tracking, retry, and dismiss system.
+
+### Files created / modified
+
+**Backend — New files**
+- `backend/src/main/resources/db/migration/V5__media_upload_failures.sql`
+  - Creates `media_upload_failures` table with all required columns and three indexes (listing_id, status, upload_request_id unique partial index).
+- `backend/src/main/java/.../exception/MediaUploadException.java`
+  - Structured exception carrying `Stage` enum (VALIDATION / CLOUDINARY_UPLOAD / DB_PERSIST), `safeReason` (user-visible), and `diagnostic` (internal-only, never sent to clients).
+- `backend/src/main/java/.../entity/MediaUploadFailure.java`
+  - JPA entity mapping `media_upload_failures`. Status stored as plain String with enum enforced in service. `internalDiagnostic` never returned in HTTP responses.
+- `backend/src/main/java/.../repository/MediaUploadFailureRepository.java`
+  - Bounded queries only — no `findAll()`. Includes `countByStatusIn` for badge display.
+- `backend/src/main/java/.../service/FailedUploadService.java`
+  - Manages full failure lifecycle: `recordFailure`, `markRetrying`, `recordResolution`, `recordRetryFailure`, `dismiss`. `ConcurrentHashMap` L1 cache for O(1) idempotency check. All writes in `REQUIRES_NEW` TX so failure records survive calling transaction rollbacks.
+- `backend/src/main/java/.../controller/FailedUploadsController.java`
+  - Admin REST API: `GET /api/v1/admin/failed-uploads`, `/count`, `/{id}`, `/{id}/dismiss`, `/{id}/retry`. Concurrent retry guard via `markRetrying`. Retry endpoint accepts optional replacement file.
+
+**Backend — Modified files**
+- `backend/src/main/java/.../service/CloudinaryService.java`
+  - `validateFile()` now throws `MediaUploadException(VALIDATION, ...)` instead of `IllegalArgumentException`. Upload failures throw `MediaUploadException(CLOUDINARY_UPLOAD, ...)` with a safe user reason and diagnostic. No public API contract change.
+- `backend/src/main/java/.../controller/PropertyController.java`
+  - Added `FailedUploadService` dependency (constructor injection). `uploadTaggedMediaAsset` now calls `recordFailure` on `MediaUploadException` (in its own TX) and resolves existing failure records on success via idempotency key.
+- `backend/src/main/java/.../exception/GlobalExceptionHandler.java`
+  - Added `@ExceptionHandler(MediaUploadException.class)` → HTTP 502, safe message only. Diagnostic logged internally at WARN.
+
+**Frontend — New files**
+- `frontend-web/src/services/failedUploadService.ts`
+  - `fetchUnresolved()`, `fetchUnresolvedCount()`, `dismiss(id)`, `retry(id, file?)`.
+- `frontend-web/src/components/FailedUploadsPanel.tsx`
+  - Admin panel: card per failure with reason, stage, filename, age, retry count, status badge. Per-card actions: Retry, Replace file (hidden file input), Open property, Dismiss. Empty state when all clear. Auto-refreshes after action.
+
+**Frontend — Modified files**
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+  - Added `AlertTriangle` icon and `FailedUploadsPanel` import. Added `failedUploadsCount` state fetched on mount. Added `failed-uploads` nav item with dynamic badge count. Renders `<FailedUploadsPanel>` when tab is active.
+
+**Tests — New files**
+- `backend/src/test/.../service/FailedUploadServiceTest.java` — 9 tests covering recordFailure (new and duplicate), retryCount increment, markRetrying concurrent guard, recordResolution, dismiss, getUnresolved, countUnresolved.
+- `backend/src/test/.../controller/FailedUploadsControllerTest.java` — 7 tests covering list, count, dismiss (found/not found), retry (not found, resolved, conflict, no-file).
+
+**Tests — Modified files**
+- `CloudinaryServiceTest.java` — Updated to assert `MediaUploadException` instead of `IllegalArgumentException` / `IllegalStateException`.
+- `PropertyControllerTest.java` — Added `@Mock FailedUploadService` to satisfy new constructor dependency.
+
+### Outcome
+Full end-to-end pipeline: every upload failure is now durably persisted in PostgreSQL, visible in the admin portal under "Failed Uploads", and retryable without recreating the property. Idempotency keys prevent duplicate media assets on retry. Failure recording uses `REQUIRES_NEW` transactions to survive parent rollbacks.
+
+### Verification
+- `mvn test` — 108 tests, 0 failures, 0 errors ✅
+- `npm run build` — clean TypeScript + Vite bundle ✅
+
+### Commit/push status
+Committed and pushed. See below.
+
+
 ## Operating Principles Adopted from System History
 - **Parser Determinism & Truthfulness**: Never guess or fabricate missing data. Ambiguous or invalid values (e.g. non-conforming phone numbers, conflicting rent figures, ambiguous deposits) must remain unresolved for admin review rather than hallucinated.
 - **Batch Isolation & Boundary Safety**: Maintain strict separation between batch chunks. Spoken boundaries and late cross-listing amendments are explicitly validated and targeted.
@@ -533,3 +593,36 @@ Commit status:
   - Frontend build: `npm run build` completed cleanly with 0 TypeScript errors and Vite bundle generation in 1.89s.
 
 - **Commit Status**: Committed (`0142ddb`) and pushed to `origin/main`.
+
+---
+
+## 2026-09-18 — 14:30 IST
+
+### Fixed Cloudinary Image Upload Contract (Byte Array vs InputStream)
+
+- **Why Work Was Requested**:
+  - Live server error logs showed that while video uploads succeeded via chunked `uploadLarge(InputStream, ...)`, image uploads to `POST /api/v1/properties/{id}/tagged-media` failed with:
+    `java.io.IOException: Unrecognized file parameter sun.nio.ch.ChannelInputStream@...` at `com.cloudinary.http44.UploaderStrategy.callApi`.
+
+- **Root Cause**:
+  - The Cloudinary Java SDK `uploader().upload(Object file, Map options)` contract accepts `byte[]`, `java.io.File`, or `String` (URL/data URI), but not raw `InputStream`.
+  - In `CloudinaryService.java`, both chunked and non-chunked uploads were passing an `InputStream`.
+  - `uploadLarge` natively handles `InputStream`, allowing videos to succeed, whereas standard `upload` rejected the stream with `IOException`.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryService.java`:
+    - Updated `upload` method so that non-chunked uploads (images) pass `file.getBytes()` to `cloudinary.uploader().upload(file.getBytes(), options)`.
+    - Maintained `uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES)` inside a try-with-resources stream for chunked media (videos).
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryServiceTest.java`:
+    - Updated image upload unit tests (`uploadsImageWithStablePublicIdentifier` and `reportsInterruptedCloudinaryUpload`) to expect and verify `byte[]` parameters rather than `InputStream`.
+
+- **Outcome**:
+  - Image uploads via single and multi-file workflows now comply with the Cloudinary Java SDK requirements and succeed without `Unrecognized file parameter` errors.
+
+- **Relevant Verification**:
+  - `mvn test -Dtest=CloudinaryServiceTest` passed all 6 tests.
+  - Full backend test suite: `mvn clean compile test` executed 89 tests with 0 failures, 0 errors, 0 skipped.
+  - Frontend build: `npm run build` completed cleanly in 1.81s.
+
+- **Commit Status**: Changes ready to commit.
+

@@ -30,9 +30,11 @@ import {
   Star,
   Mic,
   MicOff,
-  RefreshCw
+  RefreshCw,
+  AlertTriangle
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
+import { failedUploadService } from '../services/failedUploadService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, Property } from '../types';
@@ -44,6 +46,7 @@ import { SectorPerformanceBarChart } from './analytics/SectorPerformanceBarChart
 import { BhkDemandGaugeGrid } from './analytics/BhkDemandGaugeGrid';
 import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
 import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
+import { FailedUploadsPanel } from './FailedUploadsPanel';
 
 interface MasterAdminDashboardProps {
   activeTab: string;
@@ -220,6 +223,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const uploadConsoleRef = useRef<HTMLDivElement>(null);
   const [bhkConfigs, setBhkConfigs] = useState<any[]>(initialBhkConfigs);
   const [newBhkLabel, setNewBhkLabel] = useState('');
+  const [failedUploadsCount, setFailedUploadsCount] = useState<number>(0);
   const [attachedMediaFiles, setAttachedMediaFiles] = useState<File[]>([]);
   const [attachedMediaTags, setAttachedMediaTags] = useState<Record<number, RoomTag>>({});
   const [failedMediaUploads, setFailedMediaUploads] = useState<Array<{ file: File; originalIndex: number }>>([]);
@@ -262,6 +266,15 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
   const [dbSaveSuccessMsg, setDbSaveSuccessMsg] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
+
+  // Fetch unresolved upload count for nav badge on mount
+  useEffect(() => {
+    failedUploadService.fetchUnresolvedCount().then(setFailedUploadsCount);
+  }, []);
+
+  const refreshFailedUploadsCount = () => {
+    failedUploadService.fetchUnresolvedCount().then(setFailedUploadsCount);
+  };
 
   useEffect(() => {
     if (!isInlineEditOpen) return;
@@ -973,7 +986,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     { id: 'approval', label: 'Approvals Queue', badge: `${cashbacks.filter(c => c.status === 'PENDING').length} New`, icon: CheckSquare, color: 'text-amber-600' },
     { id: 'learning', label: 'Learning review', badge: 'Private', icon: ShieldCheck, color: 'text-emerald-600' },
     { id: 'config', label: 'Listing settings', badge: 'Ready', icon: SlidersHorizontal, color: 'text-purple-600' },
-    { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' }
+    { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' },
+    { id: 'failed-uploads', label: 'Failed Uploads', badge: failedUploadsCount > 0 ? `${failedUploadsCount} Issue${failedUploadsCount > 1 ? 's' : ''}` : 'Clear', icon: AlertTriangle, color: 'text-rose-600' }
   ];
 
   return (
@@ -1477,6 +1491,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           )}
 
           {activeTab === 'learning' && <ParserLearningReviewPanel />}
+
+          {activeTab === 'failed-uploads' && (
+            <FailedUploadsPanel onCountChange={refreshFailedUploadsCount} />
+          )}
 
           {/* TAB 4: BHK ENGINE & CLOUDINARY MEDIA CDN */}
           {(activeTab === 'config' || activeTab === 'media') && (

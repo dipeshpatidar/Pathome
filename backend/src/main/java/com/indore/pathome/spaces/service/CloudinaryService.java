@@ -2,12 +2,12 @@ package com.indore.pathome.spaces.service;
 
 import com.cloudinary.Cloudinary;
 import com.cloudinary.utils.ObjectUtils;
+import com.indore.pathome.spaces.exception.MediaUploadException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
@@ -27,9 +27,7 @@ public class CloudinaryService {
         this.cloudinary = Objects.requireNonNull(cloudinary, "Cloudinary must not be null");
     }
 
-    /**
-     * Uploads photo file to Cloudinary under pathome/properties/images
-     */
+    /** Uploads photo file to Cloudinary under pathome/properties/images */
     public String uploadImage(MultipartFile file) {
         return uploadImage(file, null);
     }
@@ -48,9 +46,7 @@ public class CloudinaryService {
         return upload(file, options, false, "Property image");
     }
 
-    /**
-     * Uploads video walkthrough MP4 file to Cloudinary under pathome/properties/videos
-     */
+    /** Uploads video walkthrough MP4 file to Cloudinary under pathome/properties/videos */
     public String uploadVideo(MultipartFile file) {
         return uploadVideo(file, null);
     }
@@ -73,19 +69,37 @@ public class CloudinaryService {
             Map<String, Object> options,
             boolean chunked,
             String mediaLabel) {
-        try (InputStream inputStream = file.getInputStream()) {
-            Map<?, ?> uploadResult = chunked
-                    ? cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES)
-                    : cloudinary.uploader().upload(inputStream, options);
+        try {
+            Map<?, ?> uploadResult;
+            if (chunked) {
+                try (InputStream inputStream = file.getInputStream()) {
+                    uploadResult = cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES);
+                }
+            } else {
+                uploadResult = cloudinary.uploader().upload(file.getBytes(), options);
+            }
+
             String secureUrl = Objects.toString(uploadResult.get("secure_url"), "");
             if (secureUrl.isBlank()) {
-                throw new IOException("Cloudinary response did not include a secure URL");
+                throw new MediaUploadException(
+                        MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                        "The storage service did not return a valid URL. Please try again.",
+                        "Cloudinary response missing secure_url"
+                );
             }
             logger.info("Successfully uploaded {} to Cloudinary", mediaLabel.toLowerCase());
             return secureUrl;
+        } catch (MediaUploadException mue) {
+            logger.warn("{} upload failed [{}]: {}", mediaLabel, mue.getStage(), mue.getDiagnostic());
+            throw mue;
         } catch (Exception exception) {
             logger.warn("{} upload failed: {}", mediaLabel, exception.getMessage());
-            throw new IllegalStateException(mediaLabel + " upload could not be completed", exception);
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                    "Media upload could not be completed because the storage service is temporarily unavailable. Please try again.",
+                    MediaUploadException.diagnosticFrom(exception),
+                    exception
+            );
         }
     }
 
@@ -96,15 +110,27 @@ public class CloudinaryService {
             String limitLabel,
             String contentTypePrefix) {
         if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException(mediaLabel + " cannot be empty");
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.VALIDATION,
+                    mediaLabel + " cannot be empty.",
+                    "File is null or empty"
+            );
         }
         if (file.getSize() > maximumBytes) {
-            throw new IllegalArgumentException(mediaLabel + " must be " + limitLabel + " or smaller");
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.VALIDATION,
+                    mediaLabel + " upload failed because the file exceeds the allowed size of " + limitLabel + ".",
+                    "File size " + file.getSize() + " exceeds limit " + maximumBytes
+            );
         }
         String contentType = file.getContentType();
         if (contentType == null || !contentType.toLowerCase(java.util.Locale.ROOT).startsWith(contentTypePrefix)) {
-            throw new IllegalArgumentException(mediaLabel + " has an unsupported file type");
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.VALIDATION,
+                    "This " + (contentTypePrefix.startsWith("image") ? "image" : "video")
+                            + " format is not supported. Please choose a supported file type.",
+                    "Unsupported content-type: " + contentType
+            );
         }
     }
-
 }

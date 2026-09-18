@@ -9,6 +9,7 @@ import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
@@ -40,6 +41,9 @@ public class PropertyControllerTest {
 
     @Mock
     private CloudinaryService cloudinaryService;
+
+    @Mock
+    private FailedUploadService failedUploadService;
 
     @Mock
     private PropertyParserService propertyParserService;
