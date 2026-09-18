@@ -532,4 +532,4 @@ Commit status:
   - Backend tests: `mvn test` executed 89 tests with 0 failures, 0 errors, 0 skipped.
   - Frontend build: `npm run build` completed cleanly with 0 TypeScript errors and Vite bundle generation in 1.89s.
 
-- **Commit Status**: Not committed; working tree changes verified and ready for review/commit.
+- **Commit Status**: Committed (`0142ddb`) and pushed to `origin/main`.
