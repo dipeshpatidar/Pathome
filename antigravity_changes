@@ -189,3 +189,347 @@ Verification:
 
 Commit status:
 - DDL-only fix applied directly to local DB. No Java source files changed. If Flyway/Liquibase is adopted, capture both constraint migrations.
+
+---
+
+## 2026-09-17 — 11:35 IST
+
+### Fixed: tenant page not updating after single-property publish from admin dashboard
+
+Why: Owner reported that a newly published property was not visible on the tenant page even though it was confirmed saved in PostgreSQL (listing ID 18 was visible in the DB at `created_at 22:58:46`). The property was `ACTIVE` and API returned it correctly from `/api/v1/properties`.
+
+Root cause: `MasterAdminDashboard.tsx` (single-property publish path, `createPropertyFromParsed`) did not dispatch the `pathome_property_published` window event after a successful save. `Home.tsx` listens to this event to call `loadLiveProperties()` and refresh the `properties` state passed to `TenantDashboard`. Without the event, the tenant page never reloaded data from the backend after admin published.
+
+By contrast, `BatchPropertyIngestionStudio.tsx` (batch publish path, line 677) already correctly dispatched this event — so batch publishes worked but single-property publishes from the main admin upload screen did not.
+
+Root cause investigation also found: `liveBackendProperties` state is fetched inside `TenantDashboard.tsx` independently but the result is never used — only the `properties` prop from `Home.tsx` is filtered and displayed. This is a dead code path that creates confusing duplication but does not need structural refactoring now; documenting it for future cleanup.
+
+Files affected:
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+What changed:
+- Added `window.dispatchEvent(new Event('pathome_property_published'))` immediately after `createPropertyFromParsed` succeeds and media upload completes (before `setDbSaveSuccessMsg`). This is a 1-line additive change consistent with the pattern already established by ChatGPT in `BatchPropertyIngestionStudio.tsx`.
+
+Verification:
+- `npm run build` passed: TypeScript compilation clean, 0 errors, Vite built in 1.97s. Existing large-bundle advisory unchanged (pre-existing).
+- ChatGPT's `BatchPropertyIngestionStudio` event dispatch logic was not touched.
+- Tenant page will now receive the refresh event on both the single-property and batch-property publish paths.
+
+Commit status:
+- Not committed. Include `MasterAdminDashboard.tsx` and `antigravity_changes` in next commit.
+
+---
+
+## 2026-09-17 — 11:40 IST
+
+### Full publish-property audit: findings, confirmed working areas, and outstanding known issues
+
+Why: Owner requested a complete verification audit of all publish-property use cases — including checking changes made by ChatGPT first — and asked that all findings (both what works and what needs attention) be documented fully for safe handoff.
+
+Root cause: Multiple layers of the publish flow were previously patched (DB constraints, @Autowired, parser tables) in independent sessions. A full audit was needed to confirm end-to-end correctness and surface any remaining gaps before further development.
+
+---
+
+### SECTION A — What is confirmed working correctly
+
+**A1. Backend API**
+- `GET /api/v1/properties` correctly returns all `ACTIVE` listings with all fields: `id`, `title`, `listingType`, `propertyType`, `status`, `city`, `sector`, `bhkCount`, `furnishingStatus`, `vastuFacing`, `monthlyRent`, `securityDeposit`, `brokerageAmount`, `securityDepositMonths`, `bachelorAllowed`, `possessionDateText`, `mediaGalleryUrls`, `ownerPhoneNumber`, `ownerName`, `createdAt`, `updatedAt`.
+- `POST /api/v1/properties/create-from-parsed` correctly persists to `listings` + `rental_details`.
+- `POST /api/v1/properties/{id}/tagged-media` correctly uploads media to Cloudinary and saves to `property_media_assets`.
+
+**A2. Database constraints (all verified with `pg_get_constraintdef`)**
+- `property_media_assets_room_tag_check`: 10 values — `GENERAL`, `LIVING_ROOM`, `MASTER_BEDROOM`, `BEDROOM`, `KITCHEN`, `BATHROOM`, `BALCONY`, `EXTERIOR`, `AMENITIES`, `FLOOR_PLAN` ✅
+- `listings_property_type_check`: 7 values — `FLAT`, `HOUSE`, `PLOT`, `LAND`, `PENTHOUSE`, `STUDIO`, `SERVICED_APARTMENT` ✅
+- `listings_listing_type_check`: `RENT`, `SALE` ✅
+- `listings_status_check`: `ACTIVE`, `PENDING`, `CLOSED` ✅
+- `property_media_assets_media_type_check`: `IMAGE`, `VIDEO_WALKTHROUGH`, `PANORAMA_360`, `FLOOR_PLAN` ✅
+- `listings.latitude` and `listings.longitude`: nullable ✅
+
+**A3. Batch publish path (`BatchPropertyIngestionStudio.tsx`)**
+- Dispatches `pathome_property_published` event (line 677) ✅
+- Uses `requestIndex` to safely associate listing IDs with correct property cards ✅
+- Uploads media per property only after its listing is confirmed created ✅
+
+**A4. Parser DB tables**
+- `parser_training_examples`, `parser_field_reviews`, `parser_model_versions` all created on startup ✅
+- `ParserModelRegistryService.java` has `@Autowired` on production constructor ✅
+
+---
+
+### SECTION B — Bug fixed in this session
+
+**B1. Single-property publish did not refresh tenant page**
+
+- Symptom: Admin published a listing (listing ID 18, 19 confirmed in DB), but tenant page showed no change.
+- Root cause: `MasterAdminDashboard.tsx` single-property publish path (`createPropertyFromParsed`) never fired `window.dispatchEvent(new Event('pathome_property_published'))`. `Home.tsx` depends on this event to call `loadLiveProperties()` and push fresh data into `TenantDashboard` via the `properties` prop.
+- File changed: `frontend-web/src/components/MasterAdminDashboard.tsx` — 1 line added after successful publish + media upload.
+- Fix is additive only; no ChatGPT logic was modified.
+- `npm run build` passed: 0 TypeScript errors ✅
+
+---
+
+### SECTION C — Outstanding known issues (not fixed, documented for next AI)
+
+**C1. Flyway V2 migration has never run — REQUIRES ONE-TIME ACTION**
+- `flyway_schema_history` table does not exist in the local database.
+- ChatGPT added `V2__reconcile_property_publish_constraints.sql` (at 00:42 IST 17-Sep) and `SafeFlywayMigrationConfig.java` which requires `pathome.database.allow-flyway-baseline=true` (or env var `PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=true`) for the first startup to baseline.
+- The constraints that V2 migrates (latitude nullable, room_tag, property_type) have already been applied manually to the local DB, so the app functions correctly right now.
+- However: if the DB is ever rebuilt from scratch, or if this is deployed to a new environment, these manual fixes will NOT be present and publishes WILL fail again with constraint violations.
+- **Action required (owner, one-time):** On a clean DB or new deployment, set `PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=true` in the environment, start the backend once, verify migration runs, then remove the flag. Do not commit `application.yml` with this value.
+- `backend/src/main/resources/db/migration/V2__reconcile_property_publish_constraints.sql` exists and is correct — it handles all three constraint issues.
+
+**C2. Dead `liveBackendProperties` state in `TenantDashboard.tsx`**
+- `TenantDashboard.tsx` fetches properties independently from the backend on mount (lines 126–136) and stores them in `liveBackendProperties` state.
+- This state is never read or used anywhere in the component — the filtered property list (`filteredProperties`, line 227) runs only on the `properties` prop passed from `Home.tsx`.
+- The dead fetch creates a wasted backend request on every tenant dashboard mount, duplicated loading behavior, and potential confusion for future developers.
+- **Suggested action (future task):** Either remove `liveBackendProperties` entirely (fetch only from `Home.tsx` via the event-driven `loadLiveProperties` pattern), or merge it with the prop by replacing the prop with the locally fetched value.
+- **Do not modify without owner approval** — this touches both `TenantDashboard.tsx` and `Home.tsx` and may affect mock property fallback behavior.
+
+**C3. `Nanda Nagar` is absent from Indore sectors list in `TenantDashboard.tsx`**
+- `TENANT_CITIES` for `INDORE` lists: `['Vijay Nagar', 'Bhawarkua', 'Nipania', 'LIG Circle', 'AB Road', 'Old Palasia', 'Super Corridor']`.
+- All currently published properties (IDs 4, 5, 17, 18, 19) have `sector = 'Nanda Nagar'`.
+- Nanda Nagar does not appear as a sector filter pill on the tenant page.
+- Properties with `city = 'Indore'` still pass the city filter (because `isIndoreCity = true`), so they do show in the list when no sector is selected — but if a tenant clicks any specific sector pill, Nanda Nagar properties are hidden.
+- **Suggested action (future task):** Add `'Nanda Nagar'` to the Indore sectors array in `TENANT_CITIES`. Owner must approve before change is made.
+
+**C4. `listings_status_check` constraint may not allow future statuses**
+- Current constraint allows only `ACTIVE`, `PENDING`, `CLOSED`.
+- The `ListingStatus` Java enum currently has exactly these 3 values, so there is no mismatch today.
+- Pattern to watch: if a new status (e.g. `ARCHIVED`, `DRAFT`) is added to `ListingStatus.java`, the PostgreSQL constraint must be manually updated — `ddl-auto: update` will not do it. This is the same class of bug that caused the `room_tag` and `property_type` failures.
+
+**C5. Some historical listings have data quality issues (pre-existing)**
+- Listing ID 5: title is `"Unspecified null in Nanda Nagar, Indore"` — `null` from a missing property type was interpolated into the title string. Documented in `chat_gpt_changes` 19:03 IST as a known parser presentation bug; fixed in parser for future publishes but not retroactively corrected in DB.
+- Listing ID 4: `ownerPhoneNumber = "Not Specified"` — pre-fix placeholder. Not a phone number.
+- Listing ID 3: `ownerPhoneNumber = "1234567890"` — invalid phone (starts with 1, not a valid Indian mobile number).
+- These are display-only data quality issues and do not affect the publish flow.
+
+---
+
+### SECTION D — Constraint vigilance rule (critical for future development)
+
+Every time a new enum value is added to any of the following Java enums, the corresponding PostgreSQL check constraint must be manually updated — `ddl-auto: update` will NEVER do this automatically:
+
+| Java Enum | DB Table | Constraint Name |
+|---|---|---|
+| `RoomTag` | `property_media_assets` | `property_media_assets_room_tag_check` |
+| `PropertyType` | `listings` | `listings_property_type_check` |
+| `ListingStatus` | `listings` | `listings_status_check` |
+| `MediaType` | `property_media_assets` | `property_media_assets_media_type_check` |
+| `ListingType` | `listings` | `listings_listing_type_check` |
+
+Use `psql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '<constraint_name>';"` to verify before and after any enum change.
+
+---
+
+Verification:
+- All DB constraint values confirmed with `pg_get_constraintdef`.
+- API response for `GET /api/v1/properties` tested with `curl` — listings 17, 18, 19 confirmed returned.
+- `npm run build` passed after fix B1: 0 TypeScript errors, Vite 1.97s.
+- No ChatGPT-authored code was modified.
+
+Commit status:
+- Fix B1 (`MasterAdminDashboard.tsx` + `antigravity_changes`) is ready to commit.
+- Outstanding items C1–C5 require no immediate code changes but must be addressed before production deployment.
+
+---
+
+## 2026-09-17 — 11:52 IST
+
+### Removed dead legacy client-side property parser from MasterAdminDashboard
+
+Why: Owner asked why `SECTOR_GAZETTEER` and other hardcoded locality lists existed in `MasterAdminDashboard.tsx` and whether they served any purpose.
+
+Root cause: `parseNaturalLanguageProperty()` was the original in-browser property parser written before the Spring Boot `PropertyParserService` backend existed. When ChatGPT replaced the parsing path with `propertyService.parsePropertyPrompt()` (→ `POST /api/v1/properties/parse-prompt`), the old function was never removed. It had zero call sites — it was completely dead code.
+
+The function also violated **AGENTS.md Rule 3**: cities, localities, and sectors must be database-driven. The hardcoded `SECTOR_GAZETTEER`, `PAN_INDIA_CITIES`, and `KNOWN_COLONIES` arrays were static frontend constants instead of being fetched from PostgreSQL.
+
+Files affected:
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+What changed:
+- Removed `parseNaturalLanguageProperty` function in its entirety (404 lines, original lines 640–1043).
+- Removed with it: `SECTOR_GAZETTEER` (21 entries), `PAN_INDIA_CITIES` (17 cities), `KNOWN_COLONIES` (7 entries), all BHK/property-type/rent/deposit/facing/furnishing regex extraction logic that existed only inside this function.
+- No other code referenced or called this function — deletion is zero-risk to runtime behavior.
+- File reduced from 3,391 lines to 2,987 lines (–404 lines).
+
+Verification:
+- `grep` confirmed zero call sites for `parseNaturalLanguageProperty` across all frontend source before deletion.
+- `npm run build` passed: TypeScript compilation clean, 0 errors, Vite built in 1.79s.
+- The active parse path (`propertyService.parsePropertyPrompt` → Spring Boot backend) is completely unaffected.
+
+Commit status:
+- Not committed. Include `MasterAdminDashboard.tsx` and `antigravity_changes` in next commit.
+
+---
+
+## 2026-09-17 — 12:20 IST
+
+### Full-application dead code audit (frontend + backend)
+
+Why: Owner asked for a comprehensive scan of dead code across the entire application, following the discovery of the unused `parseNaturalLanguageProperty` function in `MasterAdminDashboard.tsx`.
+
+Root cause: The codebase has grown across multiple AI sessions (ChatGPT and Antigravity) with features being added, refactored, or superseded without corresponding cleanup. TypeScript strict-mode does not flag `noUnusedLocals` (it is set to `false` in `tsconfig.json`), so dead code accumulates silently.
+
+Files inspected:
+- All 40+ `.tsx` / `.ts` files under `frontend-web/src/`
+- All `.java` files under `backend/src/main/java/`
+
+Findings summary (no code changes made; owner must approve each category):
+
+**CATEGORY 1 — Entire unused files (3)**
+- `RoleSwitcher.tsx` — zero imports anywhere; dev-era role-picker stub
+- `TenantPortal.tsx` — zero imports anywhere; 12-line visit-counter stub
+- `WfhAdminDashboard.tsx` — imported in `Home.tsx` line 19 but never rendered in JSX
+
+**CATEGORY 2 — Unused lucide icon imports (57 icons across 15 files)**
+Top offenders: `MasterAdminDashboard.tsx` (10 unused), `Navbar.tsx` (9 unused), `analytics/SectorPerformanceBarChart.tsx` (12 unused), `analytics/RevenueAreaChart.tsx` (6 unused), `BatchPropertyIngestionStudio.tsx` (6 unused). Full list in audit artifact.
+
+**CATEGORY 3 — Unused named imports (non-icon) (3)**
+- `EmployeeCrmDashboard.tsx`: `AnimatePresence` from framer-motion
+- `NotificationCenterDrawer.tsx`: `NotificationHistoryItem` from types
+- `TenantDashboard.tsx`: `LayoutGroup` from framer-motion
+
+**CATEGORY 4 — Unused state variables (30+ across codebase)**
+Notable in `MasterAdminDashboard.tsx`: `internalTab`, `showAllAttributesMobile`, `isDragOverMedia`, `isMediaUploadModalOpen`, `isUploadingCloudinary`, `uploadStatusMsg`, `publishedHistory`, `uploadMode`, `batchDetails`, `isSingleDictationChoiceOpen`, `plots`.
+Previously documented: `liveBackendProperties` in `TenantDashboard.tsx`.
+
+**CATEGORY 5 — Unused handler functions in MasterAdminDashboard.tsx (6)**
+- `handleCloudinaryPhotoUpload` — defined but not wired to any button
+- `handleCloudinaryVideoUpload` — defined but not wired to any button
+- `handleDisbursePayroll` — defined but ground-boy disbursal UI not rendered
+- `handleApprovePlot` — defined but plot approvals JSX not rendered
+- `handleApproveLeave` — defined but leave management UI not rendered
+- `handleRejectLeave` — defined but leave management UI not rendered
+
+**CATEGORY 6 — Backend services with zero injection references (3 potentially dead)**
+- `GeofenceService.java` — no controller or service injects it
+- `PayrollService.java` — no controller or service injects it
+- `TenantRevenueService.java` — no controller or service injects it
+Note: REST controllers and `GlobalExceptionHandler` show zero Java cross-refs by design (Spring wires them via HTTP routing); they are active and must NOT be deleted.
+
+What changed in this task:
+- No code changes made. This was an investigation-only task.
+- Full detailed report saved as audit artifact.
+
+Verification:
+- All findings produced by static Python regex analysis across all source files.
+- Backend services confirmed via cross-file Java reference counting.
+- `mvn clean compile` ran cleanly (0 errors) confirming no immediately broken Java.
+
+Commit status:
+- No code changed; nothing to commit for this task.
+- Cleanup actions require owner approval per category before implementation.
+
+---
+
+## 2026-09-17 — 12:33 IST
+
+### Safe dead code removal across frontend and backend
+
+Why: Owner instructed ("go on what suits you better" / "continue with the job left") to clean up the safe, high-confidence dead code items identified in the audit.
+
+Files changed/deleted:
+- Deleted unused component files:
+  - `frontend-web/src/components/RoleSwitcher.tsx` (removed unused dev role switcher)
+  - `frontend-web/src/components/TenantPortal.tsx` (removed unused 12-line stub)
+- Removed dead component import:
+  - `frontend-web/src/components/Home.tsx` (removed unused `WfhAdminDashboard` import)
+- Removed all 57 unused `lucide-react` icon imports & dead named imports across 15 frontend files:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`
+  - `frontend-web/src/components/Navbar.tsx`
+  - `frontend-web/src/components/NotificationCenterDrawer.tsx` (removed `Filter`, `NotificationHistoryItem`)
+  - `frontend-web/src/components/EmployeeCrmDashboard.tsx` (removed unused icons & `AnimatePresence`)
+  - `frontend-web/src/components/TenantDashboard.tsx` (removed unused icons & `LayoutGroup`)
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx` (removed unused icons & `ImageIcon`)
+  - `frontend-web/src/components/HeroSection.tsx`
+  - `frontend-web/src/components/VideoPlayerModal.tsx`
+  - `frontend-web/src/components/FutureExpansion.tsx`
+  - `frontend-web/src/components/PropertyShowcase.tsx`
+  - `frontend-web/src/components/WfhAdminDashboard.tsx`
+  - `frontend-web/src/components/analytics/BhkDemandGaugeGrid.tsx`
+  - `frontend-web/src/components/analytics/FunnelStepGraph.tsx`
+  - `frontend-web/src/components/analytics/RevenueAreaChart.tsx`
+  - `frontend-web/src/components/analytics/SectorPerformanceBarChart.tsx`
+- Removed dead state variables:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`: Removed `showAllAttributesMobile` and `publishedHistory`
+- Removed unused imports in backend:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryService.java` (removed `IOException`, `UUID`)
+  - `backend/src/main/java/com/indore/pathome/spaces/service/TenantRevenueService.java` (removed `Objects`)
+
+Verification:
+- Python static AST/import scanner confirmed 0 unused named/lucide imports remaining across `frontend-web/src/`
+- Python scanner confirmed 0 unused imports across `backend/src/main/java/`
+- Frontend build: `npm run build` completed cleanly in 1.80s with 0 errors.
+- Backend compilation: `mvn clean compile` succeeded with 0 errors.
+- Backend tests: `mvn test` ran 74 tests with 0 failures, 0 errors.
+- Code hygiene: `git diff --check` passed with 0 errors.
+
+Commit status:
+- All changes verified and ready to commit.
+
+### Database Credentials & Connection Configuration Verification
+- **Date & Time**: 2026-09-17 23:50 IST
+- **Why**: User asked to confirm the database username and password for local setup.
+- **Areas Inspected**:
+  - `backend/src/main/resources/application.yml`
+  - Local PostgreSQL 14 instance roles and database connectivity
+  - Commit history for datasource configuration (`c53d8d4`, `38a39b7`)
+- **Outcome**:
+  - Configured username is `dipeshpatidar` (or default `postgres`).
+  - Configured database is `pathome_db` on port 5432.
+  - Local PostgreSQL uses peer/trust auth without a required password.
+- **Verification**:
+  - Verified local TCP connection to `pathome_db` on port 5432 with role `dipeshpatidar`.
+- **Commit Status**: No code changes to commit.
+
+### PostgreSQL Database Roles and Authentication Configuration
+- **Date & Time**: 2026-09-17 23:54 IST
+- **Why**: User requested setting an unbreachable high-entropy database password, making `dipeshpatidar` database admin, and establishing `pathome` as the database application user.
+- **Areas Changed**:
+  - PostgreSQL 14 roles on `pathome_db`:
+    - Role `dipeshpatidar` confirmed as superuser (`SUPERUSER CREATEDB CREATEROLE`) and database owner with high-entropy password configured.
+    - Role `pathome` created with `LOGIN`, granted permissions on `pathome_db` (`CONNECT`, schema `public` tables and sequences read/write, default privileges).
+  - `backend/src/main/resources/application.yml`:
+    - Updated datasource default username to `pathome` and configured default password fallback.
+- **Verification**:
+  - Direct `psql` connection tested over TCP port 5432 with role `pathome` and password authentication.
+  - Table permissions verified via `has_table_privilege('pathome', 'listings', ...)`.
+  - Superuser and admin status verified on `dipeshpatidar`.
+  - Backend test suite: `mvn test` ran 79 tests with 0 failures, 0 errors.
+  - Frontend build: `npm run build` completed cleanly in 1.86s.
+- **Commit Status**: Changes ready to commit.
+
+---
+
+## 2026-09-18 — 13:50 IST
+
+### Completed Resilient Media Upload Pipeline Handoff
+
+- **Why Work Was Requested**: Codex began implementing a resilient media pipeline to fix upload failures (specifically phone camera photos and walkthrough videos on remote/tunnel connections), but its quota expired before finishing. The task required reconstructing the intended architecture, identifying what was complete vs incomplete, completing the implementation without restarting or reverting existing work, adhering to repository rules, and verifying both backend and frontend suites.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+    - Hardened `updateListingGallery` to deduplicate URLs so that retried or idempotent uploads never produce duplicate comma-separated entries in `media_gallery_urls`.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+    - Added JUnit 5 tests for `uploadTaggedMediaAsset`:
+      - Validated 404 status when listing ID is missing.
+      - Validated 400 `IllegalArgumentException` when `uploadRequestId` has an invalid pattern.
+      - Validated successful Cloudinary upload and `PropertyMediaAsset` persistence when new media is provided.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Integrated `prepareMediaForUpload` into `handleMediaSelect` and `handleMediaDrop` through a new `prepareAndAttachMedia` helper, providing instant validation (e.g. video > 100 MB or image > 50 MB) and client-side WebP compression upon file selection.
+    - Added `failedMediaUploads` and `isUploadingMedia` state tracking to decouple property publishing from media failures.
+    - Implemented `handleRetryFailedMedia` to upload only the failed items to the existing `databaseId` without re-creating the listing in the database.
+    - Added persistent "Retry failed media" buttons in both the attribute action header and the root-level media upload modal footer.
+    - Hardened `handleSaveToDatabase` so clicking save on an already-published property with failed media seamlessly routes to `handleRetryFailedMedia()` rather than creating duplicate listings.
+
+- **Outcome**:
+  - Resilient media pipeline is fully integrated across both single-property (`MasterAdminDashboard.tsx`) and batch ingestion (`BatchPropertyIngestionStudio.tsx`) workflows.
+  - Photos are compressed into bounded WebP on the client before network transmission, videos are validated $\le 100\text{ MB}$ and uploaded via chunked `uploadLarge` (6 MB chunks), individual upload progress is reported, and transient failures retry with controlled backoff.
+  - Successful property listings remain safe and separate from media failures, and admins have explicit, persistent "Retry failed media" actions without recreating properties.
+
+- **Relevant Verification**:
+  - Backend compilation: `mvn clean compile` passed with 0 errors.
+  - Backend tests: `mvn test` executed 89 tests with 0 failures, 0 errors, 0 skipped.
+  - Frontend build: `npm run build` completed cleanly with 0 TypeScript errors and Vite bundle generation in 1.89s.
+
+- **Commit Status**: Not committed; working tree changes verified and ready for review/commit.

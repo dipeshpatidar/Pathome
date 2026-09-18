@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { UserRole, UserProfile } from '../types';
-import { 
-  Building2, Sparkles, Gift, User, LogOut, Bookmark, Calendar, 
-  Users, BarChart3, ShieldCheck, CheckSquare, ChevronDown, SlidersHorizontal, UploadCloud, Layers, Bell
+import {
+  motion,
+  AnimatePresence
+} from 'framer-motion';
+import { UserRole,
+  UserProfile } from '../types';
+import {
+  Building2,
+  Sparkles,
+  Gift,
+  User,
+  LogOut,
+  ChevronDown,
+  Bell
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 
@@ -48,14 +57,14 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* GLOWING TOP ACCENT BEAM LINE WITH FLOWING GRADIENT */}
       <div className="h-[2.5px] w-full bg-gradient-to-r from-emerald-500 via-cyan-400 via-indigo-500 to-amber-400 animate-gradient-x shadow-[0_0_12px_rgba(16,185,129,0.5)]" />
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[72px] flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-3 min-[360px]:px-4 sm:px-6 lg:px-8 h-[72px] flex items-center justify-between gap-2">
         
         {/* BRANDING LOGO */}
-        <div className="flex items-center gap-4 sm:gap-8">
+        <div className="flex min-w-0 items-center gap-2.5 sm:gap-8">
           <motion.div 
             whileHover={{ scale: 1.03 }}
             whileTap={{ scale: 0.98 }}
-            className="flex items-center gap-2.5 cursor-pointer"
+            className="flex min-w-0 items-center gap-2.5 cursor-pointer"
           >
             <motion.div
               whileHover={{ rotate: 8, scale: 1.08 }}
@@ -68,12 +77,12 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <Building2 className="w-5 h-5" />
             </motion.div>
-            <div>
+            <div className="min-w-0">
               <a href="#" className={`font-['Outfit',sans-serif] text-base sm:text-xl font-black tracking-tight inline-flex items-center ${
                 isAdminRole ? 'text-white' : 'text-slate-900'
               }`}>Path<span className="text-emerald-500">ome</span></a>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <span className={`text-[9px] sm:text-[10px] font-extrabold px-2 py-0.5 rounded-full border flex items-center gap-1.5 ${
+                <span className={`hidden min-[360px]:flex text-[9px] sm:text-[10px] font-extrabold px-2 py-0.5 rounded-full border items-center gap-1.5 ${
                   isAdminRole 
                     ? 'text-emerald-300 bg-emerald-950/80 border-emerald-500/30'
                     : 'text-emerald-700 bg-emerald-50 border-emerald-200'
@@ -106,28 +115,27 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
         </div>
 
-
-
         {/* RIGHT ACTIONS & PROFILE MENU */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
           
           {role === 'GUEST' && (
             <motion.button
               whileHover={{ scale: 1.04, y: -1 }}
               whileTap={{ scale: 0.96 }}
               onClick={onOpenAuthModal}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-md shadow-emerald-600/20 transition-all flex items-center gap-2"
+              aria-label="Sign in or register"
+              className="flex h-10 min-w-10 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 text-xs font-extrabold text-white shadow-md shadow-emerald-600/20 transition-all hover:bg-emerald-700 min-[420px]:px-4"
             >
               <User className="w-3.5 h-3.5" />
-              <span>Sign In / Register</span>
+              <span className="hidden min-[420px]:inline">Sign In / Register</span>
             </motion.button>
           )}
 
           {role === 'TENANT' && (
             <>
-              <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold">
+              <div className="flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-2 text-xs font-bold min-[480px]:px-3">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-                <span className="text-slate-500 font-medium">Free Passes:</span>
+                <span className="hidden text-slate-500 font-medium min-[480px]:inline">Free Passes:</span>
                 <span className="text-slate-900">{visitsUsed} / 5</span>
               </div>
 
@@ -148,7 +156,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             whileHover={{ scale: 1.08 }}
             whileTap={{ scale: 0.94 }}
             onClick={() => setIsDrawerOpen(!isDrawerOpen)}
-            className={`relative p-2 sm:p-2.5 rounded-2xl border transition-all cursor-pointer shadow-md ${
+            className={`relative flex h-10 w-10 items-center justify-center rounded-2xl border transition-all cursor-pointer shadow-md sm:h-11 sm:w-11 ${
               isAdminRole
                 ? 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:border-emerald-500/50 hover:bg-slate-800'
                 : 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:bg-slate-800'
@@ -190,7 +198,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="text-xs font-bold max-w-[180px] sm:max-w-[220px] truncate hidden sm:inline text-slate-200">
                   {user?.fullName || role}
                 </span>
-                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-300 ${profileDropdownOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`hidden h-3.5 w-3.5 text-slate-400 transition-transform duration-300 min-[360px]:block ${profileDropdownOpen ? 'rotate-180' : ''}`} />
               </motion.button>
 
               <AnimatePresence>

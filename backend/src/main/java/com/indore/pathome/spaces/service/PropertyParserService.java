@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
+import com.indore.pathome.spaces.dto.AvailabilityStatus;
 import com.indore.pathome.spaces.entity.Locality;
 import com.indore.pathome.spaces.repository.LocalityRepository;
 import jakarta.annotation.PostConstruct;
@@ -12,8 +13,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.MonthDay;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -153,7 +158,11 @@ public class PropertyParserService {
     private static final Pattern FURNISHING_PATTERN = Pattern
             .compile("\\b(unfurnished|semi[\\-\\s]?furnished|fully[\\-\\s]?furnished)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern POSSESSION_PATTERN = Pattern.compile(
-            "\\b(?:ready\\s*to\\s*move|immediate[\\s\\-]?possession|available\\s*from\\s*[a-zA-Z0-9\\s]{3,15}|possession\\s*date|possession)\\b(?:\\s+(?:is|on|from|by)){0,2}\\s*[:\\-]?\\s*(\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?\\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\\s+\\d{4})?|\\d{1,2}[-\\/]\\d{1,2}[-\\/]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|ready\\s*to\\s*move|immediate|available\\s*[a-zA-Z0-9\\s]{3,15})\\b|\\b(ready\\s*to\\s*move|immediate[\\s\\-]?possession|immediate)\\b",
+            "\\b(?:ready\\s*to\\s*move|immediate[\\s\\-]?possession|available\\s*from|available|possession\\s*date|possession)\\b" +
+            "(?:\\s+(?:is|on|from|by|will\\s+be|would\\s+be)){0,3}\\s*[:\\-]?\\s*" +
+            "(\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?\\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\\s+\\d{4})?|" +
+            "\\d{1,2}[-\\/]\\d{1,2}[-\\/]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|ready\\s*to\\s*move|immediate)\\b|" +
+            "\\b(ready\\s*to\\s*move|immediate[\\s\\-]?possession|immediate|available\\s*now)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern RELATIVE_POSSESSION_PATTERN = Pattern.compile(
             "\\b(?:(?:available|availability|possession|ready(?:\\s*to\\s*move)?|move\\s*in)\\s*(?:is\\s*)?(?:after|in|from)\\s*|(?:after|in)\\s+)(\\d{1,2})\\s*(days?|weeks?|months?|years?|mahina|mahine)\\b",
@@ -169,6 +178,32 @@ public class PropertyParserService {
             Pattern.CASE_INSENSITIVE);
     private static final DateTimeFormatter RESOLVED_POSSESSION_DATE_FORMATTER =
             DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH);
+    private static final DateTimeFormatter NUMERIC_TWO_DIGIT_YEAR_SLASH_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .appendPattern("d/M/")
+                    .appendValueReduced(ChronoField.YEAR, 2, 2, 2000)
+                    .toFormatter(Locale.ENGLISH);
+    private static final DateTimeFormatter NUMERIC_TWO_DIGIT_YEAR_DASH_FORMATTER =
+            new DateTimeFormatterBuilder()
+                    .appendPattern("d-M-")
+                    .appendValueReduced(ChronoField.YEAR, 2, 2, 2000)
+                    .toFormatter(Locale.ENGLISH);
+    private static final List<DateTimeFormatter> FULL_POSSESSION_DATE_FORMATTERS = List.of(
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            DateTimeFormatter.ofPattern("d/M/uuuu", Locale.ENGLISH),
+            DateTimeFormatter.ofPattern("d-M-uuuu", Locale.ENGLISH),
+            NUMERIC_TWO_DIGIT_YEAR_SLASH_FORMATTER,
+            NUMERIC_TWO_DIGIT_YEAR_DASH_FORMATTER,
+            DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH),
+            DateTimeFormatter.ofPattern("d MMMM uuuu", Locale.ENGLISH));
+    private static final List<DateTimeFormatter> MONTH_DAY_POSSESSION_DATE_FORMATTERS = List.of(
+            DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH),
+            DateTimeFormatter.ofPattern("d MMMM", Locale.ENGLISH));
+    private static final Pattern DATE_ORDINAL_SUFFIX_PATTERN = Pattern.compile(
+            "(?<=\\d)(?:st|nd|rd|th)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DATE_OF_WORD_PATTERN = Pattern.compile(
+            "\\s+of\\s+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern FOUR_DIGIT_YEAR_PATTERN = Pattern.compile("\\b\\d{4}\\b");
     private static final Map<Integer, LocalDate> DIWALI_DATES = Map.ofEntries(
             Map.entry(2025, LocalDate.of(2025, 10, 20)),
             Map.entry(2026, LocalDate.of(2026, 11, 8)),
@@ -292,7 +327,7 @@ public class PropertyParserService {
 
     PropertyParserService(LocalityRepository localityRepository, Clock clock) {
         this.localityRepository = localityRepository;
-        this.clock = clock;
+        this.clock = clock != null ? clock : Clock.system(ZoneId.of("Asia/Kolkata"));
     }
 
     /**
@@ -680,18 +715,8 @@ public class PropertyParserService {
             furnishingStatus = capitalizeWords(furnMatcher.group(1));
         }
 
-        String possessionDate = resolveRelativePossessionDate(normalized);
-        if (possessionDate == null) {
-            Matcher possMatcher = POSSESSION_PATTERN.matcher(input);
-            if (possMatcher.find()) {
-                String rawP = possMatcher.group(1) != null ? possMatcher.group(1) : possMatcher.group(0);
-                if (rawP.toLowerCase().contains("ready to move") || rawP.toLowerCase().contains("immediate")) {
-                    possessionDate = "Ready To Move";
-                } else {
-                    possessionDate = capitalizeWords(rawP.trim());
-                }
-            }
-        }
+        PossessionResolution possession = resolvePossession(input, normalized);
+        String possessionDate = possession.displayText();
 
         // 3F. State & Landmark Extractor
         String state = null;
@@ -880,6 +905,11 @@ public class PropertyParserService {
             amenities.add("Swimming Pool");
 
         List<String> conflicts = detectConflicts(normalized);
+        if (possession.status() == AvailabilityStatus.AVAILABLE_FROM_DATE
+                && possession.availableFrom() != null
+                && possession.availableFrom().isBefore(LocalDate.now(clock))) {
+            conflicts.add("Possession date is in the past: " + possession.displayText());
+        }
 
         // 9. Parsing must not persist inferred localities. The publish workflow
         // persists a confirmed locality in the same transaction as its listing.
@@ -901,6 +931,8 @@ public class PropertyParserService {
         dto.setBathrooms(bathrooms != null ? bathrooms : "Not Specified");
         dto.setFurnishingStatus(furnishingStatus);
         dto.setPossessionDate(possessionDate);
+        dto.setAvailabilityStatus(possession.status());
+        dto.setAvailableFrom(possession.availableFrom());
         dto.setState(state);
         dto.setPincode(pincode != null ? pincode : "Not Specified");
         dto.setLandmark(landmark != null ? landmark : "Not Specified");
@@ -1055,27 +1087,119 @@ public class PropertyParserService {
         }
     }
 
+    private PossessionResolution resolvePossession(String originalPrompt, String normalizedPrompt) {
+        LocalDate relativeDate = resolveRelativePossessionDate(normalizedPrompt);
+        if (relativeDate != null) {
+            return possessionOn(relativeDate);
+        }
+
+        Matcher possessionMatcher = POSSESSION_PATTERN.matcher(originalPrompt);
+        boolean immediateAvailabilityFound = false;
+        while (possessionMatcher.find()) {
+            String explicitValue = possessionMatcher.group(1);
+            if (explicitValue != null) {
+                String normalizedValue = explicitValue.trim().toLowerCase(Locale.ROOT);
+                if (normalizedValue.contains("ready to move") || normalizedValue.contains("immediate")) {
+                    immediateAvailabilityFound = true;
+                    continue;
+                }
+
+                LocalDate explicitDate = parseExplicitPossessionDate(explicitValue);
+                if (explicitDate != null) {
+                    return possessionOn(explicitDate);
+                }
+            }
+
+            String matchedText = possessionMatcher.group(0).toLowerCase(Locale.ROOT);
+            if (matchedText.contains("ready to move") || matchedText.contains("immediate")) {
+                immediateAvailabilityFound = true;
+            }
+        }
+        return immediateAvailabilityFound ? readyNow() : PossessionResolution.unspecified();
+    }
+
+    private PossessionResolution readyNow() {
+        return new PossessionResolution(
+                "Ready To Move", AvailabilityStatus.READY_NOW, LocalDate.now(clock));
+    }
+
+    private PossessionResolution possessionOn(LocalDate date) {
+        return new PossessionResolution(
+                formatResolvedPossessionDate(date), AvailabilityStatus.AVAILABLE_FROM_DATE, date);
+    }
+
+    private LocalDate parseExplicitPossessionDate(String rawValue) {
+        String normalizedDate = DATE_ORDINAL_SUFFIX_PATTERN.matcher(rawValue.trim()).replaceAll("");
+        normalizedDate = DATE_OF_WORD_PATTERN.matcher(normalizedDate).replaceAll(" ").trim();
+
+        if (FOUR_DIGIT_YEAR_PATTERN.matcher(normalizedDate).find()
+                || normalizedDate.indexOf('/') >= 0
+                || countCharacter(normalizedDate, '-') >= 2) {
+            for (DateTimeFormatter formatter : FULL_POSSESSION_DATE_FORMATTERS) {
+                try {
+                    return LocalDate.parse(normalizedDate, formatter);
+                } catch (DateTimeParseException ignored) {
+                    // Try the next fixed formatter.
+                }
+            }
+            return null;
+        }
+
+        for (DateTimeFormatter formatter : MONTH_DAY_POSSESSION_DATE_FORMATTERS) {
+            try {
+                MonthDay monthDay = MonthDay.parse(normalizedDate, formatter);
+                return resolveNextOccurrence(monthDay);
+            } catch (DateTimeParseException ignored) {
+                // Try the next fixed formatter.
+            }
+        }
+        return null;
+    }
+
+    private int countCharacter(String value, char target) {
+        int count = 0;
+        for (int index = 0; index < value.length(); index++) {
+            if (value.charAt(index) == target) count++;
+        }
+        return count;
+    }
+
+    private LocalDate resolveNextOccurrence(MonthDay monthDay) {
+        LocalDate today = LocalDate.now(clock);
+        int candidateYear = today.getYear();
+        for (int attempt = 0; attempt < 8; attempt++) {
+            try {
+                LocalDate candidate = monthDay.atYear(candidateYear + attempt);
+                if (!candidate.isBefore(today)) return candidate;
+            } catch (java.time.DateTimeException ignored) {
+                // Continue until the next valid year, including leap-day input.
+            }
+        }
+        return null;
+    }
+
     /**
      * Resolves relative availability statements against Indian local time. A date is only
      * produced when the interval is clearly about availability, never when it describes
      * a deposit, brokerage, lease, or notice period.
      */
-    private String resolveRelativePossessionDate(String normalizedPrompt) {
+    private LocalDate resolveRelativePossessionDate(String normalizedPrompt) {
         Matcher diwaliMatcher = DIWALI_POSSESSION_PATTERN.matcher(normalizedPrompt);
         if (diwaliMatcher.find()) {
             String yearValue = diwaliMatcher.group(1) != null ? diwaliMatcher.group(1) : diwaliMatcher.group(2);
             LocalDate diwaliDate = resolveDiwaliDate(yearValue);
-            return diwaliDate == null ? null : formatResolvedPossessionDate(diwaliDate.plusDays(1));
+            return diwaliDate == null ? null : diwaliDate.plusDays(1);
         }
 
-        String resolvedDate = resolveRelativeInterval(normalizedPrompt, RELATIVE_POSSESSION_PATTERN.matcher(normalizedPrompt));
+        LocalDate resolvedDate = resolveRelativeInterval(
+                normalizedPrompt, RELATIVE_POSSESSION_PATTERN.matcher(normalizedPrompt));
         if (resolvedDate != null) {
             return resolvedDate;
         }
         return resolveRelativeInterval(normalizedPrompt, HINGLISH_RELATIVE_POSSESSION_PATTERN.matcher(normalizedPrompt));
     }
 
-    private String resolveRelativeInterval(String normalizedPrompt, Matcher relativeMatcher) {
+    private LocalDate resolveRelativeInterval(String normalizedPrompt, Matcher relativeMatcher) {
         while (relativeMatcher.find()) {
             if (hasNonPossessionIntervalContext(normalizedPrompt, relativeMatcher.start())) {
                 continue;
@@ -1089,7 +1213,7 @@ public class PropertyParserService {
                 case "year", "years" -> baseDate.plusYears(amount);
                 default -> baseDate.plusMonths(amount);
             };
-            return formatResolvedPossessionDate(resolvedDate);
+            return resolvedDate;
         }
         return null;
     }
@@ -1562,6 +1686,8 @@ public class PropertyParserService {
         }
         if (AMENDMENT_POSSESSION_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getPossessionDate())) {
             target.setPossessionDate(patch.getPossessionDate());
+            target.setAvailabilityStatus(patch.getAvailabilityStatus());
+            target.setAvailableFrom(patch.getAvailableFrom());
             applied++;
         }
         if (AMENDMENT_FACING_CUE_PATTERN.matcher(payload).find() && !isMissingValue(patch.getVastuFacing())) {
@@ -1631,4 +1757,11 @@ public class PropertyParserService {
     private record AmendmentMarker(int start, int payloadStart, int targetIndex) {}
 
     private record TextRange(int start, int end) {}
+
+    private record PossessionResolution(
+            String displayText, AvailabilityStatus status, LocalDate availableFrom) {
+        private static PossessionResolution unspecified() {
+            return new PossessionResolution(null, AvailabilityStatus.UNSPECIFIED, null);
+        }
+    }
 }

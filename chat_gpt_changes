@@ -556,6 +556,186 @@ Commit status:
 
 - No commit or push was performed for this task.
 
+## 2026-09-18 — 00:55 IST
+
+### Started and verified a temporary public Cloudflare Tunnel
+
+Why: After being informed that a Quick Tunnel exposes the development frontend and proxied routes to anyone with its URL, the owner explicitly approved starting it for internet-accessible mobile testing.
+
+Areas changed:
+
+- Runtime infrastructure only; started `cloudflared` against the local Vite frontend on port 5173.
+- Forwarded the expected local host header so Vite accepts requests through the tunnel.
+- No repository source code or application configuration was changed.
+
+Outcome:
+
+- A temporary `trycloudflare.com` HTTPS address is active.
+- The frontend and existing `/api` proxy are reachable through the tunnel.
+- The backend database port remains unexposed; backend requests continue through the frontend proxy.
+- The URL is temporary and will stop working when the tunnel process stops.
+
+Verification:
+
+- Public frontend endpoint — HTTP 200.
+- Public `/api/v1/properties` endpoint — HTTP 200.
+- Cloudflare connection registered successfully; transport can fall back to HTTP/2 when QUIC is degraded.
+
+Commit status:
+
+- No commit or push was performed for this runtime task.
+
+## 2026-09-18 — 01:04 IST
+
+### Diagnosed mobile property-upload failure through Cloudflare Tunnel
+
+Why: The owner could publish from the Mac but believed property publishing from the mobile tunnel was failing.
+
+Areas reviewed:
+
+- Live Spring Boot request and exception logs
+- Live Cloudflare Tunnel process
+- `CloudinaryService` media-upload implementation
+- Property media endpoint and batch publishing workflow
+- Persisted property and tagged-media records for the affected request
+
+Findings and outcome:
+
+- Mobile authentication and property publishing reached the backend successfully.
+- The listing was created and remains active as property ID 20.
+- The failure occurred afterward while the backend uploaded a photo to Cloudinary; the Cloudinary connection repeatedly ended with a broken pipe.
+- The property has zero tagged-media records because that photo upload did not complete.
+- The current frontend already separates listing success from media failure, but the resulting warning can still be interpreted as a complete publishing failure.
+- No implementation changes were made because this task requested diagnosis rather than a reliability change.
+
+Verification:
+
+- Affected property endpoint — HTTP 200 and active record present.
+- Affected tagged-media endpoint — HTTP 200 with zero media records.
+- Backend logs showed repeated Cloudinary retries followed by `Property photo upload failed` on the tagged-media endpoint.
+
+Commit status:
+
+- No commit or push was performed for this investigation.
+
+## 2026-09-18 — 00:40 IST
+
+### Verified the current phone-hotspot address
+
+Why: The owner connected the development Mac to a phone hotspot and needed the current address for opening the application from the phone.
+
+Areas reviewed:
+
+- Active macOS default route and Wi-Fi interface
+- Live frontend listener on port 5173
+- Frontend API proxy path
+
+Outcome:
+
+- Confirmed the active Wi-Fi interface is `en0` with local address `192.0.0.2` and hotspot gateway `192.0.0.1`.
+- Confirmed the running application is reachable through the hotspot address.
+
+Verification:
+
+- `http://192.0.0.2:5173/` — HTTP 200.
+- `http://192.0.0.2:5173/api/v1/properties` — HTTP 200.
+
+Commit status:
+
+- No commit or push was performed for this investigation.
+
+## 2026-09-18 — 00:52 IST
+
+### Prepared Cloudflare Tunnel tooling
+
+Why: The owner requested internet-accessible mobile access because the phone-hotspot network did not initially permit reliable local access.
+
+Areas changed:
+
+- Local development tooling only; installed the Homebrew `cloudflared` package.
+- No repository source code or application configuration was changed.
+
+Outcome:
+
+- Cloudflare Tunnel tooling is installed and ready.
+- The temporary public tunnel was not started because doing so would make the development frontend and its proxied application routes accessible to anyone who obtains the generated public URL. Explicit confirmation of that exposure is required before launch.
+
+Verification:
+
+- Homebrew installation completed successfully with `cloudflared` version 2026.9.1.
+- The local application remained running.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-18 — 00:45 IST
+
+### Diagnosed phone-hotspot access failure
+
+Why: The owner reported that the phone could not open the application through the Mac's tethered address.
+
+Areas reviewed:
+
+- Vite listener and live frontend response
+- macOS application firewall state
+- Active interface addressing, route, Wi-Fi association, and hotspot gateway reachability
+- Availability of existing secure tunnel utilities
+
+Findings and outcome:
+
+- The frontend is correctly listening on all IPv4 interfaces and responds with HTTP 200 at the Mac's tether address.
+- The macOS application firewall and block-all mode are disabled.
+- The active interface uses a cellular-tether `/32` address with `NOARP`, is not associated with a normal Wi-Fi network, and cannot reach the nominal hotspot gateway.
+- The phone hotspot is therefore isolating the tethered Mac and cannot initiate a local connection back to it; this is a network topology limitation rather than an application defect.
+- No secure tunnel utility is currently installed.
+- No source-code or configuration changes were necessary.
+
+Verification:
+
+- Confirmed `*:5173` listener.
+- Confirmed local tether-address frontend response — HTTP 200.
+- Confirmed macOS firewall disabled and block-all disabled.
+- Confirmed hotspot gateway ping failed and Wi-Fi association was absent.
+
+Commit status:
+
+- No commit or push was performed for this investigation.
+
+## 2026-09-17 — 11:18 IST
+
+### Audited date-based availability and possession handling
+
+Why: The owner asked how the system would represent a statement containing both readiness language and a concrete date, such as `ready to move on 15 Nov 2026`.
+
+Files reviewed:
+
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/Listing.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/RentalDetails.java`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+Findings:
+
+- Explicit and relative possession dates are recognized, but the parsing contract exposes only one free-text `possessionDate` value.
+- A phrase containing both `ready to move` and a date can therefore collapse to one interpretation rather than preserving a structured availability state and date.
+- Publishing currently stores that value in `possession_date_text`.
+- `RentalDetails` already has an `available_from` database field, but the parsed-property publishing path does not populate it.
+- The editor currently uses one text input, so an administrator can enter a date, but the value is not validated or normalized as a calendar date.
+
+Recommended provision:
+
+- Represent availability with a controlled status and a separate ISO calendar date.
+- Treat `ready to move` without a date as immediate availability; treat `ready to move on 15 Nov 2026` as date-based availability from `2026-11-15`.
+- Preserve the original phrase for audit, display the normalized result clearly, validate impossible or past dates, and require review for genuinely conflicting phrases.
+- Populate the existing structured `available_from` field during publishing while retaining the human-readable source text for backward compatibility.
+
+Change status:
+
+- This task was an audit and explanation only. No parser, schema, or UI implementation was changed.
+
 ## 2026-09-17 — 00:42 IST
 
 ### Audited the Antigravity publish fix with Bugbot and Security Review, then hardened it
@@ -664,3 +844,420 @@ Commit status:
 
 - Complete change set committed as `c53d8d4` with message `feat(admin): harden property ingestion and parser learning`.
 - Commit `c53d8d4` pushed successfully to `origin/main` (`https://github.com/dipeshpatidar/Divastu.git`).
+
+## 2026-09-17 — 08:25 IST
+
+### Made the web interface responsive across phones, tablets, laptops, and desktops
+
+Why: The owner requested a complete device-responsiveness check and authorized corrections wherever the interface was cramped, clipped, or difficult to operate.
+
+Root causes found:
+
+- The full 280-pixel admin sidebar appeared from the 768-pixel breakpoint, leaving too little room for the upload workspace on portrait tablets.
+- The multi-property review used two-column field grids, desktop-style headers, nested scrolling, and side-by-side publish controls even on very narrow phones.
+- The global navigation could become overcrowded at 320 pixels, especially for guest and tenant actions.
+- Authentication, error, lease-upload, and property-media dialogs could be clipped on short or landscape screens because their overlays did not provide reliable vertical scrolling.
+- Learning-review actions and notification headers could exceed the practical width of small devices.
+
+Files changed:
+
+- `frontend-web/src/components/Navbar.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/ParserLearningReviewPanel.tsx`
+- `frontend-web/src/components/AuthModal.tsx`
+- `frontend-web/src/components/LeaseUploadModal.tsx`
+- `frontend-web/src/components/AppErrorDialog.tsx`
+- `frontend-web/src/components/VideoPlayerModal.tsx`
+- `frontend-web/src/components/NotificationCenterDrawer.tsx`
+- `frontend-web/src/index.css`
+
+Outcome:
+
+- Phones and tablets now use the compact admin navigation; the full sidebar begins at the large-desktop breakpoint.
+- The compact admin bar remains visible below the global 74-pixel navigation instead of being hidden underneath it while scrolling.
+- Upload workflow steps and examples change from one column on very narrow phones to two columns on larger phones/tablets and four columns only when sufficient desktop space exists.
+- Multi-property review headers, detected-property controls, source text, field grids, review cards, and publish controls now reflow cleanly. Review fields use one column below 480 pixels and progressively expand at wider breakpoints.
+- Removed the nested 500-pixel review-card scroll region on phones and tablets so administrators can use the normal page scroll.
+- Primary mobile actions have full-width layouts and at least 44-pixel touch targets where space is constrained.
+- The 320-pixel global navigation uses compact, accessible actions while preserving full labels at larger sizes.
+- Authentication, lease upload, centralized errors, and property media dialogs now support short viewports and landscape scrolling without losing their close or primary actions.
+- Learning-review decisions stack vertically on small phones, and notification headings use concise responsive copy.
+- Added stable viewport sizing and media containment defaults without removing any feature or content.
+
+Verification:
+
+- Live browser checks completed at 320×740, 390×844, 768×1024, 1024×768, 1440×900, and 844×390.
+- No tested viewport produced horizontal document overflow.
+- The complete multi-property review workflow was opened and visually checked at narrow-phone size; its fields render as readable single-column controls.
+- Browser console check returned no warnings or errors during the responsive workflow.
+- `npm run build`: passed; TypeScript and Vite production build completed. Vite retained the existing non-blocking large-bundle advisory.
+- `git diff --check`: passed before this log entry.
+
+Commit status:
+
+- No commit or push was performed for this responsive-interface task.
+
+## 2026-09-17 — 08:48 IST
+
+### Shortened and focused the mobile property-upload journey
+
+Why: A responsive page can still be unnecessarily long. The owner asked for a stronger mobile UX audit focused on content density, scrolling effort, action visibility, and the practical experience of reviewing large property batches.
+
+Files changed:
+
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/index.css`
+
+Improvements:
+
+- Phones and tablets now show either property descriptions or property review at one time instead of stacking both workspaces vertically. A clear two-option control lets the administrator move between them without losing data.
+- Parsing automatically moves the administrator into review; editing a description returns the focused input workspace.
+- Required publishing fields remain immediately visible. Optional location, commercial, owner, and listing fields remain fully available inside one clearly labelled `Additional property details` disclosure with a captured-value count.
+- Confirmation now appears after the fields and media, matching the natural review order rather than allowing confirmation before review.
+- Large batches have explicit Previous and Next controls with the current position, in addition to the property tab strip.
+- The mobile/tablet review is bounded to the available device height with one primary internal scroll area and an anchored publish footer. Individual property cards do not introduce another nested scroll region.
+- Workflow guidance and property examples use snap-based horizontal carousels on narrow screens instead of adding eight vertically stacked cards.
+- Touch carousels hide platform scrollbars while preserving touch panning and a partial next-card cue.
+- The unrelated executive analytics summary is hidden on small devices while the property-upload workspace is active.
+- Demand insights and listing options remain available but are collapsed behind one meaningful control on phones and tablets.
+- The desktop experience retains the richer side-by-side review and expanded secondary tools.
+
+Verification:
+
+- Live 320-pixel phone review showed the compact required-field view, optional-details disclosure, batch navigation, and anchored publish controls.
+- Live 768-pixel tablet review showed the same focused flow with readable four-column essential fields and two-column required details.
+- Device checks at 320×740, 390×844, 768×1024, 1024×768, and 1440×900 produced no horizontal document overflow.
+- The small-device upload entry measured 1,129 pixels high at 320×740 and 1,012 pixels high at 390×844 after secondary content was collapsed.
+- The tablet two-property review measured 1,640 pixels at 768×1024 while retaining one bounded review workspace.
+- Browser warning/error log was empty during the phone and tablet workflows.
+- `npm run build`: passed after the final UX changes. Vite retained the existing non-blocking large-bundle advisory.
+- `git diff --check`: passed before this log entry.
+
+Commit status:
+
+- No commit or push was performed for this mobile UX refinement task.
+
+## 2026-09-17 — 09:01 IST
+
+### Replaced the mobile review scroller with a task-focused property workflow
+
+Why: The owner rejected the bounded inner review scroller as visually inelegant and asked for a genuinely premium small-device experience. The earlier solution shortened the surrounding page but moved the scrolling burden into the property-review panel.
+
+Files changed:
+
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+Design and interaction changes:
+
+- Removed the embedded review panel's height limit and all property-card vertical scrolling. Phones and tablets now use the browser's natural page scroll.
+- Replaced the always-visible mobile form with a compact property snapshot showing layout, property type, rent, deposit, locality, city, and owner phone.
+- Added a clear completeness score to each snapshot. Missing or invalid required details appear as `Needs attention` rather than looking like extracted values.
+- Kept every field available through two explicit disclosures: `Review or edit publishing fields` and `Additional property details`.
+- Kept source text separately available for audit without adding default page length.
+- Replaced the trapped footer with a viewport-level mobile publish bar rendered outside the animated panel. It shows live batch readiness and remains available while the natural page scrolls.
+- Reduced nested mobile padding, shortened the review header, removed the redundant empty-media drop zone on small devices, and retained the direct `Add photos or video` action.
+- Preserved one-property-at-a-time batch review with compact tabs and Previous/Next navigation.
+- Fixed a discovered event-bubbling defect where selecting Next briefly changed the property and then the parent card switched it back.
+- Confirmed-property state remains intact while navigating between properties.
+
+Verification:
+
+- Completed a live two-property workflow at 320×740, including parsing, snapshot review, expanding and collapsing required fields, confirming the first property, moving to the second property, and returning to the first.
+- The persistent mobile publish bar updated correctly from `0/2 ready` to `1/2 ready` without publishing test data.
+- Verified at 320×740, 390×844, 768×1024, 1024×768, and 1440×900 with no horizontal document overflow.
+- DOM inspection found zero nested vertical scroll containers in the review workflow at every tested viewport; multiline textareas were excluded because their own editing scroll is native field behavior.
+- The compact tablet review measured 1,509 pixels at 768×1024. The 390-pixel phone review measured 1,581 pixels while keeping all optional data collapsed and accessible.
+- Browser warning/error log remained empty.
+- `npm run build`: passed after the final redesign. Vite retained the existing non-blocking large-bundle advisory.
+- `git diff --check`: passed before this log entry.
+
+Commit status:
+
+- No commit or push was performed for this mobile workflow redesign.
+
+## 2026-09-17 — 11:14 IST
+
+### Restored possession details and centered the property editor
+
+Why: The property parser correctly recognized `ready to move`, but the single-property edit window did not expose or preserve the extracted possession value. The window also needed reliable viewport positioning instead of inheriting positioning constraints from the dashboard layout.
+
+File changed:
+
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+Changes:
+
+- Added an `Availability / Possession` field to the property editor. The supplied example now displays `Ready To Move` and preserves it when the administrator saves edits.
+- Added the extracted listing status to the editor, with clear Live, Draft, and Paused options, so another parsed value is no longer hidden during review.
+- Rendered the editor at the document root through a portal and centered it against the actual browser viewport on desktop.
+- Changed the phone experience to a full-width editor that begins at the top of the viewport, preventing tall forms from being centered partly off-screen.
+- Added Escape-key, backdrop-click, and accessible close behavior, while locking the background page during editing.
+- Sanitized an unprovided bathroom value before placing it in the numeric input, preventing `NaN` from being rendered as if it were an extracted value.
+
+Verification:
+
+- Live desktop measurement at 1440×900 confirmed the editor center at `(720, 450)`, exactly matching the viewport center.
+- Live phone verification at 390×844 confirmed the editor starts at the top, uses the available width without horizontal overflow, and keeps the possession field in the natural form flow.
+- A clean reload and re-run of the supplied 2 BHK example confirmed possession is `Ready To Move` and an unprovided bathroom remains empty.
+- No new browser warning or error was emitted after the sanitized bathroom handling was loaded; the developer log retained only the earlier warning from before that fix.
+- `npm run build`: passed. Vite retained the existing non-blocking large-bundle advisory.
+- `git diff --check`: passed before this log entry.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-17 — 23:10 IST
+
+### Added structured possession dates across parsing, review, and publishing
+
+Why: Availability was stored only as display text, so phrases such as `ready to move on 15 Nov 2026`, explicit dates without a year, and relative availability could not be reliably reviewed or persisted as calendar dates. The administrator also needed a clear choice between immediate availability, a specific possession date, and information that was not provided.
+
+Files changed:
+
+- `backend/src/main/java/com/indore/pathome/spaces/dto/AvailabilityStatus.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/RentalDetails.java`
+- `backend/src/main/resources/db/migration/V3__index_rental_availability.sql`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServicePureTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+
+Changes:
+
+- Added explicit availability states for `Ready now`, `Available from date`, and `Not provided`, plus an ISO calendar date in the parser DTO.
+- `ready to move` now records immediate availability, while `ready to move on 15 Nov 2026` records `2026-11-15`; a later explicit date takes precedence over an earlier immediate phrase in the same property description.
+- Added fixed, precompiled parsing support for named dates, ISO dates, slash/dash dates, two-digit years, yearless dates, relative days/weeks/months/years, Hinglish `mahine baad`, and supported Diwali dates.
+- Yearless dates resolve to the next non-past occurrence. Explicit past dates are preserved for review and flagged as a conflict instead of being silently changed.
+- Late corrections now copy the structured availability state and date to the intended property without affecting neighbouring properties.
+- Single-property, parsed-property, and batch publishing now populate the existing database `available_from` column while preserving the readable possession text for backward compatibility.
+- Added a guarded database migration and entity index for availability-date queries.
+- Replaced the ambiguous free-text review control in both single and multi-property workflows with meaningful availability choices and a date picker shown only when a specific date is selected.
+- Correcting availability in the review UI clears the related stale past-date conflict.
+- Added regression coverage for immediate versus dated possession, later-date precedence, yearless dates, relative dates, past-date review, and all three publishing paths.
+
+Verification:
+
+- `mvn clean compile test`: passed; 79 tests, zero failures and zero errors.
+- `mvn clean compile`: passed.
+- `mvn test`: passed; 79 tests, zero failures and zero errors.
+- Parser benchmark: 3,000 prompts averaged approximately 0.45 ms per prompt with 100% rent extraction in the benchmark dataset.
+- `npm run build`: passed; TypeScript and Vite production build completed. Vite retained the existing non-blocking large-bundle advisory.
+- Scoped `git diff --check` for all files in this task: passed. The repository-wide check still reports a pre-existing whitespace-only issue in `antigravity_changes`, which was not modified as part of this task.
+- No live database migration was executed during verification.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-17 — 23:19 IST
+
+### Reviewed Antigravity changes with Bugbot
+
+Why: The owner requested a read-only assessment of whether the recent changes documented in `antigravity_changes` are correct, preserve existing behavior, and avoid future reliability problems.
+
+Areas reviewed:
+
+- `antigravity_changes`
+- `frontend-web/src/components/MasterAdminDashboard.tsx`
+- `frontend-web/src/components/Home.tsx`
+- `backend/src/main/java/com/indore/pathome/spaces/config/SafeFlywayMigrationConfig.java`
+- `backend/src/main/resources/db/migration/V2__reconcile_property_publish_constraints.sql`
+- The Antigravity-documented dependency-injection and dead-code removals
+
+Findings:
+
+- Bugbot found two high-severity reliability issues.
+- The single-property publish flow creates the database listing before uploading media, but reports success and dispatches the tenant-refresh event only after every media upload succeeds. A media failure can therefore leave a successfully created listing looking like a failed publish; retrying can create a duplicate listing, and the current tenant view is not refreshed.
+- The Antigravity instruction to enable Flyway baselining on a clean database is incorrect. `SafeFlywayMigrationConfig` intentionally permits baselining only when the expected legacy tables already exist. A genuinely empty database must run migrations normally without the baseline flag; the flag is only for adopting an existing legacy schema.
+- The custom publish event refreshes only the current browser window. Other tabs and devices do not receive it and still need polling, cross-tab broadcast, or server-side push for automatic refresh.
+- The reviewed parser/component/import removals appear safe because no remaining references were found.
+- The production constructor `@Autowired` correction is valid.
+
+Verification:
+
+- Ran one read-only Bugbot review over the uncommitted changes, focused on changes documented in `antigravity_changes`.
+- Manually confirmed the publish/media control flow around `MasterAdminDashboard.tsx` lines 440–466.
+- Manually confirmed that `SafeFlywayMigrationConfig` verifies legacy tables before calling `flyway.baseline()`.
+- No application tests were run because this task was an investigation only and made no implementation changes.
+
+Commit status:
+
+- No implementation changes, commit, or push were performed for this review.
+
+## 2026-09-17 — 23:28 IST
+
+### Diagnosed complete-application startup failure
+
+Why: The owner reported that the application was no longer starting and requested the cause before any corrective changes were made.
+
+Areas inspected:
+
+- `run-app.sh`
+- `backend/src/main/resources/application.yml`
+- `backend/src/main/java/com/indore/pathome/spaces/security/JwtUtils.java`
+- `backend/src/main/java/com/indore/pathome/spaces/config/CloudinaryConfig.java`
+- `backend/src/main/java/com/indore/pathome/spaces/config/SafeFlywayMigrationConfig.java`
+- `backend/DEPLOYMENT.md`
+- Local PostgreSQL service and schema readiness
+- Frontend Vite development startup
+
+Findings:
+
+- The frontend starts successfully and is not the cause of the complete-application failure.
+- The backend reproducibly stops during Spring context initialization because `JWT_SECRET` is not present in the process environment.
+- The same process environment also lacks the required database password, OAuth client secret, and Cloudinary API credentials. No repository `.env` file or secret-loading launcher step exists.
+- PostgreSQL 14 is running and accepts local connections on port 5432; the earlier sandboxed readiness failure was environmental rather than a database outage.
+- The existing `pathome_db` schema contains legacy application tables but has no `flyway_schema_history` table. Its first upgraded startup therefore requires the documented one-time safe legacy-baseline flag after the required secrets are supplied.
+- `run-app.sh` starts both services in the background and immediately prints that the application is live without waiting for backend health. When the backend exits, the script cleanup trap stops the otherwise healthy frontend, making the whole application appear to fail together.
+
+Verification:
+
+- Reproduced the backend failure with `mvn spring-boot:run`; the terminal cause was unresolved placeholder `JWT_SECRET`.
+- Started the frontend successfully with Vite at `127.0.0.1:5173`, then stopped the diagnostic server.
+- Confirmed PostgreSQL readiness outside sandbox isolation.
+- Ran a read-only database query confirming `listings` exists and `flyway_schema_history` does not.
+- No secrets were displayed or recorded, no database mutation was performed, and no implementation/configuration files were changed.
+
+Commit status:
+
+- No implementation changes, commit, or push were performed for this diagnosis.
+
+## 2026-09-18 — 00:09 IST
+
+### Implemented secure local startup configuration and restored full application startup
+
+Why: The backend could not start because required infrastructure credentials were not supplied to the process. The owner approved a Git-ignored local environment file, requested that only the JWT signing secret be generated, deferred Google login, supplied the existing database and Cloudinary credentials, and authorized alignment of the legacy PostgreSQL object ownership with the `pathome` application role.
+
+Files changed:
+
+- `.gitignore`
+- `.env.local.example`
+- `run-app.sh`
+- `backend/src/main/resources/application.yml`
+- `backend/src/main/resources/application-google-login.yml`
+- `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java`
+- `frontend-web/src/components/AuthModal.tsx`
+- `frontend-web/src/vite-env.d.ts`
+- Local `.env.local` was created as a permission-restricted, Git-ignored machine configuration file; its values are intentionally not recorded here.
+
+Application changes:
+
+- Added a versioned local-environment template containing variable names and safe defaults only.
+- Added Git exclusions for local secret files while retaining the example template.
+- The launcher now loads `.env.local`, enforces owner-only file permissions, validates required variables, and generates one persistent 96-character cryptographic JWT secret only when none exists.
+- The launcher waits for backend and frontend health before declaring the application live, reports startup failures accurately, and shuts down the companion service when either process exits.
+- Database passwords, Cloudinary credentials, and the JWT secret remain outside tracked application configuration.
+- The database username safely defaults to `pathome`; its password has no source-controlled fallback.
+- Google OAuth configuration moved into the opt-in `google-login` Spring profile. The frontend Google action is hidden unless its explicit non-secret feature flag is enabled.
+- Added the standard Vite environment type declaration required for typed frontend feature flags.
+
+Database changes:
+
+- Confirmed the supplied credentials authenticate as the existing `pathome` PostgreSQL role.
+- Transferred ownership of the explicitly verified Pathome legacy tables and sequences from the former local owner to the dedicated `pathome` application role after receiving explicit approval.
+- Safely created the Flyway version-1 baseline for the existing legacy schema.
+- Successfully applied migration V2 for property-publishing constraints and migration V3 for the rental-availability index.
+- Disabled the one-time baseline flag after migration; subsequent startup validated schema version 3 and reported no pending migration.
+
+Verification:
+
+- `mvn clean compile`: passed.
+- `mvn test`: passed; 79 tests, zero failures and zero errors.
+- `npm run build`: passed; TypeScript and Vite production build completed with only the existing non-blocking bundle-size advisory.
+- `bash -n run-app.sh`: passed.
+- `.env.local` is ignored by Git and has owner-only permissions.
+- Final backend health check returned HTTP 200.
+- Final frontend health check returned HTTP 200.
+- Flyway history contains successful baseline, V2, and V3 rows.
+- Ownership audit found zero remaining Pathome tables or sequences owned by a different role.
+- A clean restart with `PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=false` succeeded; the complete application remains running on ports 8080 and 5173.
+- Scoped `git diff --check` passed for all files changed by this startup task.
+- No credential values were written to this change log or committed to tracked source files.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-18 — 00:18 IST
+
+### Audited local-network phone access
+
+Why: The owner asked how to open the currently running localhost application from a phone.
+
+Areas reviewed:
+
+- Active listeners on ports 5173 and 8080
+- `frontend-web/vite.config.ts`
+- `frontend-web/src/services/propertyService.ts`
+- `frontend-web/src/context/NotificationContext.tsx`
+- `frontend-web/src/components/AuthModal.tsx`
+
+Findings:
+
+- The backend already listens on network interfaces and can accept LAN traffic.
+- The Vite frontend currently listens only on `127.0.0.1`, so another device cannot reach it.
+- Several frontend API calls use `http://localhost:8080`; on a phone, `localhost` means the phone itself rather than the development Mac.
+- Reliable phone access therefore requires Vite to bind to the LAN interface and frontend requests to use the existing `/api` development proxy or a configurable backend origin.
+- The phone and Mac must be on the same local network, and the macOS firewall must permit the development services.
+
+Verification:
+
+- Confirmed the frontend listener is loopback-only on port 5173.
+- Confirmed the backend listener is available on port 8080 network interfaces.
+- Confirmed the current frontend contains absolute localhost API URLs.
+- No implementation changes were made during this audit.
+
+Commit status:
+
+- No commit or push was performed for this audit.
+
+## 2026-09-18 — 00:35 IST
+
+### Enabled safe access from phones on the same local network
+
+Why: The owner approved the configuration changes needed to open the locally running application on a phone without breaking desktop access or sending browser requests to the phone's own `localhost`.
+
+Files and areas changed:
+
+- `frontend-web/vite.config.ts`
+  - Bound the development server to all local network interfaces.
+  - Enabled strict port handling so the displayed address remains predictable.
+- `frontend-web/src/config/endpoints.ts`
+  - Added one centralized endpoint configuration with same-origin defaults and optional environment overrides.
+- `frontend-web/src/services/propertyService.ts`
+  - Removed the browser-side hardcoded backend hostname and made property requests work through the current application origin.
+- `frontend-web/src/context/NotificationContext.tsx`
+  - Routed notification reads and updates through the centralized API base.
+- `frontend-web/src/components/AuthModal.tsx`
+  - Routed the optional Google sign-in link through the centralized same-origin OAuth base.
+- `.env.local.example`
+  - Documented optional frontend API and OAuth endpoint overrides without adding any secret values.
+
+Outcome:
+
+- Desktop access remains available through `http://localhost:5173`.
+- When the Mac has an active local-network address, phones on that same network can use the network URL printed by Vite.
+- Frontend API calls now follow the hostname used to open the application, so they no longer resolve `localhost` on the phone.
+- Production deployments can override the endpoint origins without source-code changes.
+- The application was restarted and left running.
+
+Verification:
+
+- `npm run build` — passed.
+- `mvn test` — passed, 79 tests with zero failures or errors.
+- `mvn clean compile` — passed.
+- Live frontend health check through `127.0.0.1:5173` — HTTP 200.
+- Live proxied property API check through `127.0.0.1:5173/api/v1/properties` — HTTP 200.
+- Confirmed the frontend listener is bound to `*:5173` rather than loopback only.
+- A phone-facing URL could not be live-tested because the Mac had no active LAN address at the end of verification; no code failure was detected.
+
+Commit status:
+
+- No commit or push was performed for this task.

@@ -122,7 +122,7 @@ export const ParserLearningReviewPanel: React.FC = () => {
       transition={{ type: 'spring', stiffness: 470, damping: 24 }}
       className="space-y-5"
     >
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
@@ -138,7 +138,7 @@ export const ParserLearningReviewPanel: React.FC = () => {
             whileTap={{ scale: 0.97 }}
             onClick={() => void loadReviewQueue()}
             disabled={isLoading}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 shadow-sm hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-60"
+            className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 shadow-sm hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-60 sm:w-auto"
           >
             <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} /> Refresh review queue
           </motion.button>
@@ -151,7 +151,7 @@ export const ParserLearningReviewPanel: React.FC = () => {
             ['Protected test examples', stats?.approvedHoldout ?? 0, 'text-indigo-700 bg-indigo-50 border-indigo-200'],
             ['Excluded examples', stats?.rejected ?? 0, 'text-slate-700 bg-slate-50 border-slate-200']
           ].map(([label, value, colors]) => (
-            <div key={String(label)} className={`rounded-2xl border p-4 ${colors}`}>
+            <div key={String(label)} className={`rounded-2xl border p-3 sm:p-4 ${colors}`}>
               <div className="text-2xl font-black">{value}</div>
               <div className="mt-1 text-[11px] font-bold">{label}</div>
             </div>
@@ -160,11 +160,11 @@ export const ParserLearningReviewPanel: React.FC = () => {
       </div>
 
       {isLoading ? (
-        <div className="rounded-3xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500 sm:p-10">
           Loading examples awaiting review…
         </div>
       ) : examples.length === 0 ? (
-        <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-10 text-center">
+        <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-6 text-center sm:p-10">
           <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-600" />
           <h3 className="mt-3 font-black text-emerald-900">Learning review is up to date</h3>
           <p className="mt-1 text-sm text-emerald-700">New examples appear here only after a property is reviewed and published.</p>
@@ -187,7 +187,7 @@ export const ParserLearningReviewPanel: React.FC = () => {
                           : 'Typed details'}
                     </span>
                   </div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{example.rawPrompt}</p>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">{example.rawPrompt}</p>
                 </div>
                 <div className="shrink-0 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-center">
                   <div className="text-lg font-black text-emerald-700">{example.eligibleLabelCount}</div>
@@ -223,11 +223,11 @@ export const ParserLearningReviewPanel: React.FC = () => {
                 <div className="flex items-center gap-2 text-xs text-slate-500">
                   <Sparkles className="h-4 w-4 text-indigo-500" /> Personal or unsupported fields are automatically excluded.
                 </div>
-                <div className="flex gap-2">
+                <div className="flex w-full flex-col gap-2 min-[480px]:w-auto min-[480px]:flex-row">
                   <button
                     onClick={() => void decide(example, false)}
                     disabled={busyId === example.id}
-                    className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:border-rose-300 hover:text-rose-700 disabled:opacity-50"
+                    className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:border-rose-300 hover:text-rose-700 disabled:opacity-50 min-[480px]:w-auto"
                   >
                     Exclude example
                   </button>
@@ -236,7 +236,7 @@ export const ParserLearningReviewPanel: React.FC = () => {
                     whileTap={{ scale: 0.97 }}
                     onClick={() => void decide(example, true)}
                     disabled={busyId === example.id || example.eligibleLabelCount < 1}
-                    className="rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2 text-xs font-black text-white shadow-md shadow-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-11 w-full rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2 text-xs font-black text-white shadow-md shadow-emerald-600/20 disabled:cursor-not-allowed disabled:opacity-50 min-[480px]:w-auto"
                   >
                     Approve safe fields for learning
                   </motion.button>

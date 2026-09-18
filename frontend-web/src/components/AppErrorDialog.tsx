@@ -21,7 +21,7 @@ export const AppErrorDialog: React.FC = () => {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md"
+          className="fixed inset-0 z-[10000] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-3 backdrop-blur-md sm:items-center sm:p-4"
           onClick={dismissErrorDialog}
         >
           <motion.section
@@ -32,7 +32,7 @@ export const AppErrorDialog: React.FC = () => {
             animate={{ opacity: 1, scale: 1, rotateX: 0, y: 0 }}
             exit={{ opacity: 0, scale: 0.84, rotateX: 14, y: 18 }}
             transition={{ type: 'spring', stiffness: 480, damping: 24 }}
-            className="w-full max-w-lg overflow-hidden rounded-3xl border border-rose-500/50 bg-slate-900 text-white shadow-2xl shadow-rose-950/50"
+            className="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-x-hidden overflow-y-auto rounded-3xl border border-rose-500/50 bg-slate-900 text-white shadow-2xl shadow-rose-950/50 sm:max-h-[calc(100dvh-2rem)]"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="h-1 bg-gradient-to-r from-rose-500 via-amber-400 to-rose-500" />

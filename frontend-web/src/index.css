@@ -6,6 +6,15 @@
   html {
     scroll-behavior: smooth;
     -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  html,
+  body,
+  #root {
+    min-width: 0;
+    min-height: 100%;
+    width: 100%;
   }
   body {
     background-color: #f8fafc;
@@ -14,6 +23,11 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: clip;
+  }
+
+  img,
+  video {
+    max-width: 100%;
   }
 }
 
@@ -226,6 +240,16 @@
   background: #059669;
 }
 
+/* Keep touch carousels compact without showing platform scrollbars. */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @keyframes gradientX {
   0%, 100% {
     background-position: 0% 50%;
@@ -252,6 +276,4 @@
 .animate-scan-beam {
   animation: scanBeamHorizontal 3s ease-in-out infinite;
 }
-
-
 

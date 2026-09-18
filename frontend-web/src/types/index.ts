@@ -15,7 +15,7 @@ export type RoomTag =
 export interface PropertyMediaAsset {
   id?: number;
   listingId: number;
-  mediaUrl: String;
+  mediaUrl: string;
   cloudinaryPublicId?: string;
   mediaType: 'IMAGE' | 'VIDEO_WALKTHROUGH' | 'PANORAMA_360' | 'FLOOR_PLAN';
   roomTag: RoomTag;

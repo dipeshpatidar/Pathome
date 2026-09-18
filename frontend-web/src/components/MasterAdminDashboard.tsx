@@ -1,15 +1,42 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 import {
-  BarChart3, Users, CheckSquare, ShieldCheck, TrendingUp, DollarSign,
-  CheckCircle2, XCircle, ArrowUpRight, Award, FileText, Zap, ChevronRight, ChevronLeft,
-  SlidersHorizontal, Plus, ToggleLeft, ToggleRight, Settings, UploadCloud, Camera, Video, MapPin, Sparkles, AlertCircle, Menu,
-  Database, Copy, Check, Compass, Tag, Layers, Home, Info, X, Star, Mic, MicOff
+  BarChart3,
+  Users,
+  CheckSquare,
+  ShieldCheck,
+  CheckCircle2,
+  XCircle,
+  FileText,
+  Zap,
+  ChevronRight,
+  ChevronLeft,
+  SlidersHorizontal,
+  Plus,
+  ToggleLeft,
+  ToggleRight,
+  UploadCloud,
+  Camera,
+  Video,
+  Sparkles,
+  Menu,
+  Database,
+  Copy,
+  Check,
+  Tag,
+  Layers,
+  X,
+  Star,
+  Mic,
+  MicOff,
+  RefreshCw
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, Property } from '../types';
+import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 
 import { RevenueAreaChart } from './analytics/RevenueAreaChart';
 import { FunnelStepGraph } from './analytics/FunnelStepGraph';
@@ -82,6 +109,27 @@ const MULTIPLE_PROPERTY_ENTRY_PATTERN = /(?:\r?\n\s*\r?\n+|---|\bnext\s*(?:prope
 const SPOKEN_PROPERTY_BOUNDARY_PATTERN = /\b(?:and\s+)?(?:list\s+)?(?:the\s+)?(?:one\s+)?(?:other|another|next|second|third|fourth)\s+(?:property|flat|house|listing|unit)(?:\s+is)?\b/gi;
 const SPOKEN_RENT_PREFIX_PATTERN = /(?:rent\s+is\s+|kiraya\s+)/gi;
 const INDIAN_OWNER_PHONE_PATTERN = /^(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}$/;
+const READY_AVAILABILITY_PATTERN = /ready\s*to\s*move|immediate/i;
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+type AvailabilityStatusValue = 'READY_NOW' | 'AVAILABLE_FROM_DATE' | 'UNSPECIFIED';
+const DISPLAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const normalizeAvailabilityStatus = (value: any): AvailabilityStatusValue => {
+  if (value?.availabilityStatus === 'READY_NOW' || value?.availabilityStatus === 'AVAILABLE_FROM_DATE') {
+    return value.availabilityStatus;
+  }
+  if (value?.availableFrom) return 'AVAILABLE_FROM_DATE';
+  if (READY_AVAILABILITY_PATTERN.test(value?.possessionDate || '')) return 'READY_NOW';
+  return value?.possessionDate ? 'AVAILABLE_FROM_DATE' : 'UNSPECIFIED';
+};
+
+const formatAvailabilityDate = (isoDate: string): string => {
+  const match = ISO_DATE_PATTERN.exec(isoDate);
+  if (!match) return '';
+  const monthIndex = Number(match[2]) - 1;
+  if (monthIndex < 0 || monthIndex >= DISPLAY_MONTHS.length) return '';
+  return `${Number(match[3])} ${DISPLAY_MONTHS[monthIndex]} ${match[1]}`;
+};
 
 const normalizeOwnerPhoneForPublishing = (value: string | null | undefined): string => {
   const trimmed = value?.trim() || '';
@@ -151,7 +199,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const activeTab = externalActiveTab || internalTab;
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
-  const [showAllAttributesMobile, setShowAllAttributesMobile] = useState<boolean>(false);
+  const [showMobileListingTools, setShowMobileListingTools] = useState<boolean>(false);
   const [activeAttributeTab, setActiveAttributeTab] = useState<'all' | 'location' | 'pricing' | 'specs'>('all');
 
   const handleTabSelect = (tabId: string) => {
@@ -174,6 +222,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [newBhkLabel, setNewBhkLabel] = useState('');
   const [attachedMediaFiles, setAttachedMediaFiles] = useState<File[]>([]);
   const [attachedMediaTags, setAttachedMediaTags] = useState<Record<number, RoomTag>>({});
+  const [failedMediaUploads, setFailedMediaUploads] = useState<Array<{ file: File; originalIndex: number }>>([]);
+  const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [coverPhotoIndex, setCoverPhotoIndex] = useState<number>(0);
   const [isDragOverMedia, setIsDragOverMedia] = useState<boolean>(false);
   const [isMediaUploadModalOpen, setIsMediaUploadModalOpen] = useState<boolean>(false);
@@ -204,15 +254,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     mediaCount: number;
     timestamp: string;
   } | null>(null);
-  const [publishedHistory, setPublishedHistory] = useState<Array<{
-    id: string;
-    title: string;
-    sector: string;
-    rentVal: string;
-    mediaCount: number;
-    savedToDatabase: boolean;
-    timestamp: string;
-  }>>([]);
 
   // Extracted Property Parameters Inspection State (Null until natural language prompt is submitted)
   const [lastExtractedResult, setLastExtractedResult] = useState<any>(null);
@@ -221,6 +262,23 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
   const [dbSaveSuccessMsg, setDbSaveSuccessMsg] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
+
+  useEffect(() => {
+    if (!isInlineEditOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsInlineEditOpen(false);
+    };
+
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isInlineEditOpen]);
 
   const handleOpenInlineEdit = () => {
     const activeData = lastExtractedResult || liveExtractedPreview;
@@ -240,13 +298,17 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           : 'UNSPECIFIED';
 
       const parsedRentAmount = activeData.rentAmount || (activeData.rentVal && activeData.rentVal !== 'Unspecified' ? parseInt(String(activeData.rentVal).replace(/[^0-9]/g, '')) : 0);
+      const parsedBathrooms = typeof activeData.bathrooms === 'number'
+        ? activeData.bathrooms
+        : Number.parseInt(String(activeData.bathrooms || ''), 10);
+      const availabilityStatus = normalizeAvailabilityStatus(activeData);
 
       const initialForm = {
         ...activeData,
         title: activeData.title || (activeData.bhk ? `${activeData.bhk} ${typeVal} in ${activeData.sector || 'Indore'}` : ''),
         bhk: activeData.bhk && activeData.bhk !== 'Unspecified' ? activeData.bhk : '',
         type: typeVal,
-        bathrooms: activeData.bathrooms ? (typeof activeData.bathrooms === 'number' ? activeData.bathrooms : parseInt(String(activeData.bathrooms))) : '',
+        bathrooms: Number.isFinite(parsedBathrooms) ? parsedBathrooms : '',
         rentAmount: parsedRentAmount || '',
         rentVal: activeData.rentVal && activeData.rentVal !== 'Unspecified' ? activeData.rentVal : (parsedRentAmount ? `₹${parsedRentAmount.toLocaleString('en-IN')}` : ''),
         brokerageVal: activeData.brokerageVal && activeData.brokerageVal !== 'Unmentioned' ? activeData.brokerageVal : '',
@@ -254,6 +316,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         areaSqFt: activeData.areaSqFt && activeData.areaSqFt !== 'Unspecified' ? activeData.areaSqFt : '',
         vastuFacing: activeData.vastuFacing || 'Not Specified',
         furnishingStatus: furnishingVal,
+        possessionDate: activeData.possessionDate && activeData.possessionDate !== 'Unspecified' ? activeData.possessionDate : '',
+        availabilityStatus,
+        availableFrom: availabilityStatus === 'AVAILABLE_FROM_DATE' ? (activeData.availableFrom || '') : '',
+        status: activeData.status && activeData.status !== 'Unspecified' ? String(activeData.status).toUpperCase() : 'LIVE',
         sector: activeData.sector && activeData.sector !== 'Not Specified' ? activeData.sector : '',
         city: activeData.city && activeData.city !== 'Not Specified' ? activeData.city : 'Indore',
         ownerName: activeData.ownerName && activeData.ownerName !== 'Not Specified' ? activeData.ownerName : '',
@@ -282,6 +348,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       areaSqFt: editForm.areaSqFt || 'Unspecified',
       vastuFacing: editForm.vastuFacing || 'Not Specified',
       furnishingStatus: editForm.furnishingStatus || 'UNSPECIFIED',
+      possessionDate: editForm.possessionDate || '',
+      availabilityStatus: editForm.availabilityStatus || 'UNSPECIFIED',
+      availableFrom: editForm.availableFrom || '',
+      status: editForm.status || 'LIVE',
       ownerName: editForm.ownerName || 'Not Specified',
       ownerPhone: normalizeOwnerPhoneForPublishing(editForm.ownerPhone) || 'Not Specified',
       title: editForm.title || `${editForm.bhk || ''} ${editForm.type || 'Flat'} in ${editForm.sector || 'Indore'}`,
@@ -293,8 +363,86 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     notifySuccess('✅ Changes saved', 'Property details were updated successfully.');
   };
 
+  const uploadPendingMedia = async (
+    targetPropertyId: number,
+    pendingItems: Array<{ file: File; originalIndex: number }>,
+    metadata: { title?: string; sector?: string; rentVal?: string; vastuFacing?: string }
+  ) => {
+    if (!targetPropertyId || pendingItems.length === 0) return;
+    setIsUploadingMedia(true);
+    const failedItems: Array<{ file: File; originalIndex: number }> = [];
+    const failureMessages: string[] = [];
+
+    for (let pendingIndex = 0; pendingIndex < pendingItems.length; pendingIndex += 1) {
+      const item = pendingItems[pendingIndex];
+      try {
+        await propertyService.uploadTaggedMedia(targetPropertyId, item.file, {
+          roomTag: attachedMediaTags[item.originalIndex] || (item.originalIndex === 0 ? 'LIVING_ROOM' : 'BEDROOM'),
+          mediaType: item.file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
+          caption: metadata.title || 'Property media',
+          isPrimaryCover: item.originalIndex === coverPhotoIndex,
+          sector: metadata.sector,
+          priceTag: metadata.rentVal,
+          vastuFacing: metadata.vastuFacing
+        }, {
+          onProgress: (progress) => {
+            const overallProgress = Math.round(
+              ((pendingIndex + (progress.percent / 100)) / pendingItems.length) * 100
+            );
+            setUploadStatusMsg(progress.stage === 'retrying'
+              ? `Connection interrupted. Retrying media… ${overallProgress}%`
+              : progress.stage === 'preparing'
+                ? `Preparing media… ${overallProgress}%`
+                : `Uploading property media… ${overallProgress}%`);
+          }
+        });
+      } catch (mediaError) {
+        failedItems.push(item);
+        failureMessages.push(getErrorMessage(mediaError, `${item.file.name} could not be uploaded.`));
+      }
+    }
+
+    setIsUploadingMedia(false);
+    setFailedMediaUploads(failedItems);
+
+    if (failedItems.length > 0) {
+      setUploadStatusMsg(`${failedItems.length} ${failedItems.length === 1 ? 'file needs' : 'files need'} another attempt.`);
+      showErrorDialog({
+        title: 'Property published, but some media needs attention',
+        message: `Listing #${targetPropertyId} is already published. Retry only the failed media; the property will not be created again.`,
+        details: failureMessages.join(' • '),
+        action: {
+          label: 'Retry failed media',
+          onClick: () => void uploadPendingMedia(targetPropertyId, failedItems, metadata)
+        }
+      });
+      return;
+    }
+
+    setUploadStatusMsg('All property media uploaded successfully.');
+    notifySuccess('Media uploaded', 'All attached photos and videos have been uploaded to this listing.', undefined, 'PROPERTY');
+  };
+
+  const handleRetryFailedMedia = async () => {
+    const targetPropertyId = lastExtractedResult?.databaseId;
+    if (!targetPropertyId || failedMediaUploads.length === 0) return;
+    await uploadPendingMedia(targetPropertyId, failedMediaUploads, {
+      title: lastExtractedResult.title,
+      sector: lastExtractedResult.sector,
+      rentVal: lastExtractedResult.rentVal,
+      vastuFacing: lastExtractedResult.vastuFacing
+    });
+  };
+
   const handleSaveToDatabase = async () => {
     if (!lastExtractedResult) return;
+
+    if (lastExtractedResult.savedToDatabase && lastExtractedResult.databaseId) {
+      if (failedMediaUploads.length > 0) {
+        await handleRetryFailedMedia();
+      }
+      return;
+    }
     
     // Pre-flight validation for mandatory non-null database fields
     const missingReq: string[] = [];
@@ -355,6 +503,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         vastuFacing: lastExtractedResult.vastuFacing || 'Not Specified',
         furnishingStatus: lastExtractedResult.furnishingStatus || '',
         possessionDate: lastExtractedResult.possessionDate || '',
+        availabilityStatus: lastExtractedResult.availabilityStatus || 'UNSPECIFIED',
+        availableFrom: lastExtractedResult.availableFrom || '',
         address: lastExtractedResult.address || lastExtractedResult.sector || '',
         sector: lastExtractedResult.sector || '',
         city: lastExtractedResult.city || '',
@@ -371,20 +521,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
       const saved = await propertyService.createPropertyFromParsed(payload);
       const propertyId = saved.propertyId;
-      if (propertyId && attachedMediaFiles.length > 0) {
-        for (let index = 0; index < attachedMediaFiles.length; index += 1) {
-          const file = attachedMediaFiles[index];
-          await propertyService.uploadTaggedMedia(propertyId, file, {
-            roomTag: attachedMediaTags[index] || (index === 0 ? 'LIVING_ROOM' : 'BEDROOM'),
-            mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
-            caption: payload.title,
-            isPrimaryCover: index === coverPhotoIndex,
-            sector: payload.sector,
-            priceTag: payload.rentVal || `₹${rentAmountNum.toLocaleString('en-IN')} / month`,
-            vastuFacing: payload.vastuFacing
-          });
-        }
-      }
+      window.dispatchEvent(new Event('pathome_property_published'));
       setDbSaveSuccessMsg(`Property successfully published. Listing ID: #${propertyId}`);
       setLastExtractedResult((prev: any) => ({
         ...prev,
@@ -394,6 +531,17 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         databaseId: propertyId,
         extractedAt: `Just now (Listing #${saved.id})`
       }));
+
+      await uploadPendingMedia(
+        propertyId,
+        attachedMediaFiles.map((file, originalIndex) => ({ file, originalIndex })),
+        {
+          title: payload.title,
+          sector: payload.sector,
+          rentVal: payload.rentVal || `₹${rentAmountNum.toLocaleString('en-IN')} / month`,
+          vastuFacing: payload.vastuFacing
+        }
+      );
     } catch (err: unknown) {
       console.warn('Backend endpoint status notice:', err);
       const message = getErrorMessage(err, 'Please check the required property details and try again.');
@@ -546,27 +694,57 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     const files = Array.from(e.target.files);
     setIsUploadingCloudinary(true);
     setUploadStatusMsg(`Uploading ${files.length === 1 ? 'photo' : 'photos'}…`);
-    try {
-      for (const file of files) {
-        await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
-          roomTag: selectedRoomTag,
-          mediaType: 'IMAGE',
-          caption: mediaCaption || `${selectedRoomTag.replace('_', ' ')} View`,
-          isPrimaryCover,
-          sector: mediaSector,
-          priceTag: mediaPriceTag,
-          vastuFacing: mediaVastu
-        });
+
+    const uploadPendingPhotos = async (pendingFiles: File[]) => {
+      const failedFiles: File[] = [];
+      const failureMessages: string[] = [];
+      setIsUploadingCloudinary(true);
+
+      for (let index = 0; index < pendingFiles.length; index += 1) {
+        const file = pendingFiles[index];
+        try {
+          await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
+            roomTag: selectedRoomTag,
+            mediaType: 'IMAGE',
+            caption: mediaCaption || `${selectedRoomTag.replace('_', ' ')} View`,
+            isPrimaryCover,
+            sector: mediaSector,
+            priceTag: mediaPriceTag,
+            vastuFacing: mediaVastu
+          }, {
+            onProgress: (progress) => {
+              const overallProgress = Math.round(((index + (progress.percent / 100)) / pendingFiles.length) * 100);
+              setUploadStatusMsg(progress.stage === 'retrying'
+                ? `Connection interrupted. Retrying photo… ${overallProgress}%`
+                : `Uploading photos… ${overallProgress}%`);
+            }
+          });
+        } catch (error) {
+          failedFiles.push(file);
+          failureMessages.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
+        }
       }
-      setUploadStatusMsg(`✓ ${files.length} ${files.length === 1 ? 'photo' : 'photos'} uploaded.`);
-      notifySuccess('🎉 Photos uploaded', `${files.length} ${files.length === 1 ? 'photo was' : 'photos were'} added to this listing.`, `Location: ${mediaSector} • Rent: ${mediaPriceTag} • Facing: ${mediaVastu}`, 'PROPERTY');
-    } catch (err) {
-      console.error(err);
-      setUploadStatusMsg('Photos are ready to upload when the listing is published.');
-      notifyInfo('📸 Photos ready', `${files.length} ${files.length === 1 ? 'photo is' : 'photos are'} ready to add to the listing.`, undefined, 'PROPERTY');
-    } finally {
+
       setIsUploadingCloudinary(false);
-    }
+      if (failedFiles.length > 0) {
+        setUploadStatusMsg(`${failedFiles.length} ${failedFiles.length === 1 ? 'photo needs' : 'photos need'} another attempt.`);
+        showErrorDialog({
+          title: 'Some photos need another attempt',
+          message: 'Successfully uploaded photos are safe. Retry only the remaining files.',
+          details: failureMessages.join(' • '),
+          action: {
+            label: 'Retry failed photos',
+            onClick: () => void uploadPendingPhotos(failedFiles)
+          }
+        });
+        return;
+      }
+
+      setUploadStatusMsg(`✓ ${pendingFiles.length} ${pendingFiles.length === 1 ? 'photo' : 'photos'} uploaded.`);
+      notifySuccess('Photos uploaded', `${pendingFiles.length} ${pendingFiles.length === 1 ? 'photo was' : 'photos were'} added to this listing.`, `Location: ${mediaSector} • Rent: ${mediaPriceTag} • Facing: ${mediaVastu}`, 'PROPERTY');
+    };
+
+    await uploadPendingPhotos(files);
   };
 
   const handleCloudinaryVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -574,29 +752,42 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     const file = e.target.files[0];
     setIsUploadingCloudinary(true);
     setUploadStatusMsg('Uploading walkthrough video…');
-    try {
-      await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
-        roomTag: selectedRoomTag,
-        mediaType: 'VIDEO_WALKTHROUGH',
-        caption: mediaCaption || 'HD Video Walkthrough',
-        isPrimaryCover: false,
-        sector: mediaSector,
-        priceTag: mediaPriceTag,
-        vastuFacing: mediaVastu
-      });
-      setUploadStatusMsg('✓ Walkthrough video uploaded.');
-      notifySuccess('🎉 Walkthrough video uploaded', 'The walkthrough video was added to this listing.', undefined, 'PROPERTY');
-    } catch (err: unknown) {
-      console.error(err);
-      setUploadStatusMsg('Walkthrough video is ready to upload when the listing is published.');
-      showErrorDialog({
-        title: 'Unable to upload the walkthrough video',
-        message: getErrorMessage(err, 'Please choose the video again and try once more.'),
-        details: getErrorDetails(err)
-      });
-    } finally {
-      setIsUploadingCloudinary(false);
-    }
+
+    const uploadVideo = async () => {
+      setIsUploadingCloudinary(true);
+      try {
+        await propertyService.uploadTaggedMedia(selectedPropertyId, file, {
+          roomTag: selectedRoomTag,
+          mediaType: 'VIDEO_WALKTHROUGH',
+          caption: mediaCaption || 'Property walkthrough video',
+          isPrimaryCover: false,
+          sector: mediaSector,
+          priceTag: mediaPriceTag,
+          vastuFacing: mediaVastu
+        }, {
+          onProgress: (progress) => setUploadStatusMsg(progress.stage === 'retrying'
+            ? `Connection interrupted. Retrying video… ${progress.percent}%`
+            : `Uploading walkthrough video… ${progress.percent}%`)
+        });
+        setUploadStatusMsg('✓ Walkthrough video uploaded.');
+        notifySuccess('Walkthrough video uploaded', 'The walkthrough video was added to this listing.', undefined, 'PROPERTY');
+      } catch (err: unknown) {
+        setUploadStatusMsg('The walkthrough video needs another attempt.');
+        showErrorDialog({
+          title: 'Unable to upload the walkthrough video',
+          message: getErrorMessage(err, 'The property is safe. Retry the video when the connection is stable.'),
+          details: getErrorDetails(err),
+          action: {
+            label: 'Retry video',
+            onClick: () => void uploadVideo()
+          }
+        });
+      } finally {
+        setIsUploadingCloudinary(false);
+      }
+    };
+
+    await uploadVideo();
   };
 
   React.useEffect(() => {
@@ -608,411 +799,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
   const handleToggleBhk = (id: string) => {
     setBhkConfigs(bhkConfigs.map((c: any) => c.id === id ? { ...c, enabled: !c.enabled } : c));
-  };
-
-  const parseNaturalLanguageProperty = (text: string) => {
-    if (!text || !text.trim()) return null;
-    const input = text.trim();
-    const cleanLower = input.toLowerCase();
-
-    // 0. Exhaustive Pre-Pass: Typo Auto-Correction & Normalization
-    let normalized = cleanLower;
-    normalized = normalized.replace(/\b(flt|flts|flatt|appartment|appatment|apartmnt|apt|apts)\b/g, 'flat');
-    normalized = normalized.replace(/\b(viila|vlla|vlia|bunglow|bunglows|independant|indepent)\b/g, 'house');
-    normalized = normalized.replace(/\b(plott|pott|lnd)\b/g, 'plot');
-    normalized = normalized.replace(/\b(penthous|pent\s*house|pent\-house)\b/g, 'penthouse');
-    normalized = normalized.replace(/\b(semi\s*furnishd|semifurnished|semi\-furnished|semifurnish)\b/g, 'semi furnished');
-    normalized = normalized.replace(/\b(fully\s*furnishd|full\s*furnished|fully\-furnished|fullfurnish)\b/g, 'fully furnished');
-    normalized = normalized.replace(/\b(unfurnishd|un\-furnished|bare)\b/g, 'unfurnished');
-    normalized = normalized.replace(/\b(est\s*facing|east\s*faceing|east\s*dacing)\b/g, 'east facing');
-    normalized = normalized.replace(/\b(wst\s*facing|west\s*faceing|west\s*dacing)\b/g, 'west facing');
-    normalized = normalized.replace(/\b(noth\s*facing|north\s*faceing|north\s*dacing)\b/g, 'north facing');
-    normalized = normalized.replace(/\b(suth\s*facing|south\s*faceing|south\s*dacing)\b/g, 'south facing');
-    normalized = normalized.replace(/\b(rnt|ren|mothly\s*rent|pm|p\.m\.)\b/g, 'rent');
-    normalized = normalized.replace(/\b(depost|deposite|diposite|diposit|scurity\s*deposit|scurity\s*dep|securuity\s*deposit|securuity)\b/g, 'deposit');
-    normalized = normalized.replace(/\b(near\s*by|nearby|near\s*to|opp\s*to|infront\s*of)\b/g, 'near');
-    normalized = normalized.replace(/\b(brokraj|brokrage|brookerage|brokerg|brokorage|commission)\b/g, 'brokerage');
-    normalized = normalized.replace(/\b(bathromm|bathrom|bathrm|washrom|toilett|bth)\b/g, 'bathroom');
-
-    // 1. Universal Fault-Tolerant BHK / Layout Extractor
-    let bhk = 'Unspecified';
-    let bhkFound = false;
-
-    // 1A. Direct & Multi-Word Distance-Independent BHK Matching
-    const numBhkMatch = input.match(/\b([1-9](?:\.5)?|10)\s*(?:[a-zA-Z0-9\-\_]{1,30}\s+){0,10}?(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\b/i) ||
-                        normalized.match(/\b([1-9](?:\.5)?|10)\s*(?:[a-zA-Z0-9\-\_]{1,30}\s+){0,10}?(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\b/i);
-
-    // 1B. Reverse Matching (e.g. 'bhk 2' or 'bedrooms 3')
-    const revBhkMatch = input.match(/\b(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\b\s*(?:[a-zA-Z0-9\-\_]{1,30}\s+){0,10}?([1-9](?:\.5)?|10)\b/i) ||
-                        normalized.match(/\b(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk|flat|flt|flats|flatt|apartment|house|villa)\b\s*(?:[a-zA-Z0-9\-\_]{1,30}\s+){0,10}?([1-9](?:\.5)?|10)\b/i);
-
-    const wordBhkMatch = input.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:[a-zA-Z0-9\-\_]{1,30}\s+){0,10}?(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk)\b/i);
-
-    if (numBhkMatch) {
-      const val = numBhkMatch[1];
-      bhk = val.endsWith('.0') ? `${val.substring(0, val.length - 2)} BHK` : `${val} BHK`;
-      bhkFound = true;
-    } else if (revBhkMatch) {
-      const val = revBhkMatch[1];
-      bhk = val.endsWith('.0') ? `${val.substring(0, val.length - 2)} BHK` : `${val} BHK`;
-      bhkFound = true;
-    } else if (wordBhkMatch) {
-      const wordMap: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10' };
-      bhk = `${wordMap[wordBhkMatch[1].toLowerCase()] || '2'} BHK`;
-      bhkFound = true;
-    } else if (/studio|1rk|\brk\b/i.test(normalized)) {
-      bhk = '1 RK Studio';
-      bhkFound = true;
-    } else if (/triplex/i.test(normalized)) {
-      bhk = 'Triplex Villa';
-      bhkFound = true;
-    } else if (/duplex|villa/i.test(normalized)) {
-      bhk = 'Duplex Villa';
-      bhkFound = true;
-    } else if (/penthouse/i.test(normalized)) {
-      bhk = 'Luxury Penthouse';
-      bhkFound = true;
-    } else {
-      // 1C. Global Fallback Extractor: If any single number exists and prompt contains BHK/RK/Bed tokens or typos anywhere
-      const anyNumMatch = input.match(/\b([1-9]\d?(?:\.5)?)\b/);
-      if (anyNumMatch && /(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk)/i.test(input)) {
-        bhk = `${anyNumMatch[1]} BHK`;
-        bhkFound = true;
-      }
-    }
-
-    // 2. Extract Property Type (Penthouse prioritized to prevent 'house' substring collision)
-    let type = '';
-    let typeFound = false;
-    if (/penthouse|penthous/i.test(normalized)) { type = 'PENTHOUSE'; typeFound = true; }
-    else if (/air\s*bnb|airbnb/i.test(normalized)) { type = 'AIRBNB'; typeFound = true; }
-    else if (/studio/i.test(normalized)) { type = 'STUDIO'; typeFound = true; }
-    else if (/plot|land|commercial plot|plott|pott/i.test(normalized)) { type = 'PLOT'; typeFound = true; }
-    else if (/flat|apartment|flt|flts|flatt|appartment|apartmnt|apt/i.test(normalized)) { type = 'FLAT'; typeFound = true; }
-    else if (/\bhouse\b|\bvilla\b|\bbungalow\b|\bindependant\b|\bbunglow\b|\bviila\b|\bvlla\b/i.test(normalized)) { type = 'HOUSE'; typeFound = true; }
-
-    // 3A. Brokerage Extractor (Supports comma formatting & intervening words e.g. "brokerage Fee is 15000", "brokerage is 7000")
-    let brokerageDays: number | undefined = undefined;
-    let brokerageVal = 'Unmentioned';
-    let brokerageAmount: number | undefined = undefined;
-    let brokerageFound = false;
-    const brokerageDaysMatch = normalized.match(/\b(\d{1,2})\s*(?:days|day)\s*(?:brokerage|broker\s*fee|commission)?\b/i);
-    const brokerageMatch = normalized.match(/(?:brokerage|broker\s*fee|commission)\b(?:\s+(?:fee|fees|is|of|amount|charge|charges|=|-)){0,3}\s*[:\-]?\s*(?:rs\.?|₹)?\s*(\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)\b|\b(\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)\s*(?:rs\.?|₹)?\s*(?:fee|fees|is|of|amount|charge|charges)?\s*(?:brokerage|broker\s*fee|commission)\b/i);
-    if (brokerageMatch) {
-      const rawB = brokerageMatch[1] || brokerageMatch[2];
-      if (rawB) {
-        const cleanB = rawB.replace(/,/g, '');
-        brokerageAmount = cleanB.toLowerCase().endsWith('k') ? parseInt(cleanB.slice(0, -1)) * 1000 : parseInt(cleanB);
-        brokerageVal = `₹${brokerageAmount.toLocaleString('en-IN')}`;
-        brokerageFound = true;
-      }
-    } else if (brokerageDaysMatch) {
-      brokerageDays = parseInt(brokerageDaysMatch[1]);
-      brokerageVal = `${brokerageDays} Days Rent`;
-      brokerageFound = true;
-    }
-
-    // 3B. Bathrooms Extractor (No fake default - undefined if unmentioned)
-    let bathrooms: number | undefined = undefined;
-    const bathMatch = normalized.match(/\b(\d+)\s*(?:bath|baths|bathroom|bathrooms|washroom|toilet)\b|\b(?:bath|baths|bathroom|bathrooms|washroom|toilet)\s*[:\-]?\s*(\d+)\b/i);
-    if (bathMatch) {
-      bathrooms = parseInt(bathMatch[1] || bathMatch[2]);
-    }
-
-    // 3C. Area Sqft Extractor (Supports comma formatting e.g. 1,800 sqft)
-    let areaSqFt = '';
-    const sqftMatch = normalized.match(/\b(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:sqft|sq\.ft|sq\s*ft|sqfeet|square\s*feet|sq\s*meters|sqm)\b/i);
-    if (sqftMatch) {
-      areaSqFt = `${sqftMatch[1]} sqft`;
-    }
-
-    // 3D. Security Deposit Extractor (Supports typos "securuity", "is 1+1 60000", "36000 securuity deposit")
-    let depositVal = '';
-    const depositMatch = normalized.match(/(?:security\s*deposit|deposit|dep|depost|deposite|diposite|scurity|securuity)\b(?:\s+(?:is|amount|of|=|-)){0,3}\s*[:\-]?\s*(?:rs\.?|₹)?\s*([1-3]\+[1-3]\s*\d{4,6}|[1-3]\+[1-3]|\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)\b|\b([1-3]\+[1-3]\s*\d{4,6}|[1-3]\+[1-3]|\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)\s*(?:rs\.?|₹)?\s*(?:is|amount)?\s*(?:security\s*deposit|deposit|dep|depost|deposite|diposite|scurity|securuity)\b/i);
-    if (depositMatch) {
-      const depRaw = depositMatch[1] || depositMatch[2];
-      if (/^\d{1,3}(?:,\d{2,3})+|\d{4,6}$/.test(depRaw.replace(/,/g, ''))) {
-        const dAmt = parseInt(depRaw.replace(/,/g, ''));
-        depositVal = `₹${dAmt.toLocaleString('en-IN')} Security Deposit`;
-      } else {
-        depositVal = `${depRaw} Security Deposit`;
-      }
-    }
-
-    // 3E. Owner Name & Phone Extractor (Supports "owner name Dipesh Patidar" AND "Dipesh Patidar owner 6263421859")
-    let ownerName = 'Not Specified';
-    let ownerPhone = 'Not Specified';
-    let ownerFound = false;
-    const ownerNameMatch = input.match(/\b(?:owner\s*name|owner|contact)\s*[:\-]?\s*([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20}){0,3})\b/i);
-    const reverseOwnerMatch = input.match(/\b([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20}){0,3})\s+(?:owner|contact)\b/i);
-
-    if (ownerNameMatch && ownerNameMatch[1].trim()) {
-      const candidate = ownerNameMatch[1].replace(/\b(is|live|facing|flat|house|villa|apartment|plot|furnished|fully|semi|unfurnished|bhk|rk|bedroom|bath|baths)\b/gi, '').trim();
-      if (candidate) {
-        ownerName = candidate.replace(/\b\w/g, l => l.toUpperCase());
-        ownerFound = true;
-      }
-    } else if (reverseOwnerMatch && reverseOwnerMatch[1].trim()) {
-      const candidate = reverseOwnerMatch[1].replace(/\b(is|live|facing|flat|house|villa|apartment|plot|furnished|fully|semi|unfurnished|bhk|rk|bedroom|bath|baths)\b/gi, '').trim();
-      if (candidate) {
-        ownerName = candidate.replace(/\b\w/g, l => l.toUpperCase());
-        ownerFound = true;
-      }
-    }
-
-    const phoneMatch = input.match(/(?:\+?91[\-\s]?)?([1-9](?:[\-\s]?\d){7,10})/);
-    if (phoneMatch) {
-      const rawDigits = phoneMatch[0].replace(/\D/g, '');
-      const cleanDigits = (rawDigits.startsWith('91') && rawDigits.length > 10) ? rawDigits.slice(2) : rawDigits;
-      if (cleanDigits.length >= 8) {
-        const last10 = cleanDigits.slice(-10);
-        const formatted = cleanDigits.length === 10 
-          ? `+91 ${last10.slice(0, 5)} ${last10.slice(5)}` 
-          : `+91 ${cleanDigits}`;
-        if (!areaSqFt?.startsWith(last10) && (!brokerageVal || !brokerageVal.includes(last10))) {
-          ownerPhone = formatted;
-          ownerFound = true;
-        }
-      }
-    }
-
-    // 3F. Extract Rent / Price (Supports comma formatting e.g. ₹45,000)
-    let rentVal = 'Unspecified';
-    let rentAmount = 0;
-    let rentFound = false;
-    const explicitRentMatch = normalized.match(/(\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)(?!\s*(?:brokerage|broker\s*fee|commission|deposit|sqft|bath))\s*(?:rent|per\s*month|\/month|pm)\b|\brent\b\s*[:\-]?\s*(?:rs\.?|₹)?\s*(\d{1,3}(?:,\d{2,3})+|\d{4,6}|\d{1,2}k)\b/i);
-    if (explicitRentMatch) {
-      const rawR = explicitRentMatch[1] || explicitRentMatch[2];
-      if (rawR) {
-        const cleanR = rawR.replace(/,/g, '');
-        rentAmount = cleanR.toLowerCase().endsWith('k') ? parseInt(cleanR.slice(0, -1)) * 1000 : parseInt(cleanR);
-        rentVal = `₹${rentAmount.toLocaleString('en-IN')}`;
-        rentFound = true;
-      }
-    } else {
-      let numberMatch = normalized.match(/\b(\d{1,3}(?:,\d{2,3})+|\d{4,6})\b/);
-      let kMatch = normalized.match(/\b(\d{1,2})k\b/i);
-      if (numberMatch) {
-        const cleanNum = numberMatch[1].replace(/,/g, '');
-        if ((!areaSqFt || !areaSqFt.startsWith(cleanNum)) && (!brokerageVal || !brokerageVal.includes(cleanNum))) {
-          rentAmount = parseInt(cleanNum);
-          rentVal = `₹${rentAmount.toLocaleString('en-IN')}`;
-          rentFound = true;
-        }
-      } else if (kMatch) {
-        rentAmount = parseInt(kMatch[1]) * 1000;
-        rentVal = `₹${rentAmount.toLocaleString('en-IN')}`;
-        rentFound = true;
-      }
-    }
-
-    // 3.5. Multi-City Pan-India Extractor
-    let city = '';
-    const PAN_INDIA_CITIES = [
-      'Indore', 'Bhopal', 'Pune', 'Bangalore', 'Mumbai', 'Delhi',
-      'Gurgaon', 'Noida', 'Hyderabad', 'Chennai', 'Kolkata',
-      'Ahmedabad', 'Jaipur', 'Surat', 'Lucknow', 'Chandigarh', 'Goa'
-    ];
-
-    for (const c of PAN_INDIA_CITIES) {
-      if (new RegExp(`\\b${c}\\b`, 'i').test(normalized)) {
-        city = c;
-        break;
-      }
-    }
-
-    // 4. Locality & Sector Extraction with Fuzzy Gazetteer Auto-Correction
-    let sector = '';
-    const SECTOR_GAZETTEER = [
-      { canonical: 'Mahalaxmi Nagar', keywords: ['mahalaxmi nagar', 'mahalaxmi nagr', 'mahalaxmi', 'mahalaxminagar'] },
-      { canonical: 'Chikatsak Nagar', keywords: ['chikatsak nagar', 'chikatsak nagr', 'chikatsak'] },
-      { canonical: 'Rau Circle', keywords: ['rau circle', 'rau', 'rau square'] },
-      { canonical: 'Chhoti Gwaltoli', keywords: ['choti', 'gwaltoli', 'chhoti'] },
-      { canonical: 'Nanda Nagar', keywords: ['nanda', 'nandanagar', 'nanda nagr'] },
-      { canonical: 'Vijay Nagar', keywords: ['vijay', 'vijaynagar', 'vijay nagr', 'vijayngr'] },
-      { canonical: 'Bhawarkua', keywords: ['bhawarkua', 'bhawarkwa', 'bhawar', 'bhawar kua'] },
-      { canonical: 'Palasia', keywords: ['palasia', 'palasiaa'] },
-      { canonical: 'Super Corridor', keywords: ['super', 'corridor'] },
-      { canonical: 'Nipania', keywords: ['nipania', 'nipaniya'] },
-      { canonical: 'AB Road', keywords: ['ab road', 'abroad'] },
-      { canonical: 'LIG Circle', keywords: ['lig'] },
-      { canonical: 'South Tukoganj', keywords: ['tukoganj'] },
-      { canonical: 'MP Nagar', keywords: ['mp nagar', 'mpnagar'] },
-      { canonical: 'Arera Colony', keywords: ['arera colony', 'arera'] },
-      { canonical: 'Hinjewadi', keywords: ['hinjewadi', 'hinjawadi'] },
-      { canonical: 'Indiranagar', keywords: ['indiranagar', 'indira nagar'] },
-      { canonical: 'Koramangala', keywords: ['koramangala'] },
-      { canonical: 'Andheri', keywords: ['andheri'] },
-      { canonical: 'Bandra', keywords: ['bandra'] },
-      { canonical: 'Gurgaon', keywords: ['gurgaon', 'gurugram'] }
-    ];
-
-    for (const secObj of SECTOR_GAZETTEER) {
-      if (secObj.keywords.some(kw => normalized.includes(kw))) {
-        sector = secObj.canonical;
-        break;
-      }
-    }
-
-    if (!sector) {
-      let prepMatch = normalized.match(/\b(?:in|at|near|around|sector)\s+([A-Za-z0-9\s]{2,30}?)(?=\s+(?:with|having|facing|for|rent|per|\d|rs|rupees|\$|$))/i);
-      if (prepMatch && prepMatch[1].trim()) {
-        sector = prepMatch[1].trim().replace(/\b\w/g, l => l.toUpperCase());
-      }
-    }
-
-    if (!sector) {
-      let suffixMatch = normalized.match(/\b([A-Za-z0-9\s]{2,20}\s+(?:nagar|colony|city|township|road|circle|sector|bazar|vihar|enclave|pur|ganj|heights|residency|villa|society|square|chowk|puri|dham|bagh|marg))\b/i);
-      if (suffixMatch && suffixMatch[1].trim()) {
-        sector = suffixMatch[1].trim().replace(/\b\w/g, l => l.toUpperCase());
-      }
-    }
-
-    if (!sector) {
-      sector = 'Not Specified';
-    }
-
-    // 4.5. Society / Colony Landmark Detection
-    let colony = '';
-    const KNOWN_COLONIES = [
-      { canonical: 'Opal Homes', keywords: ['opal homes', 'opal'] },
-      { canonical: 'Shiva Vatika', keywords: ['shiva vatika', 'shiva', 'vatika'] },
-      { canonical: 'Singapore City', keywords: ['singapore city', 'singapore'] },
-      { canonical: 'Apollo DB City', keywords: ['apollo db city', 'apollo'] },
-      { canonical: 'Silver Springs', keywords: ['silver springs'] },
-      { canonical: 'Treasure Town', keywords: ['treasure town'] },
-      { canonical: 'Shalimar Township', keywords: ['shalimar'] }
-    ];
-
-    for (const colObj of KNOWN_COLONIES) {
-      if (colObj.keywords.some(kw => normalized.includes(kw))) {
-        colony = colObj.canonical;
-        break;
-      }
-    }
-
-    // 5. Extract Vastu Facing Direction (Supports typos like "dacing")
-    let vastuFacing = 'Not Specified';
-    const directions = [
-      { key: 'north-east', label: 'North-East Facing' },
-      { key: 'north-west', label: 'North-West Facing' },
-      { key: 'south-east', label: 'South-East Facing' },
-      { key: 'south-west', label: 'South-West Facing' },
-      { key: 'east', label: 'East Facing' },
-      { key: 'west', label: 'West Facing' },
-      { key: 'north', label: 'North Facing' },
-      { key: 'south', label: 'South Facing' }
-    ];
-
-    for (const dir of directions) {
-      if (new RegExp(`\\b(?:facing\\s+${dir.key}|${dir.key}\\s+facing|${dir.key}\\s+dacing|${dir.key})\\b`, 'i').test(cleanLower)) {
-        vastuFacing = dir.label;
-        break;
-      }
-    }
-
-    // 6. Furnishing Status
-    let furnishingStatus = 'UNSPECIFIED';
-    if (/fully\s*furnished|full\s*furnished/i.test(input)) furnishingStatus = 'FULLY_FURNISHED';
-    else if (/semi\s*furnished|partially\s*furnished/i.test(input)) furnishingStatus = 'SEMI_FURNISHED';
-    else if (/unfurnished|bare/i.test(input)) furnishingStatus = 'UNFURNISHED';
-
-    // 7. Possession Readiness / Date (Supports natural dates like "20th of september", "25th of sep")
-    let possessionDate = '';
-    const textDateMatch = input.match(/\b(?:possession\s*date|possession|available\s*from|available)\b(?:\s+(?:is|on|from|by)){0,2}\s*[:\-]?\s*(\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{4}-\d{2}-\d{2}|ready\s*to\s*move|immediate)/i);
-    if (textDateMatch) {
-      possessionDate = textDateMatch[1].replace(/\b\w/g, l => l.toUpperCase());
-    } else if (/ready\s*to\s*move|immediate|available\s*now/i.test(input)) {
-      possessionDate = 'Ready to Move (Immediate)';
-    } else {
-      const fallbackDateMatch = input.match(/\b(\d{1,2}(?:st|nd|rd|th)?(?:\s+of)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?)\b/i);
-      if (fallbackDateMatch) {
-        possessionDate = fallbackDateMatch[1].replace(/\b\w/g, l => l.toUpperCase());
-      }
-    }
-
-    // 8. State, Pincode, Landmark
-    let state = '';
-    const stateMatch = input.match(/\b(madhya\s*pradesh|mp|maharashtra|karnataka|delhi|telangana|tamil\s*nadu|gujarat|rajasthan|uttar\s*pradesh|up|goa|punjab|haryana|west\s*bengal)\b/i);
-    if (stateMatch) state = stateMatch[1];
-
-    let pincode = '';
-    const pincodeMatch = input.match(/\b([1-9]\d{5})\b/);
-    if (pincodeMatch && pincodeMatch[1] !== ownerPhone) pincode = pincodeMatch[1];
-
-    let landmark = '';
-    const landmarkMatch = input.match(/\b(?:landmark|near|opposite|behind|adj|adjacent\s+to)\s+([A-Za-z0-9\s]{2,25}?)(?=\s+in|\s+at|\s+with|\s+facing|\s+rent|\s+status|\d|$)/i);
-    if (landmarkMatch) landmark = landmarkMatch[1].trim();
-
-    // 9. Listing Status (No fake default - empty string if unmentioned in prompt)
-    let status = '';
-    const explicitStatusMatch = input.match(/\bstatus\s*[:\-]?\s*(pending|sold|expired|rented|removed|live)\b/i);
-    if (explicitStatusMatch) {
-      status = explicitStatusMatch[1].toUpperCase();
-    }
-
-    // 10. Extract Amenities
-    let amenities: string[] = [];
-    if (/balcony/i.test(input)) amenities.push('Balcony & City View');
-    if (/garden/i.test(input)) amenities.push('Private Garden');
-    if (/furnished/i.test(input)) amenities.push('Fully Furnished');
-    if (/parking/i.test(input)) amenities.push('Covered Parking');
-    if (/gated/i.test(input)) amenities.push('Gated Security');
-
-    // 11. Missing Fields Detection
-    const missingFields: string[] = [];
-    if (!bhkFound) missingFields.push("BHK Layout");
-    if (!bathMatch) missingFields.push("Bathrooms");
-    if (!rentFound) missingFields.push("Monthly Rent");
-    if (!brokerageFound) missingFields.push("Brokerage Fee/Days");
-    if (!depositMatch) missingFields.push("Security Deposit");
-    if (!sqftMatch) missingFields.push("Carpet Area (SqFt)");
-    if (vastuFacing === 'Not Specified') missingFields.push("Vastu Facing");
-    if (furnishingStatus === 'UNSPECIFIED') missingFields.push("Furnishing Status");
-    if (!possessionDate) missingFields.push("Possession Date");
-    if (sector === 'Not Specified') missingFields.push("Locality / Sector");
-    if (!state) missingFields.push("State");
-    if (!pincode) missingFields.push("Pincode");
-    if (!landmark) missingFields.push("Landmark");
-    if (ownerName === 'Not Specified') missingFields.push("Owner Name");
-    if (ownerPhone === 'Not Specified') missingFields.push("Owner Contact Number");
-
-    const isGarbageInput = !bhkFound && !rentFound && !ownerFound && (sector === 'Not Specified') && !sqftMatch && (vastuFacing === 'Not Specified') && !typeFound;
-
-    const locationPart = city ? `${sector}, ${city}` : sector;
-    const fullLocation = colony ? `${locationPart} (${colony})` : locationPart;
-    const title = bhkFound ? `${bhk} ${type} in ${colony ? colony + ', ' : ''}${locationPart}${vastuFacing !== 'Not Specified' ? ' (' + vastuFacing + ')' : ''}${amenities.length > 0 ? ' with ' + amenities.join(', ') : ''}` : `Property Listing (${locationPart})`;
-    const label = bhkFound ? `${bhk} ${type} (${fullLocation})` : `Property (${fullLocation})`;
-
-    return {
-      bhk,
-      type,
-      city: city || 'Indore',
-      sector,
-      colony,
-      rentVal,
-      rentAmount,
-      brokerageDays,
-      brokerageVal,
-      brokerageAmount,
-      bathrooms,
-      areaSqFt,
-      depositVal,
-      ownerName,
-      ownerPhone,
-      vastuFacing,
-      furnishingStatus,
-      possessionDate,
-      state: state || 'Madhya Pradesh',
-      pincode,
-      landmark,
-      status,
-      amenities,
-      title,
-      label,
-      missingFields,
-      isGarbageInput
-    };
   };
 
   const liveExtractedPreview = lastExtractedResult;
@@ -1079,18 +865,50 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     'FLOOR_PLAN'
   ];
 
-  const handleMediaSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const newFiles = Array.from(e.target.files).filter(
-        f => f.type.startsWith('image/') || f.type.startsWith('video/')
-      );
+  const prepareAndAttachMedia = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files).filter(
+      f => f.type.startsWith('image/') || f.type.startsWith('video/')
+    );
+    if (fileArray.length === 0) return;
+
+    setUploadStatusMsg(`Preparing ${fileArray.length} ${fileArray.length === 1 ? 'file' : 'files'}…`);
+    const preparedFiles: File[] = [];
+    const preparationErrors: string[] = [];
+
+    for (const file of fileArray) {
+      try {
+        const prepared = await prepareMediaForUpload(file);
+        preparedFiles.push(prepared);
+      } catch (error) {
+        preparationErrors.push(getErrorMessage(error, `${file.name} could not be prepared.`));
+      }
+    }
+
+    if (preparedFiles.length > 0) {
       const startIdx = attachedMediaFiles.length;
       const newTags: Record<number, RoomTag> = { ...attachedMediaTags };
-      newFiles.forEach((_, i) => {
+      preparedFiles.forEach((_, i) => {
         newTags[startIdx + i] = DEFAULT_SMART_TAG_SEQUENCE[(startIdx + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
       });
       setAttachedMediaTags(newTags);
-      setAttachedMediaFiles(prev => [...prev, ...newFiles]);
+      setAttachedMediaFiles(prev => [...prev, ...preparedFiles]);
+      setUploadStatusMsg(`${preparedFiles.length} ${preparedFiles.length === 1 ? 'file' : 'files'} prepared and ready.`);
+    }
+
+    if (preparationErrors.length > 0) {
+      showErrorDialog({
+        title: preparedFiles.length > 0 ? 'Some media could not be added' : 'Media could not be added',
+        message: preparedFiles.length > 0
+          ? 'Supported files were prepared. Review the files that still need attention.'
+          : 'Choose supported media within the displayed limits and try again.',
+        details: preparationErrors.join(' • ')
+      });
+    }
+  };
+
+  const handleMediaSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      void prepareAndAttachMedia(e.target.files);
     }
   };
 
@@ -1098,21 +916,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     e.preventDefault();
     setIsDragOverMedia(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const newFiles = Array.from(e.dataTransfer.files).filter(
-        f => f.type.startsWith('image/') || f.type.startsWith('video/')
-      );
-      const startIdx = attachedMediaFiles.length;
-      const newTags: Record<number, RoomTag> = { ...attachedMediaTags };
-      newFiles.forEach((_, i) => {
-        newTags[startIdx + i] = DEFAULT_SMART_TAG_SEQUENCE[(startIdx + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
-      });
-      setAttachedMediaTags(newTags);
-      setAttachedMediaFiles(prev => [...prev, ...newFiles]);
+      void prepareAndAttachMedia(e.dataTransfer.files);
     }
   };
 
   const handleRemoveAttachedMedia = (index: number) => {
     setAttachedMediaFiles(prev => prev.filter((_, i) => i !== index));
+    setFailedMediaUploads(prev => prev.filter(item => item.originalIndex !== index));
     const updatedTags: Record<number, RoomTag> = {};
     attachedMediaFiles.filter((_, i) => i !== index).forEach((_, newIdx) => {
       const origKey = newIdx >= index ? newIdx + 1 : newIdx;
@@ -1167,16 +977,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row min-w-0">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row min-w-0">
 
-      {/* MOBILE NAVIGATION BAR HEADER (VISIBLE ON PHONES/SMALL DEVICES < 768px) */}
-      <div className="md:hidden sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 px-4 py-3 flex items-center justify-between shadow-lg">
-        <div className="flex items-center gap-2.5">
+      {/* COMPACT NAVIGATION BAR FOR PHONES AND TABLETS */}
+      <div className="lg:hidden sticky top-[74px] z-40 bg-slate-900 text-white border-b border-slate-800 px-3 min-[360px]:px-4 py-3 flex items-center justify-between gap-3 shadow-lg">
+        <div className="flex min-w-0 items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold border border-emerald-500/30">
             <ShieldCheck className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="text-xs font-black font-['Outfit'] text-white leading-tight">Pathome Admin Portal</h2>
+          <div className="min-w-0">
+            <h2 className="truncate text-xs font-black font-['Outfit'] text-white leading-tight">Pathome Admin Portal</h2>
             <span className="text-[10px] text-emerald-400 font-mono font-bold block">Indore Region HQ</span>
           </div>
         </div>
@@ -1198,7 +1008,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.25 }}
-            className="md:hidden bg-slate-950 text-white border-b border-slate-800 px-4 py-4 space-y-2 z-40 shadow-2xl"
+            className="lg:hidden bg-slate-950 text-white border-b border-slate-800 px-4 py-4 space-y-2 z-40 shadow-2xl"
           >
             <div className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider mb-2">
               Select Navigation Panel:
@@ -1238,11 +1048,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         )}
       </AnimatePresence>
 
-      {/* 1. COLLAPSIBLE LEFT SIDEBAR NAVIGATION (DESKTOP / TABLET >= 768px) */}
+      {/* 1. COLLAPSIBLE LEFT SIDEBAR NAVIGATION (LARGE DESKTOPS) */}
       <motion.aside
         animate={{ width: isSidebarCollapsed ? 80 : 280 }}
         transition={{ type: "spring", stiffness: 350, damping: 32 }}
-        className="bg-white border-r border-slate-200/90 shadow-sm shrink-0 sticky top-[74.5px] h-[calc(100vh-74.5px)] flex flex-col justify-between z-30 select-none hidden md:flex relative"
+        className="bg-white border-r border-slate-200/90 shadow-sm shrink-0 sticky top-[74.5px] h-[calc(100vh-74.5px)] flex flex-col justify-between z-30 select-none hidden lg:flex relative"
       >
         {/* FLOATING SIDEBAR COLLAPSE CHEVRON TOGGLE PILL */}
         <button
@@ -1360,10 +1170,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       </motion.aside>
 
       {/* 2. MAIN ADMIN CONTENT CONTAINER */}
-      <main className="flex-1 min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 w-full">
+      <main className="flex-1 min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-6 w-full">
 
         {/* EXECUTIVE PORTAL HEADER */}
-        <div className="bg-white text-slate-900 rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-sm relative overflow-hidden">
+        <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} relative overflow-hidden rounded-3xl border border-slate-200/90 bg-white p-4 text-slate-900 shadow-sm sm:p-6 lg:p-8`}>
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">
             <div>
               <div className="flex items-center gap-2 flex-wrap">
@@ -1679,7 +1489,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               className="space-y-6"
             >
               {/* PROPERTY UPLOAD WORKSPACE */}
-              <motion.div ref={uploadConsoleRef} variants={cardVariants} className="bg-slate-900 text-white rounded-3xl p-6 sm:p-7 border border-slate-800 shadow-2xl relative overflow-hidden">
+              <motion.div ref={uploadConsoleRef} variants={cardVariants} className="relative overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-3 text-white shadow-2xl min-[380px]:p-4 sm:p-7">
                 {/* COOL ANIMATED AMBIENT AURORA GLOW ORBS */}
                 <div className="absolute -top-28 -right-28 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" />
                 <div className="absolute -bottom-28 -left-28 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" style={{ animationDelay: '1.5s' }} />
@@ -1687,7 +1497,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 {/* Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 mb-5 border-b border-slate-800 relative z-10">
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[10px] font-black text-emerald-400 bg-emerald-950 px-3 py-1 rounded-full border border-emerald-800 uppercase font-mono tracking-wider flex items-center gap-1.5">
                         <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Property listings
                       </span>
@@ -1785,8 +1595,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 </AnimatePresence>
 
                 {/* 4-STEP VISUAL WORKFLOW STEPPER WITH SPRING HOVER */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-6 p-3 bg-slate-950/90 rounded-2xl border border-slate-800/90 font-mono shadow-inner relative z-10">
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex items-center gap-2.5 p-2.5 rounded-xl transition-all ${
+                <div className="no-scrollbar relative z-10 mb-5 flex snap-x snap-mandatory touch-pan-x gap-2.5 overflow-x-auto rounded-2xl border border-slate-800/90 bg-slate-950/90 p-3 font-mono shadow-inner xl:grid xl:grid-cols-4 xl:overflow-visible">
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
                     newBhkLabel ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0 border border-emerald-500/30">1</div>
@@ -1796,7 +1606,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex items-center gap-2.5 p-2.5 rounded-xl transition-all ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
                     liveExtractedPreview && !liveExtractedPreview.isGarbageInput ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0 border border-cyan-500/30">2</div>
@@ -1806,7 +1616,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex items-center gap-2.5 p-2.5 rounded-xl transition-all ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
                     attachedMediaFiles.length > 0 ? 'bg-indigo-950/90 text-indigo-300 border border-indigo-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-black text-xs shrink-0 border border-indigo-500/30">3</div>
@@ -1816,7 +1626,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex items-center gap-2.5 p-2.5 rounded-xl transition-all ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
                     lastExtractedResult?.savedToDatabase ? 'bg-purple-950/90 text-purple-300 border border-purple-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
                     <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-black text-xs shrink-0 border border-purple-500/30">4</div>
@@ -1853,7 +1663,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                       </div>
 
                       {/* 4-COLUMN COMPACT GRID (NO SCROLLBAR) */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 w-full">
+                      <div className="no-scrollbar flex w-full snap-x snap-mandatory touch-pan-x gap-2.5 overflow-x-auto pb-1 xl:grid xl:grid-cols-4 xl:overflow-visible xl:pb-0">
                         {PRESET_PROMPTS.map((preset) => {
                           const isSelected = newBhkLabel === preset.text;
                           return (
@@ -1867,7 +1677,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 singleInputSourceRef.current = 'TYPED';
                                 handleSinglePromptChange(preset.text);
                               }}
-                              className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1.5 ${
+                              className={`flex min-w-[220px] snap-start flex-col justify-between gap-1.5 rounded-xl border p-3 text-left transition-all cursor-pointer xl:min-w-0 ${
                                 isSelected
                                   ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200 shadow-lg shadow-emerald-950/80 ring-1 ring-emerald-500/50'
                                   : 'bg-slate-900/90 hover:bg-slate-800/90 text-slate-300 border-slate-800 hover:border-slate-700'
@@ -2174,11 +1984,24 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 whileTap={{ scale: 0.96 }}
                                 type="button"
                                 onClick={handleSaveToDatabase}
-                                disabled={isSavingDb || liveExtractedPreview.savedToDatabase}
-                                className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[11px] font-extrabold rounded-xl transition-all border border-emerald-400/40 flex items-center gap-1 cursor-pointer shadow-xs"
+                                disabled={isSavingDb || isUploadingMedia || (liveExtractedPreview.savedToDatabase && failedMediaUploads.length === 0)}
+                                className={`px-3 py-1.5 ${
+                                  liveExtractedPreview.savedToDatabase && failedMediaUploads.length > 0
+                                    ? 'bg-rose-700 hover:bg-rose-600 border-rose-400/40 text-white'
+                                    : 'bg-emerald-700 hover:bg-emerald-600 border-emerald-400/40 text-white'
+                                } disabled:opacity-50 text-[11px] font-extrabold rounded-xl transition-all border flex items-center gap-1 cursor-pointer shadow-xs`}
                               >
-                                <Database className="w-3.5 h-3.5" />
-                                <span>{isSavingDb ? 'Publishing…' : liveExtractedPreview.savedToDatabase ? 'Published' : 'Publish Reviewed Listing'}</span>
+                                {liveExtractedPreview.savedToDatabase && failedMediaUploads.length > 0 ? (
+                                  <>
+                                    <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                                    <span>{isUploadingMedia ? 'Uploading media…' : `Retry failed media (${failedMediaUploads.length})`}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Database className="w-3.5 h-3.5" />
+                                    <span>{isSavingDb ? 'Publishing…' : liveExtractedPreview.savedToDatabase ? 'Published' : 'Publish Reviewed Listing'}</span>
+                                  </>
+                                )}
                               </motion.button>
                             </div>
                           )}
@@ -2557,6 +2380,22 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
               </motion.div>
 
+              <button
+                type="button"
+                onClick={() => setShowMobileListingTools((current) => !current)}
+                aria-expanded={showMobileListingTools}
+                className="flex min-h-12 w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-bold text-slate-800 shadow-sm transition-colors hover:border-emerald-300 lg:hidden"
+              >
+                <span>
+                  <span className="block">Demand insights and listing options</span>
+                  <span className="mt-0.5 block text-[11px] font-medium text-slate-500">
+                    Open only when you need to manage search options.
+                  </span>
+                </span>
+                <ChevronRight className={`h-5 w-5 shrink-0 text-emerald-600 transition-transform ${showMobileListingTools ? 'rotate-90' : ''}`} />
+              </button>
+
+              <div className={`${showMobileListingTools ? 'contents' : 'hidden'} lg:contents`}>
               {/* BHK DEMAND VISUAL SCORE GAUGES */}
               <motion.div variants={cardVariants}>
                 <BhkDemandGaugeGrid />
@@ -2621,12 +2460,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   ))}
                 </div>
               </motion.div>
+              </div>
             </motion.div>
           )}
 
         </AnimatePresence>
-
-
 
         {/* FULLSCREEN ROOT-LEVEL MEDIA UPLOAD POPUP WITH TOTAL SCREEN BLUR */}
         <AnimatePresence>
@@ -2701,7 +2539,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                       Drag & drop property photos or walkthrough videos here
                     </p>
                     <p className="text-[10px] text-slate-500 mt-1 font-mono">
-                      Supports JPG, PNG, WEBP images & MP4 property walkthrough videos
+                      {describeMediaLimits()}
                     </p>
                   </div>
 
@@ -2946,19 +2784,42 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </div>
                 )}
 
+                {uploadStatusMsg && (
+                  <div
+                    aria-live="polite"
+                    className="relative z-10 rounded-xl border border-cyan-500/30 bg-cyan-950/35 px-3 py-2 text-[11px] font-semibold text-cyan-200"
+                  >
+                    {uploadStatusMsg}
+                  </div>
+                )}
+
                 {/* MODAL FOOTER */}
                 <div className="flex items-center justify-between pt-4 border-t border-slate-800 relative z-10">
                   <span className="text-[11px] font-mono text-slate-400">
-                    {attachedMediaFiles.length} file(s) ready to submit
+                    {attachedMediaFiles.length} file(s) ready • Images are compressed before upload
                   </span>
 
-                  <button
-                    type="button"
-                    onClick={() => setIsMediaUploadModalOpen(false)}
-                    className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs rounded-xl shadow-lg shadow-emerald-600/30 cursor-pointer transition-all flex items-center gap-1.5"
-                  >
-                    ✓ Done / Save Attachments
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {failedMediaUploads.length > 0 && lastExtractedResult?.databaseId && (
+                      <button
+                        type="button"
+                        disabled={isUploadingMedia}
+                        onClick={() => void handleRetryFailedMedia()}
+                        className="px-4 py-2 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                        <span>Retry failed media ({failedMediaUploads.length})</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsMediaUploadModalOpen(false)}
+                      className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs rounded-xl shadow-lg shadow-emerald-600/30 cursor-pointer transition-all flex items-center gap-1.5"
+                    >
+                      ✓ Done / Save Attachments
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             </motion.div>
@@ -3105,18 +2966,30 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       </main>
 
       {/* TOP-LEVEL VIEWPORT-CENTERED INLINE QUICK EDIT MODAL DIALOG */}
-      {isInlineEditOpen && editForm && (
-        <div className="fixed inset-0 z-[9999] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
-          <div className="bg-slate-900 text-white rounded-3xl border border-slate-800 p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl my-auto">
+      {isInlineEditOpen && editForm && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] grid items-start justify-items-center overflow-y-auto bg-slate-950/85 p-0 backdrop-blur-md sm:place-items-center sm:p-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsInlineEditOpen(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="property-edit-dialog-title"
+            className="m-0 min-h-[100dvh] w-full max-w-3xl space-y-4 overflow-y-auto rounded-none border border-slate-800 bg-slate-900 p-4 text-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100dvh-3rem)] sm:rounded-3xl sm:p-6"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
-                <h3 className="text-lg font-bold font-['Outfit'] text-emerald-400 flex items-center gap-2">
+                <h3 id="property-edit-dialog-title" className="text-lg font-bold font-['Outfit'] text-emerald-400 flex items-center gap-2">
                   ✏️ Edit property details
                 </h3>
                 <p className="text-xs text-slate-400">Review and update property details before publishing.</p>
               </div>
               <button
+                type="button"
                 onClick={() => setIsInlineEditOpen(false)}
+                aria-label="Close property editor"
                 className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800 font-bold cursor-pointer"
               >
                 ✕
@@ -3243,6 +3116,62 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 </div>
 
                 <div>
+                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Availability</label>
+                  <select
+                    value={editForm.availabilityStatus || 'UNSPECIFIED'}
+                    onChange={(event) => {
+                      const availabilityStatus = event.target.value as AvailabilityStatusValue;
+                      setEditForm({
+                        ...editForm,
+                        availabilityStatus,
+                        availableFrom: '',
+                        possessionDate: availabilityStatus === 'READY_NOW' ? 'Ready To Move' : '',
+                        conflicts: (editForm.conflicts || []).filter(
+                          (conflict: string) => !conflict.startsWith('Possession date')
+                        )
+                      });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="UNSPECIFIED">Not provided</option>
+                    <option value="READY_NOW">Ready to move now</option>
+                    <option value="AVAILABLE_FROM_DATE">Available from a specific date</option>
+                  </select>
+                </div>
+
+                {editForm.availabilityStatus === 'AVAILABLE_FROM_DATE' && (
+                  <div>
+                    <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Possession date</label>
+                    <input
+                      type="date"
+                      value={editForm.availableFrom || ''}
+                      onChange={(event) => setEditForm({
+                        ...editForm,
+                        availableFrom: event.target.value,
+                        possessionDate: formatAvailabilityDate(event.target.value),
+                        conflicts: (editForm.conflicts || []).filter(
+                          (conflict: string) => !conflict.startsWith('Possession date')
+                        )
+                      })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Listing Status:</label>
+                  <select
+                    value={editForm.status || 'LIVE'}
+                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="LIVE">LIVE</option>
+                    <option value="DRAFT">DRAFT</option>
+                    <option value="PAUSED">PAUSED</option>
+                  </select>
+                </div>
+
+                <div>
                   <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Locality / Sector:</label>
                   <input
                     type="text"
@@ -3301,7 +3230,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>

@@ -1,5 +1,6 @@
 package com.indore.pathome.spaces.dto;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +22,8 @@ public class ParsedPropertyDTO {
     private String bathrooms;
     private String furnishingStatus;
     private String possessionDate;
+    private AvailabilityStatus availabilityStatus = AvailabilityStatus.UNSPECIFIED;
+    private LocalDate availableFrom;
     private String address;
     private String state;
     private String pincode;
@@ -248,6 +251,24 @@ public class ParsedPropertyDTO {
 
     public void setPossessionDate(String possessionDate) {
         this.possessionDate = possessionDate;
+    }
+
+    public AvailabilityStatus getAvailabilityStatus() {
+        return availabilityStatus;
+    }
+
+    public void setAvailabilityStatus(AvailabilityStatus availabilityStatus) {
+        this.availabilityStatus = availabilityStatus != null
+                ? availabilityStatus
+                : AvailabilityStatus.UNSPECIFIED;
+    }
+
+    public LocalDate getAvailableFrom() {
+        return availableFrom;
+    }
+
+    public void setAvailableFrom(LocalDate availableFrom) {
+        this.availableFrom = availableFrom;
     }
 
     public String getAddress() {

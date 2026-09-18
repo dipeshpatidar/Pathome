@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TrendingUp, DollarSign, Calendar, Filter, Sparkles, Clock, Layers } from 'lucide-react';
+import {Sparkles} from 'lucide-react';
 
 export type TimeGranularity = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
 

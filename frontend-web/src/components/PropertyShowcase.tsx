@@ -1,10 +1,22 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import {
+  motion,
+  AnimatePresence
+} from 'framer-motion';
 import { Property } from '../types';
-import { 
-  MapPin, Key, Lock, ChevronLeft, ChevronRight, 
-  CheckCircle2, ShieldCheck, Sparkles, ArrowRight, ChevronDown, ChevronUp,
-  Camera, Maximize
+import {
+  MapPin,
+  Key,
+  Lock,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2,
+  ShieldCheck,
+  Sparkles,
+  ArrowRight,
+  ChevronDown,
+  ChevronUp,
+  Camera
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 

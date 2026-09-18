@@ -1,10 +1,12 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
+import com.indore.pathome.spaces.dto.AvailabilityStatus;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.ParserInputSource;
 import com.indore.pathome.spaces.entity.RentalDetails;
+import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
@@ -18,8 +20,10 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.*;
+import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -88,6 +92,120 @@ public class PropertyControllerTest {
     }
 
     @Test
+    public void repeatedMediaUploadRequestReturnsExistingAssetWithoutUploadingAgain() {
+        RentalDetails listing = new RentalDetails();
+        PropertyMediaAsset existingAsset = new PropertyMediaAsset();
+        existingAsset.setListingId(20L);
+        existingAsset.setUploadRequestId("media-20-a1b2c3d4");
+        existingAsset.setMediaUrl("https://cdn.example/property.webp");
+
+        when(listingRepository.findById(20L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdAndUploadRequestId(20L, "media-20-a1b2c3d4"))
+                .thenReturn(Optional.of(existingAsset));
+
+        ResponseEntity<?> response = propertyController.uploadTaggedMediaAsset(
+                20L,
+                new MockMultipartFile("file", "property.webp", "image/webp", new byte[]{1}),
+                "GENERAL",
+                "IMAGE",
+                "Property photo",
+                true,
+                "Nanda Nagar",
+                "₹30,000",
+                "East Facing",
+                "media-20-a1b2c3d4");
+
+        assertEquals(200, response.getStatusCode().value());
+        assertSame(existingAsset, response.getBody());
+        verifyNoInteractions(cloudinaryService);
+        verify(mediaAssetRepository, never()).save(any(PropertyMediaAsset.class));
+    }
+
+    @Test
+    public void uploadTaggedMediaReturnsNotFoundWhenListingMissing() {
+        when(listingRepository.findById(999L)).thenReturn(Optional.empty());
+
+        ResponseEntity<?> response = propertyController.uploadTaggedMediaAsset(
+                999L,
+                new MockMultipartFile("file", "photo.webp", "image/webp", new byte[]{1}),
+                "GENERAL",
+                "IMAGE",
+                "Caption",
+                false,
+                "Sector A",
+                "₹20,000",
+                "North Facing",
+                "media-999-validid");
+
+        assertEquals(404, response.getStatusCode().value());
+        assertEquals("Property listing not found", response.getBody());
+        verifyNoInteractions(cloudinaryService);
+    }
+
+    @Test
+    public void uploadTaggedMediaRejectsInvalidUploadRequestId() {
+        RentalDetails listing = new RentalDetails();
+        when(listingRepository.findById(20L)).thenReturn(Optional.of(listing));
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> propertyController.uploadTaggedMediaAsset(
+                        20L,
+                        new MockMultipartFile("file", "photo.webp", "image/webp", new byte[]{1}),
+                        "GENERAL",
+                        "IMAGE",
+                        "Caption",
+                        false,
+                        "Sector A",
+                        "₹20,000",
+                        "North Facing",
+                        "invalid/id!@#"));
+
+        assertTrue(exception.getMessage().contains("Media upload identifier is invalid"));
+        verifyNoInteractions(cloudinaryService);
+    }
+
+    @Test
+    public void uploadTaggedMediaSuccessfullyUploadsAndPersistsNewAsset() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(20L);
+        listing.setSector("Vijay Nagar");
+        listing.setCity("Indore");
+
+        when(listingRepository.findById(20L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdAndUploadRequestId(20L, "media-20-12345678"))
+                .thenReturn(Optional.empty());
+        when(cloudinaryService.uploadImage(any(), eq("media-20-12345678")))
+                .thenReturn("https://cdn.example/photo.webp");
+        when(mediaAssetRepository.save(any(PropertyMediaAsset.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MockMultipartFile file = new MockMultipartFile("file", "photo.webp", "image/webp", new byte[]{1, 2, 3});
+        ResponseEntity<?> response = propertyController.uploadTaggedMediaAsset(
+                20L,
+                file,
+                "LIVING_ROOM",
+                "IMAGE",
+                "Spacious Living Room",
+                true,
+                "Vijay Nagar",
+                "₹25,000",
+                "East Facing",
+                "media-20-12345678");
+
+        assertEquals(201, response.getStatusCode().value());
+        assertTrue(response.getBody() instanceof PropertyMediaAsset);
+        PropertyMediaAsset asset = (PropertyMediaAsset) response.getBody();
+        assertEquals("https://cdn.example/photo.webp", asset.getMediaUrl());
+        assertEquals("media-20-12345678", asset.getUploadRequestId());
+        assertEquals(20L, asset.getListingId());
+        assertTrue(asset.getIsPrimaryCover());
+        verify(cloudinaryService).uploadImage(file, "media-20-12345678");
+        verify(mediaAssetRepository).save(any(PropertyMediaAsset.class));
+        verify(listingRepository).save(listing);
+        assertEquals("https://cdn.example/photo.webp", listing.getMediaGalleryUrls());
+    }
+
+    @Test
     public void createFromParsedPromptRejectsUnreviewedData() {
         ParsedPropertyDTO dto = new ParsedPropertyDTO();
         dto.setBhk("2 BHK");
@@ -125,6 +243,9 @@ public class PropertyControllerTest {
         dto.setDepositVal("1+1 60000 Security Deposit");
         dto.setBrokerageVal("₹15,000");
         dto.setBrokerageDays("15 Days");
+        dto.setPossessionDate("15 Nov 2026");
+        dto.setAvailabilityStatus(AvailabilityStatus.AVAILABLE_FROM_DATE);
+        dto.setAvailableFrom(LocalDate.of(2026, 11, 15));
 
         when(listingRepository.save(any(Listing.class))).thenAnswer(invocation -> {
             Listing listing = invocation.getArgument(0);
@@ -145,6 +266,8 @@ public class PropertyControllerTest {
         assertEquals(2, saved.getSecurityDepositMonths());
         assertEquals(15000, saved.getBrokerageAmount().intValueExact());
         assertEquals(15, saved.getBrokerageDays());
+        assertEquals("15 Nov 2026", saved.getPossessionDateText());
+        assertEquals(LocalDate.of(2026, 11, 15), saved.getAvailableFrom().toLocalDate());
         verify(propertyParserService).confirmLocality("Indore", "Vijay Nagar", 30000.0);
         verify(parserLearningCaptureService).captureAfterSuccessfulPublish(dto, 42L);
     }
@@ -180,6 +303,55 @@ public class PropertyControllerTest {
                 "Review this property's required details and try publishing it again.",
                 failed.get(0).get("error"));
         assertFalse(failed.get(0).get("error").toString().contains("administrator must review"));
+    }
+
+    @Test
+    public void batchPublishingMapsStructuredAvailabilityFromReviewedPayload() {
+        when(batchPropertyPublishingService.publish(any(RentalDetails.class), anyList())).thenAnswer(invocation -> {
+            RentalDetails listing = invocation.getArgument(0);
+            listing.setId(201L);
+            return listing;
+        });
+
+        Map<String, Object> property = validBatchProperty("2 BHK", "Vijay Nagar");
+        property.put("possessionDate", "15 Nov 2026");
+        property.put("availabilityStatus", "AVAILABLE_FROM_DATE");
+        property.put("availableFrom", "2026-11-15");
+
+        propertyController.createBatchProperties(Map.of("listings", List.of(property)));
+
+        var listingCaptor = org.mockito.ArgumentCaptor.forClass(RentalDetails.class);
+        verify(batchPropertyPublishingService).publish(listingCaptor.capture(), anyList());
+        RentalDetails published = listingCaptor.getValue();
+        assertEquals("15 Nov 2026", published.getPossessionDateText());
+        assertEquals(LocalDate.of(2026, 11, 15), published.getAvailableFrom().toLocalDate());
+    }
+
+    @Test
+    public void directPropertyCreationMapsStructuredAvailabilityDate() {
+        when(listingRepository.save(any(Listing.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Map<String, Object> property = new HashMap<>();
+        property.put("ownerPhoneNumber", "+91 98260 12345");
+        property.put("sector", "Vijay Nagar");
+        property.put("monthlyRent", 30000);
+        property.put("securityDeposit", 60000);
+        property.put("bhkCount", "2 BHK");
+        property.put("propertyType", "Flat");
+        property.put("city", "Indore");
+        property.put("possessionDate", "15 Nov 2026");
+        property.put("availabilityStatus", "AVAILABLE_FROM_DATE");
+        property.put("availableFrom", "2026-11-15");
+
+        ResponseEntity<Listing> response = propertyController.createProperty(property);
+
+        assertEquals(201, response.getStatusCode().value());
+        var listingCaptor = org.mockito.ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(listingCaptor.capture());
+        RentalDetails saved = (RentalDetails) listingCaptor.getValue();
+        assertEquals("15 Nov 2026", saved.getPossessionDateText());
+        assertEquals(LocalDate.of(2026, 11, 15), saved.getAvailableFrom().toLocalDate());
+        verify(propertyParserService).confirmLocality("Indore", "Vijay Nagar", 30000.0);
     }
 
     private Map<String, Object> validBatchProperty(String bhk, String sector) {

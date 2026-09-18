@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
+import { API_ROOT_URL } from '../config/endpoints';
 
 export type NotificationType = 'success' | 'info' | 'warning' | 'error' | 'ai_magic';
 export type NotificationCategory = 'SYSTEM' | 'PROPERTY' | 'PAYROLL' | 'APPROVAL' | 'AI_ENGINE';
@@ -77,7 +78,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const fetchBackendNotifications = useCallback(async () => {
     try {
       const activeRole = getActiveRole();
-      const response = await fetch(`http://localhost:8080/api/v1/notifications?role=${activeRole}`);
+      const response = await fetch(`${API_ROOT_URL}/notifications?role=${activeRole}`);
       if (!response.ok) return;
       const data = await response.json();
 
@@ -180,7 +181,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setHistory(prev => prev.map(item => item.id === id ? { ...item, read: true } : item));
     if (id.startsWith('db-')) {
       const numericId = id.replace('db-', '');
-      fetch(`http://localhost:8080/api/v1/notifications/${numericId}/read`, { method: 'PUT' }).catch(() => {});
+      fetch(`${API_ROOT_URL}/notifications/${numericId}/read`, { method: 'PUT' }).catch(() => {});
     }
   }, []);
 

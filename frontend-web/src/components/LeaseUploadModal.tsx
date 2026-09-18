@@ -32,7 +32,7 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
         onClick={onClose}
-        className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 perspective-1000"
+        className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-4 perspective-1000"
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.84, rotateX: 14, y: 30 }}
@@ -40,7 +40,7 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
           exit={{ opacity: 0, scale: 0.84, rotateX: -14, y: 30 }}
           transition={{ type: 'spring', stiffness: 450, damping: 24 }}
           onClick={(e) => e.stopPropagation()}
-          className="bg-white max-w-md w-full rounded-3xl p-7 sm:p-8 shadow-2xl border border-slate-200/90 relative overflow-hidden transform-gpu"
+          className="relative my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-x-hidden overflow-y-auto rounded-3xl border border-slate-200/90 bg-white p-5 shadow-2xl transform-gpu sm:max-h-[calc(100dvh-2rem)] sm:p-8"
         >
           
           <button
@@ -168,4 +168,3 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
     </AnimatePresence>
   );
 };
-

@@ -1,10 +1,27 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import {
+  motion,
+  AnimatePresence
+} from 'framer-motion';
 import { Property } from '../types';
-import { 
-  Play, Pause, Volume2, VolumeX, Maximize, X, 
-  MapPin, ShieldCheck, Key, Lock, Phone, Sparkles, CheckCircle2,
-  RotateCcw, RotateCw, Camera, Video as VideoIcon, ChevronLeft, ChevronRight
+import {
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Maximize,
+  X,
+  MapPin,
+  ShieldCheck,
+  Key,
+  Lock,
+  Phone,
+  RotateCcw,
+  RotateCw,
+  Camera,
+  Video as VideoIcon,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 interface VideoPlayerModalProps {
@@ -200,7 +217,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={onClose}
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-lg flex items-center justify-center p-3 sm:p-6"
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-2 backdrop-blur-lg sm:p-4 lg:items-center lg:p-6"
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.94, y: 20 }}
@@ -208,7 +225,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             exit={{ opacity: 0, scale: 0.94, y: 20 }}
             transition={{ type: 'spring', stiffness: 420, damping: 28 }}
             onClick={(e) => e.stopPropagation()}
-            className="bg-slate-900 text-white w-full max-w-5xl rounded-3xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col lg:flex-row relative select-none"
+            className="relative my-auto flex w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 text-white shadow-2xl select-none lg:max-h-[calc(100dvh-3rem)] lg:flex-row"
           >
             
             {/* Close Button */}
@@ -220,10 +237,10 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </button>
 
             {/* MAIN SHOWCASE VIEWPORT (VIDEO OR HIGH-RES PHOTO GALLERY) */}
-            <div className="lg:w-7/12 relative bg-black flex flex-col justify-center min-h-[360px] sm:min-h-[440px] overflow-hidden group">
+            <div className="relative flex min-h-[280px] flex-col justify-center overflow-hidden bg-black group sm:min-h-[420px] lg:w-7/12 lg:min-h-[440px]">
               
               {/* TOP DUAL MEDIA MODE SWITCHER TABS */}
-              <div className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-950/85 p-1 rounded-2xl border border-slate-800 backdrop-blur-md shadow-lg">
+              <div className="absolute left-2 right-14 top-2 z-30 flex items-center gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/85 p-1 shadow-lg backdrop-blur-md sm:left-4 sm:right-auto sm:top-4">
                 <button
                   onClick={() => setActiveMediaMode('VIDEO')}
                   className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all ${
@@ -269,7 +286,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               {activeMediaMode === 'PHOTOS' ? (
                 <div 
                   onClick={() => setIsPhotoLightboxOpen(true)}
-                  className="relative w-full h-full min-h-[360px] sm:min-h-[440px] flex items-center justify-center bg-slate-950 cursor-pointer group/photo"
+                  className="relative flex min-h-[280px] h-full w-full cursor-pointer items-center justify-center bg-slate-950 group/photo sm:min-h-[420px] lg:min-h-[440px]"
                 >
                   <AnimatePresence mode="wait">
                     <motion.img
@@ -409,9 +426,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 )}
 
                 {/* Action Control Buttons */}
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between gap-2 overflow-x-auto pt-1">
                   {activeMediaMode === 'VIDEO' ? (
-                    <div className="flex items-center gap-2 sm:gap-3">
+                    <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                       <button
                         onClick={togglePlay}
                         className="w-9 h-9 rounded-xl bg-white/15 hover:bg-emerald-600 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-95"
@@ -465,7 +482,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                     </div>
                   )}
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     <button
                       onClick={toggleFullscreen}
                       className="w-9 h-9 rounded-xl bg-white/15 hover:bg-slate-700 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-95"
@@ -481,7 +498,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
             </div>
 
             {/* PROPERTY DETAILS SIDEBAR IN MODAL */}
-            <div className="lg:w-5/12 p-6 sm:p-8 flex flex-col justify-between space-y-6 bg-slate-900 border-l border-slate-800">
+            <div className="flex flex-col justify-between space-y-6 border-t border-slate-800 bg-slate-900 p-5 sm:p-8 lg:w-5/12 lg:overflow-y-auto lg:border-l lg:border-t-0">
               
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -701,5 +718,4 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     </>
   );
 };
-
 

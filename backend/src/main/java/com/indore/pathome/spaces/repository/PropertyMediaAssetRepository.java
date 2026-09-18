@@ -6,9 +6,11 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface PropertyMediaAssetRepository extends JpaRepository<PropertyMediaAsset, Long> {
     List<PropertyMediaAsset> findByListingIdOrderByUploadedAtDesc(Long listingId);
     List<PropertyMediaAsset> findByListingIdAndRoomTag(Long listingId, RoomTag roomTag);
+    Optional<PropertyMediaAsset> findByListingIdAndUploadRequestId(Long listingId, String uploadRequestId);
 }

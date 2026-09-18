@@ -1,10 +1,12 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
+import com.indore.pathome.spaces.dto.AvailabilityStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
 
@@ -67,6 +69,58 @@ class PropertyParserServicePureTest {
                 .parse("3 BHK in Palasia, available post Diwali").getPossessionDate());
         assertEquals("18 Oct 2028", dateAwareParser
                 .parse("Flat available after Diwali 2028").getPossessionDate());
+
+        ParsedPropertyDTO relative = dateAwareParser.parse("2 BHK available after 3 months");
+        assertEquals(AvailabilityStatus.AVAILABLE_FROM_DATE, relative.getAvailabilityStatus());
+        assertEquals(LocalDate.of(2026, 12, 16), relative.getAvailableFrom());
+    }
+
+    @Test
+    void separatesImmediateAvailabilityFromAConcretePossessionDate() {
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-09-16T06:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        PropertyParserService dateAwareParser = new PropertyParserService(null, fixedClock);
+
+        ParsedPropertyDTO immediate = dateAwareParser.parse("2 BHK flat ready to move");
+        assertEquals("Ready To Move", immediate.getPossessionDate());
+        assertEquals(AvailabilityStatus.READY_NOW, immediate.getAvailabilityStatus());
+        assertEquals(LocalDate.of(2026, 9, 16), immediate.getAvailableFrom());
+
+        ParsedPropertyDTO dated = dateAwareParser.parse(
+                "2 BHK flat ready to move on 15 Nov 2026");
+        assertEquals("15 Nov 2026", dated.getPossessionDate());
+        assertEquals(AvailabilityStatus.AVAILABLE_FROM_DATE, dated.getAvailabilityStatus());
+        assertEquals(LocalDate.of(2026, 11, 15), dated.getAvailableFrom());
+
+        ParsedPropertyDTO clarifiedDate = dateAwareParser.parse(
+                "2 BHK flat ready to move, possession will be on 20 Nov 2026");
+        assertEquals(AvailabilityStatus.AVAILABLE_FROM_DATE, clarifiedDate.getAvailabilityStatus());
+        assertEquals(LocalDate.of(2026, 11, 20), clarifiedDate.getAvailableFrom());
+    }
+
+    @Test
+    void resolvesDatesWithoutYearsToTheNextCalendarOccurrence() {
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-09-16T06:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        PropertyParserService dateAwareParser = new PropertyParserService(null, fixedClock);
+
+        ParsedPropertyDTO upcoming = dateAwareParser.parse("possession date 20th of September");
+        assertEquals(LocalDate.of(2026, 9, 20), upcoming.getAvailableFrom());
+        assertEquals("20 Sep 2026", upcoming.getPossessionDate());
+
+        ParsedPropertyDTO nextYear = dateAwareParser.parse("available from 15th September");
+        assertEquals(LocalDate.of(2027, 9, 15), nextYear.getAvailableFrom());
+        assertEquals("15 Sep 2027", nextYear.getPossessionDate());
+    }
+
+    @Test
+    void flagsAnExplicitPastPossessionDateForReview() {
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-09-16T06:00:00Z"), ZoneId.of("Asia/Kolkata"));
+        PropertyParserService dateAwareParser = new PropertyParserService(null, fixedClock);
+
+        ParsedPropertyDTO dated = dateAwareParser.parse("possession on 15 Aug 2026");
+
+        assertEquals(LocalDate.of(2026, 8, 15), dated.getAvailableFrom());
+        assertTrue(dated.getConflicts().contains("Possession date is in the past: 15 Aug 2026"));
+        assertTrue(dated.isRequiresReview());
     }
 
     @Test

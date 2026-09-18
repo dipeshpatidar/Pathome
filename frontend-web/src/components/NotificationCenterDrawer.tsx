@@ -1,9 +1,20 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Bell, CheckCircle2, AlertCircle, Info, XCircle, Sparkles, X, CheckCheck, Trash2, Filter
+  motion,
+  AnimatePresence
+} from 'framer-motion';
+import {
+  Bell,
+  CheckCircle2,
+  AlertCircle,
+  Info,
+  XCircle,
+  Sparkles,
+  X,
+  CheckCheck,
+  Trash2
 } from 'lucide-react';
-import { useNotification, NotificationCategory, NotificationHistoryItem } from '../context/NotificationContext';
+import { useNotification, NotificationCategory } from '../context/NotificationContext';
 
 export const NotificationCenterDrawer: React.FC = () => {
   const {
@@ -81,22 +92,22 @@ export const NotificationCenterDrawer: React.FC = () => {
             <div className="absolute -bottom-32 -left-32 w-80 h-80 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
 
             {/* HEADER */}
-            <div className="p-5 border-b border-slate-800/80 relative z-10">
+            <div className="relative z-10 border-b border-slate-800/80 p-4 sm:p-5">
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center font-bold shadow-lg shadow-emerald-500/20">
+                <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+                  <div className="w-9 h-9 shrink-0 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center font-bold shadow-lg shadow-emerald-500/20 sm:h-10 sm:w-10">
                     <Bell className="w-5 h-5" />
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-lg font-black font-['Outfit'] text-white">Portal Notification Center</h2>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                      <h2 className="text-base font-black font-['Outfit'] text-white sm:text-lg">Notifications</h2>
                       {unreadCount > 0 && (
                         <span className="text-[10px] font-mono font-black text-emerald-300 bg-emerald-950 px-2 py-0.5 rounded-full border border-emerald-500/40 animate-pulse">
                           {unreadCount} New
                         </span>
                       )}
                     </div>
-                    <span className="text-xs text-slate-400 font-mono block">Real-Time System Audit & Event History</span>
+                    <span className="block truncate text-[11px] text-slate-400 font-mono sm:text-xs">Updates and activity history</span>
                   </div>
                 </div>
 

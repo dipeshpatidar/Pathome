@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { SlidersHorizontal, TrendingUp } from 'lucide-react';
+import {SlidersHorizontal} from 'lucide-react';
 
 interface BhkGauge {
   bhk: string;

@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  MapPin, Building2, TrendingUp, DollarSign, Users, Award, 
-  BarChart3, LayoutGrid, Layers, ArrowUpRight, Sparkles, Filter,
-  Zap, Sliders, ArrowUp, ArrowDown, ChevronRight, Compass, ShieldCheck, Activity, Clock
+import {
+  motion,
+  AnimatePresence
+} from 'framer-motion';
+import {
+  MapPin,
+  Award,
+  BarChart3,
+  LayoutGrid,
+  Sparkles,
+  Filter,
+  Zap,
+  Activity,
+  Clock
 } from 'lucide-react';
 
 export interface SectorData {

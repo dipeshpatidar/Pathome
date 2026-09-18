@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  MessageSquare, Users, AlertCircle, Sparkles, CheckCircle2, 
-  Send, Shield, MapPin, Search, ArrowUpRight, Clock, UserCheck
+import {
+  motion,
+  AnimatePresence
+} from 'framer-motion';
+import {
+  MessageSquare,
+  CheckCircle2,
+  Send,
+  Search,
+  UserCheck
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 

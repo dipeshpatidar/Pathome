@@ -16,7 +16,7 @@ import { TenantDashboard } from './TenantDashboard';
 import { VideoPlayerModal } from './VideoPlayerModal';
 import { CreditCard } from 'lucide-react';
 
-import { WfhAdminDashboard } from './WfhAdminDashboard';
+
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { propertyService } from '../services/propertyService';

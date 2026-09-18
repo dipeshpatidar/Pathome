@@ -1,6 +1,12 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Users, PhoneCall, Key, CheckCircle2, ArrowRight, TrendingDown } from 'lucide-react';
+import {
+  Users,
+  PhoneCall,
+  Key,
+  CheckCircle2,
+  TrendingDown
+} from 'lucide-react';
 
 interface FunnelStage {
   id: string;

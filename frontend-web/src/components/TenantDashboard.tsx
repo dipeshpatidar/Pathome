@@ -1,14 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { motion, AnimatePresence, LayoutGroup, useScroll, useSpring } from 'framer-motion';
-import { UserProfile, Property, BhkConfig } from '../types';
+import {
+  useSearchParams } from 'react-router-dom';
+import {motion,
+  AnimatePresence,
+  useScroll,
+  useSpring
+} from 'framer-motion';
+import { UserProfile,
+  Property,
+  BhkConfig } from '../types';
 import { PropertyCardMedia } from './PropertyCardMedia';
 import { VideoPlayerModal } from './VideoPlayerModal';
-import { 
-  Sparkles, Gift, MapPin, Key, ShieldCheck, 
-  Phone, UserCheck, CheckCircle2, Clock, 
-  Navigation, UploadCloud, Heart, Check, Globe, Rocket, ChevronDown,
-  Search, Mic, SlidersHorizontal, ArrowRight, Filter, RotateCcw
+import {
+  Sparkles,
+  Gift,
+  MapPin,
+  Key,
+  ShieldCheck,
+  Phone,
+  UserCheck,
+  CheckCircle2,
+  Clock,
+  Navigation,
+  UploadCloud,
+  Heart,
+  Check,
+  Globe,
+  ChevronDown,
+  Search,
+  Mic,
+  SlidersHorizontal,
+  Filter,
+  RotateCcw
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
 import { useNotification } from '../context/NotificationContext';
@@ -206,7 +229,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     }
   };
 
-
   const toggleSaveProperty = (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (savedPropertyIds.includes(id)) {
@@ -268,7 +290,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       if (!matches) return false;
     }
 
-
     // 6. TARGET METRO CITY FILTERING
     if (selectedCityId === 'INDORE') {
       const propCityClean = (prop.city || '').trim().toUpperCase();
@@ -299,8 +320,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
 
     return true;
   });
-
-
 
   return (
     <>

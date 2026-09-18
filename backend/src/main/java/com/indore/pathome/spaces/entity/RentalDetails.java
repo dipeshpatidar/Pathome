@@ -3,12 +3,15 @@ package com.indore.pathome.spaces.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorValue;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "rental_details")
+@Table(name = "rental_details", indexes = {
+    @Index(name = "idx_rental_available_from", columnList = "available_from")
+})
 @DiscriminatorValue("RENTAL")
 public class RentalDetails extends Listing {
 

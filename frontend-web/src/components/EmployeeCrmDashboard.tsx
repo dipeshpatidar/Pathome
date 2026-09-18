@@ -1,8 +1,16 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Users, Calendar, Clock, CheckCircle2, AlertCircle, FileText, 
-  MapPin, ShieldAlert, Award, Phone, Check, X, ArrowRight, UserCheck
+import { motion } from 'framer-motion';
+import {
+  Calendar,
+  Clock,
+  CheckCircle2,
+  FileText,
+  MapPin,
+  ShieldAlert,
+  Award,
+  Phone,
+  Check,
+  UserCheck
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { useNotification } from '../context/NotificationContext';

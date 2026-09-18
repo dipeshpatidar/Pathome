@@ -66,7 +66,7 @@ public class GlobalExceptionHandler {
         ErrorResponseDTO error = new ErrorResponseDTO(
                 HttpStatus.PAYLOAD_TOO_LARGE.value(),
                 "Payload Too Large",
-                "File size exceeds maximum allowed threshold",
+                "The selected file is too large. Images must be 10 MB or smaller and videos must be 100 MB or smaller.",
                 request.getRequestURI()
         );
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(error);

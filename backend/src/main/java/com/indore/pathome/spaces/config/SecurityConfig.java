@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.config;
 
 import com.indore.pathome.spaces.security.JwtAuthenticationFilter;
 import com.indore.pathome.spaces.security.OAuth2AuthenticationSuccessHandler;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -24,11 +25,14 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
+    private final boolean googleLoginEnabled;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
-                          OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler) {
+                          OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler,
+                          @Value("${pathome.google-login.enabled:false}") boolean googleLoginEnabled) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.oAuth2SuccessHandler = oAuth2SuccessHandler;
+        this.googleLoginEnabled = googleLoginEnabled;
     }
 
     @Bean
@@ -55,10 +59,11 @@ public class SecurityConfig {
             .exceptionHandling(exception -> exception
                 .authenticationEntryPoint(new org.springframework.security.web.authentication.HttpStatusEntryPoint(org.springframework.http.HttpStatus.UNAUTHORIZED))
             )
-            .oauth2Login(oauth2 -> oauth2
-                .successHandler(oAuth2SuccessHandler)
-            )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+        if (googleLoginEnabled) {
+            http.oauth2Login(oauth2 -> oauth2.successHandler(oAuth2SuccessHandler));
+        }
 
         return http.build();
     }

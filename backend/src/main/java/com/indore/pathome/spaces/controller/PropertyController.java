@@ -1,5 +1,6 @@
 package com.indore.pathome.spaces.controller;
 
+import com.indore.pathome.spaces.dto.AvailabilityStatus;
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
@@ -18,6 +19,10 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 /**
@@ -36,6 +41,11 @@ public class PropertyController {
     private static final java.util.regex.Pattern NUMERIC_VALUE_PATTERN = java.util.regex.Pattern.compile("\\d+(?:\\.\\d+)?");
     private static final java.util.regex.Pattern BATHROOM_COUNT_PATTERN = java.util.regex.Pattern.compile("\\b(\\d{1,2})\\b");
     private static final java.util.regex.Pattern PHONE_PATTERN = java.util.regex.Pattern.compile("^\\+91\\s?[6-9]\\d{4}[\\s-]?\\d{5}$");
+    private static final java.util.regex.Pattern UPLOAD_REQUEST_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[A-Za-z0-9_-]{8,80}$");
+    private static final ZoneId INDIA_ZONE = ZoneId.of("Asia/Kolkata");
+    private static final DateTimeFormatter DISPLAY_POSSESSION_DATE_FORMATTER =
+            DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH);
 
     private final ListingRepository listingRepository;
     private final PropertyMediaAssetRepository mediaAssetRepository;
@@ -110,18 +120,33 @@ public class PropertyController {
             @RequestParam(value = "isPrimaryCover", defaultValue = "false") Boolean isPrimaryCover,
             @RequestParam(value = "sector", required = false) String sector,
             @RequestParam(value = "priceTag", required = false) String priceTag,
-            @RequestParam(value = "vastuFacing", required = false) String vastuFacing) {
+            @RequestParam(value = "vastuFacing", required = false) String vastuFacing,
+            @RequestParam(value = "uploadRequestId", required = false) String uploadRequestId) {
 
         if (file == null || file.isEmpty()) {
             return ResponseEntity.badRequest().body("Uploaded file cannot be null or empty");
         }
 
         Listing listing = listingRepository.findById(id).orElse(null);
+        if (listing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Property listing not found");
+        }
         RoomTag roomTag = parseRoomTag(roomTagStr);
         MediaType mediaType = parseMediaType(mediaTypeStr);
+        String normalizedUploadRequestId = normalizeUploadRequestId(uploadRequestId);
 
-        String cdnUrl = uploadMediaToCloudinary(file, mediaType);
-        PropertyMediaAsset savedAsset = saveMediaAsset(id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover, sector, priceTag, vastuFacing, listing);
+        if (normalizedUploadRequestId != null) {
+            Optional<PropertyMediaAsset> existingAsset = mediaAssetRepository
+                    .findByListingIdAndUploadRequestId(id, normalizedUploadRequestId);
+            if (existingAsset.isPresent()) {
+                return ResponseEntity.ok(existingAsset.get());
+            }
+        }
+
+        String cdnUrl = uploadMediaToCloudinary(file, mediaType, normalizedUploadRequestId);
+        PropertyMediaAsset savedAsset = saveMediaAsset(
+                id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
+                sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
 
         updateListingGallery(listing, cdnUrl);
 
@@ -183,6 +208,16 @@ public class PropertyController {
         }
         rental.setOwnerPhoneNumber(ownerPhone.trim());
         rental.setOwnerName(emptyToNull(readString(body, "ownerName")));
+        String possessionDateText = emptyToNull(readString(body, "possessionDate"));
+        rental.setPossessionDateText(possessionDateText);
+        LocalDate availableFrom = readLocalDate(body.get("availableFrom"));
+        if (availableFrom == null
+                && AvailabilityStatus.fromExternalValue(readString(body, "availabilityStatus"))
+                        == AvailabilityStatus.READY_NOW) {
+            availableFrom = LocalDate.now(INDIA_ZONE);
+        }
+        if (availableFrom == null) availableFrom = parseDisplayPossessionDate(possessionDateText);
+        rental.setAvailableFrom(availableFrom == null ? null : availableFrom.atStartOfDay());
         rental.setLatitude(readDouble(body.get("latitude")));
         rental.setLongitude(readDouble(body.get("longitude")));
         rental.setTotalAreaSqFt(readDouble(body.get("totalAreaSqFt")));
@@ -388,6 +423,8 @@ public class PropertyController {
         dto.setBrokerageDays(readString(map, "brokerageDays"));
         dto.setDepositVal(readString(map, "depositVal"));
         dto.setPossessionDate(readString(map, "possessionDate"));
+        dto.setAvailabilityStatus(AvailabilityStatus.fromExternalValue(readString(map, "availabilityStatus")));
+        dto.setAvailableFrom(readLocalDate(map.get("availableFrom")));
         dto.setAdminVerified(Boolean.TRUE.equals(map.get("adminVerified")));
 
         Double rentAmount = readDouble(map.get("rentAmount"));
@@ -484,6 +521,8 @@ public class PropertyController {
         listing.setPincode(emptyToNull(dto.getPincode()));
         listing.setLandmark(emptyToNull(dto.getLandmark()));
         listing.setPossessionDateText(emptyToNull(dto.getPossessionDate()));
+        LocalDate availableFrom = resolveAvailableFrom(dto);
+        listing.setAvailableFrom(availableFrom == null ? null : availableFrom.atStartOfDay());
         listing.setFurnishingStatus(emptyToNull(dto.getFurnishingStatus()));
         listing.setVastuFacing(emptyToNull(dto.getVastuFacing()));
         if (dto.getAmenities() != null && !dto.getAmenities().isEmpty()) {
@@ -568,6 +607,32 @@ public class PropertyController {
         }
     }
 
+    private LocalDate readLocalDate(Object value) {
+        if (value == null || value.toString().isBlank()) return null;
+        try {
+            return LocalDate.parse(value.toString().trim(), DateTimeFormatter.ISO_LOCAL_DATE);
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException("Availability date must use the YYYY-MM-DD format");
+        }
+    }
+
+    private LocalDate resolveAvailableFrom(ParsedPropertyDTO dto) {
+        if (dto.getAvailableFrom() != null) return dto.getAvailableFrom();
+        if (dto.getAvailabilityStatus() == AvailabilityStatus.READY_NOW) {
+            return LocalDate.now(INDIA_ZONE);
+        }
+        return parseDisplayPossessionDate(dto.getPossessionDate());
+    }
+
+    private LocalDate parseDisplayPossessionDate(String possessionDate) {
+        if (isMissingValue(possessionDate)) return null;
+        try {
+            return LocalDate.parse(possessionDate.trim(), DISPLAY_POSSESSION_DATE_FORMATTER);
+        } catch (DateTimeParseException ignored) {
+            return null;
+        }
+    }
+
     private String readString(Map<String, Object> map, String key) {
         Object value = map.get(key);
         return value == null ? null : value.toString();
@@ -602,15 +667,23 @@ public class PropertyController {
     }
 
     private String uploadMediaToCloudinary(MultipartFile file, MediaType mediaType) {
+        return uploadMediaToCloudinary(file, mediaType, null);
+    }
+
+    private String uploadMediaToCloudinary(
+            MultipartFile file,
+            MediaType mediaType,
+            String uploadRequestId) {
         return (mediaType == MediaType.VIDEO_WALKTHROUGH)
-                ? cloudinaryService.uploadVideo(file)
-                : cloudinaryService.uploadImage(file);
+                ? cloudinaryService.uploadVideo(file, uploadRequestId)
+                : cloudinaryService.uploadImage(file, uploadRequestId);
     }
 
     private PropertyMediaAsset saveMediaAsset(
             Long id, String cdnUrl, MediaType mediaType, RoomTag roomTag,
             String caption, Boolean isPrimaryCover, String sector,
-            String priceTag, String vastuFacing, Listing listing) {
+            String priceTag, String vastuFacing, Listing listing,
+            String uploadRequestId) {
 
         PropertyMediaAsset asset = new PropertyMediaAsset();
         asset.setListingId(id);
@@ -624,13 +697,28 @@ public class PropertyController {
         asset.setPriceTag(priceTag != null && !priceTag.isBlank() ? priceTag : monthlyRentPriceTag(listing));
         asset.setVastuFacing(vastuFacing != null && !vastuFacing.isBlank() ? vastuFacing : (listing != null ? listing.getVastuFacing() : null));
         asset.setVerificationStatus("ADMIN_UPLOADED");
+        asset.setUploadRequestId(uploadRequestId);
 
         return mediaAssetRepository.save(asset);
     }
 
+    private String normalizeUploadRequestId(String uploadRequestId) {
+        if (uploadRequestId == null || uploadRequestId.isBlank()) return null;
+        String normalized = uploadRequestId.trim();
+        if (!UPLOAD_REQUEST_ID_PATTERN.matcher(normalized).matches()) {
+            throw new IllegalArgumentException("Media upload identifier is invalid");
+        }
+        return normalized;
+    }
+
     private void updateListingGallery(Listing listing, String cdnUrl) {
-        if (listing == null) return;
+        if (listing == null || cdnUrl == null || cdnUrl.isBlank()) return;
         String existing = listing.getMediaGalleryUrls();
+        if (existing != null && !existing.isBlank()) {
+            for (String url : existing.split(",")) {
+                if (url.trim().equals(cdnUrl.trim())) return;
+            }
+        }
         String updated = (existing == null || existing.isBlank()) ? cdnUrl : existing + "," + cdnUrl;
         listing.setMediaGalleryUrls(updated);
         listingRepository.save(listing);

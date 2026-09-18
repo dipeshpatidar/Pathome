@@ -1,27 +1,26 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { createPortal } from 'react-dom';
+import { motion,
+  AnimatePresence
+} from 'framer-motion';
 import {
   Sparkles,
   Mic,
   MicOff,
-  UploadCloud,
   CheckCircle2,
   AlertCircle,
   X,
   Plus,
   Scissors,
-  Image as ImageIcon,
   Building2,
-  Phone,
-  MapPin,
-  IndianRupee,
-  Layers,
-  ArrowRight,
-  Trash2
+  ChevronLeft,
+  ChevronRight,
+  Trash2,
+  RefreshCw
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
-import { compressImageToWebP } from '../utils/imageOptimizer';
+import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { useNotification } from '../context/NotificationContext';
 
 interface StagedProperty {
@@ -48,6 +47,8 @@ interface StagedProperty {
   areaSqFt: string;
   bathrooms: string;
   possessionDate: string;
+  availabilityStatus: AvailabilityStatusValue;
+  availableFrom: string;
   ownerName: string;
   ownerPhone: string;
   furnishingStatus: string;
@@ -64,7 +65,13 @@ interface StagedProperty {
   isValid: boolean;
   publishedId?: number;
   missingFields: string[];
+  mediaUploadStatus: 'idle' | 'preparing' | 'uploading' | 'retrying' | 'complete' | 'failed';
+  mediaUploadProgress: number;
+  mediaUploadMessage: string;
+  failedMediaFiles: File[];
 }
+
+type AvailabilityStatusValue = 'READY_NOW' | 'AVAILABLE_FROM_DATE' | 'UNSPECIFIED';
 
 interface BatchPropertyIngestionStudioProps {
   isOpen: boolean;
@@ -86,12 +93,32 @@ const INDIAN_MOBILE_PATTERN = /^(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}$/;
 const EMPTY_VALUE_PATTERN = /^(?:not specified|unspecified|unmentioned|unknown|n\/a)$/i;
 const SPOKEN_PROPERTY_BOUNDARY_PATTERN = /\b(?:and\s+)?(?:list\s+)?(?:the\s+)?(?:one\s+)?(?:other|another|next|second|third|fourth)\s+(?:property|flat|house|listing|unit)(?:\s+is)?\b/gi;
 const SPOKEN_RENT_PREFIX_PATTERN = /(?:rent\s+is\s+|kiraya\s+)/gi;
+const READY_AVAILABILITY_PATTERN = /ready\s*to\s*move|immediate/i;
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DISPLAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const isProvided = (value: string | null | undefined): boolean =>
   Boolean(value && value.trim() && !EMPTY_VALUE_PATTERN.test(value.trim()));
 
 const toEditableValue = (value: string | null | undefined): string =>
   isProvided(value) ? value!.trim() : '';
+
+const normalizeAvailabilityStatus = (dto: any): AvailabilityStatusValue => {
+  if (dto?.availabilityStatus === 'READY_NOW' || dto?.availabilityStatus === 'AVAILABLE_FROM_DATE') {
+    return dto.availabilityStatus;
+  }
+  if (isProvided(dto?.availableFrom)) return 'AVAILABLE_FROM_DATE';
+  if (READY_AVAILABILITY_PATTERN.test(dto?.possessionDate || '')) return 'READY_NOW';
+  return isProvided(dto?.possessionDate) ? 'AVAILABLE_FROM_DATE' : 'UNSPECIFIED';
+};
+
+const formatAvailabilityDate = (isoDate: string): string => {
+  const match = ISO_DATE_PATTERN.exec(isoDate);
+  if (!match) return '';
+  const monthIndex = Number(match[2]) - 1;
+  if (monthIndex < 0 || monthIndex >= DISPLAY_MONTHS.length) return '';
+  return `${Number(match[3])} ${DISPLAY_MONTHS[monthIndex]} ${match[1]}`;
+};
 
 const getPropertyTabLabel = (card: StagedProperty): string => {
   const layout = isProvided(card.bhk) ? card.bhk : 'Property';
@@ -102,6 +129,25 @@ const getPropertyTabLabel = (card: StagedProperty): string => {
       : 'Details needed';
   return `${layout} ${context}`;
 };
+
+const getAdditionalDetailCount = (card: StagedProperty): number => [
+  card.colony,
+  card.landmark,
+  card.address,
+  card.state,
+  card.pincode,
+  card.brokerageVal,
+  card.brokerageDays,
+  card.areaSqFt,
+  card.bathrooms,
+  card.furnishingStatus,
+  card.vastuFacing,
+  card.possessionDate,
+  card.status,
+  card.ownerName,
+  card.amenities.length > 0 ? card.amenities.join(', ') : '',
+  card.description
+].filter((value) => isProvided(value)).length;
 
 const normalizeOwnerPhone = (value: string | null | undefined): string => {
   const trimmed = value?.trim() || '';
@@ -229,6 +275,66 @@ const ReviewField: React.FC<ReviewFieldProps> = ({
   );
 };
 
+interface AvailabilityEditorProps {
+  status: AvailabilityStatusValue;
+  availableFrom: string;
+  onChange: (status: AvailabilityStatusValue, availableFrom: string) => void;
+  className?: string;
+}
+
+const AvailabilityEditor: React.FC<AvailabilityEditorProps> = ({
+  status,
+  availableFrom,
+  onChange,
+  className = ''
+}) => {
+  const hasValue = status === 'READY_NOW'
+    || (status === 'AVAILABLE_FROM_DATE' && Boolean(availableFrom));
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+      className={`relative overflow-hidden rounded-2xl border p-3 transition-colors duration-200 focus-within:border-cyan-400/70 focus-within:ring-2 focus-within:ring-cyan-400/10 ${
+        hasValue
+          ? 'border-slate-700/80 bg-slate-900/90 hover:border-emerald-500/40'
+          : 'border-dashed border-slate-700/90 bg-slate-950/35 hover:border-amber-400/45'
+      } ${className}`}
+    >
+      <span
+        aria-label={hasValue ? 'Availability included' : 'Availability is not provided'}
+        title={hasValue ? 'Availability included' : 'Availability is not provided'}
+        className={`absolute inset-x-3 top-0 h-px ${hasValue ? 'bg-emerald-400' : 'bg-amber-400'}`}
+      />
+      <label className="mb-2 block text-[11px] font-semibold tracking-[0.04em] text-slate-400">
+        Availability
+      </label>
+      <select
+        value={status}
+        onChange={(event) => onChange(event.target.value as AvailabilityStatusValue, '')}
+        className="w-full bg-transparent text-xs font-semibold text-slate-100 outline-none"
+      >
+        <option value="UNSPECIFIED">Not provided</option>
+        <option value="READY_NOW">Ready to move now</option>
+        <option value="AVAILABLE_FROM_DATE">Available from a specific date</option>
+      </select>
+      {status === 'AVAILABLE_FROM_DATE' && (
+        <div className="mt-3 border-t border-slate-800 pt-3">
+          <label className="mb-1.5 block text-[10px] font-semibold text-slate-500">Possession date</label>
+          <input
+            type="date"
+            value={availableFrom}
+            onChange={(event) => onChange(status, event.target.value)}
+            className="w-full bg-transparent text-xs font-semibold text-slate-100 outline-none [color-scheme:dark]"
+          />
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
 export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudioProps> = ({
   isOpen,
   onClose,
@@ -247,6 +353,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const [isDictationChoiceOpen, setIsDictationChoiceOpen] = useState<boolean>(false);
   const [detectedCount, setDetectedCount] = useState<number>(0);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [mobileWorkspaceView, setMobileWorkspaceView] = useState<'descriptions' | 'review'>('descriptions');
 
   const recognitionRef = useRef<any>(null);
   const batchSpeechBaseTextRef = useRef<string>('');
@@ -265,6 +372,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     if (details !== parsedPromptsRef.current) {
       setStagedCards([]);
       setActiveCardId(null);
+      setMobileWorkspaceView('descriptions');
     }
   }, []);
 
@@ -414,6 +522,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           areaSqFt: toEditableValue(dto.areaSqFt),
           bathrooms: toEditableValue(dto.bathrooms),
           possessionDate: toEditableValue(dto.possessionDate),
+          availabilityStatus: normalizeAvailabilityStatus(dto),
+          availableFrom: toEditableValue(dto.availableFrom),
           ownerName: toEditableValue(dto.ownerName),
           ownerPhone: normalizeOwnerPhone(dto.ownerPhone),
           furnishingStatus: toEditableValue(dto.furnishingStatus),
@@ -428,7 +538,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           localPhotoPreviews: [],
           isConfirmed: false,
           isValid: false,
-          missingFields: []
+          missingFields: [],
+          mediaUploadStatus: 'idle',
+          mediaUploadProgress: 0,
+          mediaUploadMessage: '',
+          failedMediaFiles: []
         };
         return validateCard(card);
       });
@@ -439,6 +553,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       setStagedCards(mapped);
       if (mapped.length > 0) {
         setActiveCardId(mapped[0].id);
+        setMobileWorkspaceView('review');
       }
     } catch (err: unknown) {
       console.error('Failed to parse batch prompts:', err);
@@ -472,12 +587,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     const compressedFiles: File[] = [];
     const previews: string[] = [];
 
-    for (const f of fileArray) {
-      const optimized = f.type.startsWith('image/')
-        ? await compressImageToWebP(f, 1920, 1080, 0.82)
-        : f;
-      compressedFiles.push(optimized);
-      previews.push(URL.createObjectURL(optimized));
+    const preparationErrors: string[] = [];
+    for (const file of fileArray) {
+      try {
+        const preparedFile = await prepareMediaForUpload(file);
+        compressedFiles.push(preparedFile);
+        previews.push(URL.createObjectURL(preparedFile));
+      } catch (error) {
+        preparationErrors.push(getErrorMessage(error, `${file.name} could not be prepared.`));
+      }
     }
 
     setStagedCards((prev) =>
@@ -486,12 +604,26 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           ? {
               ...c,
               localPhotos: [...c.localPhotos, ...compressedFiles],
-              localPhotoPreviews: [...c.localPhotoPreviews, ...previews]
+              localPhotoPreviews: [...c.localPhotoPreviews, ...previews],
+              mediaUploadStatus: 'idle',
+              mediaUploadProgress: 0,
+              mediaUploadMessage: '',
+              failedMediaFiles: []
             }
           : c
       )
     );
-  }, []);
+
+    if (preparationErrors.length > 0) {
+      showErrorDialog({
+        title: compressedFiles.length > 0 ? 'Some media could not be added' : 'Media could not be added',
+        message: compressedFiles.length > 0
+          ? 'Supported files were prepared. Review the files that still need attention.'
+          : 'Choose supported media within the displayed limits and try again.',
+        details: preparationErrors.join(' • ')
+      });
+    }
+  }, [showErrorDialog]);
 
   useEffect(() => {
     if (initialMediaAddedRef.current || initialMediaFiles.length === 0 || stagedCards.length === 0) return;
@@ -528,9 +660,18 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         if (c.id !== cardId) return c;
         const newFiles = [...c.localPhotos];
         const newPreviews = [...c.localPhotoPreviews];
+        URL.revokeObjectURL(newPreviews[photoIdx]);
         newFiles.splice(photoIdx, 1);
         newPreviews.splice(photoIdx, 1);
-        return { ...c, localPhotos: newFiles, localPhotoPreviews: newPreviews };
+        return {
+          ...c,
+          localPhotos: newFiles,
+          localPhotoPreviews: newPreviews,
+          failedMediaFiles: c.failedMediaFiles.filter((file) => file !== c.localPhotos[photoIdx]),
+          mediaUploadStatus: 'idle',
+          mediaUploadProgress: 0,
+          mediaUploadMessage: ''
+        };
       })
     );
   };
@@ -553,11 +694,129 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     );
   };
 
+  const handleAvailabilityChange = (
+    cardId: string,
+    availabilityStatus: AvailabilityStatusValue,
+    availableFrom: string
+  ) => {
+    setStagedCards((previousCards) => previousCards.map((card) => {
+      if (card.id !== cardId) return card;
+
+      const normalizedDate = availabilityStatus === 'AVAILABLE_FROM_DATE' ? availableFrom : '';
+      const possessionDate = availabilityStatus === 'READY_NOW'
+        ? 'Ready To Move'
+        : formatAvailabilityDate(normalizedDate);
+      const updated = {
+        ...card,
+        availabilityStatus,
+        availableFrom: normalizedDate,
+        possessionDate,
+        conflicts: card.conflicts.filter((conflict) => !conflict.startsWith('Possession date'))
+      };
+      return validateCard(updated);
+    }));
+  };
+
   const handleConfirmCard = (cardId: string, isConfirmed: boolean) => {
     setStagedCards((prev) => prev.map((card) => {
       if (card.id !== cardId) return card;
       return validateCard({ ...card, isConfirmed });
     }));
+  };
+
+  const uploadMediaFilesForCard = async (
+    card: StagedProperty,
+    propertyId: number,
+    files: File[]
+  ): Promise<{ failedFiles: File[]; errors: string[] }> => {
+    const failedFiles: File[] = [];
+    const errors: string[] = [];
+    const totalFiles = files.length;
+
+    setStagedCards((current) => current.map((item) => item.id === card.id
+      ? {
+          ...item,
+          mediaUploadStatus: 'preparing',
+          mediaUploadProgress: 0,
+          mediaUploadMessage: `Preparing ${totalFiles} ${totalFiles === 1 ? 'file' : 'files'}…`,
+          failedMediaFiles: []
+        }
+      : item));
+
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+      const file = files[fileIndex];
+      try {
+        await propertyService.uploadTaggedMedia(propertyId, file, {
+          roomTag: 'GENERAL',
+          mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
+          caption: card.title,
+          isPrimaryCover: fileIndex === 0,
+          sector: card.sector,
+          priceTag: card.rentVal,
+          vastuFacing: card.vastuFacing
+        }, {
+          onProgress: (progress) => {
+            const overallProgress = Math.round(
+              ((fileIndex + (progress.percent / 100)) / totalFiles) * 100
+            );
+            const status = progress.stage === 'retrying'
+              ? 'retrying'
+              : progress.stage === 'preparing'
+                ? 'preparing'
+                : 'uploading';
+            const message = progress.stage === 'retrying'
+              ? `Connection interrupted. Retrying file ${fileIndex + 1} of ${totalFiles}…`
+              : `Uploading file ${fileIndex + 1} of ${totalFiles}…`;
+            setStagedCards((current) => current.map((item) => item.id === card.id
+              ? {
+                  ...item,
+                  mediaUploadStatus: status,
+                  mediaUploadProgress: overallProgress,
+                  mediaUploadMessage: message
+                }
+              : item));
+          }
+        });
+      } catch (error) {
+        failedFiles.push(file);
+        errors.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
+      }
+    }
+
+    setStagedCards((current) => current.map((item) => item.id === card.id
+      ? {
+          ...item,
+          mediaUploadStatus: failedFiles.length > 0 ? 'failed' : 'complete',
+          mediaUploadProgress: failedFiles.length > 0
+            ? Math.round(((totalFiles - failedFiles.length) / totalFiles) * 100)
+            : 100,
+          mediaUploadMessage: failedFiles.length > 0
+            ? `${failedFiles.length} ${failedFiles.length === 1 ? 'file needs' : 'files need'} another attempt.`
+            : `${totalFiles} ${totalFiles === 1 ? 'file was' : 'files were'} uploaded successfully.`,
+          failedMediaFiles: failedFiles
+        }
+      : item));
+
+    return { failedFiles, errors };
+  };
+
+  const handleRetryCardMedia = async (cardId: string) => {
+    const card = stagedCards.find((item) => item.id === cardId);
+    if (!card?.publishedId || card.failedMediaFiles.length === 0) return;
+
+    setIsPublishing(true);
+    try {
+      const result = await uploadMediaFilesForCard(card, card.publishedId, card.failedMediaFiles);
+      if (result.failedFiles.length > 0) {
+        showErrorDialog({
+          title: 'Some media still needs attention',
+          message: 'The property remains published. Keep this screen open and retry when the connection is stable.',
+          details: result.errors.join(' • ')
+        });
+      }
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   // Batch Publish All Staged Properties
@@ -598,6 +857,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         areaSqFt: c.areaSqFt,
         bathrooms: c.bathrooms,
         possessionDate: c.possessionDate,
+        availabilityStatus: c.availabilityStatus,
+        availableFrom: c.availableFrom,
         ownerName: c.ownerName,
         ownerPhone: c.ownerPhone,
         furnishingStatus: c.furnishingStatus,
@@ -628,26 +889,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       // Upload media only after its listing exists, preserving the selected images and videos.
       const mediaUploadErrors: string[] = [];
       for (const created of createdResults) {
-          const propId = Number(created.id);
-          const card = validCards[created.requestIndex];
-          publishedIdsByCardId.set(card.id, propId);
-          if (card && card.localPhotos.length > 0) {
-            try {
-              const imageFiles = card.localPhotos.filter((file) => file.type.startsWith('image/'));
-              const videoFiles = card.localPhotos.filter((file) => file.type.startsWith('video/'));
-              if (imageFiles.length > 0) {
-                await propertyService.uploadPhotosToCloudinary(propId, imageFiles);
-              }
-              for (const videoFile of videoFiles) {
-                await propertyService.uploadVideoToCloudinary(propId, videoFile);
-              }
-            } catch (mediaErr) {
-              console.warn(`Media upload failed for property ${propId}:`, mediaErr);
-              mediaUploadErrors.push(
-                `Property ${card.promptIndex}: ${getErrorMessage(mediaErr, 'Media could not be uploaded.')}`
-              );
-            }
+        const propId = Number(created.id);
+        const card = validCards[created.requestIndex];
+        publishedIdsByCardId.set(card.id, propId);
+        if (card && card.localPhotos.length > 0) {
+          const result = await uploadMediaFilesForCard(card, propId, card.localPhotos);
+          if (result.errors.length > 0) {
+            mediaUploadErrors.push(`Property ${card.promptIndex}: ${result.errors.join(', ')}`);
           }
+        }
       }
 
       window.dispatchEvent(new Event('pathome_property_published'));
@@ -663,9 +913,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       if (mediaUploadErrors.length > 0) {
         showErrorDialog({
           title: 'Property published, but some media needs attention',
-          message: 'The listing details were published. Please add the affected media again from the property management page.',
+          message: 'The listing details were published. Use Retry failed media below; the property will not be created again.',
           details: mediaUploadErrors.join(' • ')
         });
+        return;
       }
 
       if (res.failedCount > 0) {
@@ -694,6 +945,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   if (!isOpen) return null;
 
+  const readyToPublishCount = stagedCards.filter((card) => card.isValid && !card.publishedId).length;
+  const unpublishedCount = stagedCards.filter((card) => !card.publishedId).length;
+
   return (
     <AnimatePresence>
       <div className={embedded ? 'relative w-full' : 'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto'}>
@@ -718,19 +972,19 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           }`}
         >
           {/* Header Bar */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/70">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-400 flex items-center justify-center text-slate-950 shadow-lg shadow-orange-500/20">
+          <div className="relative flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-950/70 px-3 py-3 sm:px-6 sm:py-4">
+            <div className="flex min-w-0 items-start gap-3 pr-12">
+              <div className="hidden w-10 h-10 shrink-0 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-400 items-center justify-center text-slate-950 shadow-lg shadow-orange-500/20 min-[400px]:flex">
                 <Sparkles className="w-5 h-5 font-black" />
               </div>
-              <div>
-                <h2 className="text-lg font-black tracking-tight text-white flex items-center gap-2">
+              <div className="min-w-0">
+                <h2 className="flex flex-wrap items-center gap-2 text-base font-black tracking-tight text-white sm:text-lg">
                   Review property details
                   <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                     Admin review
                   </span>
                 </h2>
-                <p className="text-xs text-slate-400">
+                <p className="hidden text-xs text-slate-400 min-[420px]:block">
                   Add one or several properties, then confirm the complete details for each before publishing.
                 </p>
               </div>
@@ -740,16 +994,51 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
               onClick={onClose}
               aria-label="Back to property details"
               title="Back to property details"
-              className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
+              className="absolute right-3 top-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors sm:right-5"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           {/* Main Content Split Screen */}
-          <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className={`grid flex-1 grid-cols-1 gap-3 px-2 py-3 sm:gap-6 sm:p-6 lg:grid-cols-12 ${
+            embedded
+              ? mobileWorkspaceView === 'review' && stagedCards.length > 0
+                ? 'overflow-visible pb-28 lg:pb-6'
+                : 'overflow-visible'
+              : 'overflow-y-auto'
+          }`}>
+            {stagedCards.length > 0 && (
+              <div className="grid grid-cols-2 gap-1 rounded-2xl border border-slate-800 bg-slate-950/80 p-1 lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => setMobileWorkspaceView('descriptions')}
+                  aria-pressed={mobileWorkspaceView === 'descriptions'}
+                  className={`min-h-11 rounded-xl px-3 text-xs font-bold transition-colors ${
+                    mobileWorkspaceView === 'descriptions'
+                      ? 'bg-slate-800 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Edit descriptions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileWorkspaceView('review')}
+                  aria-pressed={mobileWorkspaceView === 'review'}
+                  className={`min-h-11 rounded-xl px-3 text-xs font-bold transition-colors ${
+                    mobileWorkspaceView === 'review'
+                      ? 'bg-amber-400 text-slate-950 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Review {stagedCards.length}
+                </button>
+              </div>
+            )}
+
             {/* Left Panel: Voice & Text Prompt Input (5 Cols) */}
-            <div className="lg:col-span-5 flex flex-col gap-4">
+            <div className={`${mobileWorkspaceView === 'review' && stagedCards.length > 0 ? 'hidden lg:flex' : 'flex'} lg:col-span-5 flex-col gap-4`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2.5">
                   <span className="truncate text-sm font-bold text-slate-200">
@@ -766,7 +1055,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                     whileTap={{ scale: 0.98 }}
                     onClick={toggleSpeech}
                     type="button"
-                    className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-bold transition-all ${
+                    className={`inline-flex h-11 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-bold transition-all ${
                       isListening
                         ? 'bg-rose-500 text-white shadow-md shadow-rose-500/30'
                         : 'border border-slate-700 bg-slate-800/80 text-slate-200 hover:border-amber-400/40 hover:bg-slate-800 hover:text-white'
@@ -829,17 +1118,17 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                   value={rawPrompts}
                   onChange={(e) => handleTypedPromptChange(e.target.value)}
                   placeholder={`Type, paste, or dictate property details here.\n\nTo add another property, write “next property” on a new line.\n\nExample:\n2 BHK in Vijay Nagar, rent 18,000, owner 98260 12345\n\nnext property\n3 BHK in Palasia, rent 35,000, owner 98260 54321`}
-                  className="w-full h-full min-h-[260px] p-4 text-xs font-mono bg-slate-950/80 border border-slate-700/80 rounded-2xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500/80 focus:ring-2 focus:ring-amber-500/20 transition-all resize-none shadow-inner"
+                  className="w-full h-full min-h-[220px] p-4 text-xs font-mono bg-slate-950/80 border border-slate-700/80 rounded-2xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500/80 focus:ring-2 focus:ring-amber-500/20 transition-all resize-none shadow-inner sm:min-h-[260px]"
                 />
               </div>
 
-              <div className="flex justify-end pt-1">
+              <div className="flex justify-stretch pt-1 sm:justify-end">
                 <motion.button
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
                   onClick={handleParseBatch}
                   disabled={isParsing || !rawPrompts.trim()}
-                  className="px-5 py-2.5 rounded-xl font-black text-xs bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-slate-950 shadow-lg shadow-orange-500/20 hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-2"
+                  className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 px-5 py-2.5 text-xs font-black text-slate-950 shadow-lg shadow-orange-500/20 transition-all hover:brightness-110 disabled:opacity-50 sm:w-auto"
                 >
                   {isParsing ? (
                     <span>Extracting property details…</span>
@@ -854,9 +1143,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
             </div>
 
             {/* Right Panel: Staging Cards & Filmstrip (7 Cols) */}
-            <div className="lg:col-span-7 flex flex-col gap-4">
+            <div className={`${mobileWorkspaceView === 'descriptions' ? 'hidden lg:flex' : 'flex'} lg:col-span-7 flex-col gap-4`}>
               {stagedCards.length === 0 ? (
-                <div className="h-full min-h-[360px] flex flex-col items-center justify-center border border-dashed border-slate-800 rounded-2xl p-8 text-center bg-slate-950/40">
+                <div className="h-full min-h-[300px] sm:min-h-[360px] flex flex-col items-center justify-center border border-dashed border-slate-800 rounded-2xl p-4 sm:p-8 text-center bg-slate-950/40">
                   <div className="w-14 h-14 rounded-3xl bg-slate-800/80 flex items-center justify-center text-slate-400 mb-3">
                     <Building2 className="w-7 h-7" />
                   </div>
@@ -872,8 +1161,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
               ) : (
                 <div className="flex flex-col gap-4">
                   {/* Magnetic Filmstrip Overview Ribbon */}
-                  <div className="p-3.5 bg-slate-950/90 border border-slate-800 rounded-2xl shadow-md">
-                    <div className="flex items-center justify-between text-xs font-bold text-slate-300 mb-2">
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/90 p-3 shadow-md">
+                    <div className="flex flex-col gap-1 text-xs font-bold text-slate-300 mb-2 min-[480px]:flex-row min-[480px]:items-center min-[480px]:justify-between">
                       <span className="flex items-center gap-1.5">
                         <Scissors className="w-3.5 h-3.5 text-amber-400" />
                         Properties to review
@@ -883,7 +1172,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                    <div className="no-scrollbar flex touch-pan-x items-center gap-1.5 overflow-x-auto pb-1">
                       {stagedCards.map((card, idx) => {
                         const palette = COLOR_PALETTES[idx % COLOR_PALETTES.length];
                         const mediaCount = card.localPhotos.length + card.mediaUrls.length;
@@ -909,12 +1198,22 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                   </div>
 
                   {/* Staged Cards Grid */}
-                  <div className="flex flex-col gap-3.5 max-h-[500px] overflow-y-auto pr-1">
+                  <div className="flex flex-col gap-3.5">
                     {stagedCards.map((card, idx) => {
                       if (activeCardId && card.id !== activeCardId) return null;
 
                       const palette = COLOR_PALETTES[idx % COLOR_PALETTES.length];
                       const totalMedia = card.localPhotos.length + card.mediaUrls.length;
+                      const requiredSnapshot = [
+                        { label: 'Layout', value: card.bhk, ready: isProvided(card.bhk) },
+                        { label: 'Property type', value: card.type, ready: isProvided(card.type) },
+                        { label: 'Monthly rent', value: card.rentAmount > 0 ? `₹${card.rentAmount.toLocaleString('en-IN')}` : '', ready: card.rentAmount > 0 },
+                        { label: 'Security deposit', value: card.depositVal, ready: isProvided(card.depositVal) && /\d/.test(card.depositVal) },
+                        { label: 'Locality', value: card.sector, ready: isProvided(card.sector) },
+                        { label: 'City', value: card.city, ready: isProvided(card.city) },
+                        { label: 'Owner phone', value: card.ownerPhone, ready: hasValidOwnerPhone(card.ownerPhone) }
+                      ];
+                      const completedRequiredCount = requiredSnapshot.filter((item) => item.ready).length;
 
                       return (
                         <div
@@ -922,13 +1221,13 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                           tabIndex={0}
                           onPaste={(e) => handleCardPaste(e, card.id)}
                           onClick={() => setActiveCardId(card.id)}
-                          className={`p-4 rounded-2xl border transition-all bg-slate-950/70 shadow-lg ${
+                          className={`rounded-2xl border bg-slate-950/70 p-2.5 shadow-lg transition-all sm:p-4 ${
                             activeCardId === card.id ? `${palette.border} ring-1 ${palette.border}` : 'border-slate-800/80 hover:border-slate-700'
                           }`}
                         >
                           {/* Card Header */}
-                          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
-                            <div className="flex items-center gap-2.5">
+                          <div className="flex flex-col gap-2 pb-3 border-b border-slate-800/80 mb-3 min-[560px]:flex-row min-[560px]:items-center min-[560px]:justify-between">
+                            <div className="flex min-w-0 w-full items-center gap-2.5">
                               <span className={`px-2 py-0.5 rounded-lg text-xs font-black uppercase font-mono ${palette.badge}`}>
                                 #{idx + 1}
                               </span>
@@ -936,11 +1235,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                 type="text"
                                 value={card.title}
                                 onChange={(e) => handleUpdateField(card.id, 'title', e.target.value)}
-                                className="text-xs font-bold text-white bg-transparent border-b border-transparent hover:border-slate-700 focus:border-amber-500 focus:outline-none max-w-[240px] truncate"
+                                className="min-w-0 flex-1 truncate border-b border-transparent bg-transparent text-xs font-bold text-white hover:border-slate-700 focus:border-amber-500 focus:outline-none min-[560px]:max-w-[240px]"
                               />
                             </div>
 
-                            <div className="flex items-center gap-2">
+                            <div className="flex shrink-0 items-center gap-2 self-start min-[560px]:self-auto">
                               {card.publishedId ? (
                                 <span className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-full border border-sky-500/30">
                                   <CheckCircle2 className="w-3 h-3" /> Published
@@ -979,26 +1278,64 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                             </div>
                           )}
 
-                          <label className={`mb-3 flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-300 ${card.publishedId ? 'cursor-default opacity-70' : 'cursor-pointer'}`}>
-                            <input
-                              type="checkbox"
-                              checked={card.isConfirmed}
-                              disabled={Boolean(card.publishedId)}
-                              onChange={(e) => handleConfirmCard(card.id, e.target.checked)}
-                              className="h-3.5 w-3.5 accent-emerald-500"
-                            />
-                            I reviewed these details and confirm this property is ready to publish.
-                          </label>
-
                           <details className="mb-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
                             <summary className="cursor-pointer font-semibold text-slate-300">View source text for this property</summary>
                             <p className="mt-2 whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-slate-400">{card.rawPrompt}</p>
                           </details>
 
                           <div className="space-y-3 text-xs">
-                            <section>
+                            <section className="rounded-2xl border border-slate-800 bg-slate-900/55 p-3 lg:hidden">
+                              <div className="mb-2 flex items-center justify-between gap-3">
+                                <div>
+                                  <h4 className="text-xs font-bold text-slate-100">Property snapshot</h4>
+                                  <p className="mt-0.5 hidden text-[10px] text-slate-500 min-[480px]:block">Confirm the essentials, then edit only what needs attention.</p>
+                                </div>
+                                <span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${
+                                  completedRequiredCount === requiredSnapshot.length
+                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                    : 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+                                }`}>
+                                  {completedRequiredCount}/{requiredSnapshot.length} complete
+                                </span>
+                              </div>
+                              <dl className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-4 gap-y-2">
+                                {requiredSnapshot.map((item) => (
+                                  <div key={item.label} className={`min-w-0 ${item.label === 'Owner phone' ? 'col-span-2' : ''}`}>
+                                    <dt className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{item.label}</dt>
+                                    <dd className={`mt-0.5 truncate text-[10px] font-semibold ${item.ready ? 'text-slate-100' : 'text-rose-300'}`}>
+                                      {item.ready ? item.value : 'Needs attention'}
+                                    </dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </section>
+
+                            <details className={`group rounded-2xl border lg:hidden ${
+                              completedRequiredCount === requiredSnapshot.length && card.conflicts.length === 0
+                                ? 'border-slate-800 bg-slate-900/45'
+                                : 'border-rose-500/35 bg-rose-500/[0.04]'
+                            }`}>
+                              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-bold text-slate-200 marker:content-none">
+                                <span>{completedRequiredCount === requiredSnapshot.length ? 'Review or edit publishing fields' : 'Fix required publishing fields'}</span>
+                                <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold text-slate-400">
+                                  {completedRequiredCount}/{requiredSnapshot.length}
+                                  <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+                                </span>
+                              </summary>
+                              <div className="grid grid-cols-1 gap-2.5 border-t border-slate-800 px-3 pb-3 pt-3 min-[480px]:grid-cols-2">
+                                <ReviewField label="Layout" value={card.bhk} required onValueChange={(value) => handleUpdateField(card.id, 'bhk', value)} placeholder="Enter layout" />
+                                <ReviewField label="Property type" value={card.type} required onValueChange={(value) => handleUpdateField(card.id, 'type', value)} placeholder="Enter property type" />
+                                <ReviewField label="Monthly rent (₹)" value={card.rentAmount || ''} required type="number" onValueChange={(value) => handleUpdateField(card.id, 'rentAmount', Number(value) || 0)} placeholder="Enter monthly rent" />
+                                <ReviewField label="Security deposit" value={card.depositVal} required onValueChange={(value) => handleUpdateField(card.id, 'depositVal', value)} placeholder="Enter security deposit" />
+                                <ReviewField label="Locality" value={card.sector} required onValueChange={(value) => handleUpdateField(card.id, 'sector', value)} placeholder="Enter locality" />
+                                <ReviewField label="City" value={card.city} required onValueChange={(value) => handleUpdateField(card.id, 'city', value)} placeholder="Enter city" />
+                                <ReviewField label="Owner phone" value={card.ownerPhone} required className="min-[480px]:col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'ownerPhone', value)} onBlur={() => handleUpdateField(card.id, 'ownerPhone', normalizeOwnerPhone(card.ownerPhone))} placeholder="Enter mobile number" />
+                              </div>
+                            </details>
+
+                            <section className="hidden lg:block">
                               <h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Essential publishing details</h4>
-                              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                              <div className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-2 sm:grid-cols-4">
                                 <ReviewField label="Layout" value={card.bhk} required onValueChange={(value) => handleUpdateField(card.id, 'bhk', value)} placeholder="Enter layout" />
                                 <ReviewField label="Property type" value={card.type} required onValueChange={(value) => handleUpdateField(card.id, 'type', value)} placeholder="Enter property type" />
                                 <ReviewField label="Monthly rent (₹)" value={card.rentAmount || ''} required type="number" onValueChange={(value) => handleUpdateField(card.id, 'rentAmount', Number(value) || 0)} placeholder="Enter monthly rent" />
@@ -1006,40 +1343,78 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                               </div>
                             </section>
 
-                            <section>
+                            <details className="group rounded-2xl border border-slate-800 bg-slate-900/45 lg:hidden">
+                              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-bold text-slate-200 marker:content-none">
+                                <span>Additional property details</span>
+                                <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold text-slate-400">
+                                  {getAdditionalDetailCount(card)} captured
+                                  <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+                                </span>
+                              </summary>
+                              <div className="space-y-3 border-t border-slate-800 px-3 pb-3 pt-3">
+                                <div className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-2">
+                                  <ReviewField label="Society / colony" value={card.colony} onValueChange={(value) => handleUpdateField(card.id, 'colony', value)} placeholder="Enter society or colony" />
+                                  <ReviewField label="Landmark" value={card.landmark} onValueChange={(value) => handleUpdateField(card.id, 'landmark', value)} placeholder="Enter landmark" />
+                                  <ReviewField label="Address" value={card.address} onValueChange={(value) => handleUpdateField(card.id, 'address', value)} placeholder="Enter address" />
+                                  <ReviewField label="State" value={card.state} onValueChange={(value) => handleUpdateField(card.id, 'state', value)} placeholder="Enter state" />
+                                  <ReviewField label="Postal code" value={card.pincode} onValueChange={(value) => handleUpdateField(card.id, 'pincode', value)} placeholder="Enter postal code" />
+                                  <ReviewField label="Brokerage" value={card.brokerageVal} onValueChange={(value) => handleUpdateField(card.id, 'brokerageVal', value)} placeholder="Enter brokerage" />
+                                  <ReviewField label="Brokerage terms" value={card.brokerageDays} onValueChange={(value) => handleUpdateField(card.id, 'brokerageDays', value)} placeholder="Enter brokerage terms" />
+                                  <ReviewField label="Area" value={card.areaSqFt} onValueChange={(value) => handleUpdateField(card.id, 'areaSqFt', value)} placeholder="Enter area" />
+                                  <ReviewField label="Bathrooms" value={card.bathrooms} onValueChange={(value) => handleUpdateField(card.id, 'bathrooms', value)} placeholder="Enter bathroom count" />
+                                  <ReviewField label="Furnishing" value={card.furnishingStatus} onValueChange={(value) => handleUpdateField(card.id, 'furnishingStatus', value)} placeholder="Enter furnishing" />
+                                  <ReviewField label="Facing" value={card.vastuFacing} onValueChange={(value) => handleUpdateField(card.id, 'vastuFacing', value)} placeholder="Enter facing" />
+                                  <AvailabilityEditor
+                                    status={card.availabilityStatus}
+                                    availableFrom={card.availableFrom}
+                                    onChange={(status, availableFrom) => handleAvailabilityChange(card.id, status, availableFrom)}
+                                  />
+                                  <ReviewField label="Listing status" value={card.status} onValueChange={(value) => handleUpdateField(card.id, 'status', value.toUpperCase())} placeholder="Enter listing status" />
+                                  <ReviewField label="Owner name" value={card.ownerName} onValueChange={(value) => handleUpdateField(card.id, 'ownerName', value)} placeholder="Enter owner name" />
+                                  <ReviewField label="Amenities" value={card.amenities.join(', ')} onValueChange={(value) => handleUpdateField(card.id, 'amenities', value.split(',').map((amenity) => amenity.trim()).filter(isProvided))} placeholder="Enter amenities" />
+                                  <ReviewField label="Description" value={card.description} multiline className="min-[480px]:col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'description', value)} placeholder="Enter useful listing details" />
+                                </div>
+                              </div>
+                            </details>
+
+                            <section className="hidden lg:block">
                               <h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Location</h4>
-                              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                              <div className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-2 sm:grid-cols-4">
                                 <ReviewField label="Locality" value={card.sector} required onValueChange={(value) => handleUpdateField(card.id, 'sector', value)} placeholder="Enter locality" />
                                 <ReviewField label="City" value={card.city} required onValueChange={(value) => handleUpdateField(card.id, 'city', value)} placeholder="Enter city" />
                                 <ReviewField label="Society / colony" value={card.colony} onValueChange={(value) => handleUpdateField(card.id, 'colony', value)} placeholder="Enter society or colony" />
                                 <ReviewField label="Landmark" value={card.landmark} onValueChange={(value) => handleUpdateField(card.id, 'landmark', value)} placeholder="Enter landmark" />
-                                <ReviewField label="Address" value={card.address} className="col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'address', value)} placeholder="Enter address" />
+                                <ReviewField label="Address" value={card.address} className="min-[480px]:col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'address', value)} placeholder="Enter address" />
                                 <ReviewField label="State" value={card.state} onValueChange={(value) => handleUpdateField(card.id, 'state', value)} placeholder="Enter state" />
                                 <ReviewField label="Postal code" value={card.pincode} onValueChange={(value) => handleUpdateField(card.id, 'pincode', value)} placeholder="Enter postal code" />
                               </div>
                             </section>
 
-                            <section>
+                            <section className="hidden lg:block">
                               <h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Property and commercial details</h4>
-                              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                              <div className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-2 sm:grid-cols-4">
                                 <ReviewField label="Brokerage" value={card.brokerageVal} onValueChange={(value) => handleUpdateField(card.id, 'brokerageVal', value)} placeholder="Enter brokerage" />
                                 <ReviewField label="Brokerage terms" value={card.brokerageDays} onValueChange={(value) => handleUpdateField(card.id, 'brokerageDays', value)} placeholder="Enter brokerage terms" />
                                 <ReviewField label="Area" value={card.areaSqFt} onValueChange={(value) => handleUpdateField(card.id, 'areaSqFt', value)} placeholder="Enter area" />
                                 <ReviewField label="Bathrooms" value={card.bathrooms} onValueChange={(value) => handleUpdateField(card.id, 'bathrooms', value)} placeholder="Enter bathroom count" />
                                 <ReviewField label="Furnishing" value={card.furnishingStatus} onValueChange={(value) => handleUpdateField(card.id, 'furnishingStatus', value)} placeholder="Enter furnishing" />
                                 <ReviewField label="Facing" value={card.vastuFacing} onValueChange={(value) => handleUpdateField(card.id, 'vastuFacing', value)} placeholder="Enter facing" />
-                                <ReviewField label="Available from" value={card.possessionDate} onValueChange={(value) => handleUpdateField(card.id, 'possessionDate', value)} placeholder="Enter availability" />
+                                <AvailabilityEditor
+                                  status={card.availabilityStatus}
+                                  availableFrom={card.availableFrom}
+                                  onChange={(status, availableFrom) => handleAvailabilityChange(card.id, status, availableFrom)}
+                                />
                                 <ReviewField label="Listing status" value={card.status} onValueChange={(value) => handleUpdateField(card.id, 'status', value.toUpperCase())} placeholder="Enter listing status" />
                               </div>
                             </section>
 
-                            <section>
+                            <section className="hidden lg:block">
                               <h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Owner and listing notes</h4>
-                              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                              <div className="grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-2 sm:grid-cols-4">
                                 <ReviewField label="Owner name" value={card.ownerName} onValueChange={(value) => handleUpdateField(card.id, 'ownerName', value)} placeholder="Enter owner name" />
                                 <ReviewField label="Owner phone" value={card.ownerPhone} required onValueChange={(value) => handleUpdateField(card.id, 'ownerPhone', value)} onBlur={() => handleUpdateField(card.id, 'ownerPhone', normalizeOwnerPhone(card.ownerPhone))} placeholder="Enter mobile number" />
-                                <ReviewField label="Amenities" value={card.amenities.join(', ')} className="col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'amenities', value.split(',').map((amenity) => amenity.trim()).filter(isProvided))} placeholder="Enter amenities" />
-                                <ReviewField label="Description" value={card.description} multiline className="col-span-2 sm:col-span-4" onValueChange={(value) => handleUpdateField(card.id, 'description', value)} placeholder="Enter useful listing details" />
+                                <ReviewField label="Amenities" value={card.amenities.join(', ')} className="min-[480px]:col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'amenities', value.split(',').map((amenity) => amenity.trim()).filter(isProvided))} placeholder="Enter amenities" />
+                                <ReviewField label="Description" value={card.description} multiline className="min-[480px]:col-span-2 sm:col-span-4" onValueChange={(value) => handleUpdateField(card.id, 'description', value)} placeholder="Enter useful listing details" />
                               </div>
                               {card.parserMissingFields.length > 0 && (
                                 <p className="mt-2 text-[10px] text-slate-500">Not found in the original description: {card.parserMissingFields.join(', ')}. These fields are available above if you want to add them.</p>
@@ -1052,7 +1427,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                             <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
                               <span>Property media ({totalMedia})</span>
                               <label className="cursor-pointer text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1">
-                                <Plus className="w-3 h-3" /> Add media
+                                <Plus className="w-3 h-3" /> Add photos or video
                                 <input
                                   type="file"
                                   multiple
@@ -1062,10 +1437,13 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                 />
                               </label>
                             </div>
+                            <p className="mb-2 text-[10px] leading-relaxed text-slate-500">
+                              {describeMediaLimits()}
+                            </p>
 
                             {/* Thumbnail Strip */}
                             {totalMedia > 0 ? (
-                              <div className="flex items-center gap-2 overflow-x-auto py-1">
+                              <div className="no-scrollbar flex touch-pan-x items-center gap-2 overflow-x-auto py-1">
                                 {card.localPhotoPreviews.map((src, pIdx) => (
                                   <div key={pIdx} className="relative group w-14 h-14 rounded-xl overflow-hidden border border-slate-700 flex-shrink-0">
                                     {card.localPhotos[pIdx]?.type.startsWith('video/') ? (
@@ -1103,14 +1481,95 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                   e.preventDefault();
                                   if (e.dataTransfer.files) attachMediaToCard(card.id, e.dataTransfer.files);
                                 }}
-                                className="border border-dashed border-slate-800 rounded-xl py-3 px-4 text-center hover:border-slate-700 transition-colors cursor-pointer bg-slate-900/40"
+                                className="hidden rounded-xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-3 text-center transition-colors hover:border-slate-700 lg:block"
                               >
                                 <p className="text-[11px] text-slate-400">
                                   Drag photos or videos here, or paste images from your clipboard.
                                 </p>
                               </div>
                             )}
+
+                            {card.mediaUploadStatus !== 'idle' && (
+                              <div className={`mt-2 rounded-xl border px-3 py-2.5 ${
+                                card.mediaUploadStatus === 'failed'
+                                  ? 'border-rose-500/40 bg-rose-500/10'
+                                  : card.mediaUploadStatus === 'complete'
+                                    ? 'border-emerald-500/35 bg-emerald-500/10'
+                                    : 'border-cyan-500/35 bg-cyan-500/10'
+                              }`}>
+                                <div className="flex items-center justify-between gap-3 text-[10px] font-semibold">
+                                  <span className={card.mediaUploadStatus === 'failed' ? 'text-rose-300' : 'text-slate-300'}>
+                                    {card.mediaUploadMessage}
+                                  </span>
+                                  <span className="shrink-0 text-slate-400">{card.mediaUploadProgress}%</span>
+                                </div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                                  <motion.div
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${card.mediaUploadProgress}%` }}
+                                    transition={{ type: 'spring', stiffness: 450, damping: 24 }}
+                                    className={`h-full rounded-full ${
+                                      card.mediaUploadStatus === 'failed'
+                                        ? 'bg-rose-400'
+                                        : card.mediaUploadStatus === 'complete'
+                                          ? 'bg-emerald-400'
+                                          : 'bg-cyan-400'
+                                    }`}
+                                  />
+                                </div>
+                                {card.mediaUploadStatus === 'failed' && card.publishedId && (
+                                  <button
+                                    type="button"
+                                    disabled={isPublishing}
+                                    onClick={() => void handleRetryCardMedia(card.id)}
+                                    className="mt-2 flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-rose-400/40 bg-rose-500/15 px-3 text-[11px] font-bold text-rose-200 transition-colors hover:bg-rose-500/25 disabled:opacity-50"
+                                  >
+                                    <RefreshCw className="h-3.5 w-3.5" />
+                                    Retry failed media
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
+
+                          <label className={`mt-3 flex min-h-11 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-300 ${card.publishedId ? 'cursor-default opacity-70' : 'cursor-pointer'}`}>
+                            <input
+                              type="checkbox"
+                              checked={card.isConfirmed}
+                              disabled={Boolean(card.publishedId)}
+                              onChange={(e) => handleConfirmCard(card.id, e.target.checked)}
+                              className="h-4 w-4 shrink-0 accent-emerald-500"
+                            />
+                            I reviewed these details and confirm this property is ready to publish.
+                          </label>
+
+                          {stagedCards.length > 1 && (
+                            <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2 border-t border-slate-800/80 pt-3 lg:hidden">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setActiveCardId(stagedCards[idx - 1]?.id || card.id);
+                                }}
+                                className="flex min-h-11 items-center justify-center gap-1 rounded-xl border border-slate-800 bg-slate-900/70 px-2 text-[11px] font-bold text-slate-300 disabled:opacity-35"
+                              >
+                                <ChevronLeft className="h-4 w-4" /> Previous
+                              </button>
+                              <span className="text-[10px] font-bold text-slate-500">{idx + 1} of {stagedCards.length}</span>
+                              <button
+                                type="button"
+                                disabled={idx === stagedCards.length - 1}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setActiveCardId(stagedCards[idx + 1]?.id || card.id);
+                                }}
+                                className="flex min-h-11 items-center justify-center gap-1 rounded-xl border border-slate-800 bg-slate-900/70 px-2 text-[11px] font-bold text-slate-300 disabled:opacity-35"
+                              >
+                                Next <ChevronRight className="h-4 w-4" />
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -1121,21 +1580,21 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           </div>
 
           {/* Footer Bar */}
-          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-800 bg-slate-950/80">
+          <div className={`${embedded ? 'hidden lg:flex' : 'flex'} z-20 flex-col gap-3 border-t border-slate-800 bg-slate-950/95 px-4 py-3 shadow-[0_-12px_30px_rgba(2,6,23,0.55)] backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4 lg:shadow-none`}>
             <div className="text-xs text-slate-400">
               {stagedCards.length > 0 && (
                 <span>
-                  <strong className="text-white">{stagedCards.filter((c) => c.isValid && !c.publishedId).length}</strong> of{' '}
-                  <strong className="text-white">{stagedCards.filter((c) => !c.publishedId).length}</strong> properties ready to publish.
+                  <strong className="text-white">{readyToPublishCount}</strong> of{' '}
+                  <strong className="text-white">{unpublishedCount}</strong> properties ready to publish.
                 </span>
               )}
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex w-full flex-col-reverse gap-2 min-[560px]:w-auto min-[560px]:flex-row min-[560px]:items-center min-[560px]:gap-3">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                className="hidden min-h-11 w-full items-center justify-center rounded-xl px-4 py-2 text-xs font-bold text-slate-400 transition-colors hover:text-white min-[560px]:flex min-[560px]:w-auto"
               >
                 Back to property details
               </button>
@@ -1144,21 +1603,49 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 whileHover={{ scale: 1.03 }}
                 whileTap={{ scale: 0.97 }}
                 onClick={handlePublishAll}
-                disabled={isPublishing || stagedCards.filter((c) => c.isValid).length === 0}
-                className="px-6 py-2.5 rounded-xl font-black text-xs bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-2"
+                disabled={isPublishing || readyToPublishCount === 0}
+                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-2.5 text-center text-xs font-black text-slate-950 shadow-lg shadow-emerald-500/20 transition-all hover:brightness-110 disabled:opacity-50 min-[560px]:w-auto min-[560px]:px-6"
               >
                 {isPublishing ? (
                   <span>Publishing listings…</span>
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                  <span>Publish confirmed properties ({stagedCards.filter((c) => c.isValid && !c.publishedId).length})</span>
+                  <span>Publish confirmed properties ({readyToPublishCount})</span>
                   </>
                 )}
               </motion.button>
             </div>
           </div>
         </motion.div>
+
+        {embedded && stagedCards.length > 0 && mobileWorkspaceView === 'review' && typeof document !== 'undefined' && createPortal(
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+            className="fixed inset-x-0 bottom-0 z-[70] border-t border-slate-700/80 bg-slate-950/95 px-3 pt-3 shadow-[0_-14px_34px_rgba(2,6,23,0.7)] backdrop-blur-xl lg:hidden"
+            style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+          >
+            <div className="mx-auto flex max-w-3xl items-center gap-3">
+              <div className="min-w-[58px] text-center" aria-live="polite">
+                <span className="block text-sm font-black text-white">{readyToPublishCount}/{unpublishedCount}</span>
+                <span className="block text-[9px] font-semibold uppercase tracking-wide text-slate-400">ready</span>
+              </div>
+              <motion.button
+                whileTap={{ scale: 0.98 }}
+                onClick={handlePublishAll}
+                disabled={isPublishing || readyToPublishCount === 0}
+                className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 text-sm font-black text-slate-950 shadow-lg shadow-emerald-500/20 transition-all disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                {isPublishing ? 'Publishing properties…' : `Publish confirmed (${readyToPublishCount})`}
+              </motion.button>
+            </div>
+          </motion.div>,
+          document.body
+        )}
       </div>
     </AnimatePresence>
   );

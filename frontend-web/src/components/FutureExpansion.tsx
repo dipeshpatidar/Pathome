@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, Sparkles, MapPin } from 'lucide-react';
+import {ArrowRight, Sparkles} from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 
 export const FutureExpansion: React.FC = () => {

@@ -23,3 +23,8 @@ __pycache__/
 local-nlp/.venv/
 local-nlp/data/
 local-nlp/models/
+
+# Local secrets (templates remain versioned)
+.env.local
+.env.*.local
+!.env.local.example

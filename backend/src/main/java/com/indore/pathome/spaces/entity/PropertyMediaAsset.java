@@ -6,7 +6,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "property_media_assets", indexes = {
     @Index(name = "idx_media_listing_id", columnList = "listingId"),
-    @Index(name = "idx_media_sector", columnList = "sector")
+    @Index(name = "idx_media_sector", columnList = "sector"),
+    @Index(name = "idx_media_listing_upload_request", columnList = "listingId, uploadRequestId", unique = true)
 })
 public class PropertyMediaAsset {
 
@@ -21,6 +22,9 @@ public class PropertyMediaAsset {
     private String mediaUrl;
 
     private String cloudinaryPublicId;
+
+    @Column(length = 80)
+    private String uploadRequestId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -91,6 +95,14 @@ public class PropertyMediaAsset {
 
     public void setCloudinaryPublicId(String cloudinaryPublicId) {
         this.cloudinaryPublicId = cloudinaryPublicId;
+    }
+
+    public String getUploadRequestId() {
+        return uploadRequestId;
+    }
+
+    public void setUploadRequestId(String uploadRequestId) {
+        this.uploadRequestId = uploadRequestId;
     }
 
     public MediaType getMediaType() {

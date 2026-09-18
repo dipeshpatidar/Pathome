@@ -1,8 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence, LayoutGroup, useMotionValue, useTransform, useSpring } from 'framer-motion';
-import { 
-  Search, MapPin, ShieldCheck, Check, Sparkles, Building2, Map, Home, 
-  ChevronDown, Mic, Compass, Zap, Globe, Rocket, ArrowRight
+import {
+  motion,
+  AnimatePresence,
+  LayoutGroup,
+  useMotionValue,
+  useTransform,
+  useSpring
+} from 'framer-motion';
+import {
+  Search,
+  MapPin,
+  ShieldCheck,
+  Check,
+  Sparkles,
+  Building2,
+  Map,
+  Home,
+  ChevronDown,
+  Mic,
+  Globe,
+  Rocket
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 
@@ -328,7 +345,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch }) => {
         </div>
 
       </section>
-
 
       {/* ========================================================================= */}
       {/* 2. THE INDORE DISCOVERY DECK (3D PARALLAX TILT FLOATING GLASS CONSOLE) */}

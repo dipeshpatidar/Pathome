@@ -1,8 +1,22 @@
 import { Property, PropertyMediaAsset, RoomTag } from '../types';
+import { API_ROOT_URL } from '../config/endpoints';
 import { ApiRequestError, createApiRequestError } from './apiError';
+import { prepareMediaForUpload } from '../utils/imageOptimizer';
 
-const API_ROOT_URL = 'http://localhost:8080/api/v1';
 const API_BASE_URL = `${API_ROOT_URL}/properties`;
+const MEDIA_UPLOAD_ATTEMPTS = 3;
+const MEDIA_RETRY_DELAYS_MS = [800, 1_800];
+
+export interface MediaUploadProgress {
+  stage: 'preparing' | 'uploading' | 'retrying' | 'complete';
+  percent: number;
+  attempt: number;
+  maxAttempts: number;
+}
+
+export interface MediaUploadOptions {
+  onProgress?: (progress: MediaUploadProgress) => void;
+}
 
 const getAdminAuthorizationHeader = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
@@ -12,12 +26,112 @@ const getAdminAuthorizationHeader = (): Record<string, string> => {
   return { Authorization: `Bearer ${token}` };
 };
 
+const wait = (durationMs: number): Promise<void> =>
+  new Promise((resolve) => window.setTimeout(resolve, durationMs));
+
+const createStableUploadRequestId = (propertyId: number, file: File): string => {
+  const source = `${propertyId}:${file.name}:${file.size}:${file.lastModified}`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `media-${propertyId}-${(hash >>> 0).toString(16)}`;
+};
+
+const parseXhrError = (xhr: XMLHttpRequest, fallback: string): ApiRequestError => {
+  let serverMessage = '';
+  try {
+    const payload = JSON.parse(xhr.responseText || '{}') as { message?: string };
+    serverMessage = payload.message || '';
+  } catch {
+    // Proxies can return an empty or non-JSON error body.
+  }
+
+  if (xhr.status === 401) return new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
+  if (xhr.status === 403) return new ApiRequestError('You do not have permission to upload property media.', 403);
+  if (xhr.status === 413) {
+    return new ApiRequestError(
+      serverMessage || 'The file exceeds the allowed size. Images must be 10 MB or smaller and videos 100 MB or smaller.',
+      413
+    );
+  }
+  return new ApiRequestError(serverMessage || fallback, xhr.status || undefined);
+};
+
+const shouldRetryUpload = (error: ApiRequestError): boolean =>
+  !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
+
+const uploadFormData = <T>(
+  url: string,
+  formData: FormData,
+  attempt: number,
+  options: MediaUploadOptions,
+  fallbackMessage: string
+): Promise<T> => new Promise((resolve, reject) => {
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', url);
+  xhr.timeout = 10 * 60 * 1000;
+  Object.entries(getAdminAuthorizationHeader()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+
+  xhr.upload.onprogress = (event) => {
+    if (!event.lengthComputable) return;
+    options.onProgress?.({
+      stage: 'uploading',
+      percent: Math.min(99, Math.round((event.loaded / event.total) * 100)),
+      attempt,
+      maxAttempts: MEDIA_UPLOAD_ATTEMPTS
+    });
+  };
+  xhr.onload = () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try {
+        resolve(JSON.parse(xhr.responseText) as T);
+      } catch {
+        reject(new ApiRequestError('The media was uploaded, but the server response could not be read.', xhr.status));
+      }
+      return;
+    }
+    reject(parseXhrError(xhr, fallbackMessage));
+  };
+  xhr.onerror = () => reject(new ApiRequestError('The media connection was interrupted.', 0));
+  xhr.ontimeout = () => reject(new ApiRequestError('The media upload took too long and was stopped.', 408));
+  xhr.send(formData);
+});
+
+const uploadWithRetry = async <T>(
+  url: string,
+  createFormData: () => FormData,
+  options: MediaUploadOptions,
+  fallbackMessage: string
+): Promise<T> => {
+  let lastError: ApiRequestError | null = null;
+  for (let attempt = 1; attempt <= MEDIA_UPLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await uploadFormData<T>(url, createFormData(), attempt, options, fallbackMessage);
+      options.onProgress?.({ stage: 'complete', percent: 100, attempt, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
+      return result;
+    } catch (error) {
+      lastError = error instanceof ApiRequestError ? error : new ApiRequestError(fallbackMessage);
+      if (attempt === MEDIA_UPLOAD_ATTEMPTS || !shouldRetryUpload(lastError)) break;
+      options.onProgress?.({
+        stage: 'retrying',
+        percent: 0,
+        attempt: attempt + 1,
+        maxAttempts: MEDIA_UPLOAD_ATTEMPTS
+      });
+      await wait(MEDIA_RETRY_DELAYS_MS[attempt - 1]);
+    }
+  }
+  throw lastError || new ApiRequestError(fallbackMessage);
+};
+
 export const propertyService = {
   /**
    * Fetches active properties from Spring Boot backend REST API
    */
   async fetchProperties(sector?: string, city?: string): Promise<Property[]> {
-    const url = new URL(API_BASE_URL);
+    const url = new URL(API_BASE_URL, window.location.origin);
     if (sector) url.searchParams.append('sector', sector);
     if (city) url.searchParams.append('city', city);
 
@@ -95,29 +209,33 @@ export const propertyService = {
       sector?: string;
       priceTag?: string;
       vastuFacing?: string;
-    }
+    },
+    options: MediaUploadOptions = {}
   ): Promise<PropertyMediaAsset> {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('roomTag', metadata.roomTag);
-    formData.append('mediaType', metadata.mediaType || 'IMAGE');
-    if (metadata.caption) formData.append('caption', metadata.caption);
-    if (metadata.isPrimaryCover) formData.append('isPrimaryCover', String(metadata.isPrimaryCover));
-    if (metadata.sector) formData.append('sector', metadata.sector);
-    if (metadata.priceTag) formData.append('priceTag', metadata.priceTag);
-    if (metadata.vastuFacing) formData.append('vastuFacing', metadata.vastuFacing);
+    options.onProgress?.({ stage: 'preparing', percent: 0, attempt: 1, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
+    const preparedFile = await prepareMediaForUpload(file);
+    const uploadRequestId = createStableUploadRequestId(propertyId, preparedFile);
 
-    const response = await fetch(`${API_BASE_URL}/${propertyId}/tagged-media`, {
-      method: 'POST',
-      headers: getAdminAuthorizationHeader(),
-      body: formData
-    });
+    const createFormData = (): FormData => {
+      const formData = new FormData();
+      formData.append('file', preparedFile);
+      formData.append('roomTag', metadata.roomTag);
+      formData.append('mediaType', metadata.mediaType || (preparedFile.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE'));
+      formData.append('uploadRequestId', uploadRequestId);
+      if (metadata.caption) formData.append('caption', metadata.caption);
+      if (metadata.isPrimaryCover) formData.append('isPrimaryCover', String(metadata.isPrimaryCover));
+      if (metadata.sector) formData.append('sector', metadata.sector);
+      if (metadata.priceTag) formData.append('priceTag', metadata.priceTag);
+      if (metadata.vastuFacing) formData.append('vastuFacing', metadata.vastuFacing);
+      return formData;
+    };
 
-    if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to upload this media file. Please try again.');
-    }
-
-    return await response.json();
+    return uploadWithRetry<PropertyMediaAsset>(
+      `${API_BASE_URL}/${propertyId}/tagged-media`,
+      createFormData,
+      options,
+      'Unable to upload this media file. Please try again.'
+    );
   },
 
   /**
@@ -137,43 +255,41 @@ export const propertyService = {
   /**
    * Admin Uploads Photos to Cloudinary via Spring Boot REST API
    */
-  async uploadPhotosToCloudinary(propertyId: number, files: File[]): Promise<string[]> {
-    const formData = new FormData();
-    files.forEach(file => formData.append('files', file));
-
-    const response = await fetch(`${API_BASE_URL}/${propertyId}/photos`, {
-      method: 'POST',
-      headers: getAdminAuthorizationHeader(),
-      body: formData
-    });
-
-    if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to upload the selected photos. Please try again.');
+  async uploadPhotosToCloudinary(
+    propertyId: number,
+    files: File[],
+    options: MediaUploadOptions = {}
+  ): Promise<string[]> {
+    const urls: string[] = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const asset = await this.uploadTaggedMedia(propertyId, files[index], {
+        roomTag: 'GENERAL',
+        mediaType: 'IMAGE',
+        isPrimaryCover: index === 0
+      }, {
+        onProgress: (progress) => options.onProgress?.({
+          ...progress,
+          percent: Math.round(((index + (progress.percent / 100)) / files.length) * 100)
+        })
+      });
+      urls.push(asset.mediaUrl);
     }
-
-    const data = await response.json();
-    return data.urls || [];
+    return urls;
   },
 
   /**
    * Admin Uploads Walkthrough Video to Cloudinary via Spring Boot REST API
    */
-  async uploadVideoToCloudinary(propertyId: number, videoFile: File): Promise<string> {
-    const formData = new FormData();
-    formData.append('file', videoFile);
-
-    const response = await fetch(`${API_BASE_URL}/${propertyId}/video`, {
-      method: 'POST',
-      headers: getAdminAuthorizationHeader(),
-      body: formData
-    });
-
-    if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to upload the walkthrough video. Please try again.');
-    }
-
-    const data = await response.json();
-    return data.videoUrl || '';
+  async uploadVideoToCloudinary(
+    propertyId: number,
+    videoFile: File,
+    options: MediaUploadOptions = {}
+  ): Promise<string> {
+    const asset = await this.uploadTaggedMedia(propertyId, videoFile, {
+      roomTag: 'GENERAL',
+      mediaType: 'VIDEO_WALKTHROUGH'
+    }, options);
+    return asset.mediaUrl;
   },
 
   /**
