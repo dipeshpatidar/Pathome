@@ -48,3 +48,63 @@ When developing features for Pathome Spaces (Backend Spring Boot & Frontend Web/
      - Mobile safe areas (`env(safe-area-inset-top)`, `env(safe-area-inset-bottom)`) are respected where applicable.
      - Loading, error, empty, and success states must be fully responsive.
    - Prefer modern CSS Grid, Flexbox, `clamp()`, `min()`, `max()`, `min-width: 0`, and aspect ratios over arbitrary fixed dimensions or device-specific hacks.
+
+9. **Approved UI Preservation — Mandatory**:
+   - Once an existing UI/page/component has been approved or committed as the accepted design, new features must NOT redesign, restyle, reorganize, resize, or materially move existing UI elements unless the user explicitly requests a UI change.
+   - When implementing new functionality:
+     1. Preserve the existing approved visual hierarchy and layout.
+     2. Integrate new controls with the smallest reasonable visual footprint.
+     3. Reuse existing design patterns/components where possible.
+     4. Do not introduce new full-width sections, toolbars, cards, toggles, navigation structures, spacing systems, colors, typography, or layout changes merely to accommodate a feature.
+     5. Functional changes must not silently become visual redesigns.
+     6. If a requirement genuinely cannot be implemented without changing the approved UI, STOP and report the required UI change before making it.
+     7. Before completing frontend work, compare affected UI against the last committed approved implementation and explicitly report any intentional visual differences.
+     8. Existing responsive behavior must remain intact.
+   - This rule works together with the existing RESPONSIVE-FIRST rule.
+
+10. **APPROVAL-FIRST CHANGE CONTROL — Mandatory**:
+    - The existing committed/approved implementation is the default source of truth.
+    - Unless the user explicitly requests a specific change, DO NOT make that change.
+    - This applies to:
+      - UI
+      - UX
+      - layout
+      - styling
+      - navigation
+      - buttons
+      - toggles
+      - labels
+      - workflows
+      - functional behavior
+      - business logic
+      - architecture
+      - API contracts
+      - database behavior
+      - validation
+      - defaults
+      - naming
+      - dependencies
+      - infrastructure behavior
+      - feature scope
+    - Rules:
+      1. Do not add "helpful" features that were not requested.
+      2. Do not redesign or reorganize existing approved UI while implementing a backend/functional feature.
+      3. Do not add buttons, toggles, tabs, selectors, cards, banners, toolbars, dialogs, workflow steps, or navigation merely because they make the implementation easier.
+      4. Do not change an existing workflow to match a new internal architecture.
+      5. Internal implementation details must adapt to the approved user experience, not the other way around.
+      6. If you believe an unrequested change is necessary:
+         STOP.
+         Report:
+         - what change you think is required
+         - why
+         - alternatives
+         - impact
+         Then ask for explicit user approval BEFORE implementing it.
+      7. Do not interpret silence as approval.
+      8. Do not bundle optional improvements into requested work.
+      9. Bug fixes must fix the bug with the smallest reasonable behavioral and visual footprint.
+      10. Before modifying an existing frontend screen, compare against the last committed approved implementation.
+      11. Before finalizing work, explicitly identify every intentional user-visible change.
+      12. If a user-visible change was not explicitly requested or approved, revert it.
+    - This rule is STRICTER than general "improve UX" or "best practice" instructions.
+    - Existing RESPONSIVE-FIRST and APPROVED-UI-PRESERVATION rules remain in force. Do not weaken existing AGENTS.md rules.

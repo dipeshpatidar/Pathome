@@ -81,6 +81,63 @@ class BackblazeB2LiveIntegrationTest {
         }
     }
 
+    @Test
+    void testLiveDraftB2RoundTrip() throws Exception {
+        Map<String, String> config = loadConfig();
+
+        String bucket = config.getOrDefault("PATHOME_DRAFT_STAGING_S3_BUCKET", config.get("PATHOME_STAGING_S3_BUCKET"));
+        String region = config.getOrDefault("PATHOME_DRAFT_STAGING_S3_REGION", config.getOrDefault("PATHOME_STAGING_S3_REGION", "us-east-005"));
+        String endpoint = config.getOrDefault("PATHOME_DRAFT_STAGING_S3_ENDPOINT", config.get("PATHOME_STAGING_S3_ENDPOINT"));
+        String accessKey = config.getOrDefault("PATHOME_DRAFT_STAGING_S3_ACCESS_KEY", config.get("PATHOME_STAGING_S3_ACCESS_KEY"));
+        String secretKey = config.getOrDefault("PATHOME_DRAFT_STAGING_S3_SECRET_KEY", config.get("PATHOME_STAGING_S3_SECRET_KEY"));
+        boolean pathStyle = Boolean.parseBoolean(config.getOrDefault("PATHOME_DRAFT_STAGING_S3_PATH_STYLE",
+                config.getOrDefault("PATHOME_STAGING_S3_PATH_STYLE", "true")));
+
+        boolean credentialsAvailable = bucket != null && !bucket.isBlank()
+                && accessKey != null && !accessKey.isBlank() && !accessKey.contains("YOUR")
+                && secretKey != null && !secretKey.isBlank() && !secretKey.contains("YOUR");
+
+        assumeTrue(credentialsAvailable,
+                "Live Backblaze B2 draft credentials not configured — skipping live draft test");
+
+        S3MediaStagingService draftStagingService = new S3MediaStagingService(
+                endpoint, region, bucket, accessKey, secretKey, pathStyle
+        );
+
+        String testKey = "drafts/live-test/smoke-" + UUID.randomUUID() + ".txt";
+        byte[] expectedContent = ("Pathome Draft B2 Smoke Verification: " + System.currentTimeMillis())
+                .getBytes(StandardCharsets.UTF_8);
+
+        try {
+            // 1. PUT
+            String stagedKey = draftStagingService.stage(
+                    testKey,
+                    new ByteArrayInputStream(expectedContent),
+                    expectedContent.length,
+                    "text/plain"
+            );
+            assertEquals(testKey, stagedKey, "Staged key under drafts/ must match requested key");
+
+            // 2. HEAD / EXISTS
+            boolean existsBefore = draftStagingService.exists(testKey);
+            assertTrue(existsBefore, "Object under drafts/ must exist in Backblaze B2 after PUT");
+
+            // 3. GET
+            try (InputStream is = draftStagingService.retrieve(testKey)) {
+                assertNotNull(is, "Retrieved stream must not be null");
+                byte[] actualContent = is.readAllBytes();
+                assertArrayEquals(expectedContent, actualContent, "Retrieved content must match uploaded content");
+            }
+        } finally {
+            // 4. DELETE
+            draftStagingService.delete(testKey);
+
+            // 5. Verify deletion
+            boolean existsAfter = draftStagingService.exists(testKey);
+            assertFalse(existsAfter, "Object under drafts/ must no longer exist after DELETE");
+        }
+    }
+
     private static Map<String, String> loadConfig() {
         Map<String, String> env = new HashMap<>(System.getenv());
 

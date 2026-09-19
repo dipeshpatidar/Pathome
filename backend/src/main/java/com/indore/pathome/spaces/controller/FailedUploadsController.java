@@ -51,7 +51,7 @@ public class FailedUploadsController {
             CloudinaryService cloudinaryService,
             PropertyMediaAssetRepository mediaAssetRepository,
             ListingRepository listingRepository,
-            MediaStagingService mediaStagingService) {
+            @org.springframework.beans.factory.annotation.Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
         this.failedUploadService = Objects.requireNonNull(failedUploadService);
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository);

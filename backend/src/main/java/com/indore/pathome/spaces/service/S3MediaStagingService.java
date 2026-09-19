@@ -113,6 +113,13 @@ public class S3MediaStagingService implements MediaStagingService {
         } catch (NoSuchKeyException e) {
             log.warn("Staged object not found or expired in S3: {}", key);
             throw new IllegalStateException("Staged media object has expired or is missing: " + key, e);
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                log.warn("Staged object not found or expired in S3 (404): {}", key);
+                throw new IllegalStateException("Staged media object has expired or is missing: " + key, e);
+            }
+            log.error("Failed to retrieve staged object [{}] from S3: {}", key, e.getMessage());
+            throw new RuntimeException("Error retrieving staged media: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Failed to retrieve staged object [{}] from S3: {}", key, e.getMessage());
             throw new RuntimeException("Error retrieving staged media: " + e.getMessage(), e);

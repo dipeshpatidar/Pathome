@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
@@ -16,14 +17,20 @@ import com.indore.pathome.spaces.service.PropertyParserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -62,6 +69,14 @@ public class PropertyController {
     private final BatchPropertyPublishingService batchPropertyPublishingService;
     private final MediaStagingService mediaStagingService;
 
+    @Autowired(required = false)
+    private PropertyUploadDraftRepository draftRepository;
+
+    @Autowired(required = false)
+    private com.indore.pathome.spaces.service.PropertyDraftService propertyDraftService;
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Boolean> activePublishingDrafts = new java.util.concurrent.ConcurrentHashMap<>();
+
     private static final Pattern SAFE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
 
     @Autowired
@@ -74,7 +89,7 @@ public class PropertyController {
             ParserLearningService parserLearningService,
             ParserLearningCaptureService parserLearningCaptureService,
             BatchPropertyPublishingService batchPropertyPublishingService,
-            MediaStagingService mediaStagingService) {
+            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
@@ -100,6 +115,14 @@ public class PropertyController {
         this(listingRepository, mediaAssetRepository, cloudinaryService, failedUploadService,
                 propertyParserService, parserLearningService, parserLearningCaptureService,
                 batchPropertyPublishingService, failedUploadService.getMediaStagingService());
+    }
+
+    public void setDraftRepository(PropertyUploadDraftRepository draftRepository) {
+        this.draftRepository = draftRepository;
+    }
+
+    public void setPropertyDraftService(com.indore.pathome.spaces.service.PropertyDraftService propertyDraftService) {
+        this.propertyDraftService = propertyDraftService;
     }
 
     /**
@@ -423,17 +446,125 @@ public class PropertyController {
     public ResponseEntity<Map<String, Object>> createFromParsedPrompt(@RequestBody ParsedPropertyDTO dto) {
         Objects.requireNonNull(dto, "ParsedPropertyDTO must not be null");
 
-        RentalDetails listing = buildRentalDetailsFromDTO(dto);
-        Listing saved = listingRepository.save(listing);
-        propertyParserService.confirmLocality(listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
-        recordPublishedParserReview(dto, saved.getId());
+        String draftId = dto.getDraftId() != null && !dto.getDraftId().isBlank() ? dto.getDraftId().trim() : null;
 
-        return ResponseEntity.ok(Map.of(
-                "status", "SUCCESS",
-                "message", "Property created and mapped to PostgreSQL listings & rental_details tables",
-                "propertyId", saved.getId(),
-                "parsedDto", dto
-        ));
+        // 1. Authoritative DB Idempotency Check: if a listing already exists for this origin draft, return it immediately
+        if (draftId != null) {
+            Optional<Listing> existingListing = listingRepository.findByOriginDraftId(draftId);
+            if (existingListing.isPresent()) {
+                Listing l = existingListing.get();
+                log.info("Durable DB idempotency match: listing #{} already exists for origin draft [{}]. Replaying existing record.",
+                        l.getId(), draftId);
+                return ResponseEntity.ok(Map.of(
+                        "status", "SUCCESS",
+                        "message", "Property was already successfully published from this draft",
+                        "propertyId", l.getId(),
+                        "parsedDto", dto
+                ));
+            }
+        }
+
+        // 2. Transactional Pessimistic Row Lock & Replay Check on Draft
+        if (draftId != null && draftRepository != null) {
+            Optional<PropertyUploadDraft> draftOpt = draftRepository.findByDraftIdForUpdate(draftId);
+            if (draftOpt.isPresent()) {
+                PropertyUploadDraft draft = draftOpt.get();
+                if (draft.getPublishedPropertyId() != null) {
+                    log.info("Durable draft idempotency: draft [{}] already linked to listing #{}. Returning existing record.",
+                            draftId, draft.getPublishedPropertyId());
+                    return ResponseEntity.ok(Map.of(
+                            "status", "SUCCESS",
+                            "message", "Property was already successfully published from this draft",
+                            "propertyId", draft.getPublishedPropertyId(),
+                            "parsedDto", dto
+                    ));
+                }
+
+                // IDOR ownership check: ensure authenticated admin owns this draft
+                Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                if (auth != null && auth.getName() != null && !auth.getName().isBlank() && !"anonymousUser".equalsIgnoreCase(auth.getName())) {
+                    if (draft.getAdminId() != null && !draft.getAdminId().equalsIgnoreCase(auth.getName().trim())) {
+                        throw new AccessDeniedException("You do not have permission to publish another administrator's draft.");
+                    }
+                }
+            }
+        }
+
+        // 3. In-process double-click guard (fast non-blocking UI response for repeated clicks on same instance)
+        boolean locked = false;
+        if (draftId != null) {
+            if (activePublishingDrafts.putIfAbsent(draftId, Boolean.TRUE) != null) {
+                log.warn("Concurrent duplicate publication attempt blocked for draft [{}]", draftId);
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                        "status", "CONFLICT",
+                        "message", "Publication is already in progress for this draft. Please wait."
+                ));
+            }
+            locked = true;
+        }
+
+        try {
+            RentalDetails listing = buildRentalDetailsFromDTO(dto);
+            Listing saved;
+            try {
+                saved = listingRepository.save(listing);
+            } catch (DataIntegrityViolationException e) {
+                // Hard DB unique constraint violated on origin_draft_id: another concurrent transaction committed first
+                if (draftId != null) {
+                    Optional<Listing> concurrentWinning = listingRepository.findByOriginDraftId(draftId);
+                    if (concurrentWinning.isPresent()) {
+                        log.info("Concurrent race resolved via DB unique constraint for draft [{}]. Returning listing #{}.",
+                                draftId, concurrentWinning.get().getId());
+                        return ResponseEntity.ok(Map.of(
+                                "status", "SUCCESS",
+                                "message", "Property was already successfully published from this draft",
+                                "propertyId", concurrentWinning.get().getId(),
+                                "parsedDto", dto
+                        ));
+                    }
+                }
+                throw e;
+            }
+
+            propertyParserService.confirmLocality(listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
+            recordPublishedParserReview(dto, saved.getId());
+
+            // 4. Mark draft as published with durable property ID to guarantee crash idempotency & clean temporary media
+            if (draftId != null) {
+                if (draftRepository != null) {
+                    draftRepository.findByDraftId(draftId).ifPresent(draft -> {
+                        draft.setPublishedPropertyId(saved.getId());
+                        draft.setStatus("PUBLISHED");
+                        draft.setPayload("{}"); // Free heavy payload memory/storage
+                        draft.setItemCount(0);
+                        draft.setUpdatedAt(LocalDateTime.now());
+                        draftRepository.save(draft);
+                        log.info("Linked draft [{}] to published listing #{}", draftId, saved.getId());
+                    });
+                }
+                if (propertyDraftService != null) {
+                    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                    String adminId = (auth != null && auth.getName() != null && !auth.getName().isBlank() && !"anonymousUser".equalsIgnoreCase(auth.getName()))
+                            ? auth.getName().trim() : "admin";
+                    try {
+                        propertyDraftService.onPropertyPublished(adminId, draftId);
+                    } catch (Exception e) {
+                        log.warn("Non-fatal draft media cleanup after publish for draft [{}]: {}", draftId, e.getMessage());
+                    }
+                }
+            }
+
+            return ResponseEntity.ok(Map.of(
+                    "status", "SUCCESS",
+                    "message", "Property created and mapped to PostgreSQL listings & rental_details tables",
+                    "propertyId", saved.getId(),
+                    "parsedDto", dto
+            ));
+        } finally {
+            if (locked) {
+                activePublishingDrafts.remove(draftId);
+            }
+        }
     }
 
     /**
@@ -513,6 +644,7 @@ public class PropertyController {
         ParsedPropertyDTO dto = new ParsedPropertyDTO();
         dto.setRawPrompt(readString(map, "rawPrompt"));
         dto.setLearningExampleId(readString(map, "learningExampleId"));
+        dto.setDraftId(readString(map, "draftId"));
         Double promptIndex = readDouble(map.get("promptIndex"));
         dto.setPromptIndex(promptIndex == null ? 1 : Math.max(1, promptIndex.intValue()));
         dto.setTitle(readString(map, "title"));
@@ -657,6 +789,9 @@ public class PropertyController {
         listing.setOwnerPhoneNumber(dto.getOwnerPhone().trim());
         listing.setStatus(toListingStatus(dto.getStatus()));
         listing.setPropertyType(toPropertyType(dto.getType()));
+        if (dto.getDraftId() != null && !dto.getDraftId().isBlank()) {
+            listing.setOriginDraftId(dto.getDraftId().trim());
+        }
         return listing;
     }
 

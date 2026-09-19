@@ -15,4 +15,5 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
     List<Listing> findBySectorIgnoreCaseAndStatus(String sector, ListingStatus status);
     List<Listing> findByListingTypeAndStatus(ListingType listingType, ListingStatus status);
     List<Listing> findByBhkCountAndStatus(String bhkCount, ListingStatus status);
+    java.util.Optional<Listing> findByOriginDraftId(String originDraftId);
 }

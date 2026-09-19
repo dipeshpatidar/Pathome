@@ -50,6 +50,9 @@ import { BhkDemandGaugeGrid } from './analytics/BhkDemandGaugeGrid';
 import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
 import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 import { FailedUploadsPanel } from './FailedUploadsPanel';
+import { DraftManagementBar } from './DraftManagementBar';
+import { usePropertyDraft } from '../hooks/usePropertyDraft';
+import { draftService, DraftMedia } from '../services/draftService';
 
 interface MasterAdminDashboardProps {
   activeTab: string;
@@ -201,7 +204,13 @@ const mockLeaveRequests = [
 export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab }) => {
   const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
 
-  const [internalTab, setInternalTab] = useState<string>('funnel');
+  const [internalTab, setInternalTab] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('pathome_active_admin_tab');
+      if (saved) return saved;
+    } catch (_) {}
+    return 'funnel';
+  });
   const activeTab = externalActiveTab || internalTab;
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -211,6 +220,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const handleTabSelect = (tabId: string) => {
     setInternalTab(tabId);
     setIsMobileMenuOpen(false);
+    try {
+      localStorage.setItem('pathome_active_admin_tab', tabId);
+    } catch (_) {}
     if (externalSetActiveAdminTab) {
       externalSetActiveAdminTab(tabId);
     }
@@ -232,6 +244,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [failedMediaUploads, setFailedMediaUploads] = useState<Array<{ file: File; originalIndex: number }>>([]);
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [coverPhotoIndex, setCoverPhotoIndex] = useState<number>(0);
+  const [mediaRestorationProgress, setMediaRestorationProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [isDragOverMedia, setIsDragOverMedia] = useState<boolean>(false);
   const [isMediaUploadModalOpen, setIsMediaUploadModalOpen] = useState<boolean>(false);
   const [previewLightboxIndex, setPreviewLightboxIndex] = useState<number | null>(null);
@@ -334,9 +347,123 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     failedUploadService.fetchUnresolvedCount().then(setFailedUploadsCount);
   }, []);
 
+  // Auto-dismiss upload notification after confirmed success
+  useEffect(() => {
+    if (uploadPipeline.active && uploadPipeline.stage === 'success') {
+      const timer = setTimeout(() => {
+        setUploadPipeline(prev => ({ ...prev, active: false, stage: 'idle' }));
+      }, 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [uploadPipeline.active, uploadPipeline.stage]);
+
   const refreshFailedUploadsCount = () => {
     failedUploadService.fetchUnresolvedCount().then(setFailedUploadsCount);
   };
+
+  // Admin Draft & Recovery System for Single Property
+  const handleRestoreSingleDraft = useCallback(async (payload: any, media: DraftMedia[]) => {
+    if (!payload) return;
+    if (typeof payload.newBhkLabel === 'string') {
+      setNewBhkLabel(payload.newBhkLabel);
+    }
+    if (payload.lastExtractedResult !== undefined) {
+      setLastExtractedResult(payload.lastExtractedResult);
+    }
+    if (payload.editForm !== undefined) {
+      setEditForm(payload.editForm);
+    }
+    if (payload.activeAttributeTab) {
+      setActiveAttributeTab(payload.activeAttributeTab);
+    }
+    if (payload.attachedMediaTags) {
+      setAttachedMediaTags(payload.attachedMediaTags);
+    }
+    if (typeof payload.coverPhotoIndex === 'number') {
+      setCoverPhotoIndex(payload.coverPhotoIndex);
+    }
+
+    if (media && media.length > 0 && attachedMediaFiles.length === 0) {
+      setMediaRestorationProgress({ loaded: 0, total: media.length });
+      try {
+        const restored = await draftService.restoreMediaFiles(media, (loaded, total) => {
+          setMediaRestorationProgress({ loaded, total });
+        });
+        if (restored.files.length > 0) {
+          setAttachedMediaFiles(restored.files);
+          setAttachedMediaTags(prev => ({ ...prev, ...restored.tags }));
+          if (restored.coverIndex >= 0) {
+            setCoverPhotoIndex(restored.coverIndex);
+          }
+        }
+        if (restored.files.length < media.length) {
+          notifyWarning('Partial media restored', `${restored.files.length} of ${media.length} staged media files were restored.`);
+        }
+      } catch (err) {
+        console.warn('Draft media restoration notice:', err);
+      } finally {
+        setMediaRestorationProgress(null);
+      }
+    }
+  }, [attachedMediaFiles.length, notifyWarning]);
+
+  const handleClearSingleDraftState = useCallback(() => {
+    setNewBhkLabel('');
+    if (singleMicBaseTextRef.current) singleMicBaseTextRef.current = '';
+    setLastExtractedResult(null);
+    setEditForm(null);
+    setDbSaveSuccessMsg(null);
+    revokeAllMediaPreviewUrls();
+    setAttachedMediaFiles([]);
+    setAttachedMediaTags({});
+    setCoverPhotoIndex(0);
+  }, [revokeAllMediaPreviewUrls]);
+
+  const singleDraft = usePropertyDraft({
+    draftType: 'SINGLE',
+    onRestoreDraft: handleRestoreSingleDraft,
+    onClearDraftState: handleClearSingleDraftState
+  });
+
+  // Automatically autosave on changes
+  useEffect(() => {
+    const hasMeaningfulWork = Boolean(
+      newBhkLabel.trim() ||
+      lastExtractedResult ||
+      attachedMediaFiles.length > 0
+    );
+
+    if (!hasMeaningfulWork) return;
+
+    const titleSummary =
+      lastExtractedResult?.title ||
+      (newBhkLabel.trim().length > 40
+        ? `${newBhkLabel.trim().slice(0, 40)}…`
+        : newBhkLabel.trim()) ||
+      'Property draft';
+
+    singleDraft.scheduleAutosave(
+      {
+        newBhkLabel,
+        lastExtractedResult,
+        editForm,
+        activeAttributeTab,
+        attachedMediaTags,
+        coverPhotoIndex
+      },
+      titleSummary,
+      1
+    );
+  }, [
+    newBhkLabel,
+    lastExtractedResult,
+    editForm,
+    activeAttributeTab,
+    attachedMediaTags,
+    coverPhotoIndex,
+    attachedMediaFiles.length,
+    singleDraft.scheduleAutosave
+  ]);
 
   // Robust iOS-safe background scroll lock preserving viewport scroll position
   useEffect(() => {
@@ -541,6 +668,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           onClick: () => void uploadPendingMedia(targetPropertyId, failedItems, metadata)
         }
       });
+      void singleDraft.onPublishSuccess();
       return;
     }
 
@@ -561,6 +689,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       'PROPERTY'
     );
 
+    void singleDraft.onPublishSuccess();
     // Reset single-property transient form state after confirmed success
     setNewBhkLabel('');
     if (singleMicBaseTextRef.current) {
@@ -684,7 +813,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         ownerPhone: ownerPhoneForPublishing,
         amenities: lastExtractedResult.amenities || [],
         rawPrompt: lastExtractedResult.rawInput || '',
-        adminVerified: true
+        adminVerified: true,
+        draftId: singleDraft.currentDraftId || undefined
       };
 
       const saved = await propertyService.createPropertyFromParsed(payload);
@@ -732,6 +862,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           undefined,
           'PROPERTY'
         );
+        void singleDraft.onPublishSuccess();
         // Reset single-property transient form state after confirmed success
         setNewBhkLabel('');
         if (singleMicBaseTextRef.current) {
@@ -766,6 +897,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
   // Rich Media Metadata Tagging State (Zero hardcoded fallbacks)
   const [uploadMode, setUploadMode] = useState<'single' | 'multiple'>('single');
+  const [selectedBatchDraftId, setSelectedBatchDraftId] = useState<string | null>(null);
   const [batchDetails, setBatchDetails] = useState<string>('');
   const [isSingleMicListening, setIsSingleMicListening] = useState<boolean>(false);
   const [isSingleDictationChoiceOpen, setIsSingleDictationChoiceOpen] = useState<boolean>(false);
@@ -1164,6 +1296,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       setAttachedMediaTags(newTags);
       setAttachedMediaFiles(prev => [...prev, ...preparedFiles]);
       setUploadStatusMsg(`${preparedFiles.length} ${preparedFiles.length === 1 ? 'file' : 'files'} prepared and ready.`);
+
+      const draftId = singleDraft.ensureDraftId();
+      preparedFiles.forEach((file, i) => {
+        const idx = startIdx + i;
+        const tag = newTags[idx] || 'LIVING_ROOM';
+        draftService.stageMedia(draftId, file, {
+          roomTag: tag,
+          isCover: idx === coverPhotoIndex
+        }).catch(err => console.warn('Draft media staging notice:', err));
+      });
     }
 
     if (preparationErrors.length > 0) {
@@ -1814,6 +1956,38 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           Create one listing or add several at once. Add details, photos, and video, then review before publishing.
                         </p>
                       </div>
+
+                      {/* Action Controls: Compact Draft Controls */}
+                      {uploadMode === 'single' && (
+                        <div className="flex items-center shrink-0">
+                          <DraftManagementBar
+                            compact={true}
+                            currentDraftId={singleDraft.currentDraftId}
+                            draftType="SINGLE"
+                            autosaveStatus={singleDraft.autosaveStatus}
+                            lastSavedAt={singleDraft.lastSavedAt}
+                            conflictMessage={singleDraft.conflictMessage}
+                            drafts={singleDraft.draftsList}
+                            isLoadingDrafts={singleDraft.isLoadingDrafts}
+                            onSelectDraft={async (id) => {
+                              const selected = singleDraft.draftsList.find((d) => d.draftId === id);
+                              if (selected && selected.draftType === 'BATCH') {
+                                setSelectedBatchDraftId(id);
+                                setUploadMode('multiple');
+                              } else {
+                                setSelectedBatchDraftId(null);
+                                setUploadMode('single');
+                                await singleDraft.loadDraft(id);
+                              }
+                            }}
+                            onStartNewDraft={() => void singleDraft.startNewDraft()}
+                            onDiscardDraft={(id) => singleDraft.discardDraft(id)}
+                            onResolveConflictKeepLocal={singleDraft.resolveConflictKeepLocal}
+                            onResolveConflictReloadServer={singleDraft.resolveConflictReloadServer}
+                            fetchingMediaProgress={mediaRestorationProgress}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1894,120 +2068,137 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   )}
                 </AnimatePresence>
 
-                {/* REAL PROPERTY UPLOAD STATUS PIPELINE CARD */}
-                <AnimatePresence>
-                  {uploadPipeline.active && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -10, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -10, scale: 0.98 }}
-                      className={`relative z-20 mb-5 p-4 sm:p-5 rounded-2xl border shadow-xl transition-all ${
-                        uploadPipeline.stage === 'failure'
-                          ? 'bg-rose-950/90 border-rose-500/50 text-rose-100 shadow-rose-950/40'
-                          : uploadPipeline.stage === 'partial_failure'
-                          ? 'bg-amber-950/90 border-amber-500/50 text-amber-100 shadow-amber-950/40'
-                          : uploadPipeline.stage === 'success'
-                          ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-100 shadow-emerald-950/40'
-                          : 'bg-cyan-950/90 border-cyan-500/50 text-cyan-100 shadow-cyan-950/40'
-                      }`}
-                    >
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex items-start gap-3 min-w-0 flex-1">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
-                            uploadPipeline.stage === 'failure'
-                              ? 'bg-rose-900/60 border-rose-400/40 text-rose-300'
-                              : uploadPipeline.stage === 'partial_failure'
-                              ? 'bg-amber-900/60 border-amber-400/40 text-amber-300'
-                              : uploadPipeline.stage === 'success'
-                              ? 'bg-emerald-900/60 border-emerald-400/40 text-emerald-300'
-                              : 'bg-cyan-900/60 border-cyan-400/40 text-cyan-300'
-                          }`}>
-                            {uploadPipeline.stage === 'failure' ? (
-                              <AlertCircle className="w-5 h-5" />
-                            ) : uploadPipeline.stage === 'partial_failure' ? (
-                              <AlertTriangle className="w-5 h-5" />
-                            ) : uploadPipeline.stage === 'success' ? (
-                              <CheckCircle2 className="w-5 h-5" />
-                            ) : (
-                              <RefreshCw className="w-5 h-5 animate-spin" />
-                            )}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h4 className="text-sm font-black font-['Outfit'] text-white">
-                                {uploadPipeline.stage === 'validating' && 'Validating property details…'}
-                                {uploadPipeline.stage === 'saving_listing' && 'Creating property listing in database…'}
-                                {uploadPipeline.stage === 'preparing_media' && 'Preparing property media…'}
-                                {uploadPipeline.stage === 'uploading_media' && `Uploading media (${uploadPipeline.currentMediaIndex} of ${uploadPipeline.totalMediaCount})…`}
-                                {uploadPipeline.stage === 'success' && 'Property listing published successfully!'}
-                                {uploadPipeline.stage === 'partial_failure' && 'Listing created with media upload notice'}
-                                {uploadPipeline.stage === 'failure' && 'Failed to publish property listing'}
-                              </h4>
-                              {uploadPipeline.savedPropertyId && (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-900/80 border border-white/20 text-white">
-                                  Listing #{uploadPipeline.savedPropertyId}
-                                </span>
+                {/* COMPACT VIEWPORT-ATTACHED UPLOAD PROGRESS NOTIFICATION (PORTAL TO DOCUMENT.BODY) */}
+                {typeof document !== 'undefined' && createPortal(
+                  <AnimatePresence>
+                    {uploadPipeline.active && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -16, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -16, scale: 0.96 }}
+                        transition={{ type: "spring", stiffness: 450, damping: 28 }}
+                        style={{
+                          position: 'fixed',
+                          top: 'max(5.25rem, calc(env(safe-area-inset-top, 0px) + 5rem))',
+                          zIndex: 9995,
+                          maxWidth: 'calc(100vw - 2rem)'
+                        }}
+                        className={`left-4 right-4 sm:right-auto sm:left-6 sm:w-[420px] ${
+                          isSidebarCollapsed ? 'lg:left-[104px]' : 'lg:left-[304px]'
+                        } p-3 sm:p-3.5 rounded-2xl border shadow-2xl backdrop-blur-2xl transition-all ${
+                          uploadPipeline.stage === 'failure'
+                            ? 'bg-rose-950/95 border-rose-500/60 text-rose-100 shadow-rose-950/60'
+                            : uploadPipeline.stage === 'partial_failure'
+                            ? 'bg-amber-950/95 border-amber-500/60 text-amber-100 shadow-amber-950/60'
+                            : uploadPipeline.stage === 'success'
+                            ? 'bg-emerald-950/95 border-emerald-500/60 text-emerald-100 shadow-emerald-950/60'
+                            : 'bg-slate-950/95 border-cyan-500/50 text-cyan-100 shadow-cyan-950/50'
+                        }`}
+                        role="region"
+                        aria-live="polite"
+                        aria-label="Upload progress"
+                      >
+                        <div className="flex items-center justify-between gap-2.5">
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 border ${
+                              uploadPipeline.stage === 'failure'
+                                ? 'bg-rose-900/60 border-rose-400/40 text-rose-300'
+                                : uploadPipeline.stage === 'partial_failure'
+                                ? 'bg-amber-900/60 border-amber-400/40 text-amber-300'
+                                : uploadPipeline.stage === 'success'
+                                ? 'bg-emerald-900/60 border-emerald-400/40 text-emerald-300'
+                                : 'bg-cyan-900/60 border-cyan-400/40 text-cyan-300'
+                            }`}>
+                              {uploadPipeline.stage === 'failure' ? (
+                                <AlertCircle className="w-4 h-4" />
+                              ) : uploadPipeline.stage === 'partial_failure' ? (
+                                <AlertTriangle className="w-4 h-4" />
+                              ) : uploadPipeline.stage === 'success' ? (
+                                <CheckCircle2 className="w-4 h-4" />
+                              ) : (
+                                <RefreshCw className="w-4 h-4 animate-spin" />
                               )}
                             </div>
-                            <p className="text-xs text-slate-300 mt-1 font-mono break-words">
-                              {uploadPipeline.stageLabel || uploadPipeline.errorMessage}
-                            </p>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-black font-['Outfit'] text-white truncate">
+                                  {uploadPipeline.stage === 'validating' && 'Validating property details…'}
+                                  {uploadPipeline.stage === 'saving_listing' && 'Creating property listing…'}
+                                  {uploadPipeline.stage === 'preparing_media' && 'Preparing property media…'}
+                                  {uploadPipeline.stage === 'uploading_media' && (
+                                    <>
+                                      Uploading media {uploadPipeline.currentMediaIndex} of {uploadPipeline.totalMediaCount}
+                                      {uploadPipeline.currentFilePercent !== undefined && uploadPipeline.currentFilePercent > 0 ? ` • ${uploadPipeline.currentFilePercent}%` : ''}
+                                    </>
+                                  )}
+                                  {uploadPipeline.stage === 'success' && 'Property listing published successfully!'}
+                                  {uploadPipeline.stage === 'partial_failure' && 'Listing created with media upload notice'}
+                                  {uploadPipeline.stage === 'failure' && 'Failed to publish property listing'}
+                                </span>
+                                {uploadPipeline.savedPropertyId && (
+                                  <span className="px-1.5 py-0.2 rounded-full text-[9px] font-mono font-bold bg-slate-900/80 border border-white/20 text-white shrink-0">
+                                    Listing #{uploadPipeline.savedPropertyId}
+                                  </span>
+                                )}
+                              </div>
+                              {uploadPipeline.stage === 'uploading_media' && uploadPipeline.currentMediaName ? (
+                                <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
+                                  {uploadPipeline.currentMediaName}
+                                </p>
+                              ) : uploadPipeline.stageLabel || uploadPipeline.errorMessage ? (
+                                <p className="text-[11px] text-slate-300 font-mono truncate mt-0.5">
+                                  {uploadPipeline.stageLabel || uploadPipeline.errorMessage}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          {/* Pipeline Actions */}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {uploadPipeline.failedCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => void handleRetryFailedMedia()}
+                                disabled={isUploadingMedia}
+                                className="min-h-[36px] px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center justify-center gap-1"
+                              >
+                                <RefreshCw className={`w-3 h-3 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                                <span>Retry ({uploadPipeline.failedCount})</span>
+                              </button>
+                            )}
+                            {(uploadPipeline.stage === 'success' || uploadPipeline.stage === 'failure' || uploadPipeline.stage === 'partial_failure') && (
+                              <button
+                                type="button"
+                                onClick={() => setUploadPipeline(prev => ({ ...prev, active: false }))}
+                                className="min-h-[36px] px-2.5 py-1 bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white font-bold text-xs rounded-xl border border-white/20 cursor-pointer transition-all"
+                              >
+                                Dismiss
+                              </button>
+                            )}
                           </div>
                         </div>
 
-                        {/* Pipeline Actions */}
-                        <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/10">
-                          {uploadPipeline.failedCount > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => void handleRetryFailedMedia()}
-                              disabled={isUploadingMedia}
-                              className="min-h-[40px] px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center justify-center gap-1.5"
-                            >
-                              <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
-                              <span>Retry failed ({uploadPipeline.failedCount})</span>
-                            </button>
-                          )}
-                          {(uploadPipeline.stage === 'success' || uploadPipeline.stage === 'failure' || uploadPipeline.stage === 'partial_failure') && (
-                            <button
-                              type="button"
-                              onClick={() => setUploadPipeline(prev => ({ ...prev, active: false }))}
-                              className="min-h-[40px] px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white font-bold text-xs rounded-xl border border-white/20 cursor-pointer transition-all"
-                            >
-                              Dismiss
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Real Progress Bar for Active Uploads */}
-                      {uploadPipeline.stage === 'uploading_media' && uploadPipeline.totalMediaCount > 0 && (
-                        <div className="mt-3 pt-3 border-t border-cyan-500/20 space-y-1.5">
-                          <div className="flex items-center justify-between text-[11px] font-mono text-cyan-300">
-                            <span className="truncate max-w-[70%]">
-                              {uploadPipeline.currentMediaName ? `Current file: ${uploadPipeline.currentMediaName}` : 'Uploading…'}
-                            </span>
-                            <span className="font-bold shrink-0">
-                              Item {uploadPipeline.currentMediaIndex} / {uploadPipeline.totalMediaCount}
-                              {uploadPipeline.currentFilePercent !== undefined && uploadPipeline.currentFilePercent > 0 ? ` (${uploadPipeline.currentFilePercent}%)` : ''}
-                            </span>
+                        {/* Real Progress Bar for Active Uploads */}
+                        {uploadPipeline.stage === 'uploading_media' && uploadPipeline.totalMediaCount > 0 && (
+                          <div className="mt-2.5 pt-2 border-t border-cyan-500/20">
+                            <div className="h-1.5 w-full bg-slate-900/80 rounded-full overflow-hidden border border-cyan-500/30">
+                              <div
+                                className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 rounded-full transition-all duration-300"
+                                style={{
+                                  width: `${Math.min(100, Math.max(5, Math.round(
+                                    ((uploadPipeline.currentMediaIndex - 1 + ((uploadPipeline.currentFilePercent || 0) / 100)) / uploadPipeline.totalMediaCount) * 100
+                                  )))}%`
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div className="h-1.5 w-full bg-slate-900/80 rounded-full overflow-hidden border border-cyan-500/30">
-                            <div
-                              className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 rounded-full transition-all duration-300"
-                              style={{
-                                width: `${Math.min(100, Math.max(5, Math.round(
-                                  ((uploadPipeline.currentMediaIndex - 1 + ((uploadPipeline.currentFilePercent || 0) / 100)) / uploadPipeline.totalMediaCount) * 100
-                                )))}%`
-                              }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>,
+                  document.body
+                )}
 
                 {/* 4-STEP VISUAL WORKFLOW STEPPER */}
                 <div className="relative z-10 mb-5 grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-2xl border border-slate-800/90 bg-slate-950/90 p-2.5 sm:p-3 font-mono shadow-inner w-full">
@@ -2222,6 +2413,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                   <Camera className="w-4 h-4 text-cyan-400 shrink-0" />
                                   <span className="truncate">{attachedMediaFiles.length > 0 ? `Media added (${attachedMediaFiles.length})` : 'Add photos or video'}</span>
                                 </motion.button>
+
+                                {mediaRestorationProgress && (
+                                  <div className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-cyan-950/90 border border-cyan-500/50 text-cyan-300 text-xs font-mono font-bold flex items-center justify-center gap-2 shadow-md shadow-cyan-950/50 animate-pulse w-full sm:w-auto">
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400 shrink-0" />
+                                    <span>Fetching media... {mediaRestorationProgress.loaded} of {mediaRestorationProgress.total}</span>
+                                  </div>
+                                )}
 
                                 {newBhkLabel.trim() && (
                                   <motion.button
@@ -2875,9 +3073,19 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     isOpen
                     embedded
                     initialDetails={batchDetails}
+                    initialDraftId={selectedBatchDraftId}
                     initialMediaFiles={attachedMediaFiles}
-                    onClose={() => setUploadMode('single')}
+                    onClose={() => {
+                      setSelectedBatchDraftId(null);
+                      setUploadMode('single');
+                    }}
+                    onSwitchToSingleDraft={async (singleId) => {
+                      setSelectedBatchDraftId(null);
+                      setUploadMode('single');
+                      await singleDraft.loadDraft(singleId);
+                    }}
                     onSuccess={(count) => {
+                      setSelectedBatchDraftId(null);
                       notifySuccess(
                         `${count} ${count === 1 ? 'property' : 'properties'} uploaded`,
                         `${count} ${count === 1 ? 'property was' : 'properties were'} uploaded successfully.`,

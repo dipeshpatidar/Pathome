@@ -6,6 +6,7 @@ import com.indore.pathome.spaces.repository.MediaUploadFailureRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -80,7 +81,9 @@ public class FailedUploadService {
     private final ConcurrentHashMap<String, Long> cache = new ConcurrentHashMap<>();
 
     @Autowired
-    public FailedUploadService(MediaUploadFailureRepository repository, MediaStagingService mediaStagingService) {
+    public FailedUploadService(
+            MediaUploadFailureRepository repository,
+            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
         this.repository = Objects.requireNonNull(repository);
         this.mediaStagingService = mediaStagingService;
     }

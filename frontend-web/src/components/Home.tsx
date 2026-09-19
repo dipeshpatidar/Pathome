@@ -36,6 +36,31 @@ const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   return { role: 'GUEST', user: null };
 };
 
+const VALID_ADMIN_TABS = new Set([
+  'overview',
+  'funnel',
+  'crm',
+  'employees',
+  'payroll',
+  'approval',
+  'learning',
+  'config',
+  'media',
+  'failed-uploads'
+]);
+
+const getInitialAdminTab = (): string => {
+  try {
+    const savedTab = localStorage.getItem('pathome_active_admin_tab');
+    if (savedTab && VALID_ADMIN_TABS.has(savedTab)) {
+      return savedTab;
+    }
+  } catch (err) {
+    console.warn('Failed to load active admin tab from localStorage', err);
+  }
+  return 'overview';
+};
+
 const mockPropertyList: Property[] = [
   {
     id: 1,
@@ -691,7 +716,15 @@ export const Home: React.FC = () => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showLeaseModal, setShowLeaseModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
-  const [activeAdminTab, setActiveAdminTab] = useState('overview');
+  const [activeAdminTab, setActiveAdminTab] = useState<string>(getInitialAdminTab);
+
+  useEffect(() => {
+    if (activeAdminTab && VALID_ADMIN_TABS.has(activeAdminTab)) {
+      try {
+        localStorage.setItem('pathome_active_admin_tab', activeAdminTab);
+      } catch (_) {}
+    }
+  }, [activeAdminTab]);
   const [filterSector, setFilterSector] = useState<string>('');
   const [guestModalConfig, setGuestModalConfig] = useState<{ property: Property; initialMode?: 'VIDEO' | 'PHOTOS' } | null>(null);
 
@@ -816,6 +849,7 @@ export const Home: React.FC = () => {
     localStorage.removeItem('pathome_role');
     localStorage.removeItem('pathome_user');
     localStorage.removeItem('pathome_auth_token');
+    localStorage.removeItem('pathome_active_admin_tab');
     setUser(null);
     setRole('GUEST');
     navigate('/');

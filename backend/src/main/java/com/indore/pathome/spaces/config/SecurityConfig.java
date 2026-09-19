@@ -55,6 +55,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/v1/properties/**").permitAll()
                 .requestMatchers("/api/v1/properties/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/failed-uploads/**").hasAnyRole("ADMIN", "SUB_ADMIN")
+                .requestMatchers("/api/v1/admin/drafts/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )

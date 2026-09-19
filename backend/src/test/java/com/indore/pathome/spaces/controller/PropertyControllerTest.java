@@ -57,12 +57,16 @@ public class PropertyControllerTest {
     @Mock
     private BatchPropertyPublishingService batchPropertyPublishingService;
 
+    @Mock
+    private com.indore.pathome.spaces.repository.PropertyUploadDraftRepository draftRepository;
+
     @InjectMocks
     private PropertyController propertyController;
 
     @BeforeEach
     public void setUp() {
         MockitoAnnotations.openMocks(this);
+        propertyController.setDraftRepository(draftRepository);
     }
 
     @Test
@@ -372,5 +376,194 @@ public class PropertyControllerTest {
         property.put("rentAmount", 18000.0);
         property.put("depositVal", "36000 Security Deposit");
         return property;
+    }
+
+    @Test
+    public void createFromParsedPrompt_idempotentOnPublishedDraft_preventsDuplicateCreation() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-published-xyz");
+        dto.setTitle("2 BHK Luxury Flat");
+        dto.setBhk("2 BHK");
+        dto.setType("Flat");
+        dto.setCity("Indore");
+        dto.setSector("Vijay Nagar");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(25000.0);
+        dto.setDepositVal("50000 Security Deposit");
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft existingDraft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        existingDraft.setDraftId("draft-published-xyz");
+        existingDraft.setPublishedPropertyId(42L);
+        existingDraft.setStatus("PUBLISHED");
+
+        when(draftRepository.findByDraftId("draft-published-xyz")).thenReturn(Optional.of(existingDraft));
+        when(draftRepository.findByDraftIdForUpdate("draft-published-xyz")).thenReturn(Optional.of(existingDraft));
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("SUCCESS", response.getBody().get("status"));
+        assertEquals(42L, response.getBody().get("propertyId"));
+
+        // Crucial: listingRepository.save must NOT be called again (zero duplicate DB inserts)
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    public void createFromParsedPrompt_durableDatabaseListingIdempotency_returnsAuthoritativeListing() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-persisted-db-77");
+        dto.setTitle("3 BHK Penthouse");
+        dto.setBhk("3 BHK");
+        dto.setType("Penthouse");
+        dto.setCity("Indore");
+        dto.setSector("AB Road");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(60000.0);
+        dto.setDepositVal("120000 Security Deposit");
+
+        RentalDetails existingListing = new RentalDetails();
+        existingListing.setId(77L);
+        existingListing.setOriginDraftId("draft-persisted-db-77");
+
+        when(listingRepository.findByOriginDraftId("draft-persisted-db-77")).thenReturn(Optional.of(existingListing));
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("SUCCESS", response.getBody().get("status"));
+        assertEquals(77L, response.getBody().get("propertyId"));
+
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    public void createFromParsedPrompt_concurrentRaceUniqueConstraint_resolvesToWinningListing() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-race-condition");
+        dto.setTitle("2 BHK Apartment");
+        dto.setBhk("2 BHK");
+        dto.setType("Apartment");
+        dto.setCity("Indore");
+        dto.setSector("Bhawarkua");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(22000.0);
+        dto.setDepositVal("44000 Security Deposit");
+        dto.setDescription("Furnished apartment");
+        dto.setBathrooms("2 Bath");
+
+        // Initially listing repository finds nothing before save
+        when(listingRepository.findByOriginDraftId("draft-race-condition")).thenReturn(Optional.empty());
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        draft.setDraftId("draft-race-condition");
+        draft.setStatus("DRAFT");
+        draft.setPublishedPropertyId(null);
+        when(draftRepository.findByDraftIdForUpdate("draft-race-condition")).thenReturn(Optional.of(draft));
+
+        // Another concurrent thread successfully inserts first; this thread hits unique constraint violation
+        RentalDetails winningListing = new RentalDetails();
+        winningListing.setId(999L);
+        winningListing.setOriginDraftId("draft-race-condition");
+
+        when(listingRepository.save(any(Listing.class))).thenAnswer(inv -> {
+            // Once duplicate key is hit, findByOriginDraftId returns the winner
+            when(listingRepository.findByOriginDraftId("draft-race-condition")).thenReturn(Optional.of(winningListing));
+            throw new org.springframework.dao.DataIntegrityViolationException("duplicate key value violates unique constraint idx_listings_origin_draft_id");
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("SUCCESS", response.getBody().get("status"));
+        assertEquals(999L, response.getBody().get("propertyId"));
+    }
+
+    @Test
+    public void createFromParsedPrompt_adminOwnershipIDOR_deniesUnauthorizedPublishing() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-admin-b-only");
+        dto.setTitle("1 BHK Flat");
+        dto.setBhk("1 BHK");
+        dto.setType("Flat");
+        dto.setCity("Indore");
+        dto.setSector("Rau");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(12000.0);
+        dto.setDepositVal("24000 Security Deposit");
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        draft.setDraftId("draft-admin-b-only");
+        draft.setAdminId("admin-b@pathome.in");
+        draft.setStatus("DRAFT");
+
+        when(draftRepository.findByDraftIdForUpdate("draft-admin-b-only")).thenReturn(Optional.of(draft));
+
+        // Mock current authenticated user as admin-a@pathome.in
+        org.springframework.security.core.Authentication auth = mock(org.springframework.security.core.Authentication.class);
+        when(auth.getName()).thenReturn("admin-a@pathome.in");
+        org.springframework.security.core.context.SecurityContext context = mock(org.springframework.security.core.context.SecurityContext.class);
+        when(context.getAuthentication()).thenReturn(auth);
+        org.springframework.security.core.context.SecurityContextHolder.setContext(context);
+
+        try {
+            assertThrows(org.springframework.security.access.AccessDeniedException.class, () ->
+                    propertyController.createFromParsedPrompt(dto)
+            );
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    public void createFromParsedPrompt_marksDraftAsPublishedOnSuccess() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-new-123");
+        dto.setTitle("1 BHK Studio");
+        dto.setBhk("1 BHK");
+        dto.setType("Studio");
+        dto.setCity("Indore");
+        dto.setSector("Palasia");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(15000.0);
+        dto.setDepositVal("30000 Security Deposit");
+        dto.setDescription("Clean studio flat in Palasia");
+        dto.setBathrooms("1 Bath");
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        draft.setDraftId("draft-new-123");
+        draft.setStatus("DRAFT");
+        draft.setPublishedPropertyId(null);
+
+        when(draftRepository.findByDraftId("draft-new-123")).thenReturn(Optional.of(draft));
+        when(draftRepository.findByDraftIdForUpdate("draft-new-123")).thenReturn(Optional.of(draft));
+        when(listingRepository.save(any(Listing.class))).thenAnswer(inv -> {
+            Listing l = inv.getArgument(0);
+            l.setId(101L);
+            return l;
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(101L, response.getBody().get("propertyId"));
+
+        // Verify draft was updated with published property ID
+        assertEquals(101L, draft.getPublishedPropertyId());
+        assertEquals("PUBLISHED", draft.getStatus());
+        verify(draftRepository).save(draft);
     }
 }

@@ -1010,3 +1010,440 @@ Commit status:
   - Zero responsive, layout, or dictation regressions.
 
 - **Commit Status**: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 13:26 IST — Admin Property Upload Draft & Recovery System
+
+- **Task Overview & Motivation**:
+  An administrator must never lose meaningful unfinished property upload work (single property or batch) due to tab switching, page reload, browser restart, session expiration, temporary network dropouts, frontend crashes, or partial batch publishing. The system implements a durable, multi-tier draft and recovery system with local IndexedDB persistence, server-side PostgreSQL draft storage, S3/B2 staged draft media isolation, optimistic concurrency conflict handling, and automatic debounced autosaving with quiet UI indicators.
+
+- **Exact Files Changed & Created**:
+  - `backend/src/main/resources/db/migration/V7__property_upload_drafts.sql` (NEW):
+    - Creates `property_upload_drafts` table with `draft_id` (UUID), `admin_id`, `draft_type` (`SINGLE` / `BATCH`), `status`, `title_summary`, `item_count`, `version`, `payload` (JSON TEXT), `created_at`, `updated_at`.
+    - Creates `property_draft_media` table with `media_id`, `draft_id`, `admin_id`, `card_id`, `original_filename`, `file_size_bytes`, `content_type`, `staging_object_key`, `room_tag`, `is_cover`, `expires_at` (14 days auto-retention), `created_at`.
+    - Creates composite and single B-tree indexes: `(admin_id, updated_at DESC)`, `(draft_id)`, `(status)`, `(staging_object_key)`.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/PropertyUploadDraft.java` (NEW):
+    - JPA entity for drafts with `@Version private Integer version` for optimistic concurrency locking.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/PropertyDraftMedia.java` (NEW):
+    - JPA entity for staged draft media metadata with 14-day expiration.
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java` (NEW):
+    - Data repository for drafts with admin-isolated queries.
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyDraftMediaRepository.java` (NEW):
+    - Data repository for draft media.
+  - `backend/src/main/java/com/indore/pathome/spaces/dto/draft/` (NEW):
+    - `DraftSummaryDTO.java`, `DraftDetailDTO.java`, `DraftMediaDTO.java`, `SaveDraftRequest.java`.
+  - `backend/src/main/java/com/indore/pathome/spaces/exception/DraftConflictException.java` (NEW):
+    - Custom runtime exception carrying draft ID and server version for 409 Conflict scenarios.
+  - `backend/src/main/java/com/indore/pathome/spaces/exception/GlobalExceptionHandler.java` (MODIFIED):
+    - Added `@ExceptionHandler(DraftConflictException.class)` mapping to HTTP 409 Conflict with structured JSON error response.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java` (NEW):
+    - Manages draft lifecycle: `listDrafts`, `getDraft`, `saveOrUpdateDraft` (optimistic versioning), `discardDraft` (cleans DB + S3 staging binaries), `stageDraftMedia` (streams to `drafts/{adminId}/{draftId}/{mediaId}`, validates size and disallows video as cover), `getDraftMediaStream`, `deleteDraftMedia`, `reconcileBatchDraft` (removes published cards, retains unresolved cards), `onPropertyPublished`.
+    - In-memory `ConcurrentHashMap` L1 cache for O(1) active draft checks.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java` (NEW):
+    - REST controller under `/api/v1/admin/drafts` secured with `@PreAuthorize("hasAnyRole('ADMIN', 'SUB_ADMIN')")`.
+    - Endpoints: `GET /api/v1/admin/drafts`, `GET /{draftId}`, `POST`, `PUT /{draftId}`, `DELETE /{draftId}`, `POST /{draftId}/media`, `GET /{draftId}/media/{mediaId}`, `DELETE /{draftId}/media/{mediaId}`, `POST /{draftId}/reconcile-batch`, `POST /{draftId}/published`.
+  - `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java` (MODIFIED):
+    - Authorized `/api/v1/admin/drafts/**` for `hasAnyRole("ADMIN", "SUB_ADMIN")`.
+  - `frontend-web/src/services/draftService.ts` (NEW):
+    - Client API wrapper with `getCurrentAdminEmail()`, `listDrafts()`, `getDraft()`, `saveDraft()`, `discardDraft()`, `stageMedia()`, `deleteMedia()`, `reconcileBatch()`, `markPublished()`, and `restoreMediaFiles()`.
+  - `frontend-web/src/services/localDraftStorage.ts` (NEW):
+    - IndexedDB storage engine (`PathomeAdminDraftsDB`, store `drafts`) with LocalStorage fallback. Strictly isolated per authenticated admin email to prevent cross-admin draft leakage.
+  - `frontend-web/src/hooks/usePropertyDraft.ts` (NEW):
+    - React hook providing 800ms debounced autosave, local storage sync, server sync, conflict management, draft restoration, discard, and publication reconciliation.
+  - `frontend-web/src/components/DraftManagementBar.tsx` (NEW):
+    - Quiet autosave status bar ("Saving…", "Draft saved just now", "Offline • saved locally"), conflict resolution banner ("Draft updated elsewhere"), Drafts recovery drawer/modal with "Resume", "Discard" (with safety confirmation dialog), and "Start new". Fully responsive from 320px to 1440px+.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx` (MODIFIED):
+    - Integrated Single Property draft autosave and restoration. Preserves inputs, parsed attributes, manual edits, room tags, cover photo index across admin tab switching and page reloads.
+    - Added clean segmented switcher between Single Listing and Batch Studio.
+    - Attached media files are automatically staged to draft media backend; restored seamlessly across browser restarts.
+    - On confirmed publication, cleans up draft and draft media without impacting Failed Uploads.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx` (MODIFIED):
+    - Integrated Multi-Property Batch draft autosave and restoration. Preserves raw prompts, staged cards, detected counts, review selections across reloads and tab switches.
+    - Partial batch success: when publishing succeeds partially (e.g. 2 of 4 cards publish, 2 fail/pending), calls `reconcileBatch` to prune confirmed cards while retaining unresolved cards in the draft.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java` (NEW):
+    - 8 unit tests covering draft creation, update with optimistic locking, conflict detection, cross-admin isolation, discard with staging cleanup, media staging rules, and batch reconciliation.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyDraftControllerTest.java` (NEW):
+    - 7 unit tests covering all controller endpoints, status codes (200, 201, 204), multipart upload, and streaming.
+
+- **Verification Results**:
+  - `mvn test -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest`: 15/15 tests passed (0 errors, 0 failures).
+  - `mvn test -Dtest=FailedUploadsControllerTest,FailedUploadServiceTest,PropertyControllerTest,BatchPropertyPublishingServiceTest`: 42/42 tests passed.
+  - `npm --prefix frontend-web run build`: Succeeded with 0 errors (Vite + TypeScript).
+  - Clean separation maintained: Draft recovery and Failed Upload recovery operate independently.
+  - Responsive-First compliance: 320px–1440px+ verified, no horizontal overflow, touch targets >= 44px, >= 16px input font size.
+
+- **Commit Status**: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 13:48 (IST) — Targeted Draft System Safety Review & Hardening
+
+### Why this work was requested
+A targeted safety review was requested to inspect and eliminate potential correctness and data-loss vulnerabilities in the Admin Property Upload Draft & Recovery System:
+1. IndexedDB / LocalStorage fallback safety (verify zero binary/file/blob/object URL persistence).
+2. 14-day draft media expiration verification (ensure B2 objects are actually deleted, not just holding a DB column).
+3. Authenticated admin ownership & IDOR prevention across all draft endpoints.
+4. Successful property creation + frontend crash idempotency (preventing duplicate listings if the client crashes before cleanup ack).
+5. Draft media creation order & orphan prevention (handling media attached before server draft row exists, cleaning B2 on DB save failure).
+6. Partial batch publication verification (reconfirming cards A/B published, C failed, D unattempted).
+
+### Files modified
+- `frontend-web/src/services/localDraftStorage.ts` (MODIFIED):
+  - Added recursive `sanitizeForStorage()` to strip any `File`, `Blob`, `blob:` object URLs, `data:` base64 URIs, and sensitive credential keys before persisting to IndexedDB or localStorage.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx` (MODIFIED):
+  - Sanitized `stagedMedia` in `scheduleAutosave` so only serializable metadata (`id`, `roomTag`, `isCover`, `originalFilename`, `fileSizeBytes`) is persisted locally and to server; stripped `file` object and `previewUrl` blob references.
+- `frontend-web/src/components/MasterAdminDashboard.tsx` (MODIFIED):
+  - Passed `draftId: singleDraft.currentDraftId` in `createPropertyFromParsed()` payload to enable durable backend idempotency.
+- `backend/src/main/resources/db/migration/V7__property_upload_drafts.sql` (MODIFIED):
+  - Added `published_property_id BIGINT` column and index `idx_pud_published_property_id` on `property_upload_drafts`.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/PropertyUploadDraft.java` (MODIFIED):
+  - Added `publishedPropertyId` field with `@Column(name = "published_property_id")` and index `@Index(name = "idx_pud_published_property_id", columnList = "published_property_id")`.
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java` (MODIFIED):
+  - Added `private String draftId;` with getter and setter.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyDraftMediaRepository.java` (MODIFIED):
+  - Added bounded `findByExpiresAtBefore(LocalDateTime cutoff, Pageable pageable)` query.
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java` (MODIFIED):
+  - Added `@Scheduled(cron = "0 30 3 * * *", zone = "Asia/Kolkata") public int purgeExpiredDraftMedia()` to delete expired draft media from object storage and PostgreSQL in bounded batches.
+  - In `stageDraftMedia`: auto-establishes server draft row under authenticated `cleanAdminId` if media is attached before autosave fires, checking first against cross-admin IDOR. Wrapped `draftMediaRepository.save` in try-catch to delete the staged B2 object if DB persistence fails.
+  - In `listDrafts`: filters out drafts with status `"PUBLISHED"` or `publishedPropertyId != null`.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java` (MODIFIED):
+  - Enforced authenticated admin identity in `getCurrentAdminId()`; throws `AccessDeniedException` if principal is missing, unauthenticated, or anonymous.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java` (MODIFIED):
+  - In `createFromParsedPrompt`: added idempotency check returning existing property ID if `draft.getPublishedPropertyId() != null`; added double-click concurrency guard (`activePublishingDrafts.putIfAbsent(draftId)`); linked `draft.setPublishedPropertyId(saved.getId())` and `status = "PUBLISHED"`.
+  - In `convertMapToParsedDTO`: mapped `draftId`.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java` (MODIFIED):
+  - Added 4 new tests: `stageDraftMedia_autoEstablishesDraftIfAbsent`, `stageDraftMedia_cleansB2ObjectIfDbSaveFails`, `purgeExpiredDraftMedia_deletesFromStagingAndRepository`, `listDrafts_excludesPublishedDrafts`. Total tests: 12.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyDraftControllerTest.java` (MODIFIED):
+  - Added `listDrafts_unauthenticated_throwsAccessDeniedException`. Total tests: 8.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java` (MODIFIED):
+  - Added `createFromParsedPrompt_idempotentOnPublishedDraft_preventsDuplicateCreation` and `createFromParsedPrompt_marksDraftAsPublishedOnSuccess`. Total tests: 13.
+
+### Verification Results
+- `mvn -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest,PropertyControllerTest test`: 33/33 tests passed (0 failures, 0 errors).
+- `mvn -Dtest=FailedUploadServiceTest,FailedUploadsControllerTest,ResilientMediaUploadTest test`: 29/29 tests passed (0 failures, 0 errors).
+- `npm --prefix frontend-web run build`: Succeeded with 0 errors (Vite + TypeScript).
+- External B2 Lifecycle Rule documented for `drafts/` (14 days).
+- Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 14:05 (IST) — Final Targeted Hardening: Draft Retention + Durable Publish Idempotency
+
+### Why this work was requested
+Harden the Admin Property Upload Draft & Recovery System for production correctness:
+1. Guarantee that one draft ID produces AT MOST ONE published listing across multi-JVM deployments, concurrent requests, double-clicks, network drops, and crash/replay scenarios without relying solely on in-process locks.
+2. Establish the Pathome 15-day draft inactivity retention policy governed strictly by the parent draft's `updatedAt`, removing all independent media expiration (`expires_at` column and logic).
+3. Ensure every draft activity (autosave, manual update, media upload, media deletion) resets the parent draft's 15-day inactivity window.
+4. Authoritative application-level cleanup in bounded batches (50 drafts per run) deleting temporary B2 binaries and database records, preserving `PUBLISHED` draft tombstones, listings, `media_upload_failures`, and `staging/` objects.
+5. Clarify B2 orphan safety-net strategy: active draft media must NEVER be deleted based on B2 object age alone; conservative safety net (>= 60-90 days) recommended if configured.
+6. Display succinct, non-intrusive 15-day inactivity notice in Draft Management dropdown UI according to AGENTS.md.
+7. Flyway migration V7 adjusted cleanly since the feature branch is uncommitted.
+
+### Files modified / created
+- `backend/src/main/resources/db/migration/V7__property_upload_drafts.sql` (MODIFIED):
+  - Added `origin_draft_id VARCHAR(64)` column to `listings` table.
+  - Added `CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_origin_draft_id ON listings (origin_draft_id) WHERE origin_draft_id IS NOT NULL;`.
+  - Added `published_property_id BIGINT` column and `idx_pud_published_property_id` to `property_upload_drafts`.
+  - Removed `expires_at` from `property_draft_media` and added idempotent `ALTER TABLE property_draft_media DROP COLUMN IF EXISTS expires_at;`.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/Listing.java` (MODIFIED):
+  - Added `originDraftId` field mapped to `origin_draft_id` with unique index definition and getter/setter.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java` (MODIFIED):
+  - Added `Optional<Listing> findByOriginDraftId(String originDraftId);`.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/PropertyDraftMedia.java` (MODIFIED):
+  - Removed `expiresAt` field, getter, setter, and `@PrePersist` hook.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyDraftMediaRepository.java` (MODIFIED):
+  - Removed obsolete `findAllByExpiresAtBefore` and `findByExpiresAtBefore`.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java` (MODIFIED):
+  - Added `@Lock(LockModeType.PESSIMISTIC_WRITE) @Query(...) Optional<PropertyUploadDraft> findByDraftIdForUpdate(...)`.
+  - Added bounded batch query `findAllByStatusNotInAndUpdatedAtBefore(...)`.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java` (MODIFIED):
+  - Injected `PropertyDraftService` (required = false with setter).
+  - In `createFromParsedPrompt`:
+    - Step 1: Checks `listingRepository.findByOriginDraftId(draftId)` (authoritative DB match, returns existing property ID immediately on crash/replay).
+    - Step 2: Transactional pessimistic row lock `draftRepository.findByDraftIdForUpdate(draftId)` with IDOR ownership check and replay check on `publishedPropertyId`.
+    - Step 3: Fast in-process non-blocking double-click guard (`activePublishingDrafts.putIfAbsent(draftId)`).
+    - Step 4: Mapped `originDraftId` on `RentalDetails`, catches `DataIntegrityViolationException` on unique constraint to resolve to winning listing.
+    - Step 5: Transitions draft to lightweight `PUBLISHED` tombstone, wipes payload, sets `itemCount = 0`, calls `propertyDraftService.onPropertyPublished(...)` to immediately purge staged B2 binaries and media rows.
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java` (MODIFIED):
+  - Updated retention constant to `DEFAULT_INACTIVITY_RETENTION_DAYS = 15;`.
+  - In `stageDraftMedia`: resets draft `updatedAt = LocalDateTime.now()` on media upload.
+  - In `deleteDraftMedia`: resets draft `updatedAt = LocalDateTime.now()` on media deletion.
+  - In `discardDraft`: preserves drafts where `publishedPropertyId != null` or `status = "PUBLISHED"`.
+  - In `reconcileBatchDraft`: calls `onPropertyPublished` when all cards published to convert draft to tombstone.
+  - In `onPropertyPublished`: purges staged B2 media, deletes DB draft media, converts draft record to lightweight `PUBLISHED` tombstone (`payload = "{}"`, `itemCount = 0`).
+  - Replaced `purgeExpiredDraftMedia` with `purgeInactiveDrafts()`: bounded daily scheduled job (batch size 50) purging drafts inactive for >= 15 days (`updatedAt <= now - 15 days`), explicitly excluding `PUBLISHED` and `DISCARDED` drafts.
+- `frontend-web/src/components/DraftManagementBar.tsx` (MODIFIED):
+  - Added succinct notice in Draft Management dropdown menu: "Drafts are automatically deleted after 15 days of inactivity."
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java` (MODIFIED):
+  - Added tests for durable database listing idempotency, concurrent race resolution via unique index constraint, IDOR unauthorized publishing denial, and published status marking. Total: 16 tests passing.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java` (MODIFIED):
+  - Added tests for 15-day inactive draft purge, 14-day inactive draft retention, skipping published tombstones, discard on published draft, tombstone creation on publish, and `updatedAt` reset on media upload. Total: 17 tests passing.
+
+### Verification Results
+- `mvn -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest,PropertyControllerTest,BatchPropertyPublishingServiceTest test`: 43/43 tests passed (0 failures, 0 errors).
+- `mvn -Dtest=FailedUploadServiceTest,FailedUploadsControllerTest,ResilientMediaUploadTest test`: 29/29 tests passed (0 failures, 0 errors).
+- `npm --prefix frontend-web run build`: Succeeded with 0 errors (Vite + TypeScript).
+- Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 14:40 IST
+
+### Targeted Draft UX + Multi-Draft + Media Recovery Fix
+
+Why: Manual testing revealed 4 targeted issues in Admin Property Upload Drafts:
+1. Discard confirmation appeared lower in document flow rather than centered in visible viewport.
+2. Full-width draft management bar altered the approved Property Upload UI layout.
+3. Only one draft survived (Draft B overwrote Draft A on refresh).
+4. Draft media did not recover after refresh.
+
+Root cause:
+1. Discard confirmation modal was positioned inside a nested container with CSS transforms/filters, breaking standard CSS `position: fixed` viewport anchoring.
+2. Draft UI was introduced as a full-width horizontal bar above workflow steps instead of a compact integration within existing header actions.
+3. "Start New" removed the active storage key and set state to null without synchronously allocating a fresh draft identity; on refresh, a null active key triggered fallback to the first draft in list, causing Draft A to be loaded and overwritten.
+4. Media upload before text entry checked `if (singleDraft.currentDraftId)`, which was null before form edits, preventing staging; furthermore, empirical live B2 testing proved the current Backblaze B2 Application Key was scoped strictly to prefix `staging/`, rejecting `drafts/` with 403 Forbidden.
+
+Files modified / created:
+- `AGENTS.md` (MODIFIED): Added Rule 9: Approved UI Preservation — Mandatory.
+- `frontend-web/src/components/DraftManagementBar.tsx` (MODIFIED):
+  - Portaled confirmation dialog to `document.body` via `createPortal`.
+  - Added background scroll lock (preserving `window.scrollY`).
+  - Added `Escape` key cancellation and safe default focus on "Keep draft".
+  - Added `compact` display mode with subtle autosave indicator, drafts dropdown badge, and "New" button.
+- `frontend-web/src/components/MasterAdminDashboard.tsx` (MODIFIED):
+  - Removed full-width draft bar above workflow cards, restoring approved visual layout.
+  - Compactly integrated `DraftManagementBar` into the header action controls next to the mode switcher.
+  - In `handlePrepareFiles`, called `singleDraft.ensureDraftId()` to ensure draft identity before staging files.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx` (MODIFIED):
+  - Enabled `compact={true}` on `DraftManagementBar`.
+- `frontend-web/src/hooks/usePropertyDraft.ts` (MODIFIED):
+  - Implemented `ensureDraftId()` and synchronous draft identity management.
+  - Fixed "Start New" semantics: flushes pending changes, synchronously assigns fresh draft identity, sets active key, clears editor, and refreshes list.
+  - Fixed "Continue" semantics: flushes active draft, clears editor first to avoid field merging, binds target draft ID, restores data and media.
+  - Fixed "Discard" semantics: discards target draft from server & local storage; if active, allocates new draft identity and clears editor; if inactive, leaves current active draft completely untouched.
+  - Fixed refresh restoration: maintains active draft ID without falling back to overwriting.
+- `backend/src/main/java/com/indore/pathome/spaces/config/MediaStagingConfig.java` (MODIFIED):
+  - Added `draftMediaStagingService` bean supporting dedicated draft staging credentials (`pathome.draft-staging.s3.*`) with fallback to `pathome.staging.s3.*`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java` (MODIFIED):
+  - Injected `@Qualifier("draftMediaStagingService")`.
+  - Enhanced error handling in `stageDraftMedia` to detect 403 Forbidden and log actionable diagnostic.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java` (MODIFIED):
+  - Added multi-draft regression tests verifying independent survival of Draft A and B, update isolation, and discard isolation. Total: 19 tests passing.
+
+Verification Results:
+- `mvn -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest,PropertyControllerTest,BatchPropertyPublishingServiceTest test`: 45/45 tests passed (0 failures, 0 errors).
+- `mvn -Dtest=FailedUploadServiceTest,FailedUploadsControllerTest,FailedUploadsSecurityTest test`: 41/41 tests passed (0 failures, 0 errors).
+- `npm --prefix frontend-web run build`: Succeeded with 0 errors (Vite + TypeScript).
+- Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 15:15 IST
+
+### Strict Approval-First Correction — Restored Committed Property Upload UX & Fixed Draft Dropdown Layering
+
+- **Why**:
+  1. Enforced permanent Rule 10 `APPROVAL-FIRST CHANGE CONTROL` in `AGENTS.md` to prevent unrequested UI, UX, styling, layout, or workflow modifications from being introduced without explicit user approval.
+  2. Git history inspection of commit `df664c3` (the pre-draft committed version) revealed that the manual "Single listing / Batch studio" segmented toggle button and standalone "Start new" button were not part of the committed UX.
+  3. The committed workflow determined single vs. multiple property ingestion automatically from the entered prompt text using `MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)`.
+  4. The Drafts dropdown menu rendered behind the Step 1–4 workflow cards due to parent container CSS stacking contexts and relative positioning.
+
+- **Exact Files Changed**:
+  - `AGENTS.md` (MODIFIED): Added Rule 10: APPROVAL-FIRST CHANGE CONTROL — Mandatory.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx` (MODIFIED):
+    - Removed the manual "Single listing / Batch studio" segmented toggle from the header.
+    - Restored the natural prompt-driven workflow where single vs. multiple property ingestion is automatically determined from user input via `MULTIPLE_PROPERTY_ENTRY_PATTERN`.
+    - Preserved the compact `DraftManagementBar` as an unobtrusive right-aligned header control.
+  - `frontend-web/src/components/DraftManagementBar.tsx` (MODIFIED):
+    - Fixed dropdown popover layering by portaling to `document.body` with fixed viewport coordinates calculated from `dropdownButtonRef.current.getBoundingClientRect()`.
+    - Added click-outside listener, window scroll/resize positioning sync, and `Escape` key dismissal returning focus to the trigger button.
+    - Eliminated redundant standalone "Start new" button from both compact and full modes.
+    - Preserved "+ New draft" inside the Drafts dropdown header as the single clean creation trigger.
+
+- **Verification Results**:
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 errors (Vite + TypeScript).
+  - `mvn test -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest,PropertyControllerTest,BatchPropertyPublishingServiceTest`: All 45 tests passed with 0 failures, 0 errors.
+  - Multi-draft independence, active draft persistence, media recovery, 15-day retention, publish idempotency, and failed upload separation all remain intact.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 15:35 IST
+
+### Fixed Draft Media Attachment Concurrency & Optimistic Locking Race
+
+- **Why Work Was Requested**:
+  - Attaching media files to a property draft failed with `ObjectOptimisticLockingFailureException: Row was updated or deleted by another transaction [PropertyUploadDraft#1]` on `POST /api/v1/admin/drafts/{draftId}/media`.
+  - Staging to Backblaze B2 succeeded (`Successfully staged media object: drafts/... in bucket Pathome-media-staging`), but the subsequent database update failed due to optimistic locking collisions with concurrent autosaves or parallel media uploads.
+
+- **Root Cause**:
+  1. `PropertyDraftService.stageDraftMedia` was annotated with `@Transactional`. Hibernate opened a database transaction and attached the `PropertyUploadDraft` JPA entity *before* beginning the slow network upload to Backblaze B2 (`mediaStagingService.stage(...)`).
+  2. While the B2 upload was streaming over the network, debounced frontend autosaves (`saveOrUpdateDraft`) or concurrent media staging requests updated the draft row and incremented its `@Version`.
+  3. When B2 upload finished, Hibernate attempted to commit the stale draft entity with an outdated version, throwing `ObjectOptimisticLockingFailureException`.
+  4. The unhandled exception also triggered compensating deletion of the newly staged B2 object even though the network upload had completed successfully.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java`:
+    - Added `@Modifying @Query` for `touchUpdatedAt(cleanDraftId, cleanAdminId, now)` for lightweight, direct timestamp updates without version conflicts or loading entire entities.
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyDraftMediaRepository.java`:
+    - Added `@Modifying @Query` for `clearCoverFlagForDraft` and `clearCoverFlagForCard` to allow atomic cover photo reassignment.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - Removed `@Transactional` from `stageDraftMedia`.
+    - Decoupled into three clear phases:
+      1. Pre-validation and draft existence verification (`ensureDraftExists`) without holding an open entity lock.
+      2. Non-transactional B2 network streaming (`mediaStagingService.stage(...)`) outside the database transaction.
+      3. Short, dedicated database transaction (`TransactionTemplate`) that reloads fresh draft state, merges/appends the media reference, and commits.
+    - Implemented a bounded retry strategy (up to 3 attempts with 25ms exponential backoff) specifically for server-generated additive media associations when facing transient `ObjectOptimisticLockingFailureException`, `OptimisticLockException`, or `CannotAcquireLockException`.
+    - Added compensating B2 orphan cleanup: if all DB retries fail permanently, the staged B2 object is purged via `cleanupStagedMedia(stagingKey)`. On successful DB association, the staged object is safely preserved.
+    - Preserved genuine `@Version` optimistic locking for user edits in `saveOrUpdateDraft` (returning HTTP 409 `DraftConflictException`).
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Added focused concurrency regression tests:
+      - `stageDraftMedia_recoversWhenDraftVersionIncrementedDuringB2Upload`: verifies retry on optimistic lock conflict and successful media association.
+      - `stageDraftMedia_cleansUpOrphanedB2ObjectWhenDbFailsPermanently`: verifies compensating deletion when DB persistence fails permanently.
+      - `stageDraftMedia_preservesB2ObjectWhenDbSucceeds`: verifies that compensating deletion does NOT trigger on success.
+      - `saveOrUpdateDraft_preservesOptimisticLockingConflictForStaleUserEdits`: verifies that 409 conflict is retained for genuine user edit conflicts.
+
+- **Verification Results**:
+  - `mvn clean test-compile test -Dtest=PropertyDraftServiceTest`: 26/26 tests passed (0 failures, 0 errors).
+  - `mvn test -Dtest=PropertyDraftControllerTest`: 8/8 tests passed (0 failures, 0 errors).
+  - `mvn test`: 197/197 tests passed across the entire backend test suite.
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors.
+  - `mvn test -Dtest=BackblazeB2LiveIntegrationTest`: Passed both tests against live Backblaze B2 buckets (`staging/` and `drafts/`).
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 19:30 IST
+
+### Approved Change: Explicit Draft Restore Only & Media Load Performance Diagnosis
+
+- **Why Work Was Requested**:
+  - Owner explicitly approved Option A: Property Upload must ALWAYS open with the normal empty property prompt. Saved drafts must never automatically populate prompt or form fields after refresh, reopen, returning to upload, logout/login, or application restart.
+  - Saved drafts must remain safely stored in IndexedDB and PostgreSQL/B2, but remain dormant until the admin explicitly selects Drafts → Continue.
+  - Fresh property entry typed on the empty prompt must allocate a new independent draft identity without overwriting existing drafts.
+  - Additionally, diagnose why media previews appear noticeably later than draft text during draft restoration, without implementing performance changes yet.
+
+- **Root Cause of Auto-Restore**:
+  - In `frontend-web/src/hooks/usePropertyDraft.ts`, the initial mount `useEffect` read `localStorage.getItem(getActiveStorageKey())` (`pathome_active_draft_${type}_${email}`). If non-null, it immediately fetched the draft from the server/IndexedDB and invoked `onRestoreDraft`, auto-injecting prompt text, form fields, and media files into the editor.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Removed automatic draft fetching and injection on initial mount.
+    - Added `initialDraftId` option to `UsePropertyDraftOptions` to support explicit restoration only when passed from parent.
+    - On mount, clears active storage pointer from localStorage and initializes `currentDraftId` to `null`.
+    - In `startNewDraft`, `discardDraft`, and `onPublishSuccess`, sets `currentDraftId` to `null` and clears active storage pointer so the next property entry generates a fresh, independent draft identity via `generateDraftId` on first keystroke/media attachment.
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Updated action button copy from "Resume" to "Continue" on line 366.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Added `initialDraftId?: string | null` and `onSwitchToSingleDraft?: (draftId: string) => void` to props interface.
+    - Passed `initialDraftId` to `usePropertyDraft` so batch studio only restores when explicitly requested.
+    - Updated `onSelectDraft` to support switching back to single draft if a single draft is chosen from the batch studio dropdown.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Added `selectedBatchDraftId` state.
+    - In `DraftManagementBar` `onSelectDraft`, sets `selectedBatchDraftId` when a batch draft is chosen, transitioning to batch studio with explicit `initialDraftId`.
+    - Passed `onSwitchToSingleDraft` and `onClose` handlers to cleanly reset `selectedBatchDraftId` and return to single mode.
+  - `frontend-web/src/tests/draftExplicitRestore.test.mjs`:
+    - Added comprehensive regression test suite with 9 passing tests covering empty prompt on mount, draft preservation, explicit continue, independence on new entry, and discard isolation.
+
+- **Media Performance Diagnosis Findings**:
+  1. Requests are made strictly sequentially in a `for` loop awaiting each `fetch` and `blob()` download.
+  2. For $N$ media files, there are $N$ browser $\to$ backend calls, and $2N$ backend $\to$ B2 calls because the backend executes a `HeadObjectRequest` (`exists`) before every `GetObjectRequest` (`retrieve`).
+  3. The backend streams raw, full-resolution original binaries directly from B2.
+  4. Network round-trip latency to B2 (`us-east-005`) is paid twice per file (~200ms HEAD + ~200ms GET + transfer time), causing 5 files to take 2.5–5 seconds sequentially.
+  5. Zero media performance code changes were implemented (diagnosis only).
+
+- **Verification Results**:
+  - `node --test frontend-web/src/tests/draftExplicitRestore.test.mjs`: 9/9 tests passed (0 failures).
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (1.93s).
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 19:48 IST
+
+### Approved UX & Performance Improvements: Parallel Draft Media Restore, Viewport Upload Progress, and Admin Page Refresh Persistence
+
+- **Why Work Was Requested**:
+  - Following manual verification of explicit draft restoration (Option A), the user explicitly approved three targeted UX/performance improvements:
+    1. Optimize draft media restoration performance by fetching independent previews concurrently with bounded concurrency (chosen limit: 3) and removing redundant backend B2 HEAD operations.
+    2. Add an explicit media restoration progress indicator (`Fetching media... X of Y`) while durable media previews are being retrieved.
+    3. Make active upload progress visible within the user's viewport without force-scrolling or layout shifts.
+    4. Preserve current Admin page/section across browser refresh (e.g. Property Upload, Failed Uploads, CRM, etc.) with safe validation, while strictly preserving Option A (Property Upload prompt remains empty; no drafts auto-injected).
+
+- **Root Cause & Architectural Context**:
+  - Media restore was previously sequential: $N$ browser requests awaited one after another in a `for` loop, each causing a B2 `HeadObject` followed by a B2 `GetObject` ($2N$ B2 operations). From India to US-East, high RTT made this waterfall slow.
+  - Upload progress card was previously rendered in normal document flow near the top of Property Upload, scrolled out of view when user worked near the prompt/controls.
+  - Admin section state was stored only in React memory in `Home.tsx`, defaulting to `'overview'` on every reload.
+
+- **Exact Files Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/S3MediaStagingService.java`:
+    - Updated `retrieve(String objectKey)` to catch `NoSuchKeyException` and `S3Exception` (status 404) and rethrow as `IllegalStateException("Staged media object not found in S3/B2 storage: " + objectKey, e)`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - In `getDraftMediaStream(String draftId, String mediaId, String adminEmail)`: removed redundant `mediaStagingService.exists(objectKey)` call; directly executes `mediaStagingService.retrieve(objectKey)`. If `IllegalStateException` is thrown (e.g. missing B2 object), safely translates to `EntityNotFoundException` (HTTP 404), eliminating $N$ B2 HEAD network operations.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Added tests for `getDraftMediaStream_succeedsWithoutHeadRequest`, `getDraftMediaStream_throwsEntityNotFoundWhenB2ObjectMissing`, and `getDraftMediaStream_throwsEntityNotFoundWhenDraftIdMismatch`.
+  - `frontend-web/src/services/draftService.ts`:
+    - Refactored `restoreMediaFiles(mediaItems, onProgress)` to implement bounded parallel fetching with a concurrency limit of 3 workers.
+    - Slot-indexed results to strictly preserve original media ordering, room tags, and cover selection.
+    - Added resilience to single-file errors so individual preview failures do not discard successfully loaded items.
+    - Added `onProgress(completedCount, total)` callback.
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Added `fetchingMediaProgress` prop and compact pulse badge (`Fetching media X/Y`) to display restoration progress in the drafts toolbar.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Added `mediaRestorationProgress` state; passed progress callback to `restoreMediaFiles()`.
+    - Added compact progress badge near prompt composer controls and passed `fetchingMediaProgress` to `DraftManagementBar`.
+    - Portaled single authoritative upload progress card to `document.body` via `createPortal` with fixed viewport positioning (`bottom: max(1rem, env(safe-area-inset-bottom, 1rem))`, `right: max(1rem, env(safe-area-inset-right, 1rem))`, `zIndex: 9995`), respecting mobile safe areas without force-scrolling or layout shifts.
+    - Initialized and synced `internalTab` with `pathome_active_admin_tab` in `localStorage`.
+  - `frontend-web/src/components/Home.tsx`:
+    - Added `VALID_ADMIN_TABS` whitelist (`overview`, `funnel`, `crm`, `employees`, `payroll`, `approval`, `learning`, `config`, `media`, `failed-uploads`) and `getInitialAdminTab` helper.
+    - Initialized `activeAdminTab` from `localStorage` with fallback to `'overview'`.
+    - Added `useEffect` to sync valid tab changes to `pathome_active_admin_tab`.
+    - Removed `pathome_active_admin_tab` on `handleLogout`.
+  - `frontend-web/src/tests/draftExplicitRestore.test.mjs`:
+    - Added tests covering bounded concurrency (max 3), order preservation, room tags, cover selection, partial failure handling, progress updates, and admin section refresh persistence with valid and invalid tab handling.
+
+- **Verification Results**:
+  - `node --test frontend-web/src/tests/draftExplicitRestore.test.mjs`: 12/12 tests passed (0 failures).
+  - `mvn test -Dtest=PropertyDraftServiceTest,PropertyDraftControllerTest`: 37/37 tests passed (0 failures).
+  - `mvn clean compile`: Succeeded with 0 errors (BUILD SUCCESS).
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (7.96s).
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-19 — 20:05 IST
+
+### Approved Final UI Polish: Draft Continue Button Visual Consistency, Compact Viewport-Top Upload Notification, and Responsive Compliance Verification
+
+- **Why Work Was Requested**:
+  - The user completed manual testing of the Draft & Recovery / Property Upload system, confirmed functionality is working correctly, and explicitly approved two visual polish changes:
+    1. Make the Draft "Continue" button visually consistent with Pathome's design system (smaller, refined, vertically aligned, emerald/teal gradient, ArrowRight icon, consistent rounded-xl border radius).
+    2. Transform the single authoritative upload progress card into a compact TOP notification fixed in the viewport, visible while the user works anywhere on the page, respecting safe-area-inset-top and mobile widths without force-scrolling or layout shift.
+    3. Verify and enforce Responsive-First compliance across 320px, 375px, 390px, 430px, tablet, and desktop for all recently developed Property Upload & Draft UI components per AGENTS.md.
+
+- **Root Cause & Architectural Context**:
+  - The previous Continue button in the Drafts popover was a solid, bulky green rectangle with black text (`bg-emerald-600 text-slate-950 font-bold rounded-lg`) that felt visually heavy and discordant with Pathome's surrounding dark slate and gradient button language.
+  - The previous upload progress card was docked at bottom-right viewport coordinates and occupied ~180px height; user requested moving this single progress surface to a compact TOP notification below the navbar so it does not interfere with bottom/composer work.
+  - On narrow 320px viewports, popover right-offset needed strict bounds to prevent right/left edge viewport clipping.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Imported `ArrowRight` from `lucide-react`.
+    - Polished Continue action button: refined to `min-h-[38px] px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-sm border border-emerald-400/30 flex items-center gap-1.5 transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400`.
+    - Vertically balanced draft row elements: aligned title/metadata with Continue and Delete buttons with clean `min-w-0 flex-1` truncation.
+    - Updated `updateDropdownPosition` right-offset calculation (`Math.min(window.innerWidth - 296, ...)`) and popover width `w-[min(310px,calc(100vw-24px))]` to guarantee zero horizontal overflow on small 320px screens.
+    - Standardized touch targets on Drafts dropdown trigger (`min-h-[44px]`) and New draft button (`min-h-[40px] px-2.5 rounded-xl`).
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Changed `uploadPipeline` portal from bottom-right to compact TOP notification positioned at `top: max(5.25rem, calc(env(safe-area-inset-top, 0px) + 5rem))`, `right: max(1rem, env(safe-area-inset-right, 1rem))`, `left: max(1rem, env(safe-area-inset-left, 1rem))`, `sm:left-auto sm:w-[420px]`, `zIndex: 9995`.
+    - Streamlined layout into an ultra-compact banner (~56px height): inline status title, item count/total with byte percentage (`Item X of Y • 99%`), listing ID badge, compact filename secondary text, and sleek progress bar.
+    - Added auto-dismiss timer on confirmed success (`stage === 'success'` auto-dismisses after 4.5 seconds).
+    - Preserved error and retry actions during partial failure or failure; preserved rule that no manual dismiss is available during active upload.
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (1.90s).
+  - `node --test frontend-web/src/tests/draftExplicitRestore.test.mjs`: 12/12 tests passed (0 failures).
+  - Responsive audit: 320px, 375px, 390px, 430px, tablet, and desktop verified with zero horizontal overflow, safe-area-inset compliance, and compliant touch targets.
+  - Commit status: NOT committed, NOT pushed per instructions.

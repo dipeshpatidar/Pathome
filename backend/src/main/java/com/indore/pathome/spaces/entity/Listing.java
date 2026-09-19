@@ -8,7 +8,8 @@ import java.time.LocalDateTime;
     @Index(name = "idx_listing_status_sector", columnList = "status, sector"),
     @Index(name = "idx_listing_status_type", columnList = "status, listing_type"),
     @Index(name = "idx_listing_bhk", columnList = "status, bhk_count"),
-    @Index(name = "idx_listing_owner_phone", columnList = "owner_phone_number")
+    @Index(name = "idx_listing_owner_phone", columnList = "owner_phone_number"),
+    @Index(name = "idx_listing_origin_draft_id", columnList = "origin_draft_id", unique = true)
 })
 @Inheritance(strategy = InheritanceType.JOINED)
 @DiscriminatorColumn(name = "listing_category", discriminatorType = DiscriminatorType.STRING)
@@ -93,6 +94,9 @@ public abstract class Listing {
     @Column(name = "possession_date_text")
     private String possessionDateText;
 
+    @Column(name = "origin_draft_id", length = 64)
+    private String originDraftId;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -175,6 +179,9 @@ public abstract class Listing {
 
     public String getPossessionDateText() { return possessionDateText; }
     public void setPossessionDateText(String possessionDateText) { this.possessionDateText = possessionDateText; }
+
+    public String getOriginDraftId() { return originDraftId; }
+    public void setOriginDraftId(String originDraftId) { this.originDraftId = originDraftId; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

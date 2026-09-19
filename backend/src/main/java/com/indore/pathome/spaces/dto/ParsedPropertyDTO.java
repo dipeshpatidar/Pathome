@@ -46,6 +46,7 @@ public class ParsedPropertyDTO {
     private Map<String, String> sourceSnippets = new LinkedHashMap<>();
     private List<String> appliedAmendments = new ArrayList<>();
     private String learningExampleId;
+    private String draftId;
 
     public ParsedPropertyDTO() {
     }
@@ -397,5 +398,13 @@ public class ParsedPropertyDTO {
 
     public void setLearningExampleId(String learningExampleId) {
         this.learningExampleId = learningExampleId;
+    }
+
+    public String getDraftId() {
+        return draftId;
+    }
+
+    public void setDraftId(String draftId) {
+        this.draftId = draftId;
     }
 }

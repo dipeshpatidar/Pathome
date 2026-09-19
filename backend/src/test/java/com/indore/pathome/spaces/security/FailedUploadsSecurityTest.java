@@ -44,6 +44,7 @@ class FailedUploadsSecurityTest {
     private ListingRepository listingRepository;
 
     @MockBean
+    @org.springframework.beans.factory.annotation.Qualifier("mediaStagingService")
     private MediaStagingService mediaStagingService;
 
     @MockBean

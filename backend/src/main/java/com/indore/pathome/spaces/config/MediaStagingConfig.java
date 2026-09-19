@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 
 /**
@@ -23,8 +24,9 @@ public class MediaStagingConfig {
 
     private static final Logger log = LoggerFactory.getLogger(MediaStagingConfig.class);
 
-    @Bean
-    @ConditionalOnMissingBean(MediaStagingService.class)
+    @Bean(name = "mediaStagingService")
+    @Primary
+    @ConditionalOnMissingBean(name = "mediaStagingService")
     public MediaStagingService mediaStagingService(
             Environment environment,
             @Value("${pathome.staging.s3.endpoint:}") String endpoint,
@@ -52,6 +54,30 @@ public class MediaStagingConfig {
         }
 
         log.info("Temporary object storage: S3 bucket not configured. Using local filesystem staging fallback.");
+        return new FileSystemMediaStagingService(localPath);
+    }
+
+    /**
+     * Dedicated staging service for draft media.
+     * Supports Option A (dedicated credentials restricted to 'drafts/') or Option B (falling back to staging credentials).
+     */
+    @Bean(name = "draftMediaStagingService")
+    public MediaStagingService draftMediaStagingService(
+            Environment environment,
+            @Value("${pathome.draft-staging.s3.endpoint:${pathome.staging.s3.endpoint:}}") String endpoint,
+            @Value("${pathome.draft-staging.s3.region:${pathome.staging.s3.region:us-east-005}}") String region,
+            @Value("${pathome.draft-staging.s3.bucket:${pathome.staging.s3.bucket:}}") String bucket,
+            @Value("${pathome.draft-staging.s3.access-key:${pathome.staging.s3.access-key:}}") String accessKey,
+            @Value("${pathome.draft-staging.s3.secret-key:${pathome.staging.s3.secret-key:}}") String secretKey,
+            @Value("${pathome.staging.s3.path-style-access:${pathome.staging.s3.path-style:true}}") boolean pathStyleAccess,
+            @Value("${pathome.staging.local-path:}") String localPath) {
+
+        if (bucket != null && !bucket.isBlank()) {
+            log.info("Configuring draftMediaStagingService (S3) with bucket: {}", bucket);
+            return new S3MediaStagingService(endpoint, region, bucket, accessKey, secretKey, pathStyleAccess);
+        }
+
+        log.info("Draft media object storage: S3 bucket not configured. Using local filesystem staging fallback.");
         return new FileSystemMediaStagingService(localPath);
     }
 

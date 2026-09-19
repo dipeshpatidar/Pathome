@@ -33,6 +33,18 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
     }
 
+    @ExceptionHandler(DraftConflictException.class)
+    public ResponseEntity<ErrorResponseDTO> handleDraftConflict(DraftConflictException ex, HttpServletRequest request) {
+        log.warn("Draft Conflict Exception on draft {}: {} | Path: {}", ex.getDraftId(), ex.getMessage(), request.getRequestURI());
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                ex.getMessage(),
+                request.getRequestURI()
+        );
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponseDTO> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         log.warn("Invalid Argument Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI());

@@ -26,6 +26,9 @@ import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, ROOM_TAG_OPTIONS, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
+import { DraftManagementBar } from './DraftManagementBar';
+import { usePropertyDraft } from '../hooks/usePropertyDraft';
+import { draftService, DraftMedia } from '../services/draftService';
 
 export interface StagedMediaItem {
   id: string;
@@ -93,6 +96,8 @@ interface BatchPropertyIngestionStudioProps {
   embedded?: boolean;
   initialDetails?: string;
   initialMediaFiles?: File[];
+  initialDraftId?: string | null;
+  onSwitchToSingleDraft?: (draftId: string) => void;
 }
 
 const COLOR_PALETTES = [
@@ -354,7 +359,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   onSuccess,
   embedded = false,
   initialDetails = '',
-  initialMediaFiles = []
+  initialMediaFiles = [],
+  initialDraftId = null,
+  onSwitchToSingleDraft
 }) => {
   const { showErrorDialog, notifyWarning } = useNotification();
   const [rawPrompts, setRawPrompts] = useState<string>('');
@@ -402,6 +409,81 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       stagedCardsRef.current.forEach(revokeCardMediaUrls);
     };
   }, [revokeCardMediaUrls]);
+
+  // Admin Draft & Recovery System for Batch Upload
+  const handleRestoreBatchDraft = useCallback(async (payload: any) => {
+    if (!payload) return;
+    if (typeof payload.rawPrompts === 'string') {
+      rawPromptsRef.current = payload.rawPrompts;
+      parsedPromptsRef.current = payload.rawPrompts;
+      setRawPrompts(payload.rawPrompts);
+    }
+    if (typeof payload.detectedCount === 'number') {
+      setDetectedCount(payload.detectedCount);
+    }
+    if (payload.activeCardId) {
+      setActiveCardId(payload.activeCardId);
+    }
+    if (payload.mobileWorkspaceView) {
+      setMobileWorkspaceView(payload.mobileWorkspaceView);
+    }
+    if (Array.isArray(payload.stagedCards) && payload.stagedCards.length > 0) {
+      setStagedCards(payload.stagedCards);
+      if (!payload.activeCardId && payload.stagedCards[0]) {
+        setActiveCardId(payload.stagedCards[0].id);
+      }
+    }
+  }, []);
+
+  const handleClearBatchDraftState = useCallback(() => {
+    stagedCardsRef.current.forEach(revokeCardMediaUrls);
+    setStagedCards([]);
+    setRawPrompts('');
+    rawPromptsRef.current = '';
+    parsedPromptsRef.current = '';
+    setDetectedCount(0);
+    setActiveCardId(null);
+    setMobileWorkspaceView('descriptions');
+  }, [revokeCardMediaUrls]);
+
+  const batchDraft = usePropertyDraft({
+    draftType: 'BATCH',
+    initialDraftId,
+    onRestoreDraft: handleRestoreBatchDraft,
+    onClearDraftState: handleClearBatchDraftState
+  });
+
+  useEffect(() => {
+    const hasMeaningfulWork = Boolean(rawPrompts.trim() || stagedCards.length > 0);
+    if (!hasMeaningfulWork) return;
+
+    const summary = stagedCards.length > 0
+      ? `Batch (${stagedCards.length} ${stagedCards.length === 1 ? 'property' : 'properties'})`
+      : `Batch draft (${detectedCount || 1} ${detectedCount === 1 ? 'listing' : 'listings'})`;
+
+    batchDraft.scheduleAutosave(
+      {
+        rawPrompts,
+        detectedCount,
+        activeCardId,
+        mobileWorkspaceView,
+        stagedCards: stagedCards.map((card) => ({
+          ...card,
+          localPhotos: [],
+          localPhotoPreviews: [],
+          stagedMedia: (card.stagedMedia || []).map((m) => ({
+            id: m.id,
+            roomTag: m.roomTag,
+            isCover: m.isCover,
+            originalFilename: m.file?.name || '',
+            fileSizeBytes: m.file?.size || 0
+          }))
+        }))
+      },
+      summary,
+      stagedCards.length || detectedCount || 1
+    );
+  }, [rawPrompts, stagedCards, detectedCount, activeCardId, mobileWorkspaceView, batchDraft.scheduleAutosave]);
 
   const updateRawPrompts = useCallback((details: string) => {
     rawPromptsRef.current = details;
@@ -1143,6 +1225,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       if (isFullBatchSuccess) {
         // FULL SUCCESS:
+        void batchDraft.onPublishSuccess();
         // 1. Send dynamic confirmed count to parent callback FIRST
         onSuccess(publishedCount);
 
@@ -1171,6 +1254,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       // PARTIAL SUCCESS / ATTENTION NEEDED:
       if (publishedCount > 0) {
         onSuccess(publishedCount);
+        const publishedCardIds = Array.from(publishedIdsByCardId.keys());
+        void batchDraft.onBatchPublished(publishedCardIds);
 
         // Revoke object URLs ONLY for the completely successful cards
         stagedCards.forEach((card) => {
@@ -1285,6 +1370,36 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
             >
               <X className="w-5 h-5" />
             </button>
+          </div>
+
+          {/* Batch Draft Management & Autosave Status Bar */}
+          <div className="px-3 sm:px-6 pt-3">
+            <DraftManagementBar
+              compact={true}
+              currentDraftId={batchDraft.currentDraftId}
+              draftType="BATCH"
+              autosaveStatus={batchDraft.autosaveStatus}
+              lastSavedAt={batchDraft.lastSavedAt}
+              conflictMessage={batchDraft.conflictMessage}
+              drafts={batchDraft.draftsList}
+              isLoadingDrafts={batchDraft.isLoadingDrafts}
+              onSelectDraft={async (id) => {
+                const selected = batchDraft.draftsList.find((d) => d.draftId === id);
+                if (selected && selected.draftType === 'SINGLE') {
+                  if (onSwitchToSingleDraft) {
+                    onSwitchToSingleDraft(id);
+                  } else {
+                    onClose();
+                  }
+                } else {
+                  await batchDraft.loadDraft(id);
+                }
+              }}
+              onStartNewDraft={() => void batchDraft.startNewDraft()}
+              onDiscardDraft={(id) => batchDraft.discardDraft(id)}
+              onResolveConflictKeepLocal={batchDraft.resolveConflictKeepLocal}
+              onResolveConflictReloadServer={batchDraft.resolveConflictReloadServer}
+            />
           </div>
 
           {/* Main Content Split Screen */}
