@@ -1725,3 +1725,28 @@ Verification Results:
   - Frontend build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.12s).
   - `git diff --check`: 100% clean, zero whitespace/EOF errors.
   - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 02:15 IST - Read-Only Property Media Debug View
+
+- **Why**:
+  - The user requested a developer/debugging-only PostgreSQL VIEW (`property_media_debug_view`) to make property media easy to inspect row-by-row in DBeaver/psql without touching application code, media flows, or `media_gallery_urls`.
+
+- **Root Cause & Architectural Context**:
+  - Developers and DBAs needed an ergonomic, structured join between `property_media_assets` and `listings` exposing asset metadata, cover status, upload request IDs, timestamps, and Cloudinary public IDs without having to parse comma-separated `media_gallery_urls`.
+  - Implemented strictly as a PostgreSQL `VIEW` in Flyway migration `V9__property_media_debug_view.sql` with `LEFT JOIN` on `listings` ensuring a strict 1-to-1 row correspondence with `property_media_assets`.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/resources/db/migration/V9__property_media_debug_view.sql`:
+    - Created `property_media_debug_view` joining `property_media_assets` (`pma`) and `listings` (`l`):
+      - `listing_id`, `listing_title`, `listing_status`, `origin_draft_id`, `media_asset_id`, `media_type`, `room_tag`, `caption`, `is_cover`, `upload_request_id`, `media_url`, `cloudinary_public_id`, `verification_status`, `sector`, `city`, `price_tag`, `vastu_facing`, `uploaded_at`.
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - Flyway migration V9 validated and applied cleanly to PostgreSQL (`pathome_db`).
+  - `COUNT(*)` in `property_media_debug_view` matches `COUNT(*)` in `property_media_assets` exactly (135 == 135).
+  - Queried listing #43: 13 media rows retrieved in ordered sequence with accurate titles, tags, covers, and request IDs.
+  - Confirmed `listings.media_gallery_urls` remains completely untouched.
+  - Zero application code, frontend code, APIs, or existing tables modified.
+  - `git diff --check`: 100% clean.
+  - Commit status: NOT committed, NOT pushed per instructions.
