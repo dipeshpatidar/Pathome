@@ -161,4 +161,14 @@ class PropertyDraftControllerTest {
         SecurityContextHolder.clearContext();
         assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> controller.listDrafts());
     }
+
+    @Test
+    void markPublished_delegatesToServiceWithListingId() {
+        doNothing().when(draftService).onPropertyPublished(ADMIN_ID, DRAFT_ID, 40L);
+
+        ResponseEntity<Void> response = controller.markPublished(DRAFT_ID, Map.of("listingId", 40L));
+
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+        verify(draftService).onPropertyPublished(ADMIN_ID, DRAFT_ID, 40L);
+    }
 }

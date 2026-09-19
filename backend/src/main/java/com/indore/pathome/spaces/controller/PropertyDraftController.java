@@ -122,7 +122,22 @@ public class PropertyDraftController {
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "cardId", required = false) String cardId,
             @RequestParam(value = "roomTag", required = false, defaultValue = "LIVING_ROOM") String roomTag,
-            @RequestParam(value = "isCover", required = false, defaultValue = "false") Boolean isCover
+            @RequestParam(value = "isCover", required = false, defaultValue = "false") Boolean isCover,
+            @RequestParam(value = "mediaId", required = false) String mediaId
+    ) {
+        String adminId = getCurrentAdminId();
+        DraftMediaDTO dto = (mediaId != null && !mediaId.isBlank())
+                ? draftService.stageDraftMedia(adminId, draftId, file, cardId, roomTag, isCover, mediaId)
+                : draftService.stageDraftMedia(adminId, draftId, file, cardId, roomTag, isCover);
+        return ResponseEntity.status(HttpStatus.CREATED).body(dto);
+    }
+
+    public ResponseEntity<DraftMediaDTO> stageMedia(
+            String draftId,
+            MultipartFile file,
+            String cardId,
+            String roomTag,
+            Boolean isCover
     ) {
         String adminId = getCurrentAdminId();
         DraftMediaDTO dto = draftService.stageDraftMedia(adminId, draftId, file, cardId, roomTag, isCover);
@@ -184,9 +199,22 @@ public class PropertyDraftController {
      * Cleans up a draft after confirmed single property publication.
      */
     @PostMapping("/{draftId}/published")
-    public ResponseEntity<Void> markPublished(@PathVariable String draftId) {
+    public ResponseEntity<Void> markPublished(
+            @PathVariable String draftId,
+            @RequestBody(required = false) Map<String, Object> body) {
         String adminId = getCurrentAdminId();
-        draftService.onPropertyPublished(adminId, draftId);
+        Long listingId = null;
+        if (body != null && body.containsKey("listingId")) {
+            Object raw = body.get("listingId");
+            if (raw instanceof Number) {
+                listingId = ((Number) raw).longValue();
+            } else if (raw != null) {
+                try {
+                    listingId = Long.parseLong(raw.toString().trim());
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        draftService.onPropertyPublished(adminId, draftId, listingId);
         return ResponseEntity.noContent().build();
     }
 }

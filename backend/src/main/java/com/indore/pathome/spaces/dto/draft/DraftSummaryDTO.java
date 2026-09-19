@@ -11,5 +11,20 @@ public record DraftSummaryDTO(
         int version,
         int mediaCount,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
-) {}
+        LocalDateTime updatedAt,
+        Long publishedPropertyId
+) {
+    public DraftSummaryDTO(
+            String draftId,
+            String draftType,
+            String status,
+            String titleSummary,
+            int itemCount,
+            int version,
+            int mediaCount,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt
+    ) {
+        this(draftId, draftType, status, titleSummary, itemCount, version, mediaCount, createdAt, updatedAt, null);
+    }
+}

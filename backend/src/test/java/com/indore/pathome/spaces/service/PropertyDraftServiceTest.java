@@ -786,4 +786,86 @@ class PropertyDraftServiceTest {
                 service.getDraftMediaStream(ADMIN_ID, DRAFT_ID, "media-other")
         );
     }
+
+    @Test
+    void listDrafts_includesDraftsInPublishingStateWithPublishedPropertyId() {
+        PropertyUploadDraft publishingDraft = new PropertyUploadDraft();
+        publishingDraft.setDraftId("draft-publishing-1");
+        publishingDraft.setAdminId(ADMIN_ID);
+        publishingDraft.setStatus("PUBLISHING");
+        publishingDraft.setPublishedPropertyId(40L);
+        publishingDraft.setTitleSummary("3 BHK in Vijay Nagar");
+        publishingDraft.setItemCount(1);
+        publishingDraft.setVersion(2);
+        publishingDraft.setPayload("{\"title\":\"3 BHK in Vijay Nagar\"}");
+
+        PropertyUploadDraft publishedDraft = new PropertyUploadDraft();
+        publishedDraft.setDraftId("draft-published-2");
+        publishedDraft.setAdminId(ADMIN_ID);
+        publishedDraft.setStatus("PUBLISHED");
+        publishedDraft.setPublishedPropertyId(41L);
+
+        when(draftRepository.findAllByAdminIdAndStatusNotOrderByUpdatedAtDesc(ADMIN_ID, "DISCARDED"))
+                .thenReturn(List.of(publishingDraft, publishedDraft));
+        when(draftMediaRepository.findAllByDraftIdAndAdminId("draft-publishing-1", ADMIN_ID)).thenReturn(List.of());
+
+        List<DraftSummaryDTO> summaries = service.listDrafts(ADMIN_ID);
+
+        assertEquals(1, summaries.size(), "Only PUBLISHING draft should be listed; terminal PUBLISHED must be excluded");
+        DraftSummaryDTO s = summaries.get(0);
+        assertEquals("draft-publishing-1", s.draftId());
+        assertEquals("PUBLISHING", s.status());
+        assertEquals(40L, s.publishedPropertyId());
+    }
+
+    @Test
+    void onPropertyPublished_validatesListingIdMismatch() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setStatus("PUBLISHING");
+        draft.setPublishedPropertyId(40L);
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID))
+                .thenReturn(Optional.of(draft));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                service.onPropertyPublished(ADMIN_ID, DRAFT_ID, 999L)
+        );
+    }
+
+    @Test
+    void onPropertyPublished_idempotentWhenAlreadyPublished() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setStatus("PUBLISHED");
+        draft.setPublishedPropertyId(40L);
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID))
+                .thenReturn(Optional.of(draft));
+
+        // Should return cleanly without throwing or touching repositories
+        service.onPropertyPublished(ADMIN_ID, DRAFT_ID, 40L);
+
+        verify(mediaStagingService, never()).delete(anyString());
+        verify(draftMediaRepository, never()).deleteAllByDraftIdAndAdminId(anyString(), anyString());
+    }
+
+    @Test
+    void saveOrUpdateDraft_rejectsModifyingPublishedDraft() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setStatus("PUBLISHED");
+        draft.setVersion(1);
+
+        when(draftRepository.findByDraftId(DRAFT_ID)).thenReturn(Optional.of(draft));
+
+        SaveDraftRequest req = new SaveDraftRequest(DRAFT_ID, "SINGLE", "DRAFT", "New Title", 1, 1, "{\"title\":\"edit\"}");
+
+        assertThrows(IllegalStateException.class, () ->
+                service.saveOrUpdateDraft(ADMIN_ID, req)
+        );
+    }
 }

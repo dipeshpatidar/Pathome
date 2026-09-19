@@ -151,4 +151,76 @@ class CloudinaryServiceTest {
     void diagnosticFromHandlesNull() {
         assertEquals("unknown", MediaUploadException.diagnosticFrom(null));
     }
+
+    @Test
+    void imageDeterministicReconciliationSuccess() throws Exception {
+        com.cloudinary.Api api = mock(com.cloudinary.Api.class);
+        when(cloudinary.api()).thenReturn(api);
+
+        com.cloudinary.api.ApiResponse apiResponse = mock(com.cloudinary.api.ApiResponse.class);
+        when(apiResponse.get("secure_url")).thenReturn("https://res.cloudinary.com/demo/image/upload/sample.webp");
+        when(apiResponse.get("public_id")).thenReturn("pathome/properties/images/req-123");
+        when(apiResponse.get("resource_type")).thenReturn("image");
+
+        when(api.resource(eq("pathome/properties/images/req-123"), anyMap())).thenReturn(apiResponse);
+
+        java.util.Optional<CloudinaryService.CloudinaryUploadResult> result =
+                service.findExistingResourceByUploadRequestId("req-123", false);
+
+        assertTrue(result.isPresent());
+        assertEquals("https://res.cloudinary.com/demo/image/upload/sample.webp", result.get().secureUrl());
+        assertEquals("pathome/properties/images/req-123", result.get().publicId());
+        assertEquals("image", result.get().resourceType());
+    }
+
+    @Test
+    void videoDeterministicReconciliationSuccess() throws Exception {
+        com.cloudinary.Api api = mock(com.cloudinary.Api.class);
+        when(cloudinary.api()).thenReturn(api);
+
+        com.cloudinary.api.ApiResponse apiResponse = mock(com.cloudinary.api.ApiResponse.class);
+        when(apiResponse.get("secure_url")).thenReturn("https://res.cloudinary.com/demo/video/upload/tour.mp4");
+        when(apiResponse.get("public_id")).thenReturn("pathome/properties/videos/req-vid-1");
+        when(apiResponse.get("resource_type")).thenReturn("video");
+
+        when(api.resource(eq("pathome/properties/videos/req-vid-1"), anyMap())).thenReturn(apiResponse);
+
+        java.util.Optional<CloudinaryService.CloudinaryUploadResult> result =
+                service.findExistingResourceByUploadRequestId("req-vid-1", true);
+
+        assertTrue(result.isPresent());
+        assertEquals("https://res.cloudinary.com/demo/video/upload/tour.mp4", result.get().secureUrl());
+        assertEquals("pathome/properties/videos/req-vid-1", result.get().publicId());
+        assertEquals("video", result.get().resourceType());
+    }
+
+
+    @Test
+    void definitiveCloudinaryNotFoundReturnsEmpty() throws Exception {
+        com.cloudinary.Api api = mock(com.cloudinary.Api.class);
+        when(cloudinary.api()).thenReturn(api);
+
+        when(api.resource(eq("pathome/properties/images/not-found-id"), anyMap()))
+                .thenThrow(new com.cloudinary.api.exceptions.NotFound("Resource not found"));
+
+        java.util.Optional<CloudinaryService.CloudinaryUploadResult> result =
+                service.findExistingResourceByUploadRequestId("not-found-id", false);
+
+        assertTrue(result.isEmpty(), "Definitive NotFound must return Optional.empty()");
+    }
+
+    @Test
+    void ambiguousCloudinaryErrorThrowsMediaUploadExceptionAndDoesNotReturnEmpty() throws Exception {
+        com.cloudinary.Api api = mock(com.cloudinary.Api.class);
+        when(cloudinary.api()).thenReturn(api);
+
+        when(api.resource(eq("pathome/properties/images/rate-limit-id"), anyMap()))
+                .thenThrow(new com.cloudinary.api.exceptions.RateLimited("Rate limit exceeded"));
+
+        MediaUploadException ex = assertThrows(MediaUploadException.class, () ->
+                service.findExistingResourceByUploadRequestId("rate-limit-id", false));
+
+        assertEquals(MediaUploadException.Stage.CLOUDINARY_UPLOAD, ex.getStage());
+        assertTrue(ex.getDiagnostic().contains("RateLimited"));
+    }
 }

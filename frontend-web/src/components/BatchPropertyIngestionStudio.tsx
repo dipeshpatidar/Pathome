@@ -21,7 +21,7 @@ import {
   Star,
   Video
 } from 'lucide-react';
-import { propertyService } from '../services/propertyService';
+import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { useNotification } from '../context/NotificationContext';
@@ -1020,61 +1020,144 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     propertyId: number,
     mediaItemsToUpload?: StagedMediaItem[]
   ): Promise<{ failedFiles: File[]; errors: string[] }> => {
-    const items = mediaItemsToUpload || card.stagedMedia || [];
+    const rawItems = mediaItemsToUpload || card.stagedMedia || [];
+    const totalFiles = rawItems.length;
+    if (totalFiles === 0) return { failedFiles: [], errors: [] };
+
+    // Deduplicate against existing assets on the property
+    let existingReqIds = new Set<string>();
+    try {
+      const existing = await propertyService.fetchTaggedMedia(propertyId);
+      if (Array.isArray(existing)) {
+        existing.forEach(a => { if (a.uploadRequestId) existingReqIds.add(a.uploadRequestId); });
+      }
+    } catch {}
+
+    const items: StagedMediaItem[] = [];
+    let completedCount = 0;
+    rawItems.forEach(item => {
+      const draftMediaId = item.id || (item.file as any)?.draftMediaId;
+      const reqId = createStableUploadRequestId(propertyId, item.file, draftMediaId);
+      if (existingReqIds.has(reqId)) {
+        completedCount += 1;
+      } else {
+        items.push(item);
+      }
+    });
+
+    if (items.length === 0) {
+      setStagedCards((current) => current.map((item) => item.id === card.id
+        ? {
+            ...item,
+            mediaUploadStatus: 'complete',
+            mediaUploadProgress: 100,
+            mediaUploadMessage: `${totalFiles} ${totalFiles === 1 ? 'file was' : 'files were'} verified successfully.`,
+            failedMediaFiles: []
+          }
+        : item));
+      return { failedFiles: [], errors: [] };
+    }
+
     const failedFiles: File[] = [];
     const errors: string[] = [];
-    const totalFiles = items.length;
-    if (totalFiles === 0) return { failedFiles: [], errors: [] };
 
     setStagedCards((current) => current.map((item) => item.id === card.id
       ? {
           ...item,
           mediaUploadStatus: 'preparing',
-          mediaUploadProgress: 0,
-          mediaUploadMessage: `Preparing ${totalFiles} ${totalFiles === 1 ? 'file' : 'files'}…`,
+          mediaUploadProgress: Math.round((completedCount / totalFiles) * 100),
+          mediaUploadMessage: `Preparing ${items.length} ${items.length === 1 ? 'file' : 'files'}…`,
           failedMediaFiles: []
         }
       : item));
 
-    for (let fileIndex = 0; fileIndex < items.length; fileIndex += 1) {
-      const mediaItem = items[fileIndex];
-      const file = mediaItem.file;
-      try {
-        await propertyService.uploadTaggedMedia(propertyId, file, {
-          roomTag: mediaItem.roomTag,
-          mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
-          caption: `${card.title} - ${mediaItem.roomTag.replace('_', ' ')}`,
-          isPrimaryCover: mediaItem.isCover,
-          sector: card.sector,
-          priceTag: card.rentVal,
-          vastuFacing: card.vastuFacing
-        }, {
-          onProgress: (progress) => {
-            const overallProgress = Math.round(
-              ((fileIndex + (progress.percent / 100)) / totalFiles) * 100
-            );
-            const status = progress.stage === 'retrying'
-              ? 'retrying'
-              : progress.stage === 'preparing'
-                ? 'preparing'
-                : 'uploading';
-            const message = progress.stage === 'retrying'
-              ? `Connection interrupted. Retrying file ${fileIndex + 1} of ${totalFiles}…`
-              : `Uploading file ${fileIndex + 1} of ${totalFiles}…`;
-            setStagedCards((current) => current.map((item) => item.id === card.id
-              ? {
-                  ...item,
-                  mediaUploadStatus: status,
-                  mediaUploadProgress: overallProgress,
-                  mediaUploadMessage: message
-                }
-              : item));
+    const CONCURRENCY_LIMIT = 3;
+    let nextIndex = 0;
+
+    const abortController = new AbortController();
+    const handleOffline = () => {
+      abortController.abort();
+    };
+    window.addEventListener('offline', handleOffline);
+
+    const worker = async () => {
+      while (nextIndex < items.length) {
+        if (abortController.signal.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+          const unstarted = items[nextIndex];
+          if (unstarted) {
+            failedFiles.push(unstarted.file);
+            errors.push(`${unstarted.file.name} was interrupted because the network disconnected.`);
           }
-        });
-      } catch (error) {
-        failedFiles.push(file);
-        errors.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
+          nextIndex += 1;
+          continue;
+        }
+
+        const fileIndex = nextIndex;
+        nextIndex += 1;
+        const mediaItem = items[fileIndex];
+        const file = mediaItem.file;
+
+        try {
+          const draftMediaId = mediaItem.id || (file as any)?.draftMediaId;
+          await propertyService.uploadTaggedMedia(propertyId, file, {
+            roomTag: mediaItem.roomTag,
+            mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
+            caption: `${card.title} - ${mediaItem.roomTag.replace('_', ' ')}`,
+            isPrimaryCover: mediaItem.isCover,
+            sector: card.sector,
+            priceTag: card.rentVal,
+            vastuFacing: card.vastuFacing,
+            draftMediaId
+          }, {
+            signal: abortController.signal,
+            onProgress: (progress) => {
+              const overallProgress = Math.round(
+                ((completedCount + (progress.percent / 100)) / totalFiles) * 100
+              );
+              const status = progress.stage === 'retrying'
+                ? 'retrying'
+                : progress.stage === 'preparing'
+                  ? 'preparing'
+                  : 'uploading';
+              const message = progress.stage === 'retrying'
+                ? `Connection interrupted. Retrying file (${file.name})…`
+                : `Uploading file (${completedCount + 1} of ${totalFiles})…`;
+              setStagedCards((current) => current.map((item) => item.id === card.id
+                ? {
+                    ...item,
+                    mediaUploadStatus: status,
+                    mediaUploadProgress: overallProgress,
+                    mediaUploadMessage: message
+                  }
+                : item));
+            }
+          });
+        } catch (error) {
+          failedFiles.push(file);
+          errors.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
+        } finally {
+          completedCount += 1;
+          const overallProgress = Math.round((completedCount / totalFiles) * 100);
+          setStagedCards((current) => current.map((item) => item.id === card.id
+            ? {
+                ...item,
+                mediaUploadProgress: overallProgress,
+                mediaUploadMessage: `Uploaded ${completedCount} of ${totalFiles} file(s)…`
+              }
+            : item));
+        }
       }
+    };
+
+    try {
+      const workerCount = Math.min(CONCURRENCY_LIMIT, items.length);
+      const workers: Promise<void>[] = [];
+      for (let w = 0; w < workerCount; w += 1) {
+        workers.push(worker());
+      }
+      await Promise.all(workers);
+    } finally {
+      window.removeEventListener('offline', handleOffline);
     }
 
     setStagedCards((current) => current.map((item) => item.id === card.id

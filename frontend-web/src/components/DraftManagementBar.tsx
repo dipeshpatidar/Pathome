@@ -84,7 +84,21 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
   const popoverRef = useRef<HTMLDivElement>(null);
   const keepDraftBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Position popover anchored to Drafts button in viewport coordinates
+  // Responsive breakpoint tracking: <640px is mobile bottom sheet, >=640px is desktop/tablet popover
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 640;
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 640);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Position popover anchored to Drafts button in viewport coordinates (desktop only)
   const updateDropdownPosition = useCallback(() => {
     if (!dropdownButtonRef.current) return;
     const rect = dropdownButtonRef.current.getBoundingClientRect();
@@ -96,6 +110,22 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
   // Close dropdown on outside click, window scroll/resize, or Escape
   useEffect(() => {
     if (!isDropdownOpen) return;
+
+    if (isMobile) {
+      // Mobile bottom sheet handles its own backdrop taps & Escape key
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          setIsDropdownOpen(false);
+          dropdownButtonRef.current?.focus();
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+
+    // Desktop popover handlers
     updateDropdownPosition();
 
     const handleScroll = () => {
@@ -132,7 +162,30 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isDropdownOpen, updateDropdownPosition]);
+  }, [isDropdownOpen, isMobile, updateDropdownPosition]);
+
+  // Mobile Bottom Sheet: Lock background page scroll & restore exact position on close
+  useEffect(() => {
+    if (!isDropdownOpen || !isMobile) return;
+    const scrollY = window.scrollY;
+    const originalOverflow = document.body.style.overflow;
+    const originalPosition = document.body.style.position;
+    const originalTop = document.body.style.top;
+    const originalWidth = document.body.style.width;
+
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.position = originalPosition;
+      document.body.style.top = originalTop;
+      document.body.style.width = originalWidth;
+      window.scrollTo(0, scrollY);
+    };
+  }, [isDropdownOpen, isMobile]);
 
   // Robust viewport modal: lock background page scrolling & support Escape
   useEffect(() => {
@@ -264,10 +317,171 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
     );
   };
 
-  // VIEWPORT-ATTACHED DROPDOWN POPOVER (PORTAL TO DOCUMENT.BODY)
-  // Eliminates parent overflow clipping and stacking context hierarchy issues
-  const renderDropdownContent = () => {
-    if (typeof document === 'undefined') return null;
+  // MOBILE NATIVE-FEELING BOTTOM SHEET (PORTAL TO DOCUMENT.BODY)
+  // Adaptive content height up to max 85dvh, fixed header & footer, scrollable draft list
+  const renderMobileBottomSheet = () => {
+    return createPortal(
+      <AnimatePresence>
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-[9990] flex flex-col justify-end bg-slate-950/80 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Saved Drafts"
+            onClick={() => setIsDropdownOpen(false)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-slate-900 border-t border-slate-800 rounded-t-3xl shadow-2xl flex flex-col max-h-[85dvh] text-slate-200 overflow-hidden"
+              style={{
+                paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+                paddingLeft: 'max(0.75rem, env(safe-area-inset-left, 0px))',
+                paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+              }}
+            >
+              {/* GRAB INDICATOR & FIXED HEADER */}
+              <div className="shrink-0 px-4 pt-3 pb-2.5 border-b border-slate-800/80">
+                <div className="w-12 h-1.5 rounded-full bg-slate-700/80 mx-auto mb-3" aria-hidden="true" />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-emerald-400" />
+                    <h2 className="text-sm font-bold font-['Outfit'] text-white">
+                      Saved Drafts ({drafts.length})
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsDropdownOpen(false)}
+                    className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+                    aria-label="Close saved drafts"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* SCROLLABLE DRAFT LIST (FLEX-1 OVERFLOW-Y-AUTO) */}
+              <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-2 divide-y divide-slate-800/60 min-h-0">
+                {isLoadingDrafts ? (
+                  <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                    <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" /> Loading drafts…
+                  </div>
+                ) : drafts.length === 0 ? (
+                  <div className="py-8 text-center px-4">
+                    <p className="text-sm font-semibold text-slate-300">No unfinished drafts</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Any property details or photos you type will autosave here automatically.
+                    </p>
+                  </div>
+                ) : (
+                  drafts.map((draft) => {
+                    const isCurrent = draft.draftId === currentDraftId;
+                    return (
+                      <div
+                        key={draft.draftId}
+                        className={`flex items-center justify-between gap-3 py-3 px-2 rounded-xl transition-colors ${
+                          isCurrent ? 'bg-emerald-950/30' : 'active:bg-slate-800/50'
+                        }`}
+                      >
+                        <div
+                          className="min-w-0 flex-1 cursor-pointer"
+                          onClick={() => {
+                            onSelectDraft(draft.draftId);
+                            setIsDropdownOpen(false);
+                          }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-100 truncate block">
+                              {draft.titleSummary || 'Untitled Draft'}
+                            </span>
+                            {isCurrent ? (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
+                                Active
+                              </span>
+                            ) : draft.status === 'PUBLISHING' ? (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                                Publishing interrupted
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-400 font-mono flex-wrap">
+                            <span className="uppercase">{draft.draftType}</span>
+                            <span>•</span>
+                            <span>{formatRelativeTime(draft.updatedAt)}</span>
+                            {draft.mediaCount > 0 && (
+                              <>
+                                <span>•</span>
+                                <span>{draft.mediaCount} media</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {!isCurrent && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onSelectDraft(draft.draftId);
+                                setIsDropdownOpen(false);
+                              }}
+                              className="min-h-[44px] px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-sm shadow-emerald-950/40 border border-emerald-400/30 flex items-center gap-1.5 transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+                            >
+                              <span>{draft.status === 'PUBLISHING' ? 'Resume' : 'Continue'}</span>
+                              <ArrowRight className="w-3.5 h-3.5 text-emerald-100 shrink-0" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            title="Discard draft"
+                            aria-label={`Discard draft ${draft.titleSummary || 'Untitled'}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDraftToDiscard(draft);
+                            }}
+                            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-800/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* FIXED FOOTER */}
+              <div className="shrink-0 p-3 pt-2 border-t border-slate-800/80 bg-slate-900/95 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDropdownOpen(false);
+                    onStartNewDraft();
+                  }}
+                  className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center justify-center gap-1.5 border border-slate-700/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>New draft</span>
+                </button>
+                <p className="text-[11px] text-slate-500 text-center font-mono leading-tight">
+                  Drafts are automatically deleted after 15 days of inactivity.
+                </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>,
+      document.body
+    );
+  };
+
+  // DESKTOP VIEWPORT-ATTACHED DROPDOWN POPOVER (PORTAL TO DOCUMENT.BODY)
+  // Preserved exactly as approved on desktop/tablet (>=640px)
+  const renderDesktopPopover = () => {
     return createPortal(
       <AnimatePresence>
         {isDropdownOpen && dropdownCoords && (
@@ -284,7 +498,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
               zIndex: 9998,
               maxWidth: 'calc(100vw - 24px)'
             }}
-            className="w-[min(310px,calc(100vw-24px))] sm:w-[380px] max-h-[min(480px,80vh)] overflow-y-auto rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl p-2 text-slate-200"
+            className="w-[380px] max-h-[min(480px,80vh)] overflow-y-auto rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl p-2 text-slate-200"
             role="menu"
             aria-label="Saved Property Drafts"
           >
@@ -337,11 +551,15 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                           <span className="text-xs font-bold text-slate-200 truncate">
                             {draft.titleSummary || 'Untitled Draft'}
                           </span>
-                          {isCurrent && (
+                          {isCurrent ? (
                             <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                               Active
                             </span>
-                          )}
+                          ) : draft.status === 'PUBLISHING' ? (
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              Publishing interrupted
+                            </span>
+                          ) : null}
                         </div>
                         <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400 font-mono">
                           <span className="uppercase">{draft.draftType}</span>
@@ -366,7 +584,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                             }}
                             className="min-h-[44px] px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-sm shadow-emerald-950/40 border border-emerald-400/30 flex items-center gap-1.5 transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
                           >
-                            <span>Continue</span>
+                            <span>{draft.status === 'PUBLISHING' ? 'Resume' : 'Continue'}</span>
                             <ArrowRight className="w-3.5 h-3.5 text-emerald-100 shrink-0" />
                           </button>
                         )}
@@ -397,6 +615,11 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
       </AnimatePresence>,
       document.body
     );
+  };
+
+  const renderDropdownContent = () => {
+    if (typeof document === 'undefined') return null;
+    return isMobile ? renderMobileBottomSheet() : renderDesktopPopover();
   };
 
   // COMPACT INLINE MODE

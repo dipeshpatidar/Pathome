@@ -209,7 +209,7 @@ public class PropertyControllerTest {
         assertTrue(asset.getIsPrimaryCover());
         verify(cloudinaryService).uploadImage(file, "media-20-12345678");
         verify(mediaAssetRepository).save(any(PropertyMediaAsset.class));
-        verify(listingRepository).save(listing);
+        verify(listingRepository).appendMediaGalleryUrlAtomic(20L, "https://cdn.example/photo.webp");
         assertEquals("https://cdn.example/photo.webp", listing.getMediaGalleryUrls());
     }
 
@@ -561,9 +561,53 @@ public class PropertyControllerTest {
         assertEquals(200, response.getStatusCode().value());
         assertEquals(101L, response.getBody().get("propertyId"));
 
-        // Verify draft was updated with published property ID
+        // Verify draft was updated with published property ID and status PUBLISHING (retaining payload)
         assertEquals(101L, draft.getPublishedPropertyId());
-        assertEquals("PUBLISHED", draft.getStatus());
+        assertEquals("PUBLISHING", draft.getStatus());
         verify(draftRepository).save(draft);
+    }
+
+    @Test
+    public void createFromParsedPrompt_retainsPayloadAndDoesNotTriggerDraftMediaCleanup() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-retain-456");
+        dto.setTitle("2 BHK Apartment");
+        dto.setBhk("2 BHK");
+        dto.setType("Apartment");
+        dto.setCity("Indore");
+        dto.setSector("Vijay Nagar");
+        dto.setOwnerPhone("+91 98260 54321");
+        dto.setRentAmount(25000.0);
+        dto.setDepositVal("50000 Deposit");
+        dto.setBathrooms("2 Bath");
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        draft.setDraftId("draft-retain-456");
+        draft.setStatus("DRAFT");
+        draft.setPayload("{\"title\":\"2 BHK Apartment\",\"details\":\"preserved\"}");
+        draft.setItemCount(1);
+        draft.setPublishedPropertyId(null);
+
+        when(draftRepository.findByDraftId("draft-retain-456")).thenReturn(Optional.of(draft));
+        when(draftRepository.findByDraftIdForUpdate("draft-retain-456")).thenReturn(Optional.of(draft));
+        when(listingRepository.save(any(Listing.class))).thenAnswer(inv -> {
+            Listing l = inv.getArgument(0);
+            l.setId(202L);
+            return l;
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(202L, response.getBody().get("propertyId"));
+
+        // Critical P0 Invariant: Payload must NOT be cleared to "{}" on listing creation!
+        assertEquals("{\"title\":\"2 BHK Apartment\",\"details\":\"preserved\"}", draft.getPayload());
+        assertEquals(1, draft.getItemCount());
+        assertEquals(202L, draft.getPublishedPropertyId());
+        assertEquals("PUBLISHING", draft.getStatus());
     }
 }

@@ -28,6 +28,7 @@ export function usePropertyDraft({
   initialDraftId
 }: UsePropertyDraftOptions) {
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+  const [publishedPropertyId, setPublishedPropertyId] = useState<number | null>(null);
   const [draftVersion, setDraftVersion] = useState<number>(1);
   const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
@@ -43,6 +44,7 @@ export function usePropertyDraft({
 
   const debounceTimerRef = useRef<any>(null);
   const currentDraftIdRef = useRef<string | null>(currentDraftId);
+  const publishedPropertyIdRef = useRef<number | null>(publishedPropertyId);
   const draftVersionRef = useRef<number>(draftVersion);
   const isSavingRef = useRef<boolean>(false);
   const initialRestoreDoneRef = useRef<boolean>(false);
@@ -50,6 +52,10 @@ export function usePropertyDraft({
   useEffect(() => {
     currentDraftIdRef.current = currentDraftId;
   }, [currentDraftId]);
+
+  useEffect(() => {
+    publishedPropertyIdRef.current = publishedPropertyId;
+  }, [publishedPropertyId]);
 
   useEffect(() => {
     draftVersionRef.current = draftVersion;
@@ -296,11 +302,24 @@ export function usePropertyDraft({
 
       try {
         const detail = await draftService.getDraft(targetDraftId);
-        if (detail && detail.payload) {
+        if (detail) {
+          // PUBLISHED tombstone protection: never wipe the active editor with empty tombstone payload
+          if (detail.status === 'PUBLISHED' || (!detail.payload || detail.payload === '{}')) {
+            try {
+              localStorage.removeItem(getActiveStorageKey());
+            } catch {}
+            await localDraftStorage.remove(email, targetDraftId);
+            await refreshDraftsList();
+            return;
+          }
+
           currentDraftIdRef.current = detail.draftId;
           setCurrentDraftId(detail.draftId);
           setDraftVersion(detail.version);
           draftVersionRef.current = detail.version;
+          const propId = detail.publishedPropertyId || null;
+          setPublishedPropertyId(propId);
+          publishedPropertyIdRef.current = propId;
           setLastSavedAt(new Date(detail.updatedAt));
           setAutosaveStatus('saved');
           const parsed = JSON.parse(detail.payload);
@@ -310,11 +329,13 @@ export function usePropertyDraft({
         }
       } catch {
         const local = await localDraftStorage.get(email, targetDraftId);
-        if (local && local.payload) {
+        if (local && local.payload && local.payload !== '{}') {
           currentDraftIdRef.current = local.draftId;
           setCurrentDraftId(local.draftId);
           setDraftVersion(local.version);
           draftVersionRef.current = local.version;
+          setPublishedPropertyId(null);
+          publishedPropertyIdRef.current = null;
           setLastSavedAt(new Date(local.updatedAt));
           setAutosaveStatus('offline');
           await onRestoreDraft(local.payload, []);
@@ -333,6 +354,8 @@ export function usePropertyDraft({
     // 2. Detach and reset to clean empty state (do not pre-create draft in DB)
     currentDraftIdRef.current = null;
     setCurrentDraftId(null);
+    setPublishedPropertyId(null);
+    publishedPropertyIdRef.current = null;
     setDraftVersion(1);
     draftVersionRef.current = 1;
     setAutosaveStatus('idle');
@@ -363,6 +386,8 @@ export function usePropertyDraft({
       if (currentDraftIdRef.current === draftIdToDiscard) {
         currentDraftIdRef.current = null;
         setCurrentDraftId(null);
+        setPublishedPropertyId(null);
+        publishedPropertyIdRef.current = null;
         setDraftVersion(1);
         draftVersionRef.current = 1;
         setAutosaveStatus('idle');
@@ -381,18 +406,21 @@ export function usePropertyDraft({
   );
 
   // Handle successful publication
-  const onPublishSuccess = useCallback(async () => {
+  const onPublishSuccess = useCallback(async (listingId?: number) => {
     const draftId = currentDraftIdRef.current;
+    const finalListingId = listingId || publishedPropertyIdRef.current || undefined;
     if (!draftId) return;
 
     const email = getCurrentAdminEmail();
     try {
-      await draftService.markPublished(draftId);
+      await draftService.markPublished(draftId, finalListingId);
     } catch {}
     await localDraftStorage.remove(email, draftId);
 
     currentDraftIdRef.current = null;
     setCurrentDraftId(null);
+    setPublishedPropertyId(null);
+    publishedPropertyIdRef.current = null;
     setDraftVersion(1);
     draftVersionRef.current = 1;
     setAutosaveStatus('idle');
@@ -467,6 +495,7 @@ export function usePropertyDraft({
 
   return {
     currentDraftId,
+    publishedPropertyId,
     draftVersion,
     autosaveStatus,
     lastSavedAt,

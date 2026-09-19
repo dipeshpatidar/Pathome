@@ -36,7 +36,7 @@ import {
   AlertTriangle,
   AlertCircle
 } from 'lucide-react';
-import { propertyService } from '../services/propertyService';
+import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { failedUploadService } from '../services/failedUploadService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
@@ -241,6 +241,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [failedUploadsCount, setFailedUploadsCount] = useState<number>(0);
   const [attachedMediaFiles, setAttachedMediaFiles] = useState<File[]>([]);
   const [attachedMediaTags, setAttachedMediaTags] = useState<Record<number, RoomTag>>({});
+  const [attachedDraftMediaIds, setAttachedDraftMediaIds] = useState<Record<number, string>>({});
   const [failedMediaUploads, setFailedMediaUploads] = useState<Array<{ file: File; originalIndex: number }>>([]);
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [coverPhotoIndex, setCoverPhotoIndex] = useState<number>(0);
@@ -249,6 +250,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isMediaUploadModalOpen, setIsMediaUploadModalOpen] = useState<boolean>(false);
   const [previewLightboxIndex, setPreviewLightboxIndex] = useState<number | null>(null);
   const [mediaViewMode, setMediaViewMode] = useState<'grid' | 'list'>('grid');
+
+  // Rich Media Metadata Tagging & Mode State
+  const [uploadMode, setUploadMode] = useState<'single' | 'multiple'>('single');
+  const [selectedBatchDraftId, setSelectedBatchDraftId] = useState<string | null>(null);
+  const [batchDetails, setBatchDetails] = useState<string>('');
 
   const mediaObjectUrlMapRef = useRef<Map<File, string>>(new Map());
 
@@ -286,12 +292,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     };
   }, [revokeAllMediaPreviewUrls]);
 
-  const handleOpenMediaUpload = () => {
-    setIsMediaUploadModalOpen(true);
-    setTimeout(() => {
-      uploadConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 50);
-  };
+
   const [selectedPropertyId, setSelectedPropertyId] = useState<number>(1);
   const [isUploadingCloudinary, setIsUploadingCloudinary] = useState<boolean>(false);
   const [uploadStatusMsg, setUploadStatusMsg] = useState<string | null>(null);
@@ -319,6 +320,38 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [dbSaveSuccessMsg, setDbSaveSuccessMsg] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
   const [isAttributesCollapsed, setIsAttributesCollapsed] = useState<boolean>(true);
+
+  const handleOpenMediaUpload = () => {
+    const isMultiple =
+      uploadMode === 'multiple' ||
+      selectedBatchDraftId !== null ||
+      MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel) ||
+      Boolean(lastExtractedResult?.rawInput && MULTIPLE_PROPERTY_ENTRY_PATTERN.test(lastExtractedResult.rawInput));
+
+    if (isMultiple) {
+      const details =
+        newBhkLabel.trim() ||
+        (typeof lastExtractedResult?.rawInput === 'string' ? lastExtractedResult.rawInput.trim() : '') ||
+        batchDetails.trim();
+
+      if (details && details !== batchDetails) {
+        setBatchDetails(details);
+      }
+      if (uploadMode !== 'multiple') {
+        setUploadMode('multiple');
+      }
+      setIsMediaUploadModalOpen(false);
+      setTimeout(() => {
+        uploadConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 50);
+      return;
+    }
+
+    setIsMediaUploadModalOpen(true);
+    setTimeout(() => {
+      uploadConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  };
 
   // Real Property Upload Pipeline Progress State (Zero Fake Percentages)
   const [uploadPipeline, setUploadPipeline] = useState<{
@@ -366,6 +399,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (!payload) return;
     if (typeof payload.newBhkLabel === 'string') {
       setNewBhkLabel(payload.newBhkLabel);
+      if (MULTIPLE_PROPERTY_ENTRY_PATTERN.test(payload.newBhkLabel)) {
+        setBatchDetails(payload.newBhkLabel);
+        setUploadMode('multiple');
+      }
+    }
+    if (payload.draftType === 'BATCH' || payload.isBatch) {
+      setUploadMode('multiple');
     }
     if (payload.lastExtractedResult !== undefined) {
       setLastExtractedResult(payload.lastExtractedResult);
@@ -392,6 +432,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         if (restored.files.length > 0) {
           setAttachedMediaFiles(restored.files);
           setAttachedMediaTags(prev => ({ ...prev, ...restored.tags }));
+          if (restored.mediaIds) {
+            setAttachedDraftMediaIds(restored.mediaIds);
+          }
           if (restored.coverIndex >= 0) {
             setCoverPhotoIndex(restored.coverIndex);
           }
@@ -416,7 +459,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     revokeAllMediaPreviewUrls();
     setAttachedMediaFiles([]);
     setAttachedMediaTags({});
+    setAttachedDraftMediaIds({});
     setCoverPhotoIndex(0);
+    setBatchDetails('');
+    setSelectedBatchDraftId(null);
+    setUploadMode('single');
   }, [revokeAllMediaPreviewUrls]);
 
   const singleDraft = usePropertyDraft({
@@ -500,6 +547,67 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       window.scrollTo(0, scrollY);
     };
   }, [isMobileMenuOpen, isMediaUploadModalOpen, previewLightboxIndex, isInlineEditOpen]);
+
+  // Authoritative field attention resolver adhering to mandatory publish validation rules
+  const getFieldAttention = (fieldName: string, form: any): { needsAttention: boolean; message: string } | null => {
+    if (!form) return null;
+    switch (fieldName) {
+      case 'bhk':
+        if (!form.bhk || form.bhk === 'Not Specified' || form.bhk === 'Unspecified') {
+          return { needsAttention: true, message: 'BHK configuration is required for publishing' };
+        }
+        return null;
+      case 'type':
+        if (!form.type || form.type === 'Not Specified' || form.type === 'Unspecified') {
+          return { needsAttention: true, message: 'Property type is required for publishing' };
+        }
+        return null;
+      case 'rentAmount': {
+        const num = form.rentAmount ? Number(form.rentAmount) : (form.rentVal ? Number(String(form.rentVal).replace(/[^0-9]/g, '')) : 0);
+        if (!num || num <= 0) {
+          return { needsAttention: true, message: 'Monthly rent is required for publishing' };
+        }
+        return null;
+      }
+      case 'depositVal':
+        if (!form.depositVal || form.depositVal === 'Not Specified' || form.depositVal === 'Unspecified') {
+          return { needsAttention: true, message: 'Security deposit terms are required for publishing' };
+        }
+        return null;
+      case 'sector':
+        if (!form.sector || form.sector === 'Not Specified' || form.sector === 'Unspecified') {
+          return { needsAttention: true, message: 'Locality / sector name is required for publishing' };
+        }
+        return null;
+      case 'ownerPhone': {
+        const phone = normalizeOwnerPhoneForPublishing(form.ownerPhone);
+        if (!phone || form.ownerPhone === 'Not Specified' || !INDIAN_OWNER_PHONE_PATTERN.test(phone)) {
+          return { needsAttention: true, message: 'Valid 10-digit owner phone number is required' };
+        }
+        return null;
+      }
+      case 'availableFrom':
+      case 'possessionDate':
+        if (form.availabilityStatus === 'AVAILABLE_FROM_DATE' && !form.availableFrom) {
+          return { needsAttention: true, message: 'Possession date is required when availability is specific date' };
+        }
+        return null;
+      default:
+        return null;
+    }
+  };
+
+  // When Inline Edit opens, smoothly scroll the first attention field into the visible region without auto-focus
+  useEffect(() => {
+    if (!isInlineEditOpen) return;
+    const timer = setTimeout(() => {
+      const firstAttentionEl = document.querySelector('[data-attention="true"]');
+      if (firstAttentionEl) {
+        firstAttentionEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [isInlineEditOpen]);
 
   const handleOpenInlineEdit = () => {
     const activeData = lastExtractedResult || liveExtractedPreview;
@@ -591,64 +699,157 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   ) => {
     if (!targetPropertyId || pendingItems.length === 0) return;
     setIsUploadingMedia(true);
+
+    // 1. Authoritative Media Deduplication: Check already-persisted assets for this listing to avoid re-uploading
+    let existingReqIds = new Set<string>();
+    try {
+      const existing = await propertyService.fetchTaggedMedia(targetPropertyId);
+      if (Array.isArray(existing)) {
+        existing.forEach(a => {
+          if (a.uploadRequestId) existingReqIds.add(a.uploadRequestId);
+        });
+      }
+    } catch {}
+
+    const itemsToUpload: Array<{ file: File; originalIndex: number }> = [];
+    let completedCount = 0;
+    pendingItems.forEach(item => {
+      const draftMediaId = (item.file as any)?.draftMediaId || attachedDraftMediaIds[item.originalIndex];
+      const reqId = createStableUploadRequestId(targetPropertyId, item.file, draftMediaId);
+      if (existingReqIds.has(reqId)) {
+        completedCount += 1;
+      } else {
+        itemsToUpload.push(item);
+      }
+    });
+
+    const totalMedia = pendingItems.length;
+
+    // Fast-path: if all media items are already durably persisted, finalize publication immediately
+    if (itemsToUpload.length === 0) {
+      setIsUploadingMedia(false);
+      setFailedMediaUploads([]);
+      setUploadStatusMsg('All property media verified successfully.');
+      setUploadPipeline(prev => ({
+        ...prev,
+        stage: 'success',
+        stageLabel: `Listing #${targetPropertyId} and all ${totalMedia} media items verified successfully!`
+      }));
+      notifySuccess('1 property uploaded', `Listing #${targetPropertyId} and all media items published successfully.`, undefined, 'PROPERTY');
+      void singleDraft.onPublishSuccess(targetPropertyId);
+      setNewBhkLabel('');
+      if (singleMicBaseTextRef.current) singleMicBaseTextRef.current = '';
+      revokeAllMediaPreviewUrls();
+      setAttachedMediaFiles([]);
+      setAttachedMediaTags({});
+      setAttachedDraftMediaIds({});
+      setCoverPhotoIndex(0);
+      setLastExtractedResult(null);
+      setDbSaveSuccessMsg(null);
+      return;
+    }
+
     setUploadPipeline(prev => ({
       ...prev,
       active: true,
       stage: 'uploading_media',
-      totalMediaCount: pendingItems.length,
+      totalMediaCount: totalMedia,
       failedCount: 0,
-      stageLabel: `Preparing ${pendingItems.length} media file(s) for listing #${targetPropertyId}…`
+      stageLabel: completedCount > 0
+        ? `Resuming: ${completedCount} media already uploaded. Uploading remaining ${itemsToUpload.length} file(s)…`
+        : `Preparing ${totalMedia} media file(s) for listing #${targetPropertyId}…`
     }));
 
     const failedItems: Array<{ file: File; originalIndex: number }> = [];
     const failureMessages: string[] = [];
 
-    for (let pendingIndex = 0; pendingIndex < pendingItems.length; pendingIndex += 1) {
-      const item = pendingItems[pendingIndex];
-      setUploadPipeline(prev => ({
-        ...prev,
-        currentMediaIndex: pendingIndex + 1,
-        currentMediaName: item.file.name,
-        currentFilePercent: 0,
-        stage: 'uploading_media',
-        stageLabel: `Uploading media item ${pendingIndex + 1} of ${pendingItems.length} (${item.file.name})…`
-      }));
+    const CONCURRENCY_LIMIT = 3;
+    let nextIndex = 0;
 
-      try {
-        await propertyService.uploadTaggedMedia(targetPropertyId, item.file, {
-          roomTag: attachedMediaTags[item.originalIndex] || (item.originalIndex === 0 ? 'LIVING_ROOM' : 'BEDROOM'),
-          mediaType: item.file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
-          caption: metadata.title || 'Property media',
-          isPrimaryCover: item.originalIndex === coverPhotoIndex,
-          sector: metadata.sector,
-          priceTag: metadata.rentVal,
-          vastuFacing: metadata.vastuFacing
-        }, {
-          onProgress: (progress) => {
-            const itemLabel = `Media ${pendingIndex + 1} of ${pendingItems.length} (${item.file.name})`;
-            const statusText = progress.stage === 'retrying'
-              ? `Connection interrupted. Retrying ${itemLabel} (attempt ${progress.attempt}/${progress.maxAttempts})…`
-              : progress.stage === 'preparing'
-                ? `Preparing & compressing ${itemLabel}…`
-                : progress.percent > 0
-                  ? `Uploading ${itemLabel} • ${progress.percent}% byte progress`
-                  : `Uploading ${itemLabel}…`;
+    // Fast offline detection & cancellation: cancel active in-flight requests and prevent queued requests
+    const abortController = new AbortController();
+    const handleOffline = () => {
+      abortController.abort();
+    };
+    window.addEventListener('offline', handleOffline);
 
-            setUploadStatusMsg(statusText);
-            setUploadPipeline(prev => ({
-              ...prev,
-              currentFilePercent: progress.percent,
-              stageLabel: statusText
-            }));
+    const worker = async () => {
+      while (nextIndex < itemsToUpload.length) {
+        if (abortController.signal.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+          const unstarted = itemsToUpload[nextIndex];
+          if (unstarted) {
+            failedItems.push(unstarted);
+            failureMessages.push(`${unstarted.file.name} was interrupted because the network disconnected.`);
           }
-        });
-      } catch (mediaError) {
-        failedItems.push(item);
-        failureMessages.push(getErrorMessage(mediaError, `${item.file.name} could not be uploaded.`));
+          nextIndex += 1;
+          continue;
+        }
+
+        const pendingIndex = nextIndex;
+        nextIndex += 1;
+        const item = itemsToUpload[pendingIndex];
+
+        try {
+          const draftMediaId = (item.file as any)?.draftMediaId || attachedDraftMediaIds[item.originalIndex];
+          await propertyService.uploadTaggedMedia(targetPropertyId, item.file, {
+            roomTag: attachedMediaTags[item.originalIndex] || (item.originalIndex === 0 ? 'LIVING_ROOM' : 'BEDROOM'),
+            mediaType: item.file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
+            caption: metadata.title || 'Property media',
+            isPrimaryCover: item.originalIndex === coverPhotoIndex,
+            sector: metadata.sector,
+            priceTag: metadata.rentVal,
+            vastuFacing: metadata.vastuFacing,
+            draftMediaId
+          }, {
+            signal: abortController.signal,
+            onProgress: (progress) => {
+              const itemLabel = `Media ${completedCount + 1} of ${totalMedia} (${item.file.name})`;
+              const statusText = progress.stage === 'retrying'
+                ? `Connection interrupted. Retrying ${itemLabel} (attempt ${progress.attempt}/${progress.maxAttempts})…`
+                : progress.stage === 'preparing'
+                  ? `Preparing & compressing ${itemLabel}…`
+                  : progress.percent > 0
+                    ? `Uploading ${itemLabel} • ${progress.percent}% byte progress`
+                    : `Uploading ${itemLabel}…`;
+
+              setUploadStatusMsg(statusText);
+              setUploadPipeline(prev => ({
+                ...prev,
+                currentFilePercent: progress.percent,
+                stageLabel: statusText
+              }));
+            }
+          });
+        } catch (mediaError) {
+          failedItems.push(item);
+          failureMessages.push(getErrorMessage(mediaError, `${item.file.name} could not be uploaded.`));
+        } finally {
+          completedCount += 1;
+          const statusText = `Uploaded ${completedCount} of ${totalMedia} media file(s)…`;
+          setUploadStatusMsg(statusText);
+          setUploadPipeline(prev => ({
+            ...prev,
+            currentMediaIndex: completedCount,
+            currentMediaName: item.file.name,
+            stage: 'uploading_media',
+            stageLabel: statusText
+          }));
+        }
       }
+    };
+
+    try {
+      const workerCount = Math.min(CONCURRENCY_LIMIT, itemsToUpload.length);
+      const workers: Promise<void>[] = [];
+      for (let w = 0; w < workerCount; w += 1) {
+        workers.push(worker());
+      }
+      await Promise.all(workers);
+    } finally {
+      window.removeEventListener('offline', handleOffline);
+      setIsUploadingMedia(false);
     }
 
-    setIsUploadingMedia(false);
     setFailedMediaUploads(failedItems);
 
     if (failedItems.length > 0) {
@@ -657,18 +858,19 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         ...prev,
         stage: 'partial_failure',
         failedCount: failedItems.length,
-        stageLabel: `Listing #${targetPropertyId} published, but ${failedItems.length} of ${pendingItems.length} media items failed.`
+        stageLabel: `Listing #${targetPropertyId} created, but ${failedItems.length} of ${pendingItems.length} media items failed.`
       }));
       showErrorDialog({
-        title: 'Property published, but some media needs attention',
-        message: `${failedItems.length} of ${pendingItems.length} media files could not be uploaded for listing #${targetPropertyId}. You can retry only the failed media; successful uploads have been preserved.`,
+        title: 'Property created, but some media needs attention',
+        message: `${failedItems.length} of ${pendingItems.length} media files could not be uploaded for listing #${targetPropertyId}. Your draft remains saved and recoverable. You can retry only the failed media; successful uploads have been preserved.`,
         details: failureMessages.join(' • '),
         action: {
           label: 'Retry failed media',
           onClick: () => void uploadPendingMedia(targetPropertyId, failedItems, metadata)
         }
       });
-      void singleDraft.onPublishSuccess();
+      // CRITICAL P0 INVARIANT: DO NOT finalize draft when media uploads fail!
+      // The draft remains in PUBLISHING state with full payload and staged media so it can be resumed.
       return;
     }
 
@@ -689,7 +891,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       'PROPERTY'
     );
 
-    void singleDraft.onPublishSuccess();
+    // Terminal completion: All media succeeded, safely finalize draft into PUBLISHED tombstone
+    void singleDraft.onPublishSuccess(targetPropertyId);
     // Reset single-property transient form state after confirmed success
     setNewBhkLabel('');
     if (singleMicBaseTextRef.current) {
@@ -862,7 +1065,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           undefined,
           'PROPERTY'
         );
-        void singleDraft.onPublishSuccess();
+        void singleDraft.onPublishSuccess(propertyId);
         // Reset single-property transient form state after confirmed success
         setNewBhkLabel('');
         if (singleMicBaseTextRef.current) {
@@ -895,10 +1098,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
   };
 
-  // Rich Media Metadata Tagging State (Zero hardcoded fallbacks)
-  const [uploadMode, setUploadMode] = useState<'single' | 'multiple'>('single');
-  const [selectedBatchDraftId, setSelectedBatchDraftId] = useState<string | null>(null);
-  const [batchDetails, setBatchDetails] = useState<string>('');
+
   const [isSingleMicListening, setIsSingleMicListening] = useState<boolean>(false);
   const [isSingleDictationChoiceOpen, setIsSingleDictationChoiceOpen] = useState<boolean>(false);
   const singleRecognitionRef = useRef<any>(null);
@@ -1301,9 +1501,19 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       preparedFiles.forEach((file, i) => {
         const idx = startIdx + i;
         const tag = newTags[idx] || 'LIVING_ROOM';
+        const mediaId = (file as any)?.draftMediaId || `dm-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}`;
+        (file as any).draftMediaId = mediaId;
+        setAttachedDraftMediaIds(prev => ({ ...prev, [idx]: mediaId }));
+
         draftService.stageMedia(draftId, file, {
           roomTag: tag,
-          isCover: idx === coverPhotoIndex
+          isCover: idx === coverPhotoIndex,
+          mediaId
+        }).then(staged => {
+          if (staged && staged.mediaId) {
+            (file as any).draftMediaId = staged.mediaId;
+            setAttachedDraftMediaIds(prev => ({ ...prev, [idx]: staged.mediaId }));
+          }
         }).catch(err => console.warn('Draft media staging notice:', err));
       });
     }
@@ -1971,7 +2181,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             isLoadingDrafts={singleDraft.isLoadingDrafts}
                             onSelectDraft={async (id) => {
                               const selected = singleDraft.draftsList.find((d) => d.draftId === id);
-                              if (selected && selected.draftType === 'BATCH') {
+                              const isBatch = selected ? selected.draftType === 'BATCH' : id.includes('batch');
+                              if (isBatch) {
                                 setSelectedBatchDraftId(id);
                                 setUploadMode('multiple');
                               } else {
@@ -2742,57 +2953,120 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           {(activeAttributeTab === 'all' || activeAttributeTab === 'location') && (
                             <>
                               {/* 1. BHK Layout */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏠 BHK Layout</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  liveExtractedPreview.bhk === 'Unspecified' ? 'text-slate-500 italic' : 'text-white'
-                                }`}>{liveExtractedPreview.bhk}</span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('bhk', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-emerald-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏠 BHK Layout</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : liveExtractedPreview.bhk === 'Unspecified' ? 'text-slate-500 italic' : 'text-white'
+                                    }`}>{liveExtractedPreview.bhk || 'Unspecified'}</span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 2. Property Type */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-indigo-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏷️ Property Type</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  !liveExtractedPreview.type ? 'text-slate-500 italic' : 'text-indigo-300'
-                                }`}>
-                                  {liveExtractedPreview.type === 'FLAT' ? 'Flat / Apartment' :
-                                   liveExtractedPreview.type === 'HOUSE' ? 'Independent House' :
-                                   liveExtractedPreview.type === 'VILLA' ? 'Villa' :
-                                   liveExtractedPreview.type === 'PLOT' ? 'Plot / Land' :
-                                   liveExtractedPreview.type === 'PENTHOUSE' ? 'Penthouse' :
-                                   liveExtractedPreview.type === 'STUDIO' ? 'Studio' :
-                                   liveExtractedPreview.type === 'AIRBNB' ? 'Airbnb' :
-                                   (liveExtractedPreview.type || 'Unspecified')}
-                                </span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('type', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-indigo-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏷️ Property Type</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : !liveExtractedPreview.type ? 'text-slate-500 italic' : 'text-indigo-300'
+                                    }`}>
+                                      {liveExtractedPreview.type === 'FLAT' ? 'Flat / Apartment' :
+                                       liveExtractedPreview.type === 'HOUSE' ? 'Independent House' :
+                                       liveExtractedPreview.type === 'VILLA' ? 'Villa' :
+                                       liveExtractedPreview.type === 'PLOT' ? 'Plot / Land' :
+                                       liveExtractedPreview.type === 'PENTHOUSE' ? 'Penthouse' :
+                                       liveExtractedPreview.type === 'STUDIO' ? 'Studio' :
+                                       liveExtractedPreview.type === 'AIRBNB' ? 'Airbnb' :
+                                       (liveExtractedPreview.type || 'Unspecified')}
+                                    </span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 3. Locality / Sector */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📍 Locality</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  liveExtractedPreview.sector === 'Not Specified' ? 'text-slate-500 italic' : 'text-emerald-300'
-                                }`} title={liveExtractedPreview.sector}>
-                                  {liveExtractedPreview.sector}
-                                </span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('sector', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-emerald-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📍 Locality</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : liveExtractedPreview.sector === 'Not Specified' ? 'text-slate-500 italic' : 'text-emerald-300'
+                                    }`} title={liveExtractedPreview.sector}>
+                                      {liveExtractedPreview.sector}
+                                    </span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 4. City & State */}
                               <motion.div
@@ -2800,7 +3074,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-blue-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-blue-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏙️ City</span>
                                 <span className="text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 text-blue-300">
@@ -2814,7 +3092,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-yellow-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-yellow-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏢 Landmark</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2830,7 +3112,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-indigo-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-indigo-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📌 Pincode</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2844,18 +3130,39 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           {(activeAttributeTab === 'all' || activeAttributeTab === 'pricing') && (
                             <>
                               {/* 5. Monthly Rent */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-amber-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">💰 Rent</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  liveExtractedPreview.rentVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-amber-300'
-                                }`}>{liveExtractedPreview.rentVal}</span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('rentAmount', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-amber-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">💰 Rent</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : liveExtractedPreview.rentVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-amber-300'
+                                    }`}>{liveExtractedPreview.rentVal}</span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 6. Brokerage Fee */}
                               <motion.div
@@ -2863,7 +3170,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-purple-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-purple-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">💼 Brokerage</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2872,32 +3183,74 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                               </motion.div>
 
                               {/* 7. Security Deposit */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-rose-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛡️ Deposit</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  !liveExtractedPreview.depositVal || liveExtractedPreview.depositVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-rose-300'
-                                }`}>{liveExtractedPreview.depositVal || 'Unspecified'}</span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('depositVal', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-rose-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛡️ Deposit</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : !liveExtractedPreview.depositVal || liveExtractedPreview.depositVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-rose-300'
+                                    }`}>{liveExtractedPreview.depositVal || 'Unspecified'}</span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 10. Possession Date */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📅 Possession</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  !liveExtractedPreview.possessionDate ? 'text-slate-500 italic' : 'text-emerald-400'
-                                }`}>{liveExtractedPreview.possessionDate || 'Unspecified'}</span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('availableFrom', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-emerald-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📅 Possession</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : !liveExtractedPreview.possessionDate ? 'text-slate-500 italic' : 'text-emerald-400'
+                                    }`}>{liveExtractedPreview.possessionDate || 'Unspecified'}</span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 17. Listing Status */}
                               <motion.div
@@ -2905,7 +3258,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-lime-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-lime-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">⚡ Status</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2926,7 +3283,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-orange-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-orange-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📐 Carpet Area</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2940,7 +3301,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛁 Bathrooms</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2954,7 +3319,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">👤 Owner Name</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -2965,20 +3334,41 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                               </motion.div>
 
                               {/* 14. Owner Phone */}
-                              <motion.div
-                                layout
-                                initial={{ opacity: 0, scale: 0.9 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-sky-500/50 transition-colors"
-                              >
-                                <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📞 Owner Contact</span>
-                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
-                                  liveExtractedPreview.ownerPhone === 'Not Specified' ? 'text-slate-500 italic' : 'text-sky-300'
-                                }`} title={liveExtractedPreview.ownerPhone}>
-                                  {liveExtractedPreview.ownerPhone}
-                                </span>
-                              </motion.div>
+                              {(() => {
+                                const att = getFieldAttention('ownerPhone', liveExtractedPreview);
+                                return (
+                                  <motion.div
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.03, y: -1 }}
+                                    onClick={handleOpenInlineEdit}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                    className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+                                      att
+                                        ? 'bg-amber-950/30 border-amber-500/60 hover:border-amber-400'
+                                        : 'bg-slate-900/90 border-slate-800 hover:border-sky-500/50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                                      <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📞 Owner Contact</span>
+                                      {att && (
+                                        <span className="text-[9px] font-mono font-bold text-amber-400 flex items-center gap-0.5">
+                                          <AlertTriangle className="w-2.5 h-2.5" />
+                                          <span>Needs attention</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
+                                      att ? 'text-amber-200' : liveExtractedPreview.ownerPhone === 'Not Specified' ? 'text-slate-500 italic' : 'text-sky-300'
+                                    }`} title={liveExtractedPreview.ownerPhone}>
+                                      {liveExtractedPreview.ownerPhone}
+                                    </span>
+                                  </motion.div>
+                                );
+                              })()}
 
                               {/* 15. Vastu Facing */}
                               <motion.div
@@ -2986,7 +3376,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-teal-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-teal-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🧭 Vastu Facing</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -3000,7 +3394,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-fuchsia-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-fuchsia-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛋️ Furnishing</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -3019,7 +3417,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 whileHover={{ scale: 1.03, y: -1 }}
-                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-violet-500/50 transition-colors"
+                                onClick={handleOpenInlineEdit}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenInlineEdit(); } }}
+                                className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-violet-500/50 transition-colors cursor-pointer"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">✨ Key Amenities</span>
                                 <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
@@ -3731,8 +4133,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       {/* TOP-LEVEL VIEWPORT-CENTERED INLINE QUICK EDIT MODAL DIALOG */}
       {isInlineEditOpen && editForm && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[9999] grid items-start justify-items-center overflow-y-auto bg-slate-950/85 p-0 backdrop-blur-md sm:place-items-center sm:p-6"
-          onMouseDown={(event) => {
+          className="fixed inset-0 z-[9999] flex flex-col justify-end sm:justify-center sm:items-center bg-slate-950/85 backdrop-blur-md overflow-hidden sm:p-6"
+          onClick={(event) => {
             if (event.target === event.currentTarget) setIsInlineEditOpen(false);
           }}
         >
@@ -3740,120 +4142,240 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             role="dialog"
             aria-modal="true"
             aria-labelledby="property-edit-dialog-title"
-            className="m-0 min-h-[100dvh] w-full max-w-3xl space-y-4 overflow-y-auto rounded-none border border-slate-800 bg-slate-900 p-4 text-white shadow-2xl sm:min-h-0 sm:max-h-[calc(100dvh-3rem)] sm:rounded-3xl sm:p-6"
+            className="w-full max-w-3xl flex flex-col h-[100dvh] sm:h-auto sm:max-h-[min(90dvh,850px)] bg-slate-900 border-0 sm:border border-slate-800 rounded-none sm:rounded-3xl shadow-2xl text-white overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+            {/* FIXED/STICKY HEADER */}
+            <div className="shrink-0 p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/95">
               <div>
-                <h3 id="property-edit-dialog-title" className="text-lg font-bold font-['Outfit'] text-emerald-400 flex items-center gap-2">
-                  ✏️ Edit property details
+                <h3 id="property-edit-dialog-title" className="text-base sm:text-lg font-bold font-['Outfit'] text-emerald-400 flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+                  <span>Edit property details</span>
                 </h3>
-                <p className="text-xs text-slate-400">Review and update property details before publishing.</p>
+                <p className="text-xs text-slate-400 mt-0.5">Review and update property details before publishing.</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsInlineEditOpen(false)}
                 aria-label="Close property editor"
-                className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800 font-bold cursor-pointer"
+                className="min-h-[44px] min-w-[44px] -mr-2 text-slate-400 hover:text-white flex items-center justify-center rounded-xl bg-slate-800/80 hover:bg-slate-800 font-bold cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
               >
-                ✕
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveInlineEdits} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            {/* SCROLLABLE FORM BODY (SINGLE TOUCH-SCROLL REGION) */}
+            <form id="inline-property-edit-form" onSubmit={handleSaveInlineEdits} className="flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 min-h-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* 1. Title */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Listing Title:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Listing Title</label>
+                  </div>
                   <input
                     type="text"
                     value={editForm.title || ''}
                     onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-white bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Property Type:</label>
-                  <select
-                    value={editForm.type || 'FLAT'}
-                    onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-emerald-500"
-                  >
-                    <option value="FLAT">FLAT / APARTMENT</option>
-                    <option value="HOUSE">HOUSE / VILLA</option>
-                    <option value="PLOT">PLOT / LAND</option>
-                    <option value="PENTHOUSE">PENTHOUSE</option>
-                    <option value="STUDIO">STUDIO APARTMENT</option>
-                    <option value="AIRBNB">AIRBNB / VACATION STAY</option>
-                  </select>
-                </div>
+                {/* 2. Property Type */}
+                {(() => {
+                  const att = getFieldAttention('type', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Property Type</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={editForm.type || 'FLAT'}
+                        onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-white transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      >
+                        <option value="FLAT">FLAT / APARTMENT</option>
+                        <option value="HOUSE">HOUSE / VILLA</option>
+                        <option value="PLOT">PLOT / LAND</option>
+                        <option value="PENTHOUSE">PENTHOUSE</option>
+                        <option value="STUDIO">STUDIO APARTMENT</option>
+                        <option value="AIRBNB">AIRBNB / VACATION STAY</option>
+                      </select>
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">BHK Configuration:</label>
-                  <input
-                    type="text"
-                    value={editForm.bhk || ''}
-                    onChange={(e) => setEditForm({ ...editForm, bhk: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+                {/* 3. BHK Configuration */}
+                {(() => {
+                  const att = getFieldAttention('bhk', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">BHK Configuration</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="e.g. 2 BHK"
+                        value={editForm.bhk || ''}
+                        onChange={(e) => setEditForm({ ...editForm, bhk: e.target.value })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-white transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* 4. Bathrooms Count */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Bathrooms Count:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Bathrooms Count</label>
+                  </div>
                   <input
                     type="number"
                     value={editForm.bathrooms ?? ''}
                     onChange={(e) => setEditForm({ ...editForm, bathrooms: e.target.value ? Number(e.target.value) : '' })}
                     placeholder="e.g. 2"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-white bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Monthly Rent Amount (₹):</label>
-                  <input
-                    type="number"
-                    value={editForm.rentAmount ?? ''}
-                    onChange={(e) => setEditForm({ ...editForm, rentAmount: e.target.value ? Number(e.target.value) : '', rentVal: e.target.value ? `₹${Number(e.target.value).toLocaleString('en-IN')}` : '' })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-amber-400 font-bold focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+                {/* 5. Monthly Rent Amount */}
+                {(() => {
+                  const att = getFieldAttention('rentAmount', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Monthly Rent Amount (₹)</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        placeholder="e.g. 15000"
+                        value={editForm.rentAmount ?? ''}
+                        onChange={(e) => setEditForm({
+                          ...editForm,
+                          rentAmount: e.target.value ? Number(e.target.value) : '',
+                          rentVal: e.target.value ? `₹${Number(e.target.value).toLocaleString('en-IN')}` : ''
+                        })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-amber-400 transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* 6. Brokerage Fee */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Brokerage Fee / Terms:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Brokerage Fee / Terms</label>
+                  </div>
                   <input
                     type="text"
+                    placeholder="e.g. 15 Days Brokerage or Zero"
                     value={editForm.brokerageVal || ''}
                     onChange={(e) => setEditForm({ ...editForm, brokerageVal: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-purple-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-purple-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Security Deposit Terms:</label>
-                  <input
-                    type="text"
-                    value={editForm.depositVal || ''}
-                    onChange={(e) => setEditForm({ ...editForm, depositVal: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-blue-300 font-bold focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+                {/* 7. Security Deposit */}
+                {(() => {
+                  const att = getFieldAttention('depositVal', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Security Deposit Terms</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="e.g. 2 Months Deposit or ₹30,000"
+                        value={editForm.depositVal || ''}
+                        onChange={(e) => setEditForm({ ...editForm, depositVal: e.target.value })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-blue-300 transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* 8. Carpet Area */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Carpet Area (SqFt):</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Carpet Area (SqFt)</label>
+                  </div>
                   <input
                     type="text"
+                    placeholder="e.g. 1100 SqFt"
                     value={editForm.areaSqFt || ''}
                     onChange={(e) => setEditForm({ ...editForm, areaSqFt: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-teal-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-teal-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
+                {/* 9. Vastu Facing Direction */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Vastu Facing Direction:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Vastu Facing Direction</label>
+                  </div>
                   <select
                     value={editForm.vastuFacing || 'Not Specified'}
                     onChange={(e) => setEditForm({ ...editForm, vastuFacing: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-cyan-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-cyan-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   >
                     <option value="Not Specified">Not Specified</option>
                     <option value="East Facing">East Facing</option>
@@ -3864,12 +4386,15 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </select>
                 </div>
 
+                {/* 10. Furnishing Status */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Furnishing Status:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Furnishing Status</label>
+                  </div>
                   <select
                     value={editForm.furnishingStatus || 'UNSPECIFIED'}
                     onChange={(e) => setEditForm({ ...editForm, furnishingStatus: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-indigo-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-indigo-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   >
                     <option value="UNSPECIFIED">UNSPECIFIED</option>
                     <option value="FULLY_FURNISHED">FULLY FURNISHED</option>
@@ -3878,8 +4403,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </select>
                 </div>
 
+                {/* 11. Availability */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Availability</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Availability</label>
+                  </div>
                   <select
                     value={editForm.availabilityStatus || 'UNSPECIFIED'}
                     onChange={(event) => {
@@ -3894,7 +4422,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                         )
                       });
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-emerald-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   >
                     <option value="UNSPECIFIED">Not provided</option>
                     <option value="READY_NOW">Ready to move now</option>
@@ -3902,31 +4430,55 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </select>
                 </div>
 
-                {editForm.availabilityStatus === 'AVAILABLE_FROM_DATE' && (
-                  <div>
-                    <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Possession date</label>
-                    <input
-                      type="date"
-                      value={editForm.availableFrom || ''}
-                      onChange={(event) => setEditForm({
-                        ...editForm,
-                        availableFrom: event.target.value,
-                        possessionDate: formatAvailabilityDate(event.target.value),
-                        conflicts: (editForm.conflicts || []).filter(
-                          (conflict: string) => !conflict.startsWith('Possession date')
-                        )
-                      })}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
-                    />
-                  </div>
-                )}
+                {/* 12. Possession Date (conditional) */}
+                {editForm.availabilityStatus === 'AVAILABLE_FROM_DATE' && (() => {
+                  const att = getFieldAttention('availableFrom', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Possession date</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="date"
+                        value={editForm.availableFrom || ''}
+                        onChange={(event) => setEditForm({
+                          ...editForm,
+                          availableFrom: event.target.value,
+                          possessionDate: formatAvailabilityDate(event.target.value),
+                          conflicts: (editForm.conflicts || []).filter(
+                            (conflict: string) => !conflict.startsWith('Possession date')
+                          )
+                        })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-emerald-300 transition-colors focus:outline-none [color-scheme:dark] ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* 13. Listing Status */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Listing Status:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Listing Status</label>
+                  </div>
                   <select
                     value={editForm.status || 'LIVE'}
                     onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-emerald-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   >
                     <option value="LIVE">LIVE</option>
                     <option value="DRAFT">DRAFT</option>
@@ -3934,64 +4486,122 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   </select>
                 </div>
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Locality / Sector:</label>
-                  <input
-                    type="text"
-                    value={editForm.sector || ''}
-                    onChange={(e) => setEditForm({ ...editForm, sector: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+                {/* 14. Locality / Sector */}
+                {(() => {
+                  const att = getFieldAttention('sector', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined}>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Locality / Sector</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="e.g. Vijay Nagar"
+                        value={editForm.sector || ''}
+                        onChange={(e) => setEditForm({ ...editForm, sector: e.target.value })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-emerald-300 transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* 15. Target City */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Target City:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Target City</label>
+                  </div>
                   <input
                     type="text"
+                    placeholder="e.g. Indore"
                     value={editForm.city || ''}
                     onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-white bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
+                {/* 16. Owner Name */}
                 <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Owner Name:</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Owner Name</label>
+                  </div>
                   <input
                     type="text"
+                    placeholder="e.g. Rajesh Sharma"
                     value={editForm.ownerName || ''}
                     onChange={(e) => setEditForm({ ...editForm, ownerName: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-pink-300 font-bold focus:outline-none focus:border-emerald-500"
+                    className="w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-pink-300 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors focus:outline-none"
                   />
                 </div>
 
-                <div>
-                  <label className="text-slate-400 block font-mono text-[10px] uppercase font-bold mb-1">Owner Phone Number:</label>
-                  <input
-                    type="text"
-                    value={editForm.ownerPhone || ''}
-                    onChange={(e) => setEditForm({ ...editForm, ownerPhone: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-pink-300 font-bold focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsInlineEditOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs shadow-md shadow-emerald-600/30 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Save changes</span>
-                </button>
+                {/* 17. Owner Phone Number */}
+                {(() => {
+                  const att = getFieldAttention('ownerPhone', editForm);
+                  return (
+                    <div data-attention={att ? 'true' : undefined} className="sm:col-span-2">
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label className="text-slate-300 block font-mono text-xs uppercase font-bold tracking-wider">Owner Phone Number</label>
+                        {att && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>Needs attention</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="e.g. 9826012345 (10-digit mobile number)"
+                        value={editForm.ownerPhone || ''}
+                        onChange={(e) => setEditForm({ ...editForm, ownerPhone: e.target.value })}
+                        className={`w-full min-h-[44px] rounded-xl px-3.5 py-2.5 text-[16px] sm:text-xs font-bold text-pink-300 transition-colors focus:outline-none ${
+                          att
+                            ? 'bg-amber-950/20 border-2 border-amber-500/70 focus:border-amber-400 focus:ring-1 focus:ring-amber-400'
+                            : 'bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+                        }`}
+                      />
+                      {att && (
+                        <p className="text-[11px] text-amber-300/90 flex items-center gap-1 mt-1 font-mono">
+                          <span>⚠️ {att.message}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </form>
+
+            {/* FIXED/STICKY FOOTER WITH ACCESSIBLE ACTIONS */}
+            <div className="shrink-0 p-4 border-t border-slate-800 bg-slate-900/95 flex items-center justify-end gap-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <button
+                type="button"
+                onClick={() => setIsInlineEditOpen(false)}
+                className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="inline-property-edit-form"
+                className="min-h-[44px] px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs shadow-md shadow-emerald-600/30 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Save changes</span>
+              </button>
+            </div>
           </div>
         </div>,
         document.body

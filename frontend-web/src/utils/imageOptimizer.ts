@@ -101,6 +101,9 @@ export async function compressImageToWebP(file: File): Promise<File> {
     type: 'image/webp',
     lastModified: file.lastModified
   });
+  if ((file as any).draftMediaId) {
+    (compressedFile as any).draftMediaId = (file as any).draftMediaId;
+  }
   preparedFiles.add(compressedFile);
   return compressedFile;
 }

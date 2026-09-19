@@ -16,6 +16,7 @@ export interface MediaUploadProgress {
 
 export interface MediaUploadOptions {
   onProgress?: (progress: MediaUploadProgress) => void;
+  signal?: AbortSignal;
 }
 
 const getAdminAuthorizationHeader = (): Record<string, string> => {
@@ -29,7 +30,17 @@ const getAdminAuthorizationHeader = (): Record<string, string> => {
 const wait = (durationMs: number): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, durationMs));
 
-const createStableUploadRequestId = (propertyId: number, file: File): string => {
+export const createStableUploadRequestId = (
+  propertyId: number,
+  file: File,
+  draftMediaId?: string | null
+): string => {
+  const effectiveDraftMediaId = draftMediaId || (file as any)?.draftMediaId;
+  if (effectiveDraftMediaId && typeof effectiveDraftMediaId === 'string' && effectiveDraftMediaId.trim()) {
+    const cleanId = effectiveDraftMediaId.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `media-${propertyId}-${cleanId}`;
+  }
+
   const source = `${propertyId}:${file.name}:${file.size}:${file.lastModified}`;
   let hash = 2166136261;
   for (let index = 0; index < source.length; index += 1) {
@@ -69,13 +80,38 @@ const uploadFormData = <T>(
   options: MediaUploadOptions,
   fallbackMessage: string
 ): Promise<T> => new Promise((resolve, reject) => {
+  if (options.signal?.aborted) {
+    reject(new ApiRequestError('Upload was cancelled because the network disconnected.', 0));
+    return;
+  }
+
   const xhr = new XMLHttpRequest();
+  let settled = false;
+
+  const onAbort = () => {
+    if (settled) return;
+    settled = true;
+    try { xhr.abort(); } catch {}
+    reject(new ApiRequestError('Upload was cancelled because the network disconnected.', 0));
+  };
+
+  if (options.signal) {
+    options.signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  const cleanup = () => {
+    settled = true;
+    if (options.signal) {
+      options.signal.removeEventListener('abort', onAbort);
+    }
+  };
+
   xhr.open('POST', url);
   xhr.timeout = 10 * 60 * 1000;
   Object.entries(getAdminAuthorizationHeader()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
 
   xhr.upload.onprogress = (event) => {
-    if (!event.lengthComputable) return;
+    if (!event.lengthComputable || settled) return;
     options.onProgress?.({
       stage: 'uploading',
       percent: Math.min(99, Math.round((event.loaded / event.total) * 100)),
@@ -84,6 +120,7 @@ const uploadFormData = <T>(
     });
   };
   xhr.onload = () => {
+    cleanup();
     if (xhr.status >= 200 && xhr.status < 300) {
       try {
         resolve(JSON.parse(xhr.responseText) as T);
@@ -94,8 +131,14 @@ const uploadFormData = <T>(
     }
     reject(parseXhrError(xhr, fallbackMessage));
   };
-  xhr.onerror = () => reject(new ApiRequestError('The media connection was interrupted.', 0));
-  xhr.ontimeout = () => reject(new ApiRequestError('The media upload took too long and was stopped.', 408));
+  xhr.onerror = () => {
+    cleanup();
+    reject(new ApiRequestError('The media connection was interrupted.', 0));
+  };
+  xhr.ontimeout = () => {
+    cleanup();
+    reject(new ApiRequestError('The media upload took too long and was stopped.', 408));
+  };
   xhr.send(formData);
 });
 
@@ -107,12 +150,18 @@ const uploadWithRetry = async <T>(
 ): Promise<T> => {
   let lastError: ApiRequestError | null = null;
   for (let attempt = 1; attempt <= MEDIA_UPLOAD_ATTEMPTS; attempt += 1) {
+    if (options.signal?.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      throw new ApiRequestError('Upload was interrupted because the network disconnected.', 0);
+    }
     try {
       const result = await uploadFormData<T>(url, createFormData(), attempt, options, fallbackMessage);
       options.onProgress?.({ stage: 'complete', percent: 100, attempt, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
       return result;
     } catch (error) {
       lastError = error instanceof ApiRequestError ? error : new ApiRequestError(fallbackMessage);
+      if (options.signal?.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+        break;
+      }
       if (attempt === MEDIA_UPLOAD_ATTEMPTS || !shouldRetryUpload(lastError)) break;
       options.onProgress?.({
         stage: 'retrying',
@@ -209,12 +258,14 @@ export const propertyService = {
       sector?: string;
       priceTag?: string;
       vastuFacing?: string;
+      draftMediaId?: string;
     },
     options: MediaUploadOptions = {}
   ): Promise<PropertyMediaAsset> {
     options.onProgress?.({ stage: 'preparing', percent: 0, attempt: 1, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
     const preparedFile = await prepareMediaForUpload(file);
-    const uploadRequestId = createStableUploadRequestId(propertyId, preparedFile);
+    const draftMediaId = metadata.draftMediaId || (file as any)?.draftMediaId || (preparedFile as any)?.draftMediaId;
+    const uploadRequestId = createStableUploadRequestId(propertyId, preparedFile, draftMediaId);
 
     const createFormData = (): FormData => {
       const formData = new FormData();

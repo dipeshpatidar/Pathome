@@ -12,6 +12,7 @@ export interface DraftSummary {
   itemCount: number;
   version: number;
   mediaCount: number;
+  publishedPropertyId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +39,7 @@ export interface DraftDetail {
   version: number;
   payload: string;
   media: DraftMedia[];
+  publishedPropertyId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,13 +140,15 @@ export const draftService = {
   async stageMedia(
     draftId: string,
     file: File,
-    options?: { cardId?: string; roomTag?: RoomTag; isCover?: boolean }
+    options?: { cardId?: string; roomTag?: RoomTag; isCover?: boolean; mediaId?: string }
   ): Promise<DraftMedia> {
     const formData = new FormData();
     formData.append('file', file);
     if (options?.cardId) formData.append('cardId', options.cardId);
     if (options?.roomTag) formData.append('roomTag', options.roomTag);
     if (options?.isCover !== undefined) formData.append('isCover', String(options.isCover));
+    const effectiveMediaId = options?.mediaId || (file as any)?.draftMediaId;
+    if (effectiveMediaId) formData.append('mediaId', effectiveMediaId);
 
     const response = await fetch(`${BASE_URL}/${encodeURIComponent(draftId)}/media`, {
       method: 'POST',
@@ -154,7 +158,11 @@ export const draftService = {
     if (!response.ok) {
       throw await createApiRequestError(response, `Unable to upload ${file.name} to draft media staging.`);
     }
-    return response.json();
+    const result: DraftMedia = await response.json();
+    if (result && result.mediaId) {
+      (file as any).draftMediaId = result.mediaId;
+    }
+    return result;
   },
 
   /**
@@ -197,11 +205,15 @@ export const draftService = {
   /**
    * Cleans up single draft after confirmed publication.
    */
-  async markPublished(draftId: string): Promise<void> {
+  async markPublished(draftId: string, listingId?: number): Promise<void> {
     try {
       await fetch(`${BASE_URL}/${encodeURIComponent(draftId)}/published`, {
         method: 'POST',
-        headers: getAuthHeaders()
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: listingId ? JSON.stringify({ listingId }) : undefined
       });
     } catch {
       // Non-fatal cleanup
@@ -226,9 +238,10 @@ export const draftService = {
     files: File[];
     tags: Record<number, RoomTag>;
     coverIndex: number;
+    mediaIds: Record<number, string>;
   }> {
     if (!mediaItems || mediaItems.length === 0) {
-      return { files: [], tags: {}, coverIndex: 0 };
+      return { files: [], tags: {}, coverIndex: 0, mediaIds: {} };
     }
 
     const CONCURRENCY_LIMIT = 3;
@@ -236,7 +249,7 @@ export const draftService = {
     let completedCount = 0;
 
     // Slot-indexed results to guarantee preservation of original order
-    const results: Array<{ file: File; roomTag?: RoomTag; isCover?: boolean } | null> = new Array(total).fill(null);
+    const results: Array<{ file: File; roomTag?: RoomTag; isCover?: boolean; draftMediaId?: string } | null> = new Array(total).fill(null);
 
     let nextIndex = 0;
     const worker = async () => {
@@ -255,10 +268,12 @@ export const draftService = {
             const file = new File([blob], item.originalFilename || `media_${i + 1}`, {
               type: item.contentType || 'image/jpeg'
             });
+            (file as any).draftMediaId = item.mediaId;
             results[i] = {
               file,
               roomTag: item.roomTag,
-              isCover: item.isCover
+              isCover: item.isCover,
+              draftMediaId: item.mediaId
             };
           } else {
             console.warn(`Staged media preview returned HTTP ${res.status} for item: ${item.mediaId}`);
@@ -286,6 +301,7 @@ export const draftService = {
     // Reconstruct files and tags in original order for all successful items
     const files: File[] = [];
     const tags: Record<number, RoomTag> = {};
+    const mediaIds: Record<number, string> = {};
     let coverIndex = 0;
 
     for (let i = 0; i < total; i += 1) {
@@ -299,9 +315,12 @@ export const draftService = {
         if (res.isCover) {
           coverIndex = finalIndex;
         }
+        if (res.draftMediaId) {
+          mediaIds[finalIndex] = res.draftMediaId;
+        }
       }
     }
 
-    return { files, tags, coverIndex };
+    return { files, tags, coverIndex, mediaIds };
   }
 };

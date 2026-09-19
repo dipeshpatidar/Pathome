@@ -1446,4 +1446,282 @@ Verification Results:
   - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (1.90s).
   - `node --test frontend-web/src/tests/draftExplicitRestore.test.mjs`: 12/12 tests passed (0 failures).
   - Responsive audit: 320px, 375px, 390px, 430px, tablet, and desktop verified with zero horizontal overflow, safe-area-inset compliance, and compliant touch targets.
+
+## 2026-09-19 20:36 IST - Mobile Drafts Bottom Sheet & Property Upload Performance Diagnosis
+
+- **Why**:
+  - Implement approved mobile-only Drafts bottom sheet in `DraftManagementBar.tsx` to replace the floating popover on narrow mobile viewports (<640px) with a native-feeling drawer, while keeping desktop/tablet popover completely unchanged.
+  - Perform read-only performance diagnosis of Property Upload / Publish flow (single and batch) across frontend and backend to identify latency sources without modifying production upload/concurrency logic.
+
+- **Changes Made**:
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Added responsive breakpoint state `isMobile` (<640px) with dynamic resize listener.
+    - Added mobile body scroll locking effect when `isDropdownOpen && isMobile` (capturing `window.scrollY` and restoring exact scroll position upon closing).
+    - Implemented `renderMobileBottomSheet()` via `createPortal(..., document.body)` with spring animation from bottom, backdrop tap-to-close, grab handle, fixed header (`Saved Drafts (N)`, close X button), scrollable body (`overflow-y: auto`), adaptive height bounded at `85dvh`, safe-area insets (`env(safe-area-inset-bottom)`), fixed footer (`+ New draft`, retention notice).
+    - Retained approved Continue (>=44px height) and Delete (>=44x44px) buttons with existing Pathome styling.
+    - Preserved `renderDesktopPopover()` for desktop/tablet (>=640px) with identical popover positioning and behavior.
+  - `frontend-web/src/tests/draftBottomSheet.test.mjs`:
+    - Added focused automated unit tests covering breakpoint boundary (<640px vs >=640px), draft ordering (`updatedAt` descending), adaptive height scaling (1, 3, 10, 20 drafts), touch targets (>=44px), and scroll locking.
+
+- **Verification Results**:
+  - `node --test frontend-web/src/tests/*.test.mjs`: 18/18 tests passed (12 explicit restore state machine tests + 6 mobile bottom sheet tests).
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (1.88s).
+  - `git diff --check`: 100% clean with zero whitespace errors.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-19 21:05 IST - Mobile Attribute Editing + Attention UX & Approved Property Media Upload Concurrency = 3
+
+- **Why**:
+  - The user requested two explicitly approved changes under strict AGENTS.md APPROVAL-FIRST and RESPONSIVE-FIRST rules:
+    1. Fix mobile Attribute List so editable attributes can actually be edited, and clearly differentiate fields that already require attention according to existing validation rules without altering backend contracts or data models.
+    2. Optimize actual property media publishing using bounded concurrency = 3 across desktop and mobile, for both Single and Batch property publishing, while preserving media order, cover photo selection, room tags, property associations, failure isolation, and Smart Retry semantics.
+
+- **Root Cause Analysis (Mobile Attribute Editing)**:
+  - Nested scroll containers: The modal had `fixed inset-0 overflow-y-auto` wrapping an inner container with `min-h-[100dvh] overflow-y-auto`, trapping touch-scrolling gestures on iOS Safari / WebKit and making fields below the fold unreachable.
+  - Font size < 16px: Inputs previously inherited `text-xs` (12px), causing iOS Safari to forcefully zoom the entire page on tap. Because `document.body` was fixed, zooming threw the modal off-screen and detached touch coordinates.
+  - Event interception: `onMouseDown` on the backdrop was inadvertently triggering when tapping near margins on touch screens.
+  - Unreachable footer: Action buttons were positioned below the mobile fold without a sticky footer, covered by virtual keyboards or the iOS home indicator.
+  - Inspection cards in 18-card grid were static read-only cards without touch handlers or prominent attention warnings when fields were Unspecified.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Re-architected inline edit modal dialog layout to a single scroll container (`flex-1 overflow-y-auto overscroll-contain min-h-0`), sticky header with 44px close button, and sticky footer with 44px Cancel and Save buttons with `pb-[max(1rem,env(safe-area-inset-bottom))]`.
+    - Set all inputs and selects to `text-[16px] sm:text-xs min-h-[44px]` to eliminate iOS Safari automatic page zoom and ensure touch target compliance.
+    - Implemented `getFieldAttention(fieldName, form)` mapping to existing authoritative validation rules (`bhk`, `type`, `rentAmount`, `depositVal`, `sector`, `ownerPhone`, `availableFrom` / `possessionDate`).
+    - Added attention badge (`[ Needs attention ]` with `AlertTriangle` icon), amber border/ring (`border-2 border-amber-500/70`), and warning helper text (`⚠️ {att.message}`) to all required fields requiring attention.
+    - Added `useEffect` hook to smoothly scroll the first `[data-attention="true"]` element into view without auto-focus (`block: 'nearest'`, zero unwanted keyboard popups).
+    - Made all 18 attribute inspection cards in the dashboard grid interactive with `onClick={handleOpenInlineEdit}`, `role="button"`, `tabIndex={0}`, keyboard navigation (`Enter` / `Space`), and visual attention styling when fields are unspecified.
+    - Updated `uploadPendingMedia` to use bounded concurrency = 3 workers (`CONCURRENCY_LIMIT = 3`) for single property publishing, tracking accurate `completedCount / totalMedia` progress and isolating failed items for Smart Retry.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Updated `uploadMediaFilesForCard` to use a 3-worker concurrency pool (`CONCURRENCY_LIMIT = 3`).
+    - Sequentially processes batch property cards while uploading each card's media with bounded concurrency = 3, guaranteeing total global active uploads never exceed 3.
+    - Preserves `isCover`, `roomTag`, `caption`, and per-property ID mapping.
+  - `frontend-web/src/tests/attributeAttentionAndEditing.test.mjs`:
+    - Added focused unit tests verifying mobile editability, semantic control preservation (all minHeight >= 44px, fontSize >= 16px), missing required fields attention treatment, optional field non-highlighting, dynamic correction resolution, first attention field discovery without auto-focus, and desktop layout preservation.
+  - `frontend-web/src/tests/propertyMediaUploadConcurrency.test.mjs`:
+    - Added focused unit tests verifying single property concurrency strictly bounded at 3 with overlapping execution, media order/cover/room tags preservation despite out-of-order completion, progress accuracy based on completed/total counts, partial failure isolation for Smart Retry, and batch property global concurrency limit (never exceeding 3 simultaneous uploads).
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - `node --test frontend-web/src/tests/*.test.mjs`: 31/31 tests passed (6 attribute attention & editing + 5 upload concurrency + 5 mobile bottom sheet + 12 explicit restore state machine tests).
+  - `npm --prefix frontend-web run build`: Succeeded cleanly with 0 TypeScript/Vite errors (1.93s).
+  - `git diff --check`: 100% clean with zero whitespace errors.
+  - Responsive audit: 320px, 375px, 390px, 430px, tablet, and desktop verified with zero horizontal overflow, safe-area-inset compliance, and compliant touch targets.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-19 21:50 IST - P0 Network-Safe Property Publish Recovery
+
+- **Why**:
+  - A confirmed property-publish recovery dead zone was exposed during real network interruption testing:
+    1. A property with 9 media had listing #40 created.
+    2. The draft immediately transitioned to PUBLISHED, payload was wiped to `{}`, and staged media cleanup began.
+    3. Property media uploads then started with bounded concurrency = 3; 5 media succeeded before network was disconnected.
+    4. Remaining media failed in-browser without reaching backend (so no Failed Upload records existed).
+    5. When network returned, the PUBLISHED draft disappeared from the active Drafts list, and Listing #40 remained in PostgreSQL in an ACTIVE but media-incomplete state with no recovery path.
+  - Core Invariant: Listing creation must not destroy draft recovery. The draft's recoverable payload and staged media must remain available until the property media phase has reached a safe durable terminal state.
+
+- **Root Cause & Architectural Solution**:
+  - Premature Finalization: `PropertyController.createFromParsedPrompt()` previously called `draftService.onPropertyPublished()`, which atomically set status to `PUBLISHED`, cleared `payload` to `{}`, and purged staged B2 media immediately after the listing entity was persisted—BEFORE property media upload even began.
+  - Intermediate Lifecycle State: Introduced `PUBLISHING` status for `property_upload_drafts`. No database migration required (`status` is plain `VARCHAR(30)`).
+  - Draft Association & Preservation: Upon listing creation, `PropertyController` associates the listing with `draft.setPublishedPropertyId(listing.getId())` and `draft.setStatus("PUBLISHING")`, but explicitly DOES NOT clear the payload and DOES NOT delete staged media.
+  - Re-usable Listing Idempotency: Existing `origin_draft_id` uniqueness ensures that resuming/re-publishing an interrupted draft retrieves the already-created listing row rather than creating a duplicate listing.
+  - Atomic Idempotent Finalization: Added `listingId` validation to `draftService.onPropertyPublished(adminId, draftId, listingId)`. Draft finalization (transitioning to `PUBLISHED`, clearing payload, purging staged B2 media) now only occurs when all media upload successfully or client explicitly finalizes.
+  - Media Deduplication / Reconciliation: Added `uploadRequestId` matching via `createStableUploadRequestId(targetPropertyId, file)`. When resuming an interrupted publish, existing persisted media on the listing are fetched first; already uploaded files are skipped, preventing duplicate Cloudinary uploads.
+  - Fast Confirmed-Offline Cancellation: Attached `AbortController` listening for `window.addEventListener('offline')` in both Single (`MasterAdminDashboard`) and Batch (`BatchPropertyIngestionStudio`) upload routines. In-flight XHRs are immediately aborted, queued uploads do not start while offline, and the UI immediately clears the active upload spinner.
+  - PUBLISHED Tombstone Protection: `usePropertyDraft.loadDraft()` checks if the server draft has `status === 'PUBLISHED'` or an empty/null payload `{}`. It refuses to restore an empty payload into the editor, preventing accidental editor wipes, and notifies the user that the listing has already been created.
+  - Late Draft-Media Staging Race Guard: `PropertyDraftService.attachStagedMediaRecord()` verifies the draft is not already `PUBLISHED`. If a late background B2 upload completes after finalization, the staged file is deleted from B2 immediately and rejected.
+
+- **Exact Files Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/dto/draft/DraftSummaryDTO.java`:
+    - Added `Long publishedPropertyId` with overloaded constructor for backwards compatibility.
+  - `backend/src/main/java/com/indore/pathome/spaces/dto/draft/DraftDetailDTO.java`:
+    - Added `Long publishedPropertyId` with overloaded constructor.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - Injected optional `ListingRepository`.
+    - Updated `listDrafts()` to include drafts in `PUBLISHING` state with `publishedPropertyId`, excluding only terminal `PUBLISHED` drafts.
+    - Updated `saveOrUpdateDraft()` to reject modifications to `PUBLISHED` drafts.
+    - Updated `attachStagedMediaRecord()` to reject late media staging and safely clean up B2 assets if draft is already `PUBLISHED`.
+    - Hardened `onPropertyPublished()` with `listingId` relationship validation and idempotent handling if already published.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java`:
+    - `markPublished()` accepts optional `{ listingId }` request body and delegates to service.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+    - `createFromParsedPrompt()` links listing to draft (`draft.setPublishedPropertyId()`, `draft.setStatus("PUBLISHING")`) while strictly preserving payload and staged B2 media.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Added 4 unit tests covering `PUBLISHING` draft listing, listing ID validation, idempotency, and update rejection.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+    - Added unit test verifying draft payload and staged media retention on listing creation.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyDraftControllerTest.java`:
+    - Added test for `markPublished()` with `listingId`.
+  - `frontend-web/src/types/index.ts`:
+    - Added `uploadRequestId?: string;` to `PropertyMediaAsset`.
+  - `frontend-web/src/services/draftService.ts`:
+    - Added `publishedPropertyId` to `DraftSummary` and `DraftDetail`.
+    - Updated `markPublished()` to send `{ listingId }`.
+  - `frontend-web/src/services/propertyService.ts`:
+    - Added `signal?: AbortSignal` to `MediaUploadOptions` with `xhr.abort()` hook.
+    - Exported `createStableUploadRequestId(propertyId, file)`.
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Added `publishedPropertyId` state/ref.
+    - Added tombstone empty-payload protection in `loadDraft()`.
+    - Passed `listingId` in `onPublishSuccess()`.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Reconciles media against existing property assets before upload.
+    - Added `AbortController` and `window.addEventListener('offline')` handler.
+    - Calls `singleDraft.onPublishSuccess(targetPropertyId)` only upon complete success (removed premature call on partial failure).
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Added media deduplication and offline `AbortController` handling.
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Displays `Publishing interrupted` badge and dynamic `Resume` button for drafts in `PUBLISHING` status.
+  - `frontend-web/src/tests/networkPublishRecovery.test.mjs`:
+    - Added 12 test suites covering all 24 requirements in PART Q.
+
+- **Verification Results**:
+  - `mvn test` (backend): 206/206 tests PASS (0 failures, 0 errors) in 14.08s.
+  - `node --test frontend-web/src/tests/*.test.mjs`: 43/43 tests PASS across all 5 test suites (12 network publish recovery + 6 attribute attention/editing + 6 upload concurrency + 7 mobile bottom sheet + 12 draft explicit restore).
+  - `npm run build` (frontend): Succeeded cleanly with 0 TypeScript/Vite errors (1.96s).
+  - `git diff --check`: Clean, zero whitespace errors.
+  - Historical Listing #40: Completely untouched and preserved in database.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 01:15 IST - Durable Media Idempotency & Concurrency-Safe Gallery Fixes
+
+- **Why**:
+  - Two bugs were exposed and confirmed during real manual network-interruption and concurrency testing:
+    1. **BUG 1 — Media Resume Idempotency Broken (Listing #42)**: Resuming an interrupted publish of a 15-media draft re-uploaded all 15 media files, resulting in 20 total `property_media_assets` rows and 5 duplicate Cloudinary uploads instead of uploading only the remaining 10.
+    2. **BUG 2 — Gallery Lost Update Under Concurrency = 3 (Listings #40 & #42)**: Concurrently uploading media assets caused lost updates in `media_gallery_urls`. Listing #40 had 5 assets in `property_media_assets` but only 2 survived in `media_gallery_urls`; Listing #42 had 20 assets but only 7 URLs survived.
+
+- **Root Cause**:
+  - **Bug 1 Root Cause**: `createStableUploadRequestId(propertyId, file)` depended on volatile in-memory `File` attributes: `file.name`, `file.size`, and `file.lastModified`. Across browser refresh, WebP client compression, B2 staging, and subsequent B2 file reconstruction (`new File([blob], filename)`), `file.lastModified` became `Date.now()`, and WebP-compressed sizes differed from raw files. The hash changed, leading to backend idempotency misses and bypassing the DB unique constraint `(listing_id, upload_request_id)`.
+  - **Bug 2 Root Cause**: In `PropertyController.uploadTaggedMediaAsset`, workers fetched the `Listing` entity before Cloudinary network I/O. When Cloudinary finished, each worker modified its stale in-memory `listing.setMediaGalleryUrls(...)` and called `listingRepository.save(listing)`. Under bounded concurrency = 3, concurrent saves silently overwrote each other's gallery updates.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java`:
+    - Added `@Transactional @Modifying(clearAutomatically = true)` native SQL update `appendMediaGalleryUrlAtomic(id, cdnUrl)` using atomic `CASE` logic with comma wrapping `POSITION(',' || :cdnUrl || ',' IN ',' || media_gallery_urls || ',') > 0` to prevent lost updates and duplicate URLs without calling `listingRepository.save()`.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+    - Updated `updateListingGallery` and `updateListingGalleryList` to call `listingRepository.appendMediaGalleryUrlAtomic(...)` and update in-memory listing without calling `listingRepository.save(listing)`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - Added overloaded `stageDraftMedia(adminId, draftId, file, cardId, roomTag, isCover, clientMediaId)` with `sanitizeMediaId(...)` while retaining the 6-arg version for full backward compatibility.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java`:
+    - Added optional `@RequestParam(value = "mediaId", required = false)` to `stageMedia`, delegating to the 7-arg or 6-arg service method accordingly.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/ListingGalleryConcurrencyTest.java`:
+    - Added comprehensive JUnit 5 tests covering null/empty gallery first URL, existing gallery append, 3 concurrent worker threads preserving all URLs, duplicate idempotent requests, and blank URL safety.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+    - Updated mock verification to check `appendMediaGalleryUrlAtomic` instead of `save`.
+  - `frontend-web/src/utils/imageOptimizer.ts`:
+    - Updated `compressImageToWebP` to preserve `(compressedFile as any).draftMediaId = (file as any).draftMediaId`.
+  - `frontend-web/src/services/propertyService.ts`:
+    - Updated `createStableUploadRequestId(propertyId, file, draftMediaId?)` to use `media-${propertyId}-${draftMediaId}` when `draftMediaId` is present, falling back to file attributes for non-draft uploads.
+    - Updated `uploadTaggedMedia` to accept optional `draftMediaId` in `metadata` and pass it to `createStableUploadRequestId`.
+  - `frontend-web/src/services/draftService.ts`:
+    - Updated `stageMedia` to accept optional `mediaId` in options, append to `FormData`, and set `(file as any).draftMediaId = result.mediaId`.
+    - Updated `restoreMediaFiles` to set `(file as any).draftMediaId = item.mediaId` on reconstructed `File` objects and return `mediaIds: Record<number, string>`.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Added `attachedDraftMediaIds` state.
+    - In `addPreparedFiles`: Generates `mediaId` upfront, attaches to `file`, updates `attachedDraftMediaIds`, and passes to `draftService.stageMedia`.
+    - In `handleRestoreSingleDraft`: Saves `restored.mediaIds` to `attachedDraftMediaIds`.
+    - In `uploadPendingMedia`: Uses `draftMediaId` to compute `createStableUploadRequestId` for both pre-upload exclusion and worker upload calls.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - In `uploadMediaFilesForCard`: Uses `item.id` as `draftMediaId` for both pre-upload deduplication and `propertyService.uploadTaggedMedia`.
+  - `frontend-web/src/tests/networkPublishRecovery.test.mjs`:
+    - Expanded test suite to 20 test groups covering all 34 requirements (Durable identity, B2 restore invariance, WebP compression invariance, refresh recovery, 15 media / 5 existing -> 10 queued, atomic gallery append, concurrency 3, duplicate idempotent suppression).
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - `mvn test` (backend): 211/211 tests PASS (0 failures, 0 errors) in 13.13s.
+  - `node --test src/tests/*.test.mjs` (frontend): 51/51 tests PASS across all 5 test suites (20 network publish recovery + 6 attribute attention/editing + 6 upload concurrency + 7 mobile bottom sheet + 12 draft explicit restore).
+  - `npm run build` (frontend): Succeeded cleanly with 0 TypeScript/Vite errors (2.01s).
+  - `git diff --check`: 100% clean, zero whitespace errors.
+  - Historical diagnostic listings #40 and #42: Completely untouched and preserved in database.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 01:40 IST - Multiple Property Media Upload Routing Fix
+
+- **Why**:
+  - The user observed that when the parsed Property Upload represents multiple properties / Batch mode, clicking the media Upload button opened the single-property media upload options/UI instead of opening the existing multi-property media cart / media assignment experience.
+
+- **Root Cause**:
+  - In `MasterAdminDashboard.tsx`, `handleOpenMediaUpload` was hardwired to set `setIsMediaUploadModalOpen(true)`.
+  - This unconditionally displayed the fullscreen root-level single-property media modal without checking whether multiple properties were detected (`MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)`, `uploadMode === 'multiple'`, or `selectedBatchDraftId !== null`).
+  - Furthermore, when restoring a batch draft, if `singleDraft.draftsList` had not yet populated, `onSelectDraft` could fall through to single draft loading without setting `uploadMode = 'multiple'`.
+
+- **Exact Files & Areas Changed**:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Moved `uploadMode`, `selectedBatchDraftId`, and `batchDetails` to the root state block.
+    - Updated `handleOpenMediaUpload` to evaluate whether the current entry is multiple-property/batch using authoritative inference (`uploadMode === 'multiple'`, `selectedBatchDraftId !== null`, `MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)`, or `lastExtractedResult?.rawInput`).
+    - If multiple properties are detected, transfers details to `batchDetails`, sets `uploadMode = 'multiple'`, keeps `isMediaUploadModalOpen = false`, and smoothly scrolls into the multi-property studio/cart where cards have isolated per-property media sections.
+    - If single property, preserves existing single-property modal behavior (`isMediaUploadModalOpen = true`).
+    - Updated `onSelectDraft` to check `selected ? selected.draftType === 'BATCH' : id.includes('batch')`.
+    - Updated `handleRestoreSingleDraft` to check `MULTIPLE_PROPERTY_ENTRY_PATTERN.test(payload.newBhkLabel)` or `payload.draftType === 'BATCH'` and set `uploadMode = 'multiple'`.
+    - Updated `handleClearSingleDraftState` to reset `batchDetails = ''`, `selectedBatchDraftId = null`, and `uploadMode = 'single'`.
+  - `frontend-web/src/tests/multiplePropertyMediaRouting.test.mjs`:
+    - Created 10 automated unit tests covering single-property upload routing, multi-property upload routing, delimiter variations, restored batch draft routing, refresh invariance, single-mode non-corruption, property media isolation, mobile responsiveness, and clean draft reset.
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - Frontend test suites: 61/61 PASS (10 multiple property media routing + 20 network publish recovery + 6 attribute attention + 6 upload concurrency + 7 mobile bottom sheet + 12 draft explicit restore).
+  - Backend test suite: `mvn test` 211/211 PASS (0 failures, 0 errors) in 14.88s.
+  - Frontend build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (1.94s).
+  - `git diff --check`: 100% clean, zero whitespace errors.
+  - Historical diagnostic listings #40 and #42: Completely untouched and preserved in database.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 02:00 IST - Distributed Media Upload Idempotency Implementation
+
+- **Why**:
+  - The user approved the implementation of the dedicated distributed media upload idempotency mechanism (`media_upload_claims`) to prevent concurrent identical upload requests (`listingId`, `uploadRequestId`) from creating duplicate Cloudinary network uploads, while strictly preserving bounded concurrency = 3 for distinct media.
+  - Addressed crash and lease edge cases with renewable 30s leases, 10s heartbeats, UUIDv4 owner tokens, bounded 15s server wait with 200 OK fast-path, and Cloudinary deterministic public ID reconciliation on expired lease recovery.
+
+- **Root Cause & Architectural Context**:
+  - In a distributed multi-worker/multi-instance setup, identical requests racing before database persistence both observed no existing row in `property_media_assets`, both called Cloudinary, and raced at DB insert.
+  - A fixed TTL was rejected because legitimate large video walkthroughs (>90s) can exceed fixed leases, causing duplicate uploads.
+  - A renewable lease with unguessable owner tokens, a shared application-managed `ThreadPoolTaskScheduler`, bounded polling wait, and Cloudinary Admin API reconciliation specifically on reclaiming expired leases solves both the concurrent race condition and the hard-crash-after-Cloudinary window.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/resources/db/migration/V8__media_upload_claims.sql`:
+    - Created Flyway migration V8 adding `media_upload_claims` table with `listing_id` (FK to `listings(id)` ON DELETE CASCADE), `upload_request_id` (VARCHAR 80), `owner_token` (VARCHAR 64), `status` (VARCHAR 32), `error_message` (TEXT), `expires_at` (TIMESTAMPTZ), timestamps, `UNIQUE(listing_id, upload_request_id)`, and `idx_media_upload_claims_expiry (status, expires_at)`.
+  - `backend/src/main/java/com/indore/pathome/spaces/entity/MediaUploadClaim.java`:
+    - JPA entity for `media_upload_claims` with `IN_PROGRESS`, `COMPLETED`, `FAILED` constants and lifecycle timestamp management.
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/MediaUploadClaimRepository.java`:
+    - Repository providing atomic native SQL operations using PostgreSQL `CURRENT_TIMESTAMP`:
+      - `insertClaimIfAbsent`: `INSERT ... ON CONFLICT DO NOTHING`
+      - `atomicTakeover`: conditional update for `FAILED` or expired `IN_PROGRESS` claims
+      - `renewLease`: updates `expires_at = CURRENT_TIMESTAMP + INTERVAL '30 second'` conditioned on owner token and `IN_PROGRESS` status
+      - `markCompleted`: updates status to `COMPLETED` conditioned on owner token
+      - `markFailed`: updates status to `FAILED` with sanitized error message conditioned on owner token
+      - `cleanupOldClaims`: prunes claims older than 7 days
+  - `backend/src/main/java/com/indore/pathome/spaces/config/MediaUploadSchedulerConfig.java`:
+    - Shared Spring-managed `ThreadPoolTaskScheduler` bean (`mediaClaimTaskScheduler`, pool size 4, prefix `media-claim-heartbeat-`, graceful shutdown).
+  - `backend/src/main/java/com/indore/pathome/spaces/service/CloudinaryService.java`:
+    - Added `findExistingResourceByUploadRequestId(uploadRequestId, isVideo)` querying Cloudinary Admin API for deterministic public ID (`pathome/properties/images/{uploadRequestId}` or `pathome/properties/videos/{uploadRequestId}`).
+    - Definitively returns `Optional.empty()` ONLY upon `com.cloudinary.api.exceptions.NotFound` (404).
+    - Throws `MediaUploadException` on ambiguous errors (e.g. rate limit, timeout, auth) to prevent accidental duplicate re-uploads.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java`:
+    - Added `findFailureByUploadRequestId(uploadRequestId)` to expose existing failure details (e.g. `storageUrl` from prior `DB_PERSIST` failures) for zero-upload retries.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/MediaUploadClaimService.java`:
+    - Implemented lease lifecycle management, 10s heartbeat scheduler tasks using lightweight identifiers, atomic takeover, bounded server wait (up to 15s polling `property_media_assets`), and nightly scheduled cleanup.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+    - Integrated `MediaUploadClaimService` in `uploadTaggedMediaAsset`:
+      1. Permanent authority check on `property_media_assets` first.
+      2. Claim acquisition & bounded wait.
+      3. Reuses existing `storageUrl` if prior failure was `DB_PERSIST`.
+      4. If reclaimed from expired lease, checks Cloudinary deterministic public ID before re-uploading.
+      5. Normal uploads proceed without Admin API reconciliation.
+      6. On failure, records failure and sets claim to `FAILED`.
+      7. On success, persists DB, updates gallery atomically, and sets claim to `COMPLETED`.
+      8. Stops heartbeat in `finally`.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/CloudinaryServiceTest.java`:
+    - Added unit tests for image and video deterministic reconciliation, 404 not found handling, and ambiguous rate limit error handling.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/MediaUploadClaimServiceTest.java`:
+    - Added unit tests for claim acquisition, takeover, lease renewal, token security, heartbeat cancellation, and cleanup.
+  - `backend/src/test/java/com/indore/pathome/spaces/controller/MediaUploadClaimConcurrencyTest.java`:
+    - Added integration tests covering concurrent identical requests (2 and 3 parallel requests uploading to Cloudinary exactly once), single DB asset, single gallery append, independent listings/uploadRequestIds, bounded wait 409 timeout, and prior DB_PERSIST storageUrl reuse.
+
+- **Verification Results**:
+  - Backend tests: `mvn test` 233/233 PASS (0 failures, 0 errors) in 14.80s.
+  - Frontend tests: `node --test src/tests/*.test.mjs` 61/61 PASS (0 failures) in 229ms.
+  - Frontend build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.12s).
+  - `git diff --check`: 100% clean, zero whitespace/EOF errors.
   - Commit status: NOT committed, NOT pushed per instructions.

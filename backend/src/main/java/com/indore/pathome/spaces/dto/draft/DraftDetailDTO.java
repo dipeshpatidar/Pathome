@@ -13,5 +13,21 @@ public record DraftDetailDTO(
         String payload,
         List<DraftMediaDTO> media,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
-) {}
+        LocalDateTime updatedAt,
+        Long publishedPropertyId
+) {
+    public DraftDetailDTO(
+            String draftId,
+            String draftType,
+            String status,
+            String titleSummary,
+            int itemCount,
+            int version,
+            String payload,
+            List<DraftMediaDTO> media,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt
+    ) {
+        this(draftId, draftType, status, titleSummary, itemCount, version, payload, media, createdAt, updatedAt, null);
+    }
+}

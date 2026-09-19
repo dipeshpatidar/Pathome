@@ -196,6 +196,15 @@ public class FailedUploadService {
     }
 
     /**
+     * Looks up the full failure record for a given {@code uploadRequestId}.
+     */
+    public Optional<MediaUploadFailure> findFailureByUploadRequestId(String uploadRequestId) {
+        if (uploadRequestId == null) return Optional.empty();
+        return repository.findByUploadRequestId(uploadRequestId);
+    }
+
+
+    /**
      * Admin dismiss — marks record as DISMISSED so it no longer appears in the default view.
      * Proactively cleans up any staged media binary.
      */

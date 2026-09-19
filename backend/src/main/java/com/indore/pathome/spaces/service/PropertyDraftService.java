@@ -12,6 +12,7 @@ import com.indore.pathome.spaces.dto.draft.SaveDraftRequest;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -63,6 +64,13 @@ public class PropertyDraftService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
 
+    @Autowired(required = false)
+    private ListingRepository listingRepository;
+
+    public void setListingRepository(ListingRepository listingRepository) {
+        this.listingRepository = listingRepository;
+    }
+
     // L1 in-memory cache: (adminId + ":" + draftId) -> draftId for fast O(1) checks
     private final ConcurrentHashMap<String, String> activeDraftCache = new ConcurrentHashMap<>();
 
@@ -101,8 +109,8 @@ public class PropertyDraftService {
 
         List<DraftSummaryDTO> result = new ArrayList<>(drafts.size());
         for (PropertyUploadDraft draft : drafts) {
-            // Never list drafts that have already been successfully published
-            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus()) || draft.getPublishedPropertyId() != null) {
+            // Only exclude drafts that have already reached terminal PUBLISHED status
+            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
                 continue;
             }
             List<PropertyDraftMedia> mediaList = draftMediaRepository.findAllByDraftIdAndAdminId(draft.getDraftId(), cleanAdminId);
@@ -115,7 +123,8 @@ public class PropertyDraftService {
                     draft.getVersion() != null ? draft.getVersion() : 1,
                     mediaList.size(),
                     draft.getCreatedAt(),
-                    draft.getUpdatedAt()
+                    draft.getUpdatedAt(),
+                    draft.getPublishedPropertyId()
             ));
         }
         return result;
@@ -145,7 +154,8 @@ public class PropertyDraftService {
                 draft.getPayload(),
                 mediaList,
                 draft.getCreatedAt(),
-                draft.getUpdatedAt()
+                draft.getUpdatedAt(),
+                draft.getPublishedPropertyId()
         );
     }
 
@@ -175,6 +185,10 @@ public class PropertyDraftService {
             // Ownership check: Admin A cannot overwrite Admin B's draft
             if (!draft.getAdminId().equals(cleanAdminId)) {
                 throw new EntityNotFoundException("Draft not found or access denied: " + request.draftId());
+            }
+
+            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
+                throw new IllegalStateException("Draft is already published and cannot be modified.");
             }
 
             // Optimistic concurrency check
@@ -231,7 +245,8 @@ public class PropertyDraftService {
                 saved.getPayload(),
                 mediaList,
                 saved.getCreatedAt(),
-                saved.getUpdatedAt()
+                saved.getUpdatedAt(),
+                saved.getPublishedPropertyId()
         );
     }
 
@@ -330,6 +345,18 @@ public class PropertyDraftService {
             String roomTag,
             Boolean isCover
     ) {
+        return stageDraftMedia(adminId, draftId, file, cardId, roomTag, isCover, null);
+    }
+
+    public DraftMediaDTO stageDraftMedia(
+            String adminId,
+            String draftId,
+            MultipartFile file,
+            String cardId,
+            String roomTag,
+            Boolean isCover,
+            String clientMediaId
+    ) {
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -358,7 +385,9 @@ public class PropertyDraftService {
         PropertyUploadDraft initialDraft = ensureDraftExists(cleanAdminId, draftId);
 
         // Phase B: Stream binary to B2 object storage OUTSIDE of database transaction
-        String mediaId = "dm-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String mediaId = (clientMediaId != null && !clientMediaId.isBlank())
+                ? sanitizeMediaId(clientMediaId)
+                : "dm-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         String safeFilename = sanitizeFilename(file.getOriginalFilename());
         String stagingKey = "drafts/" + sanitizeKeyPart(cleanAdminId) + "/" + draftId + "/" + mediaId + "_" + safeFilename;
 
@@ -464,6 +493,12 @@ public class PropertyDraftService {
                 .orElse(initialDraft);
         if (draft == null) {
             throw new EntityNotFoundException("Draft not found or access denied: " + draftId);
+        }
+
+        if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
+            log.warn("Late draft media staging rejected for draft [{}]: draft is already PUBLISHED. Cleaning up staged B2 key [{}]", draftId, stagingKey);
+            cleanupStagedMedia(stagingKey);
+            throw new IllegalStateException("Draft is already published. New media cannot be attached.");
         }
 
         // 2. Clear previous cover photo if new media is designated as cover
@@ -612,17 +647,52 @@ public class PropertyDraftService {
         return getDraft(adminId, draftId);
     }
 
-    /**
-     * Invoked when a single property has successfully been published.
-     * Safely purges temporary staged media from B2 and database records,
-     * and transitions the draft to a lightweight PUBLISHED tombstone.
-     */
     @Transactional
     public void onPropertyPublished(String adminId, String draftId) {
+        onPropertyPublished(adminId, draftId, null);
+    }
+
+    /**
+     * Invoked when a single property publish workflow has reached safe terminal completion.
+     * Safely purges temporary staged media from B2 and database records,
+     * retains publishedPropertyId, and transitions the draft to a lightweight PUBLISHED tombstone.
+     */
+    @Transactional
+    public void onPropertyPublished(String adminId, String draftId, Long listingId) {
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
         try {
+            Optional<PropertyUploadDraft> draftOpt = draftRepository.findByDraftIdAndAdminId(draftId, cleanAdminId);
+            if (draftOpt.isEmpty()) {
+                log.debug("Draft [{}] not found for admin [{}] during publish finalization", draftId, cleanAdminId);
+                return;
+            }
+
+            PropertyUploadDraft draft = draftOpt.get();
+
+            // Idempotency: if draft is already PUBLISHED, return cleanly
+            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
+                log.info("Draft [{}] is already PUBLISHED tombstone. Finalization is idempotent.", draftId);
+                return;
+            }
+
+            // Relationship verification: ensure draft publishedPropertyId matches listingId if provided
+            if (listingId != null) {
+                if (draft.getPublishedPropertyId() != null && !draft.getPublishedPropertyId().equals(listingId)) {
+                    throw new IllegalArgumentException("Draft [" + draftId + "] is linked to listing #"
+                            + draft.getPublishedPropertyId() + ", cannot finalize for listing #" + listingId);
+                }
+                if (listingRepository != null) {
+                    listingRepository.findById(listingId).ifPresent(listing -> {
+                        if (listing.getOriginDraftId() != null && !listing.getOriginDraftId().equals(draftId)) {
+                            throw new IllegalArgumentException("Listing #" + listingId + " does not originate from draft [" + draftId + "]");
+                        }
+                    });
+                }
+                draft.setPublishedPropertyId(listingId);
+            }
+
             // 1. Purge all staged media files belonging to this draft from object storage
             List<PropertyDraftMedia> mediaList = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
             for (PropertyDraftMedia media : mediaList) {
@@ -631,19 +701,19 @@ public class PropertyDraftService {
             draftMediaRepository.deleteAllByDraftIdAndAdminId(draftId, cleanAdminId);
 
             // 2. Mark draft record as lightweight PUBLISHED tombstone, wiping payload to free storage
-            draftRepository.findByDraftIdAndAdminId(draftId, cleanAdminId).ifPresent(draft -> {
-                draft.setStatus("PUBLISHED");
-                draft.setPayload("{}");
-                draft.setItemCount(0);
-                draft.setUpdatedAt(LocalDateTime.now());
-                draftRepository.save(draft);
-            });
+            draft.setStatus("PUBLISHED");
+            draft.setPayload("{}");
+            draft.setItemCount(0);
+            draft.setUpdatedAt(LocalDateTime.now());
+            draftRepository.save(draft);
 
             activeDraftCache.remove(cleanAdminId + ":" + draftId);
-            log.info("Converted draft [{}] into PUBLISHED tombstone and cleaned {} staged media items for admin [{}]",
-                    draftId, mediaList.size(), cleanAdminId);
+            log.info("Converted draft [{}] into PUBLISHED tombstone linked to listing #{} and cleaned {} staged media items for admin [{}]",
+                    draftId, draft.getPublishedPropertyId(), mediaList.size(), cleanAdminId);
         } catch (EntityNotFoundException e) {
             log.debug("Draft [{}] was already cleaned up", draftId);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("Non-fatal error cleaning draft [{}] media after publication: {}", draftId, e.getMessage());
         }
@@ -747,6 +817,12 @@ public class PropertyDraftService {
         if (filename == null || filename.isBlank()) return "media_file";
         String clean = SAFE_KEY_CHARS_PATTERN.matcher(filename.trim()).replaceAll("_");
         return clean.length() > 80 ? clean.substring(0, 80) : clean;
+    }
+
+    private String sanitizeMediaId(String input) {
+        if (input == null || input.isBlank()) return null;
+        String clean = KEY_PART_CLEAN_PATTERN.matcher(input.trim()).replaceAll("_");
+        return clean.length() > 64 ? clean.substring(0, 64) : clean;
     }
 
     private void validateDraftId(String draftId) {

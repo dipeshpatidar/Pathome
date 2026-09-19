@@ -240,4 +240,59 @@ public class CloudinaryService {
             );
         }
     }
+
+    /**
+     * Reconciles deterministic Cloudinary asset for expired claim crash recovery.
+     * Uses Admin API resource() lookup with exact public_id:
+     * - Images: pathome/properties/images/{uploadRequestId}
+     * - Videos: pathome/properties/videos/{uploadRequestId}
+     *
+     * Returns:
+     * - Optional.of(result) if asset exists in Cloudinary
+     * - Optional.empty() ONLY if Cloudinary definitively returns NotFound (HTTP 404)
+     * - Throws MediaUploadException for ambiguous errors, rate limits, network timeouts, auth errors.
+     *   Ambiguous errors MUST NOT be treated as "not found" to prevent duplicate uploads.
+     */
+    public java.util.Optional<CloudinaryUploadResult> findExistingResourceByUploadRequestId(
+            String uploadRequestId,
+            boolean isVideo) {
+
+        if (uploadRequestId == null || uploadRequestId.isBlank()) {
+            return java.util.Optional.empty();
+        }
+
+        String folder = isVideo ? "pathome/properties/videos" : "pathome/properties/images";
+        String publicId = folder + "/" + uploadRequestId.trim();
+        String resourceType = isVideo ? "video" : "image";
+        Map<String, Object> options = ObjectUtils.asMap("resource_type", resourceType);
+
+        try {
+            Map<?, ?> response = cloudinary.api().resource(publicId, options);
+            if (response != null) {
+                String secureUrl = Objects.toString(response.get("secure_url"), "");
+                String returnedPublicId = Objects.toString(response.get("public_id"), publicId);
+                String returnedResourceType = Objects.toString(response.get("resource_type"), resourceType);
+                if (!secureUrl.isBlank()) {
+                    logger.info("Reconciled existing Cloudinary asset (publicId={}): {}", returnedPublicId, secureUrl);
+                    return java.util.Optional.of(new CloudinaryUploadResult(secureUrl, returnedPublicId, returnedResourceType));
+                }
+            }
+            return java.util.Optional.empty();
+        } catch (com.cloudinary.api.exceptions.NotFound notFound) {
+            logger.info("Cloudinary asset definitively not found for publicId={}", publicId);
+            return java.util.Optional.empty();
+        } catch (Exception e) {
+            CloudinaryErrorClassifier.ClassificationResult cr = CloudinaryErrorClassifier.classify(e);
+            logger.warn("Cloudinary reconciliation failed ambiguously for publicId={} [{}]: {}",
+                    publicId, cr.category(), cr.sanitizedDiagnostic());
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                    "Unable to verify existing media in cloud storage. Please try again.",
+                    "Cloudinary reconciliation error: " + cr.sanitizedDiagnostic(),
+                    cr.category(),
+                    cr.statusCode(),
+                    e
+            );
+        }
+    }
 }

@@ -75,6 +75,9 @@ public class PropertyController {
     @Autowired(required = false)
     private com.indore.pathome.spaces.service.PropertyDraftService propertyDraftService;
 
+    @Autowired(required = false)
+    private com.indore.pathome.spaces.service.MediaUploadClaimService mediaUploadClaimService;
+
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> activePublishingDrafts = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final Pattern SAFE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
@@ -124,6 +127,11 @@ public class PropertyController {
     public void setPropertyDraftService(com.indore.pathome.spaces.service.PropertyDraftService propertyDraftService) {
         this.propertyDraftService = propertyDraftService;
     }
+
+    public void setMediaUploadClaimService(com.indore.pathome.spaces.service.MediaUploadClaimService mediaUploadClaimService) {
+        this.mediaUploadClaimService = mediaUploadClaimService;
+    }
+
 
     /**
      * GET /api/v1/properties - Fetch active property listings.
@@ -193,7 +201,7 @@ public class PropertyController {
         MediaType mediaType = parseMediaType(mediaTypeStr);
         String normalizedUploadRequestId = normalizeUploadRequestId(uploadRequestId);
 
-        // Idempotency: return existing asset if already uploaded successfully
+        // Idempotency: return existing asset if already uploaded successfully (Permanent Authority)
         if (normalizedUploadRequestId != null) {
             Optional<PropertyMediaAsset> existingAsset = mediaAssetRepository
                     .findByListingIdAndUploadRequestId(id, normalizedUploadRequestId);
@@ -205,10 +213,64 @@ public class PropertyController {
             }
         }
 
-        CloudinaryService.CloudinaryUploadResult uploadResult;
+        com.indore.pathome.spaces.service.MediaUploadClaimService.ClaimContext claimContext = null;
+        if (normalizedUploadRequestId != null && mediaUploadClaimService != null) {
+            com.indore.pathome.spaces.service.MediaUploadClaimService.ClaimResult claimResult =
+                    mediaUploadClaimService.acquireOrWait(id, normalizedUploadRequestId);
+            if (claimResult.isAlreadyComplete()) {
+                PropertyMediaAsset asset = claimResult.getExistingAsset();
+                failedUploadService.findFailureIdByUploadRequestId(normalizedUploadRequestId)
+                        .ifPresent(fid -> failedUploadService.recordResolution(fid, asset.getMediaUrl()));
+                return ResponseEntity.ok(asset);
+            }
+            if (claimResult.isConflict()) {
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                        "timestamp", java.time.Instant.now().toString(),
+                        "status", HttpStatus.CONFLICT.value(),
+                        "error", "UPLOAD_IN_PROGRESS",
+                        "message", "Media upload is already in progress for this item",
+                        "path", "/api/v1/properties/" + id + "/tagged-media"
+                ));
+            }
+            claimContext = claimResult.getClaimContext();
+            mediaUploadClaimService.startHeartbeat(claimContext);
+        }
+
+        CloudinaryService.CloudinaryUploadResult uploadResult = null;
         try {
-            uploadResult = uploadMediaToCloudinaryResult(file, mediaType, normalizedUploadRequestId);
+            // Check if prior DB_PERSIST failure already has Cloudinary storageUrl
+            if (normalizedUploadRequestId != null) {
+                Optional<com.indore.pathome.spaces.entity.MediaUploadFailure> priorFailure =
+                        failedUploadService.findFailureByUploadRequestId(normalizedUploadRequestId);
+                if (priorFailure.isPresent() && priorFailure.get().getStorageUrl() != null && !priorFailure.get().getStorageUrl().isBlank()) {
+                    String sUrl = priorFailure.get().getStorageUrl();
+                    String pId = priorFailure.get().getStoragePublicId() != null ? priorFailure.get().getStoragePublicId() : normalizedUploadRequestId;
+                    uploadResult = new CloudinaryService.CloudinaryUploadResult(
+                            sUrl, pId, mediaType == MediaType.VIDEO_WALKTHROUGH ? "video" : "image");
+                    log.info("Reusing existing storageUrl from prior DB_PERSIST failure for uploadRequestId={}", normalizedUploadRequestId);
+                }
+            }
+
+            if (uploadResult == null) {
+                if (claimContext != null && claimContext.isReclaimedFromExpired()) {
+                    // Reclaimed from expired lease (crash recovery): check Cloudinary deterministic publicId before uploading
+                    boolean isVideo = mediaType == MediaType.VIDEO_WALKTHROUGH;
+                    Optional<CloudinaryService.CloudinaryUploadResult> existingCdn =
+                            cloudinaryService.findExistingResourceByUploadRequestId(normalizedUploadRequestId, isVideo);
+                    if (existingCdn.isPresent()) {
+                        uploadResult = existingCdn.get();
+                    } else {
+                        uploadResult = uploadMediaToCloudinaryResult(file, mediaType, normalizedUploadRequestId);
+                    }
+                } else {
+                    // Normal upload: DO NOT call Admin API reconciliation
+                    uploadResult = uploadMediaToCloudinaryResult(file, mediaType, normalizedUploadRequestId);
+                }
+            }
         } catch (MediaUploadException mue) {
+            if (claimContext != null && mediaUploadClaimService != null) {
+                mediaUploadClaimService.markFailed(claimContext, mue.getSafeReason());
+            }
             String stagedKey = null;
             java.time.LocalDateTime stagingExpiresAt = null;
 
@@ -244,16 +306,37 @@ public class PropertyController {
                     mue.getProviderStatusCode()
             ));
             throw mue;
+        } finally {
+            if (claimContext != null && mediaUploadClaimService != null) {
+                mediaUploadClaimService.stopHeartbeat(claimContext);
+            }
         }
 
         String cdnUrl = uploadResult.secureUrl();
         String publicId = uploadResult.publicId();
 
         try {
-            PropertyMediaAsset savedAsset = saveMediaAsset(
-                    id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
-                    sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
-            updateListingGallery(listing, cdnUrl);
+            PropertyMediaAsset savedAsset;
+            try {
+                savedAsset = saveMediaAsset(
+                        id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
+                        sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
+                updateListingGallery(listing, cdnUrl);
+            } catch (Exception dbEx) {
+                // Check if asset was already saved by concurrent request race
+                Optional<PropertyMediaAsset> raceAsset = (normalizedUploadRequestId != null)
+                        ? mediaAssetRepository.findByListingIdAndUploadRequestId(id, normalizedUploadRequestId)
+                        : Optional.empty();
+                if (raceAsset.isPresent()) {
+                    savedAsset = raceAsset.get();
+                } else {
+                    throw dbEx;
+                }
+            }
+
+            if (claimContext != null && mediaUploadClaimService != null) {
+                mediaUploadClaimService.markCompleted(claimContext);
+            }
 
             // Resolve any prior failure record for this idempotency key
             if (normalizedUploadRequestId != null) {
@@ -262,6 +345,9 @@ public class PropertyController {
             }
             return ResponseEntity.status(HttpStatus.CREATED).body(savedAsset);
         } catch (Exception dbEx) {
+            if (claimContext != null && mediaUploadClaimService != null) {
+                mediaUploadClaimService.markFailed(claimContext, "Database persistence failed");
+            }
             MediaUploadException mue = new MediaUploadException(
                     MediaUploadException.Stage.DB_PERSIST,
                     "Media was uploaded to storage, but could not be saved to the property. Please retry from Failed Uploads.",
@@ -289,6 +375,7 @@ public class PropertyController {
             ));
             throw mue;
         }
+
     }
 
     /**
@@ -529,28 +616,16 @@ public class PropertyController {
             propertyParserService.confirmLocality(listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
             recordPublishedParserReview(dto, saved.getId());
 
-            // 4. Mark draft as published with durable property ID to guarantee crash idempotency & clean temporary media
+            // 4. Link draft to the newly created listing with PUBLISHING status, retaining payload and staged media until media transfer completes safely
             if (draftId != null) {
                 if (draftRepository != null) {
                     draftRepository.findByDraftId(draftId).ifPresent(draft -> {
                         draft.setPublishedPropertyId(saved.getId());
-                        draft.setStatus("PUBLISHED");
-                        draft.setPayload("{}"); // Free heavy payload memory/storage
-                        draft.setItemCount(0);
+                        draft.setStatus("PUBLISHING");
                         draft.setUpdatedAt(LocalDateTime.now());
                         draftRepository.save(draft);
-                        log.info("Linked draft [{}] to published listing #{}", draftId, saved.getId());
+                        log.info("Linked draft [{}] to listing #{} with status PUBLISHING (retaining payload & staged media)", draftId, saved.getId());
                     });
-                }
-                if (propertyDraftService != null) {
-                    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-                    String adminId = (auth != null && auth.getName() != null && !auth.getName().isBlank() && !"anonymousUser".equalsIgnoreCase(auth.getName()))
-                            ? auth.getName().trim() : "admin";
-                    try {
-                        propertyDraftService.onPropertyPublished(adminId, draftId);
-                    } catch (Exception e) {
-                        log.warn("Non-fatal draft media cleanup after publish for draft [{}]: {}", draftId, e.getMessage());
-                    }
                 }
             }
 
@@ -984,15 +1059,27 @@ public class PropertyController {
 
     private void updateListingGallery(Listing listing, String cdnUrl) {
         if (listing == null || cdnUrl == null || cdnUrl.isBlank()) return;
+        String trimmedUrl = cdnUrl.trim();
+        // Atomic Database Update (prevents lost updates under concurrency = 3)
+        if (listing.getId() != null) {
+            listingRepository.appendMediaGalleryUrlAtomic(listing.getId(), trimmedUrl);
+        }
+        // In-memory update for immediate callers/mocks without overwriting DB
         String existing = listing.getMediaGalleryUrls();
-        if (existing != null && !existing.isBlank()) {
+        if (existing == null || existing.isBlank()) {
+            listing.setMediaGalleryUrls(trimmedUrl);
+        } else {
+            boolean alreadyPresent = false;
             for (String url : existing.split(",")) {
-                if (url.trim().equals(cdnUrl.trim())) return;
+                if (url.trim().equals(trimmedUrl)) {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+            if (!alreadyPresent) {
+                listing.setMediaGalleryUrls(existing + "," + trimmedUrl);
             }
         }
-        String updated = (existing == null || existing.isBlank()) ? cdnUrl : existing + "," + cdnUrl;
-        listing.setMediaGalleryUrls(updated);
-        listingRepository.save(listing);
     }
 
     private List<String> processPhotoUploads(Long id, MultipartFile[] files, Listing listing) {
@@ -1012,13 +1099,10 @@ public class PropertyController {
     }
 
     private void updateListingGalleryList(Listing listing, List<String> uploadedUrls) {
-        String existing = listing.getMediaGalleryUrls();
-        String updatedGallery = (existing == null || existing.isBlank())
-                ? String.join(",", uploadedUrls)
-                : existing + "," + String.join(",", uploadedUrls);
-
-        listing.setMediaGalleryUrls(updatedGallery);
-        listingRepository.save(listing);
+        if (listing == null || uploadedUrls == null || uploadedUrls.isEmpty()) return;
+        for (String url : uploadedUrls) {
+            updateListingGallery(listing, url);
+        }
     }
 
     private String monthlyRentPriceTag(Listing listing) {

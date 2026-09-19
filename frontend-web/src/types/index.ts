@@ -45,6 +45,7 @@ export interface PropertyMediaAsset {
   listingId: number;
   mediaUrl: string;
   cloudinaryPublicId?: string;
+  uploadRequestId?: string;
   mediaType: 'IMAGE' | 'VIDEO_WALKTHROUGH' | 'PANORAMA_360' | 'FLOOR_PLAN';
   roomTag: RoomTag;
   caption?: string;
