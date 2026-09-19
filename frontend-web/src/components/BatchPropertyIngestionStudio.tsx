@@ -15,13 +15,25 @@ import {
   Building2,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Trash2,
-  RefreshCw
+  RefreshCw,
+  Star,
+  Video
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { useNotification } from '../context/NotificationContext';
+import { RoomTag, ROOM_TAG_OPTIONS, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
+
+export interface StagedMediaItem {
+  id: string;
+  file: File;
+  previewUrl: string;
+  roomTag: RoomTag;
+  isCover: boolean;
+}
 
 interface StagedProperty {
   id: string;
@@ -59,6 +71,7 @@ interface StagedProperty {
   conflicts: string[];
   appliedAmendments: string[];
   mediaUrls: string[];
+  stagedMedia: StagedMediaItem[];
   localPhotos: File[];
   localPhotoPreviews: string[];
   isConfirmed: boolean;
@@ -259,7 +272,7 @@ const ReviewField: React.FC<ReviewFieldProps> = ({
         onChange={(event) => onValueChange(event.target.value)}
         onBlur={onBlur}
         rows={3}
-        className="w-full resize-y bg-transparent text-xs font-semibold text-slate-100 outline-none placeholder:text-slate-600 placeholder:italic"
+        className="w-full resize-y bg-transparent text-[16px] sm:text-xs font-semibold text-slate-100 outline-none placeholder:text-slate-600 placeholder:italic"
       />
     ) : (
       <input
@@ -268,7 +281,7 @@ const ReviewField: React.FC<ReviewFieldProps> = ({
         placeholder={placeholder}
         onChange={(event) => onValueChange(event.target.value)}
         onBlur={onBlur}
-        className="w-full bg-transparent text-xs font-semibold text-slate-100 outline-none placeholder:text-slate-600 placeholder:italic"
+        className="w-full bg-transparent text-[16px] sm:text-xs font-semibold text-slate-100 outline-none placeholder:text-slate-600 placeholder:italic"
       />
     )}
   </motion.label>
@@ -314,7 +327,7 @@ const AvailabilityEditor: React.FC<AvailabilityEditorProps> = ({
       <select
         value={status}
         onChange={(event) => onChange(event.target.value as AvailabilityStatusValue, '')}
-        className="w-full bg-transparent text-xs font-semibold text-slate-100 outline-none"
+        className="w-full bg-transparent text-[16px] sm:text-xs font-semibold text-slate-100 outline-none"
       >
         <option value="UNSPECIFIED">Not provided</option>
         <option value="READY_NOW">Ready to move now</option>
@@ -327,7 +340,7 @@ const AvailabilityEditor: React.FC<AvailabilityEditorProps> = ({
             type="date"
             value={availableFrom}
             onChange={(event) => onChange(status, event.target.value)}
-            className="w-full bg-transparent text-xs font-semibold text-slate-100 outline-none [color-scheme:dark]"
+            className="w-full bg-transparent text-[16px] sm:text-xs font-semibold text-slate-100 outline-none [color-scheme:dark]"
           />
         </div>
       )}
@@ -343,11 +356,12 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   initialDetails = '',
   initialMediaFiles = []
 }) => {
-  const { showErrorDialog } = useNotification();
+  const { showErrorDialog, notifyWarning } = useNotification();
   const [rawPrompts, setRawPrompts] = useState<string>('');
   const [stagedCards, setStagedCards] = useState<StagedProperty[]>([]);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isPublishing, setIsPublishing] = useState<boolean>(false);
+  const [publishingCardId, setPublishingCardId] = useState<string | null>(null);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [speechSupported, setSpeechSupported] = useState<boolean>(true);
   const [isDictationChoiceOpen, setIsDictationChoiceOpen] = useState<boolean>(false);
@@ -364,17 +378,42 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const parsedPromptsRef = useRef<string>('');
   const parseRequestIdRef = useRef(0);
   const inputSourceRef = useRef<'TYPED' | 'DICTATED' | 'MIXED'>('TYPED');
+  const stagedCardsRef = useRef<StagedProperty[]>(stagedCards);
+
+  useEffect(() => {
+    stagedCardsRef.current = stagedCards;
+  }, [stagedCards]);
+
+  const revokeCardMediaUrls = useCallback((card: StagedProperty) => {
+    (card.stagedMedia || []).forEach((item) => {
+      try {
+        URL.revokeObjectURL(item.previewUrl);
+      } catch (_) {}
+    });
+    (card.localPhotoPreviews || []).forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stagedCardsRef.current.forEach(revokeCardMediaUrls);
+    };
+  }, [revokeCardMediaUrls]);
 
   const updateRawPrompts = useCallback((details: string) => {
     rawPromptsRef.current = details;
     setRawPrompts(details);
 
     if (details !== parsedPromptsRef.current) {
+      stagedCardsRef.current.forEach(revokeCardMediaUrls);
       setStagedCards([]);
       setActiveCardId(null);
       setMobileWorkspaceView('descriptions');
     }
-  }, []);
+  }, [revokeCardMediaUrls]);
 
   const handleTypedPromptChange = useCallback((details: string) => {
     inputSourceRef.current = !details.trim()
@@ -384,6 +423,29 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         : inputSourceRef.current;
     updateRawPrompts(details);
   }, [updateRawPrompts]);
+
+  // iOS-safe background body scroll lock when opened as standalone modal
+  useEffect(() => {
+    if (!isOpen || embedded) return;
+    const originalOverflow = document.body.style.overflow;
+    const originalPosition = document.body.style.position;
+    const originalTop = document.body.style.top;
+    const originalWidth = document.body.style.width;
+    const scrollY = window.scrollY;
+
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.position = originalPosition;
+      document.body.style.top = originalTop;
+      document.body.style.width = originalWidth;
+      window.scrollTo(0, scrollY);
+    };
+  }, [isOpen, embedded]);
 
   // Live Delimiter Property Counting
   useEffect(() => {
@@ -399,66 +461,43 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   // Initialize Web Speech Recognition
   useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch (_) {}
+      }
+    };
+  }, []);
+
+  const startDictation = (mode: 'replace' | 'append') => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      setSpeechSupported(false);
+      notifyWarning(
+        'Dictation not supported by this browser',
+        'Your mobile browser does not support the Web Speech API. Tip: You can tap the microphone button on your phone keyboard to dictate directly into the text field.'
+      );
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-IN'; // Optimized for Indian English & Hinglish terms
-
-    recognition.onresult = (event: any) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const text = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += (finalTranscript ? ' ' : '') + text.trim();
-        } else {
-          interimTranscript += (interimTranscript ? ' ' : '') + text.trim();
-        }
-      }
-
-      // Spoken listing boundaries become explicit separators without adding listing details.
-      const formattedFinal = finalTranscript
-        .replace(SPOKEN_PROPERTY_BOUNDARY_PATTERN, '\n\nNext property\n')
-        .replace(SPOKEN_RENT_PREFIX_PATTERN, 'Rent: ');
-
-      if (formattedFinal) {
-        const base = batchSpeechBaseTextRef.current || '';
-        const separator = base && !formattedFinal.startsWith('\n') ? ' ' : '';
-        batchSpeechBaseTextRef.current = `${base}${separator}${formattedFinal}`;
-      }
-
-      const confirmedText = batchSpeechBaseTextRef.current;
-      const interimSeparator = confirmedText && interimTranscript ? ' ' : '';
-      updateRawPrompts(`${confirmedText}${interimSeparator}${interimTranscript}`);
-    };
-
-    recognition.onerror = (err: any) => {
-      console.warn('Speech recognition warning:', err);
-      setIsListening(false);
-      setIsDictationChoiceOpen(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-      setIsDictationChoiceOpen(false);
-    };
-
-    recognitionRef.current = recognition;
-  }, [updateRawPrompts]);
-
-  const startDictation = (mode: 'replace' | 'append') => {
-    if (!recognitionRef.current) return;
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (_) {}
+    }
 
     try {
+      const isIOSOrSafari = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
+        /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = !isIOSOrSafari;
+      recognition.interimResults = true;
+      recognition.lang = 'en-IN'; // Optimized for Indian English & Hinglish terms
+
       const currentDraft = rawPromptsRef.current.trim();
       inputSourceRef.current = mode === 'append' && currentDraft ? 'MIXED' : 'DICTATED';
       batchSpeechBaseTextRef.current = mode === 'append' ? currentDraft : '';
@@ -466,17 +505,109 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         updateRawPrompts('');
       }
       setIsDictationChoiceOpen(false);
-      recognitionRef.current.start();
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        let interimTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const text = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += (finalTranscript ? ' ' : '') + text.trim();
+          } else {
+            interimTranscript += (interimTranscript ? ' ' : '') + text.trim();
+          }
+        }
+
+        // Spoken listing boundaries become explicit separators without adding listing details.
+        const formattedFinal = finalTranscript
+          .replace(SPOKEN_PROPERTY_BOUNDARY_PATTERN, '\n\nNext property\n')
+          .replace(SPOKEN_RENT_PREFIX_PATTERN, 'Rent: ');
+
+        if (formattedFinal) {
+          const base = batchSpeechBaseTextRef.current || '';
+          const separator = base && !formattedFinal.startsWith('\n') ? ' ' : '';
+          batchSpeechBaseTextRef.current = `${base}${separator}${formattedFinal}`;
+        }
+
+        const confirmedText = batchSpeechBaseTextRef.current;
+        const interimSeparator = confirmedText && interimTranscript ? ' ' : '';
+        updateRawPrompts(`${confirmedText}${interimSeparator}${interimTranscript}`);
+      };
+
+      recognition.onerror = (err: any) => {
+        console.warn('Speech recognition warning:', err);
+        setIsListening(false);
+        setIsDictationChoiceOpen(false);
+        const errType = err?.error;
+        if (errType === 'no-speech') return;
+
+        if (errType === 'not-allowed' || errType === 'service-not-allowed') {
+          if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+            notifyWarning(
+              'Microphone requires HTTPS on mobile',
+              'Mobile browsers restrict voice dictation to HTTPS connections over Wi-Fi/LAN. Tip: Tap the microphone button on your phone keyboard to dictate directly into the text field!'
+            );
+          } else {
+            notifyWarning(
+              'Microphone permission needed',
+              'Please allow microphone access in your browser settings to dictate property details, or use the microphone button on your device keyboard.'
+            );
+          }
+        } else if (errType === 'network') {
+          notifyWarning(
+            'Speech recognition network error',
+            'Voice dictation could not connect to speech services. Please check your internet connection, or use the microphone button on your phone keyboard.'
+          );
+        } else if (errType) {
+          notifyWarning(
+            'Dictation paused',
+            `Dictation stopped (${errType}). You can also use the microphone button on your phone keyboard.`
+          );
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+        setIsDictationChoiceOpen(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
       setIsListening(true);
-    } catch (err) {
-      console.error('Failed to start voice listener', err);
+    } catch (err: any) {
+      console.warn('Mic start error', err);
+      setIsListening(false);
+      if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        notifyWarning(
+          'Microphone requires HTTPS on mobile',
+          'Mobile browsers restrict speech recognition to HTTPS connections over Wi-Fi/LAN. Tip: Tap the microphone button on your phone keyboard to dictate directly!'
+        );
+      } else {
+        notifyWarning(
+          'Dictation unavailable',
+          'Could not activate microphone. You can tap the microphone button on your phone keyboard to dictate directly.'
+        );
+      }
     }
   };
 
   const toggleSpeech = () => {
-    if (!recognitionRef.current) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      notifyWarning(
+        'Dictation not supported by this browser',
+        'Your mobile browser does not support the Web Speech API. You can use the microphone button on your phone keyboard to dictate directly into the text field.'
+      );
+      return;
+    }
+
     if (isListening) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current?.stop();
+      } catch (_) {}
       setIsListening(false);
       return;
     }
@@ -534,6 +665,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           conflicts: Array.isArray(dto.conflicts) ? dto.conflicts : [],
           appliedAmendments: Array.isArray(dto.appliedAmendments) ? dto.appliedAmendments : [],
           mediaUrls: dto.mediaUrls || [],
+          stagedMedia: [],
           localPhotos: [],
           localPhotoPreviews: [],
           isConfirmed: false,
@@ -599,19 +731,40 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
 
     setStagedCards((prev) =>
-      prev.map((c) =>
-        c.id === cardId
-          ? {
-              ...c,
-              localPhotos: [...c.localPhotos, ...compressedFiles],
-              localPhotoPreviews: [...c.localPhotoPreviews, ...previews],
-              mediaUploadStatus: 'idle',
-              mediaUploadProgress: 0,
-              mediaUploadMessage: '',
-              failedMediaFiles: []
-            }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id !== cardId) return c;
+        const currentMedia: StagedMediaItem[] = c.stagedMedia || [];
+        const hasExistingCover = currentMedia.some((m) => m.isCover);
+        const newItems: StagedMediaItem[] = [];
+
+        for (let i = 0; i < compressedFiles.length; i++) {
+          const file = compressedFiles[i];
+          const isVideo = file.type.startsWith('video/');
+          const smartTag = DEFAULT_SMART_TAG_SEQUENCE[(currentMedia.length + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
+          const willBeCover = !hasExistingCover && !isVideo && !newItems.some((item) => item.isCover);
+
+          newItems.push({
+            id: `${cardId}_media_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${i}`,
+            file,
+            previewUrl: previews[i],
+            roomTag: smartTag,
+            isCover: willBeCover
+          });
+        }
+
+        const combinedMedia = [...currentMedia, ...newItems];
+
+        return {
+          ...c,
+          stagedMedia: combinedMedia,
+          localPhotos: combinedMedia.map((m) => m.file),
+          localPhotoPreviews: combinedMedia.map((m) => m.previewUrl),
+          mediaUploadStatus: 'idle',
+          mediaUploadProgress: 0,
+          mediaUploadMessage: '',
+          failedMediaFiles: []
+        };
+      })
     );
 
     if (preparationErrors.length > 0) {
@@ -624,6 +777,77 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       });
     }
   }, [showErrorDialog]);
+
+  // Set cover photo for a specific staged card (only images can be cover, strictly per-card isolation)
+  const handleSetCoverPhoto = (cardId: string, mediaId: string) => {
+    setStagedCards((prev) =>
+      prev.map((card) => {
+        if (card.id !== cardId) return card;
+        const updatedMedia = (card.stagedMedia || []).map((m) => {
+          if (m.file.type.startsWith('video/')) return { ...m, isCover: false };
+          return { ...m, isCover: m.id === mediaId };
+        });
+        return {
+          ...card,
+          stagedMedia: updatedMedia
+        };
+      })
+    );
+  };
+
+  // Set room tag for a specific media item on a specific staged card
+  const handleSetMediaRoomTag = (cardId: string, mediaId: string, roomTag: RoomTag) => {
+    setStagedCards((prev) =>
+      prev.map((card) => {
+        if (card.id !== cardId) return card;
+        const updatedMedia = (card.stagedMedia || []).map((m) =>
+          m.id === mediaId ? { ...m, roomTag } : m
+        );
+        return {
+          ...card,
+          stagedMedia: updatedMedia
+        };
+      })
+    );
+  };
+
+  // Remove media item from a card with URL revocation and automatic cover fallback
+  const handleRemoveStagedMedia = (cardId: string, mediaId: string) => {
+    setStagedCards((prev) =>
+      prev.map((c) => {
+        if (c.id !== cardId) return c;
+        const mediaList = c.stagedMedia || [];
+        const target = mediaList.find((m) => m.id === mediaId);
+        if (target?.previewUrl) {
+          try {
+            URL.revokeObjectURL(target.previewUrl);
+          } catch (_) {}
+        }
+        const remaining = mediaList.filter((m) => m.id !== mediaId);
+        let updated = remaining;
+        // If removed item was cover, assign cover to first remaining eligible image
+        if (target?.isCover && remaining.length > 0) {
+          const firstImgIdx = remaining.findIndex((m) => !m.file.type.startsWith('video/'));
+          if (firstImgIdx !== -1) {
+            updated = remaining.map((m, idx) => ({
+              ...m,
+              isCover: idx === firstImgIdx
+            }));
+          }
+        }
+        return {
+          ...c,
+          stagedMedia: updated,
+          localPhotos: updated.map((m) => m.file),
+          localPhotoPreviews: updated.map((m) => m.previewUrl),
+          failedMediaFiles: c.failedMediaFiles.filter((file) => file !== target?.file),
+          mediaUploadStatus: 'idle',
+          mediaUploadProgress: 0,
+          mediaUploadMessage: ''
+        };
+      })
+    );
+  };
 
   useEffect(() => {
     if (initialMediaAddedRef.current || initialMediaFiles.length === 0 || stagedCards.length === 0) return;
@@ -653,27 +877,12 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     [attachMediaToCard]
   );
 
-  // Remove photo from card
+  // Remove photo by index (delegates to stable handleRemoveStagedMedia)
   const handleRemovePhoto = (cardId: string, photoIdx: number) => {
-    setStagedCards((prev) =>
-      prev.map((c) => {
-        if (c.id !== cardId) return c;
-        const newFiles = [...c.localPhotos];
-        const newPreviews = [...c.localPhotoPreviews];
-        URL.revokeObjectURL(newPreviews[photoIdx]);
-        newFiles.splice(photoIdx, 1);
-        newPreviews.splice(photoIdx, 1);
-        return {
-          ...c,
-          localPhotos: newFiles,
-          localPhotoPreviews: newPreviews,
-          failedMediaFiles: c.failedMediaFiles.filter((file) => file !== c.localPhotos[photoIdx]),
-          mediaUploadStatus: 'idle',
-          mediaUploadProgress: 0,
-          mediaUploadMessage: ''
-        };
-      })
-    );
+    const card = stagedCards.find((c) => c.id === cardId);
+    if (card && card.stagedMedia && card.stagedMedia[photoIdx]) {
+      handleRemoveStagedMedia(cardId, card.stagedMedia[photoIdx].id);
+    }
   };
 
   // Card Field Inline Quick-Edit
@@ -727,11 +936,13 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const uploadMediaFilesForCard = async (
     card: StagedProperty,
     propertyId: number,
-    files: File[]
+    mediaItemsToUpload?: StagedMediaItem[]
   ): Promise<{ failedFiles: File[]; errors: string[] }> => {
+    const items = mediaItemsToUpload || card.stagedMedia || [];
     const failedFiles: File[] = [];
     const errors: string[] = [];
-    const totalFiles = files.length;
+    const totalFiles = items.length;
+    if (totalFiles === 0) return { failedFiles: [], errors: [] };
 
     setStagedCards((current) => current.map((item) => item.id === card.id
       ? {
@@ -743,14 +954,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         }
       : item));
 
-    for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
-      const file = files[fileIndex];
+    for (let fileIndex = 0; fileIndex < items.length; fileIndex += 1) {
+      const mediaItem = items[fileIndex];
+      const file = mediaItem.file;
       try {
         await propertyService.uploadTaggedMedia(propertyId, file, {
-          roomTag: 'GENERAL',
+          roomTag: mediaItem.roomTag,
           mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
-          caption: card.title,
-          isPrimaryCover: fileIndex === 0,
+          caption: `${card.title} - ${mediaItem.roomTag.replace('_', ' ')}`,
+          isPrimaryCover: mediaItem.isCover,
           sector: card.sector,
           priceTag: card.rentVal,
           vastuFacing: card.vastuFacing
@@ -804,9 +1016,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     const card = stagedCards.find((item) => item.id === cardId);
     if (!card?.publishedId || card.failedMediaFiles.length === 0) return;
 
+    const itemsToRetry = (card.stagedMedia || []).filter((m) =>
+      card.failedMediaFiles.includes(m.file)
+    );
+    if (itemsToRetry.length === 0) return;
+
     setIsPublishing(true);
     try {
-      const result = await uploadMediaFilesForCard(card, card.publishedId, card.failedMediaFiles);
+      const result = await uploadMediaFilesForCard(card, card.publishedId, itemsToRetry);
       if (result.failedFiles.length > 0) {
         showErrorDialog({
           title: 'Some media still needs attention',
@@ -888,46 +1105,111 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       // Upload media only after its listing exists, preserving the selected images and videos.
       const mediaUploadErrors: string[] = [];
-      for (const created of createdResults) {
+      for (let i = 0; i < createdResults.length; i++) {
+        const created = createdResults[i];
         const propId = Number(created.id);
         const card = validCards[created.requestIndex];
         publishedIdsByCardId.set(card.id, propId);
-        if (card && card.localPhotos.length > 0) {
-          const result = await uploadMediaFilesForCard(card, propId, card.localPhotos);
+
+        // Per-property publishing state isolation: mark this card specifically as publishing & confirmed published
+        setPublishingCardId(card.id);
+        setActiveCardId(card.id);
+        setStagedCards((current) =>
+          current.map((c) =>
+            c.id === card.id ? { ...c, publishedId: propId, isValid: false, isConfirmed: true } : c
+          )
+        );
+
+        if (card && card.stagedMedia && card.stagedMedia.length > 0) {
+          const result = await uploadMediaFilesForCard(card, propId, card.stagedMedia);
           if (result.errors.length > 0) {
             mediaUploadErrors.push(`Property ${card.promptIndex}: ${result.errors.join(', ')}`);
           }
         }
+
+        // Once this property finishes, auto-advance active view to next property immediately without blocking sequential upload
+        if (i + 1 < createdResults.length) {
+          const nextCard = validCards[createdResults[i + 1].requestIndex];
+          if (nextCard) {
+            setActiveCardId(nextCard.id);
+          }
+        }
       }
+      setPublishingCardId(null);
 
       window.dispatchEvent(new Event('pathome_property_published'));
       const publishedCount = res.successCount || 0;
-      setStagedCards((current) => current.map((card) => {
-        const publishedId = publishedIdsByCardId.get(card.id);
-        return publishedId === undefined
-          ? card
-          : { ...card, publishedId, isValid: false, isConfirmed: true };
-      }));
-      onSuccess(publishedCount);
+      const isFullBatchSuccess = res.failedCount === 0 && mediaUploadErrors.length === 0 && publishedCount > 0;
 
-      if (mediaUploadErrors.length > 0) {
-        showErrorDialog({
-          title: 'Property published, but some media needs attention',
-          message: 'The listing details were published. Use Retry failed media below; the property will not be created again.',
-          details: mediaUploadErrors.join(' • ')
+      if (isFullBatchSuccess) {
+        // FULL SUCCESS:
+        // 1. Send dynamic confirmed count to parent callback FIRST
+        onSuccess(publishedCount);
+
+        // 2. Revoke all object URLs for preview media to prevent memory leaks
+        stagedCards.forEach((card) => {
+          (card.stagedMedia || []).forEach((item) => {
+            try { URL.revokeObjectURL(item.previewUrl); } catch (_) {}
+          });
+          (card.localPhotoPreviews || []).forEach((url) => {
+            try { URL.revokeObjectURL(url); } catch (_) {}
+          });
         });
+
+        // 3. Clear completed session and batch form state
+        setStagedCards([]);
+        updateRawPrompts('');
+        setDetectedCount(0);
+        rawPromptsRef.current = '';
+        parsedPromptsRef.current = '';
+        setMobileWorkspaceView('descriptions');
+
+        onClose();
         return;
       }
 
-      if (res.failedCount > 0) {
-        showErrorDialog({
-          title: 'Some properties still need attention',
-          message: `${publishedCount} ${publishedCount === 1 ? 'property was' : 'properties were'} published. Review the remaining entries and try again.`,
-          details: Array.isArray(res.failedListings)
-            ? res.failedListings.map((item: any) => item.error).filter(Boolean).join(' • ')
-            : undefined
+      // PARTIAL SUCCESS / ATTENTION NEEDED:
+      if (publishedCount > 0) {
+        onSuccess(publishedCount);
+
+        // Revoke object URLs ONLY for the completely successful cards
+        stagedCards.forEach((card) => {
+          const pubId = publishedIdsByCardId.get(card.id);
+          const hasFailedMedia = card.failedMediaFiles && card.failedMediaFiles.length > 0;
+          if (pubId && !hasFailedMedia) {
+            (card.stagedMedia || []).forEach((item) => {
+              try { URL.revokeObjectURL(item.previewUrl); } catch (_) {}
+            });
+          }
         });
-        return;
+
+        // Update cards: mark published ones, preserve failed ones and cards with failed media
+        setStagedCards((current) => current.map((card) => {
+          const publishedId = publishedIdsByCardId.get(card.id);
+          return publishedId === undefined
+            ? card
+            : { ...card, publishedId, isValid: false, isConfirmed: true };
+        }));
+
+        if (mediaUploadErrors.length > 0) {
+          showErrorDialog({
+            title: 'Property published, but some media needs attention',
+            message: 'The listing details were published. Use Retry failed media below; the property will not be created again.',
+            details: mediaUploadErrors.join(' • ')
+          });
+          return;
+        }
+
+        if (res.failedCount > 0) {
+          showErrorDialog({
+            title: 'Some properties still need attention',
+            message: `${publishedCount} ${publishedCount === 1 ? 'property was' : 'properties were'} published. Review the remaining entries and try again.`,
+            details: Array.isArray(res.failedListings)
+              ? res.failedListings.map((item: any) => item.error).filter(Boolean).join(' • ')
+              : undefined
+          });
+          return;
+        }
       }
 
       onClose();
@@ -939,6 +1221,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         details: getErrorDetails(err)
       });
     } finally {
+      setPublishingCardId(null);
       setIsPublishing(false);
     }
   };
@@ -950,14 +1233,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   return (
     <AnimatePresence>
-      <div className={embedded ? 'relative w-full' : 'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto'}>
+      <div className={embedded ? 'relative w-full' : 'fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-6 overflow-y-auto'}>
         {!embedded && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-slate-950/80 backdrop-blur-md transition-all"
+            className="fixed inset-0 bg-slate-950 sm:bg-slate-950/90 backdrop-blur-md transition-all"
           />
         )}
 
@@ -967,12 +1250,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           animate={{ opacity: 1, scale: 1, rotateX: 0 }}
           exit={embedded ? { opacity: 0, y: 12 } : { opacity: 0, scale: 0.85, rotateX: 14 }}
           transition={{ type: 'spring', stiffness: 480, damping: 25 }}
-          className={`relative w-full flex flex-col bg-slate-900 border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden text-slate-100 ${
-            embedded ? 'max-h-none' : 'max-w-7xl max-h-[92vh] z-10'
+          className={`relative w-full flex flex-col bg-slate-900 border-0 sm:border border-slate-700/80 rounded-none sm:rounded-3xl shadow-2xl overflow-hidden text-slate-100 ${
+            embedded ? 'max-h-none' : 'max-w-7xl h-[100dvh] sm:h-auto sm:max-h-[92vh] z-10'
           }`}
         >
           {/* Header Bar */}
-          <div className="relative flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-950/70 px-3 py-3 sm:px-6 sm:py-4">
+          <div className={`relative flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-950 px-3 sm:px-6 ${
+            embedded ? 'py-3 sm:py-4' : 'pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] pb-3 sm:py-4'
+          }`}>
             <div className="flex min-w-0 items-start gap-3 pr-12">
               <div className="hidden w-10 h-10 shrink-0 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-400 items-center justify-center text-slate-950 shadow-lg shadow-orange-500/20 min-[400px]:flex">
                 <Sparkles className="w-5 h-5 font-black" />
@@ -994,7 +1279,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
               onClick={onClose}
               aria-label="Back to property details"
               title="Back to property details"
-              className="absolute right-3 top-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors sm:right-5"
+              className={`absolute right-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors sm:right-5 ${
+                embedded ? 'top-3' : 'top-[calc(env(safe-area-inset-top,0px)+0.75rem)] sm:top-4'
+              }`}
             >
               <X className="w-5 h-5" />
             </button>
@@ -1118,7 +1405,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                   value={rawPrompts}
                   onChange={(e) => handleTypedPromptChange(e.target.value)}
                   placeholder={`Type, paste, or dictate property details here.\n\nTo add another property, write “next property” on a new line.\n\nExample:\n2 BHK in Vijay Nagar, rent 18,000, owner 98260 12345\n\nnext property\n3 BHK in Palasia, rent 35,000, owner 98260 54321`}
-                  className="w-full h-full min-h-[220px] p-4 text-xs font-mono bg-slate-950/80 border border-slate-700/80 rounded-2xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500/80 focus:ring-2 focus:ring-amber-500/20 transition-all resize-none shadow-inner sm:min-h-[260px]"
+                  className="w-full h-full min-h-[220px] p-4 text-[16px] sm:text-xs font-mono bg-slate-950/80 border border-slate-700/80 rounded-2xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500/80 focus:ring-2 focus:ring-amber-500/20 transition-all resize-none shadow-inner sm:min-h-[260px]"
                 />
               </div>
 
@@ -1188,9 +1475,19 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                           >
                             <span className="font-mono">#{idx + 1}</span>
                             <span>{getPropertyTabLabel(card)}</span>
-                            <span className="px-1.5 py-0.2 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
-                              {mediaCount} media
-                            </span>
+                            {card.publishedId ? (
+                              <span className="px-1.5 py-0.5 rounded-md bg-sky-950/80 text-[10px] text-sky-300 font-mono flex items-center gap-1 border border-sky-600/40">
+                                <CheckCircle2 className="w-2.5 h-2.5" /> Published
+                              </span>
+                            ) : publishingCardId === card.id ? (
+                              <span className="px-1.5 py-0.5 rounded-md bg-cyan-950/80 text-[10px] text-cyan-300 font-mono flex items-center gap-1 border border-cyan-600/40">
+                                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Publishing
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
+                                {mediaCount} media
+                              </span>
+                            )}
                           </button>
                         );
                       })}
@@ -1235,7 +1532,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                 type="text"
                                 value={card.title}
                                 onChange={(e) => handleUpdateField(card.id, 'title', e.target.value)}
-                                className="min-w-0 flex-1 truncate border-b border-transparent bg-transparent text-xs font-bold text-white hover:border-slate-700 focus:border-amber-500 focus:outline-none min-[560px]:max-w-[240px]"
+                                className="min-w-0 flex-1 truncate border-b border-transparent bg-transparent text-[16px] sm:text-xs font-bold text-white hover:border-slate-700 focus:border-amber-500 focus:outline-none min-[560px]:max-w-[240px]"
                               />
                             </div>
 
@@ -1243,6 +1540,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                               {card.publishedId ? (
                                 <span className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-full border border-sky-500/30">
                                   <CheckCircle2 className="w-3 h-3" /> Published
+                                </span>
+                              ) : publishingCardId === card.id ? (
+                                <span className="flex items-center gap-1 text-[11px] font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/30">
+                                  <RefreshCw className="w-3 h-3 animate-spin" /> Publishing…
                                 </span>
                               ) : card.isValid ? (
                                 <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
@@ -1441,38 +1742,150 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                               {describeMediaLimits()}
                             </p>
 
-                            {/* Thumbnail Strip */}
+                            {/* Staged Media Cards List */}
                             {totalMedia > 0 ? (
-                              <div className="no-scrollbar flex touch-pan-x items-center gap-2 overflow-x-auto py-1">
-                                {card.localPhotoPreviews.map((src, pIdx) => (
-                                  <div key={pIdx} className="relative group w-14 h-14 rounded-xl overflow-hidden border border-slate-700 flex-shrink-0">
-                                    {card.localPhotos[pIdx]?.type.startsWith('video/') ? (
-                                      <video src={src} className="h-full w-full object-cover" muted />
-                                    ) : (
-                                      <img src={src} alt="Property media" className="w-full h-full object-cover" />
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemovePhoto(card.id, pIdx)}
-                                      className="absolute inset-0 bg-slate-950/70 text-rose-400 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
+                              <div className="space-y-2.5 py-1">
+                                {(card.stagedMedia || []).map((item) => {
+                                  const isVideo = item.file.type.startsWith('video/');
+                                  return (
+                                    <div
+                                      key={item.id}
+                                      className="bg-slate-950 p-2.5 sm:p-3 rounded-2xl border border-slate-800 flex items-start gap-3 hover:border-slate-700 transition-colors relative group"
                                     >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
+                                      {/* Photo/Video Thumbnail */}
+                                      {!isVideo ? (
+                                        <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 shrink-0 shadow-sm">
+                                          <img
+                                            src={item.previewUrl}
+                                            alt={item.file.name}
+                                            className="w-full h-full object-cover"
+                                          />
+                                          {item.isCover && (
+                                            <div
+                                              title="Primary listing cover"
+                                              className="absolute top-1 left-1 bg-amber-400 text-slate-950 rounded-md p-0.5 shadow-sm"
+                                            >
+                                              <Star className="w-3 h-3 fill-current text-slate-950" />
+                                            </div>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-indigo-950/60 border border-indigo-500/40 flex items-center justify-center shrink-0 shadow-sm">
+                                          <Video className="w-6 h-6 text-indigo-400" />
+                                        </div>
+                                      )}
+
+                                      {/* File Details & Compact Controls */}
+                                      <div className="flex-1 min-w-0 pr-7 flex flex-col justify-between self-stretch py-0.5">
+                                        <div>
+                                          <p className="font-bold text-slate-200 truncate text-xs sm:text-sm font-['Outfit']" title={item.file.name}>
+                                            {item.file.name}
+                                          </p>
+                                          <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                            {(item.file.size / 1024 / 1024).toFixed(1)} MB
+                                          </p>
+                                        </div>
+
+                                        {/* Compact inline chip controls */}
+                                        <div className="flex items-center gap-2 flex-wrap mt-2">
+                                          {!isVideo ? (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleSetCoverPhoto(card.id, item.id);
+                                              }}
+                                              title={item.isCover ? 'Primary Cover Photo' : 'Click to set as primary cover'}
+                                              className={`min-h-[28px] px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                                                item.isCover
+                                                  ? 'bg-amber-400 text-slate-950 ring-1 ring-amber-300 font-extrabold shadow-xs'
+                                                  : 'bg-slate-900 text-slate-400 hover:text-amber-300 border border-slate-800 hover:border-slate-700'
+                                              }`}
+                                            >
+                                              <Star className={`w-3 h-3 ${item.isCover ? 'fill-current text-slate-950' : 'text-slate-400'}`} />
+                                              <span>{item.isCover ? 'Cover photo' : 'Set cover'}</span>
+                                            </button>
+                                          ) : (
+                                            <span className="min-h-[28px] px-2 py-0.5 rounded-lg text-[10px] font-mono text-slate-500 bg-slate-900/60 border border-slate-800/80 flex items-center gap-1">
+                                              Video
+                                            </span>
+                                          )}
+
+                                          <div className="relative inline-flex items-center">
+                                            <select
+                                              value={item.roomTag}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                handleSetMediaRoomTag(card.id, item.id, e.target.value as RoomTag);
+                                              }}
+                                              aria-label={`Room category for ${item.file.name}`}
+                                              className="min-h-[28px] bg-slate-900 text-cyan-300 font-mono text-[10px] sm:text-[11px] font-bold border border-slate-800 rounded-lg pl-2 pr-5 outline-none focus:border-cyan-500 cursor-pointer appearance-none"
+                                            >
+                                              {ROOM_TAG_OPTIONS.map((opt) => (
+                                                <option key={opt.value} value={opt.value}>
+                                                  {opt.label}
+                                                </option>
+                                              ))}
+                                            </select>
+                                            <ChevronDown className="w-3 h-3 text-slate-500 absolute right-1 pointer-events-none" />
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {/* Delete / Remove Button - top-right corner */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleRemoveStagedMedia(card.id, item.id);
+                                        }}
+                                        aria-label={`Remove file ${item.file.name}`}
+                                        className="absolute top-2.5 right-2.5 w-8 h-8 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+
+                                {card.mediaUrls.map((url, uIdx) => (
+                                  <div
+                                    key={`url-${uIdx}`}
+                                    className="bg-slate-950 p-2.5 sm:p-3 rounded-2xl border border-indigo-500/30 flex items-center gap-3 relative group"
+                                  >
+                                    <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-indigo-500/40 bg-slate-900 shrink-0">
+                                      {isVideoUrl(url) ? (
+                                        <video src={url} className="h-full w-full object-cover" muted />
+                                      ) : (
+                                        <img src={url} alt="Property media" className="w-full h-full object-cover" />
+                                      )}
+                                    </div>
+                                    <div className="flex-1 min-w-0 pr-7">
+                                      <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-950/90 text-indigo-300 border border-indigo-500/30 mb-1">
+                                        Extracted Media URL
+                                      </span>
+                                      <p className="text-[11px] font-mono text-slate-400 truncate" title={url}>
+                                        {url}
+                                      </p>
+                                    </div>
                                   </div>
                                 ))}
 
-                                {card.mediaUrls.map((url, uIdx) => (
-                                  <div key={`url-${uIdx}`} className="relative w-14 h-14 rounded-xl overflow-hidden border border-indigo-500/40 flex-shrink-0">
-                                    {isVideoUrl(url) ? (
-                                      <video src={url} className="h-full w-full object-cover" muted />
-                                    ) : (
-                                      <img src={url} alt="Property media" className="w-full h-full object-cover" />
-                                    )}
-                                    <span className="absolute bottom-0 inset-x-0 bg-indigo-950/90 text-[8px] font-bold text-center text-indigo-300 truncate px-1">
-                                      URL
-                                    </span>
+                                {totalMedia > 0 && stagedCards.length > 1 && idx < stagedCards.length - 1 && (
+                                  <div className="pt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveCardId(stagedCards[idx + 1].id);
+                                      }}
+                                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 hover:bg-slate-850 px-3 py-1.5 text-xs font-bold text-slate-300 hover:border-amber-400/50 hover:text-white transition-all cursor-pointer shadow-xs"
+                                    >
+                                      <span>Next property ({stagedCards[idx + 1].bhk || stagedCards[idx + 1].title || `#${idx + 2}`})</span>
+                                      <ChevronRight className="w-3.5 h-3.5 text-amber-400" />
+                                    </button>
                                   </div>
-                                ))}
+                                )}
                               </div>
                             ) : (
                               <div
@@ -1604,6 +2017,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 whileTap={{ scale: 0.97 }}
                 onClick={handlePublishAll}
                 disabled={isPublishing || readyToPublishCount === 0}
+                aria-busy={isPublishing}
                 className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-2.5 text-center text-xs font-black text-slate-950 shadow-lg shadow-emerald-500/20 transition-all hover:brightness-110 disabled:opacity-50 min-[560px]:w-auto min-[560px]:px-6"
               >
                 {isPublishing ? (
@@ -1637,6 +2051,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 whileTap={{ scale: 0.98 }}
                 onClick={handlePublishAll}
                 disabled={isPublishing || readyToPublishCount === 0}
+                aria-busy={isPublishing}
                 className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 text-sm font-black text-slate-950 shadow-lg shadow-emerald-500/20 transition-all disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <CheckCircle2 className="h-4 w-4" />

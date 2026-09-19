@@ -215,19 +215,19 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
               className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow"
             >
               {/* Card Header */}
-              <div className="px-5 pt-5 pb-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0">
+              <div className="px-4 sm:px-5 pt-4 sm:pt-5 pb-4">
+                <div className="flex items-start justify-between gap-3 sm:gap-4">
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0">
                       {failure.mediaType === 'VIDEO_WALKTHROUGH'
-                        ? <Video className="w-4 h-4 text-indigo-500" />
-                        : <FileImage className="w-4 h-4 text-teal-600" />}
+                        ? <Video className="w-5 h-5 text-indigo-500" />
+                        : <FileImage className="w-5 h-5 text-teal-600" />}
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900 truncate leading-tight">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-slate-900 break-words leading-snug">
                         {failure.originalFilename || 'Unnamed file'}
                       </p>
-                      <p className="text-xs text-slate-500 mt-0.5">
+                      <p className="text-xs text-slate-500 mt-0.5 break-words">
                         {failure.mediaType === 'VIDEO_WALKTHROUGH' ? 'Video' : 'Image'}
                         {failure.fileSizeBytes ? ` · ${formatFileSize(failure.fileSizeBytes)}` : ''}
                         {failure.roomTag ? ` · ${failure.roomTag.replace('_', ' ').toLowerCase()}` : ''}
@@ -242,15 +242,15 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
 
                 {/* Failure Reason */}
                 <div className="mt-3 p-3 bg-rose-50/70 border border-rose-100 rounded-xl">
-                  <p className="text-xs font-semibold text-rose-800 leading-snug">{failure.failureReason}</p>
-                  <p className="text-[10px] text-rose-500 mt-1 font-medium">
+                  <p className="text-xs font-semibold text-rose-800 leading-snug break-words">{failure.failureReason}</p>
+                  <p className="text-[10px] text-rose-500 mt-1 font-medium break-words">
                     Stage: {STAGE_LABELS[failure.failureStage] ?? failure.failureStage}
                     {failure.retryCount > 0 ? ` · ${failure.retryCount} retry attempt${failure.retryCount > 1 ? 's' : ''}` : ''}
                   </p>
                 </div>
 
                 {/* Meta Row */}
-                <div className="flex items-center gap-3 mt-3 flex-wrap">
+                <div className="flex items-center gap-2 sm:gap-3 mt-3 flex-wrap">
                   {failure.listingId && (
                     <span className="inline-flex items-center gap-1 text-[10px] font-mono text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-lg">
                       Listing #{failure.listingId}
@@ -304,73 +304,77 @@ export const FailedUploadsPanel: React.FC<FailedUploadsPanelProps> = ({ onCountC
                 </AnimatePresence>
               </div>
 
-              {/* Action Footer */}
-              <div className="px-5 pb-5 flex items-center gap-2 flex-wrap">
-                {/* One-Click Automatic Retry (NO file picker) */}
-                {failure.autoRetryAvailable ? (
+              {/* Responsive Action Footer */}
+              <div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-1 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+                <div className="grid grid-cols-1 min-[440px]:grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
+                  {/* One-Click Automatic Retry (NO file picker) */}
+                  {failure.autoRetryAvailable ? (
+                    <button
+                      id={`retry-failed-upload-${failure.id}`}
+                      onClick={() => handleAutoRetry(failure.id)}
+                      disabled={isActing}
+                      title="Automatically recover original upload without choosing a file"
+                      className="min-h-[44px] flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl hover:from-emerald-700 hover:to-teal-700 active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+                    >
+                      {actionInProgress[failure.id] === 'retrying'
+                        ? <RefreshCw className="w-4 h-4 animate-spin" />
+                        : <UploadCloud className="w-4 h-4" />}
+                      <span>{actionInProgress[failure.id] === 'retrying' ? 'Retrying…' : 'Retry Upload'}</span>
+                    </button>
+                  ) : null}
+
+                  {/* Explicit Manual Replace File (Opens OS file picker) */}
                   <button
-                    id={`retry-failed-upload-${failure.id}`}
-                    onClick={() => handleAutoRetry(failure.id)}
+                    id={`replace-file-${failure.id}`}
+                    onClick={() => { setPendingReplaceId(failure.id); replaceFileInputRef.current?.click(); }}
                     disabled={isActing}
-                    title="Automatically recover original upload without choosing a file"
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl hover:from-emerald-700 hover:to-teal-700 active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+                    title="Choose a new replacement file for this upload"
+                    className={`min-h-[44px] flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold rounded-xl active:scale-95 transition-all disabled:opacity-50 cursor-pointer ${
+                      failure.autoRetryAvailable
+                        ? 'text-slate-700 bg-white border border-slate-200 hover:bg-slate-50'
+                        : 'text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 shadow-sm'
+                    }`}
                   >
-                    {actionInProgress[failure.id] === 'retrying'
-                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      : <UploadCloud className="w-3.5 h-3.5" />}
-                    {actionInProgress[failure.id] === 'retrying' ? 'Retrying…' : 'Retry'}
+                    {actionInProgress[failure.id] === 'replacing'
+                      ? <RefreshCw className="w-4 h-4 animate-spin" />
+                      : <RotateCcw className="w-4 h-4" />}
+                    <span>{actionInProgress[failure.id] === 'replacing' ? 'Replacing…' : 'Replace file'}</span>
                   </button>
-                ) : null}
 
-                {/* Explicit Manual Replace File (Opens OS file picker) */}
-                <button
-                  id={`replace-file-${failure.id}`}
-                  onClick={() => { setPendingReplaceId(failure.id); replaceFileInputRef.current?.click(); }}
-                  disabled={isActing}
-                  title="Choose a new replacement file for this upload"
-                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl active:scale-95 transition-all disabled:opacity-50 cursor-pointer ${
-                    failure.autoRetryAvailable
-                      ? 'text-slate-700 bg-white border border-slate-200 hover:bg-slate-50'
-                      : 'text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 shadow-sm'
-                  }`}
-                >
-                  {actionInProgress[failure.id] === 'replacing'
-                    ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    : <RotateCcw className="w-3.5 h-3.5" />}
-                  {actionInProgress[failure.id] === 'replacing' ? 'Replacing…' : 'Replace file'}
-                </button>
+                  {/* Open property */}
+                  {failure.listingId && (
+                    <a
+                      href={`/admin/property/${failure.listingId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[44px] flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-all"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open listing</span>
+                    </a>
+                  )}
+                </div>
 
-                {!failure.autoRetryAvailable && (
-                  <span className="text-[11px] text-slate-500 font-medium">
-                    Original file expired or invalid
-                  </span>
-                )}
+                <div className="flex items-center justify-between sm:justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                  {!failure.autoRetryAvailable && (
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      Original file expired
+                    </span>
+                  )}
 
-                {/* Open property */}
-                {failure.listingId && (
-                  <a
-                    href={`/admin/property/${failure.listingId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-all"
+                  {/* Dismiss */}
+                  <button
+                    id={`dismiss-failed-upload-${failure.id}`}
+                    onClick={() => handleDismiss(failure.id)}
+                    disabled={isActing}
+                    className="min-h-[44px] flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition-all disabled:opacity-50 cursor-pointer"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    Open property
-                  </a>
-                )}
-
-                {/* Dismiss */}
-                <button
-                  id={`dismiss-failed-upload-${failure.id}`}
-                  onClick={() => handleDismiss(failure.id)}
-                  disabled={isActing}
-                  className="ml-auto flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {actionInProgress[failure.id] === 'dismissing'
-                    ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    : <XCircle className="w-3.5 h-3.5" />}
-                  Dismiss
-                </button>
+                    {actionInProgress[failure.id] === 'dismissing'
+                      ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      : <XCircle className="w-3.5 h-3.5" />}
+                    <span>Dismiss</span>
+                  </button>
+                </div>
               </div>
             </motion.div>
           );

@@ -29,9 +29,25 @@
   video {
     max-width: 100%;
   }
+
+  /* Prevent iOS Safari automatic viewport focus zoom while preserving user pinch-zoom */
+  @media screen and (max-width: 767px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+  }
 }
 
 @layer utilities {
+  .safe-area-bottom {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .safe-area-top {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+  }
+
   .perspective-1000 {
     perspective: 1000px;
   }

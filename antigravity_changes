@@ -771,5 +771,242 @@ Commit status:
   - **Frontend Build**: `npm run build` succeeded (0 TypeScript errors).
   - **Secret Security Audit**: Verified `.env.local` is ignored and untracked. Zero credentials in Git history, diff, logs, or API responses.
 
-- **Commit Status**: Kept in working tree for review (NOT committed, NOT pushed).
+- **Commit Status**: Committed as `991dc00` (`feat: add resilient failed media retry with durable staging`) and pushed to `origin/main`.
 
+---
+
+## 2026-09-18 — 19:52 IST
+
+### Mobile Device LAN Access & Vite Host Configuration
+
+- **Why**: User reported inability to open the web frontend on mobile when Vite announced network address `http://192.0.0.2:5173/`. On macOS connected via a cellular mobile hotspot (Jio IPv6), `192.0.0.2` is an RFC 7335 464XLAT internal translation dummy address that is unroutable from external devices, and Vite 5.4.21 blocked `.local` hostnames with `403 Forbidden` due to default `allowedHosts` restrictions while only binding to IPv4.
+- **Exact Files Changed**:
+  - `frontend-web/vite.config.ts`: Configured `server.host: true` (dual-stack IPv6 and IPv4 binding) and `server.allowedHosts: true` to permit incoming requests via Bonjour/mDNS (`.local`) and LAN IP addresses.
+  - `run-app.sh`: Updated completion banner to dynamically detect and display the mobile-friendly mDNS hostname URL (`http://<hostname>.local:5173`) and any valid local Wi-Fi LAN IP address.
+- **Outcome & Verification Results**:
+  - Verified `http://Dipeshs-MacBook-Air.local:5173/` resolves and returns `HTTP 200 OK` (previously returned `HTTP 403 Forbidden: Blocked request. This host is not allowed`).
+  - Confirmed `npm run build` succeeds cleanly with 0 TypeScript/Vite errors.
+  - Verified `bash -n run-app.sh` passes cleanly with dynamic URL output.
+- **Commit Status**: Kept in working tree for review.
+
+---
+
+## 2026-09-18 — 20:52 IST
+
+### Pathome Property Upload & Failed Upload Responsive UX Overhaul
+
+- **Why**: Real iPhone screenshots (`dipeshs-macbook-air.local:5173`) revealed multiple responsive usability defects on mobile:
+  1. iOS Safari automatic viewport zoom triggered upon tapping inputs and prompt textarea (due to font-size < 16px).
+  2. The Media Upload dialog grew unbounded beyond the mobile viewport height with `my-auto`, causing the action footer ("✓ Done / Save Attachments") to fall below the visible screen.
+  3. Action buttons in modals and inspectors experienced horizontal overflow and clipping on small mobile widths.
+  4. Media gallery cards had overlapping "Set Cover" and "✕" buttons on narrow viewports.
+  5. The 18-attribute property inspection grid suffered from truncated values ("Flat / Apartment", "1+1 Security Deposit", addresses) due to cramped 2-column mobile cards.
+  6. The 4-step stepper and composer toolbars overflowed horizontally on mobile viewports.
+  7. Lack of a real-time progress status card during multi-step property publication and media uploads.
+  8. Missing permanent responsive-first development rule in `AGENTS.md`.
+
+- **Exact Files Changed**:
+  - `AGENTS.md`: Added Rule 8 (`Responsive-First Frontend Development — Mandatory`) as part of Definition of Done for all frontend development, strictly preserving rules 1–7.
+  - `frontend-web/index.html`: Added `viewport-fit=cover` to `<meta name="viewport">` for safe-area support on notched mobile devices.
+  - `frontend-web/src/index.css`:
+    - Added `@media screen and (max-width: 767px)` rule ensuring editable controls (`input`, `textarea`, `select`) maintain an effective font-size of at least 16px to prevent unwanted iOS Safari auto-focus zoom while fully preserving user pinch zoom.
+    - Added responsive utility classes `.safe-area-bottom` (`max(1rem, env(safe-area-inset-bottom))`) and `.safe-area-top` (`max(0.5rem, env(safe-area-inset-top))`).
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Added `uploadPipeline` state machine with real stages (`idle`, `validating`, `saving_listing`, `preparing_media`, `uploading_media`, `success`, `partial_failure`, `failure`) and real item count / XHR byte progress (zero fake percentages).
+    - Implemented iOS-safe background scroll lock hook preserving viewport scroll position for all modals and drawers (`isMobileMenuOpen`, `isMediaUploadModalOpen`, `previewLightboxIndex`, `isInlineEditOpen`).
+    - Added mobile drawer overlay with high z-index, backdrop blur, scroll containment, and touch-friendly navigation dismiss.
+    - Converted Stepper from overflowing flex layout to a 2x2 / 4-column responsive grid (`grid grid-cols-2 sm:grid-cols-4 gap-2 w-full`).
+    - Converted Property Examples carousel to fluid snap cards (`min-w-[250px] max-w-[300px]`) with no horizontal page break.
+    - Added `PropertyUploadProgressCard` directly above workflow stepper displaying real-time stage, active file name, byte progress bar, item counters, and instant retry triggers.
+    - Reorganized review action buttons: full-width primary CTA ("Publish Reviewed Listing", min 44px height) on mobile, secondary actions in a 3-column responsive grid (`grid grid-cols-3 sm:flex`).
+    - Made 18-attribute inspection grid responsive (`grid-cols-1 min-[440px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6`), replacing `truncate` with `break-words leading-tight` so attribute values never clip.
+    - Overhauled Media Upload dialog: fixed viewport containment (`fixed inset-0 flex flex-col sm:max-h-[90dvh]`), pinned header with close button, independently scrollable body (`flex-1 min-h-0 overflow-y-auto`), non-overlapping "Set Cover" and "✕ Remove" buttons in gallery cards, clean filename truncation with file size, and pinned sticky footer respecting `safe-area-bottom` with full-width primary CTA.
+  - `frontend-web/src/components/FailedUploadsPanel.tsx`:
+    - Made card header, failure reason, and metadata responsive with `break-words` to eliminate any horizontal card overflow.
+    - Overhauled card action footer into a responsive layout on mobile (`grid grid-cols-1 min-[440px]:grid-cols-2 sm:flex`), providing minimum 44px touch targets (`min-h-[44px]`) for "Retry Upload", "Replace file", "Open listing", and "Dismiss".
+
+- **Outcome & Verification Results**:
+  - `npm --prefix frontend-web run build`: 100% build success (TypeScript clean, Vite bundle 764 kB JS / 103 kB CSS in 12.4s).
+  - `mvn test` (backend): 156 tests run, 0 failures, 0 errors, 0 skipped.
+  - Responsive audit: Eliminated horizontal page overflow; modal footer is always reachable on any viewport height; touch targets are >= 44px; text wrapping prevents clipping; iOS Safari auto-zoom prevented via 16px effective font size without disabling browser pinch zoom.
+  - All existing features, Backblaze B2 durable staging retry flow, and role-based access preserved intact.
+
+- **Commit Status**: Kept in working tree for user review per instructions (DO NOT COMMIT, DO NOT PUSH).
+
+---
+
+## 2026-09-18 — 21:11 IST
+
+### Collapsible Attribute Preview, Media Modal Bleed Fix, List View Redesign & Multi-Property Responsive Standards
+
+- **Why Work Was Requested**:
+  1. The 18 extracted property attributes preview cards consumed over 1200px of vertical space on mobile, forcing users to scroll endlessly before seeing publishing actions.
+  2. The Media Upload modal allowed the underlying webpage to bleed through the top status bar / notch on iOS mobile devices due to translucency and missing safe-area padding.
+  3. A duplicate count pill (`✓ 2 files added`) was displayed directly below the toolbar button that already read `Media added (2)`.
+  4. In the Media Upload modal's List View, the "Set Cover" and Room Selector controls were visually disproportionate and significantly larger than the photo thumbnail.
+  5. Multi-property ingestion functionality (`BatchPropertyIngestionStudio.tsx`) needed to be inspected and updated to comply with Rule 6 (zero dev notes/garbage copy) and Rule 8 (iOS input font size >= 16px, background scroll lock, solid modal backdrop, safe area padding).
+
+- **Exact Files Changed**:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Removed redundant `✓ {attachedMediaFiles.length} files added` pill rendered below the "Add media" / "Media added (N)" toolbar button.
+    - Implemented collapsible attribute preview: displays a sleek 1-row summary card (`bhk • propertyType • locality • city • rent` + spec badges) with a "View all 18 attributes" toggle button. When expanded, category tabs and the full 18-card grid are shown alongside top and bottom "Collapse 18 attributes" buttons.
+    - Fixed Media Upload modal top bleed: made backdrop solid `bg-slate-950 sm:bg-slate-950/95`, set modal container to `h-[100dvh] sm:h-auto sm:max-h-[90dvh]`, and added safe-area padding `pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] sm:pt-6` with solid `bg-slate-900` header so the underlying page is completely occluded.
+    - Redesigned Media Upload List View: enlarged photo thumbnail from 48px to 64px–80px (`w-16 h-16 sm:w-20 sm:h-20 rounded-xl`) with tap-to-expand lightbox preview, positioned the remove button (`✕`) at the top-right corner, and styled "Cover photo" / "Set cover" and Room Tag selector as compact, sleek inline chips (`h-7`) under the filename.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Added iOS-safe background body scroll lock effect when modal is active (`isOpen && !embedded`), restoring window scroll position upon close.
+    - Updated all editable inputs, textareas, and selects (`ReviewField`, `AvailabilityEditor`, main prompt textarea, and staged card title inputs) to use `text-[16px] sm:text-xs` to prevent iOS Safari auto-focus zooming.
+    - Solidified backdrop (`bg-slate-950 sm:bg-slate-950/90`) and added safe-area-top padding `pt-[calc(env(safe-area-inset-top,0px)+0.75rem)]` to the modal header when opened in standalone mode.
+    - Audited copywriting for complete Rule 6 compliance.
+
+- **Relevant Verification**:
+  - Frontend production build: `npm --prefix frontend-web run build` passed cleanly with 0 TypeScript/Vite errors in 1.87s.
+  - Backend test suite: `mvn test` ran 156 JUnit 5 tests with 0 failures and 0 errors.
+  - Verification of responsive layout, touch targets, and iOS Safari input font sizes.
+
+- **Commit Status**: Kept in working tree for user review per instructions (DO NOT COMMIT, DO NOT PUSH).
+
+---
+
+## 2026-09-18 — 21:35 IST
+
+### Multi-Property Media Metadata Controls (Cover + Room Type) & Upload State Reset
+
+- **Why Work Was Requested**:
+  - Real mobile device testing uncovered two functional/UX issues before commit:
+    1. **Issue 1 — Multi-Property Media Needs Cover + Room Type**: In the multi-property upload workflow (`BatchPropertyIngestionStudio.tsx`), staged properties did not provide cover photo selection or room/category selection. Each property must allow setting at most one cover photo (images only, safe fallback on removal) and room tags reusing the canonical `RoomTag` enum/model without cross-property contamination.
+    2. **Issue 2 — Clear State After Successful Property Upload**: After successful upload, completed form and session state remained stale. All transient batch state, prompt text, staged cards, media references, and previews/object URLs must be cleanly reset upon confirmed full success while preserving state on total failure and preserving unresolved cards/media on partial failure.
+    3. **Preserve Dynamic Success Notification**: Preserve dynamic count notification (e.g. `"2 properties uploaded"`) with grammatical singular/plural handling, capturing confirmed count before resetting state.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/types/index.ts`:
+    - Exported `ROOM_TAG_OPTIONS` containing all 10 canonical values (`GENERAL`, `LIVING_ROOM`, `MASTER_BEDROOM`, `BEDROOM`, `KITCHEN`, `BATHROOM`, `BALCONY`, `EXTERIOR`, `AMENITIES`, `FLOOR_PLAN`) and `DEFAULT_SMART_TAG_SEQUENCE`.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Defined `StagedMediaItem` interface (`id`, `file`, `previewUrl`, `roomTag`, `isCover`) with stable identifiers and added `stagedMedia: StagedMediaItem[]` to `StagedProperty`.
+    - Implemented `handleSetCoverPhoto(cardId, mediaId)` ensuring strictly isolated per-card cover assignment and preventing video covers.
+    - Implemented `handleSetMediaRoomTag(cardId, mediaId, roomTag)` ensuring strictly isolated per-card room tag assignment.
+    - Implemented `handleRemoveStagedMedia(cardId, mediaId)` with `URL.revokeObjectURL` cleanup and automatic fallback assigning cover to the first remaining eligible non-video image.
+    - Replaced the horizontal scrolling thumbnail strip with the responsive media list card layout matching single-property media design: 64–80px thumbnail, gold star indicator for cover, filename and size, compact inline chips ("Cover photo" / "Set cover" button + Room Tag selector dropdown), and clean top-right `✕` remove button.
+    - Updated `uploadMediaFilesForCard` and `handleRetryCardMedia` to transmit each item's isolated `roomTag` and `isPrimaryCover: mediaItem.isCover` to `propertyService.uploadTaggedMedia`.
+    - In `handlePublishAll`: captured `publishedCount` before resetting state, called `onSuccess(publishedCount)`, revoked all preview object URLs via `URL.revokeObjectURL`, cleared all transient batch state (`stagedCards: []`, `rawPrompts: ''`, `detectedCount: 0`, `setMobileWorkspaceView('descriptions')`), and closed modal. On partial failure, preserved failed cards and failed media for retry; on total failure, preserved all input intact.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Imported `DEFAULT_SMART_TAG_SEQUENCE` from `../types` to eliminate local duplicate declaration.
+    - Introduced `mediaObjectUrlMapRef` with `getMediaPreviewUrl`, `revokeMediaPreviewUrl`, and `revokeAllMediaPreviewUrls` to prevent memory leaks and ensure object URLs are revoked upon file removal or unmount.
+    - Updated `uploadPendingMedia` to display dynamic notification (`"1 property uploaded"`) and reset single-property transient state (`newBhkLabel`, `attachedMediaFiles`, `attachedMediaTags`, `coverPhotoIndex`, `lastExtractedResult`) after confirmed full success while keeping unresolved media on failure.
+    - Updated `BatchPropertyIngestionStudio`'s `onSuccess` callback to display dynamic notification (`"${count} ${count === 1 ? 'property' : 'properties'} uploaded"`) and completely clear parent state (`batchDetails`, `newBhkLabel`, `attachedMediaFiles`, `attachedMediaTags`, `coverPhotoIndex`, `uploadPipeline`, `uploadMode: 'single'`).
+
+- **Outcome & Verification Results**:
+  - `node --test` executed 6 focused regression tests covering:
+    1. Per-property cover isolation (Property A cover selection does NOT affect Property B; videos never become cover) - PASS
+    2. Per-property room-tag isolation (Property A tags do NOT appear on Property B) - PASS
+    3. Successful batch reset (Full success clears cards, input, and transient state) - PASS
+    4. Failure preserves state (Total failure keeps all data; partial preserves unresolved cards) - PASS
+    5. Notification count before reset (Dynamic count captured before state reset; singular vs plural handled) - PASS
+    6. Media removal and cover fallback (Removing cover assigns first remaining eligible image) - PASS
+  - `npm --prefix frontend-web run build`: Succeeded with 0 TypeScript/Vite errors (dist generated in 1.87s).
+  - No backend files were modified; backend already supports `roomTag` and `isPrimaryCover` endpoints.
+  - Zero secrets in diff/status; `.env.local` untouched and untracked.
+
+- **Commit Status**: Kept in working tree for user review per instructions (DO NOT COMMIT, DO NOT PUSH).
+
+---
+
+## 2026-09-18 — 21:40 IST
+
+### Voice Dictation Mobile Compatibility & Duplicate Mic Icon Removal
+
+- **Why Work Was Requested**:
+  - User reported:
+    1. "dictate details is not working in phone but working in desktop. not sure why?"
+    2. "also remove that extra mic from there"
+  - Root Cause Analysis:
+    1. **Why Dictation Worked on Desktop but Failed on Phone**:
+       - On desktop, running via `http://localhost:5173` is considered a secure context (`isSecureContext === true`).
+       - On a real mobile phone connected over Wi-Fi / LAN (`http://Dipeshs-MacBook-Air.local:5173` or `http://192.168.x.x:5173`), the connection is plain HTTP (`isSecureContext === false`). In modern mobile browsers (especially iOS Safari and Android Chrome), the Web Speech API (`webkitSpeechRecognition`) and microphone capture are restricted or blocked on non-localhost HTTP origins, throwing `not-allowed` or `service-not-allowed`.
+       - Previously, `recognition.onerror` in both `MasterAdminDashboard` and `BatchPropertyIngestionStudio` had empty handlers with zero user notification, silently resetting `isListening` to false without explaining why.
+       - In addition, iOS Safari does not support `recognition.continuous = true` (which triggers instant recognition aborts or failures).
+       - Reusing a single stale `SpeechRecognition` instance across stops/starts on WebKit causes `InvalidStateError`.
+    2. **Extra Mic Icon**:
+       - In `MasterAdminDashboard.tsx`, the Dictate button rendered both a Lucide `<Mic />` icon AND `'🎤 Dictate details'`, resulting in two microphones displayed side-by-side.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Removed the emoji `'🎤 '` from `'🎤 Dictate details'`, leaving only the clean Lucide `<Mic />` icon alongside `'Dictate details'`.
+    - Updated speech recognition to instantiate fresh sessions on demand, preventing stale session crashes.
+    - Set `recognition.continuous = !isIOSOrSafari` to prevent iOS Safari SpeechRecognition crashes.
+    - Added informative user feedback in `recognition.onerror`: detects non-secure LAN HTTP origins and informs the user that mobile browsers require HTTPS for in-browser speech recognition, while offering the immediate tip to tap the native microphone button on their smartphone virtual keyboard to dictate directly into the text field.
+    - Handled `SpeechRecognition` absence gracefully with immediate notification rather than silent failure.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Applied the same on-demand session creation, iOS Safari `continuous` protection, and informative mobile/HTTPS error feedback to batch voice dictation.
+
+- **Outcome & Verification Results**:
+  - `npm --prefix frontend-web run build`: Succeeded with 0 TypeScript/Vite errors (1.87s).
+  - `node --test` executed 6 regression tests: All 6 passed in 57ms.
+  - Dictate button now has a single clean microphone icon.
+  - Mobile users receive helpful and immediate guidance on permissions, HTTPS, and phone keyboard dictation.
+
+- **Commit Status**: Kept in working tree for user review per instructions (DO NOT COMMIT, DO NOT PUSH).
+
+---
+
+## 2026-09-18 — 21:44 IST
+
+### Multi-Property Upload Auto-Advance to Next Property
+
+- **Why Work Was Requested**:
+  - User requested: "also in multi photo upload if one property is uploaded move to next automatically"
+  - During batch property publication (`handlePublishAll`), multiple properties were uploaded sequentially, but the active card view remained statically pinned to the first property. The user on mobile could not see subsequent properties uploading unless they manually tapped the tabs.
+
+- **Exact Files Changed**:
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Updated `handlePublishAll` upload loop: dynamically sets `setActiveCardId(card.id)` for the property currently being uploaded, and upon successful completion of that property's media upload, pauses briefly (700ms) to display 100% completion before automatically advancing `setActiveCardId(nextCard.id)` to the next property.
+    - Added a convenient inline "Next property →" button directly underneath each staged property's media cards list, enabling users to fluidly move to the next property card during media review without having to scroll up to the top tab bar.
+
+- **Outcome & Verification Results**:
+  - `npm --prefix frontend-web run build`: Succeeded with 0 TypeScript/Vite errors (1.82s).
+  - `node --test` executed 6 regression tests: All 6 passed in 54ms.
+  - Multi-property upload now automatically advances view from Property 1 to Property 2 to Property N as each completes.
+
+- **Commit Status**: Kept in working tree for user review per instructions (DO NOT COMMIT, DO NOT PUSH).
+
+## 2026-09-18 — 22:55 IST
+
+### Targeted Bug Fix: Owner Name Parsing & Publish State Machine Cleanup
+
+- **Why Work Was Requested**:
+  - Real iPhone testing revealed two functional bugs:
+    1. **Owner Name Parsing**: In natural language descriptions like `"... Name is Piyushi Saha number is 9131670191."`, owner name was missed, truncated, or contaminated with boundary keywords (`number`, `is`).
+    2. **Publish Button Stuck on "Publishing listing…"**: Contradictory UI state where `"Property successfully published. Listing ID: #32"` was rendered while the main CTA button still showed `"Publishing listing…"` and remained visually disabled/loading.
+
+- **Exact Files Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`:
+    - Replaced brittle `OWNER_NAME_PATTERN` with `OWNER_NAME_WITH_CUE_PATTERN`, `REV_OWNER_NAME_PATTERN`, and `DIRECT_OWNER_PHONE_PATTERN` using pre-compiled `private static final Pattern` constants per AGENTS.md.
+    - Added lookahead boundary delimiters (`number`, `contact`, `phone`, `mobile`, `rent`, `deposit`, `facing`, etc.) to prevent swallowing contact words or phone numbers into the owner name.
+    - Added `sanitizeOwnerName(String rawCandidate)` helper method that strips punctuation and noise tokens while rejecting locality suffixes and non-name terms, preserving valid multi-word names (e.g. "Piyushi Saha", "Rahul Sharma") and defaulting to "Not Specified" when no owner is present.
+    - Broadened `AMENDMENT_OWNER_NAME_CUE_PATTERN` to support natural voice dictation amendments ("Owner is...", "Name is...").
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceTest.java`:
+    - Added `testOwnerNameAndContactExtractionRegression()` covering all required scenarios:
+      1. `"Name is Piyushi Saha number is 9131670191"` -> `ownerName = "Piyushi Saha"`, `ownerPhone = "+91 91316 70191"`.
+      2. `"Owner name is Rahul Sharma and contact is 9876543210"` -> `ownerName = "Rahul Sharma"`, `ownerPhone = "+91 98765 43210"`.
+      3. Description without owner details (`2 BHK flat in Nanda Nagar Indore with rent 25000 9876543210`) does not invent an owner name -> `ownerName = "Not Specified"`.
+      4. Unrelated trailing words following phone/name (`facing east ready to move`) are not swallowed into owner name.
+      5. Natural variations: "Owner Piyushi Saha, contact 9131670191", "Contact person Piyushi Saha - 9131670191", "Piyushi Saha 9131670191".
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Fixed root cause of publish button stuck state: `setIsSavingDb(false)` is now called immediately after `createPropertyFromParsed` returns the created `propertyId`.
+    - Handled 0-media case cleanly in `handleSaveToDatabase`: triggers success pipeline, calls `notifySuccess('1 property uploaded')`, and resets transient state and success message cleanly.
+    - Refactored CTA button state hierarchy: checks `isSavingDb ? 'Publishing listing…' : isUploadingMedia ? 'Uploading media…' : liveExtractedPreview.savedToDatabase ? 'Listing Published' : 'Publish Reviewed Listing'`.
+    - Added `aria-busy` and checkmark icon for published state; prevented contradictory simultaneously visible states.
+    - Added `setDbSaveSuccessMsg(null)` upon confirmed media completion reset.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Added `publishingCardId` state to isolate publishing status per property card.
+    - Updated batch publish loop to immediately update `card.publishedId` upon creation, mark only the active card as publishing, and auto-advance to next card without a blocking 700ms sleep.
+    - Updated property tab buttons and card header badges so that Property 1 shows `Published`, Property 2 shows `Publishing…`, and Property 3 shows `Ready to publish` (or media count).
+    - Added `aria-busy={isPublishing}` on batch CTAs and ensured `setPublishingCardId(null)` in `finally`.
+
+- **Outcome & Verification Results**:
+  - `mvn test -Dtest=PropertyParserServiceTest`: 19/19 tests passed (0.605s).
+  - `mvn test -Dtest=PropertyParserServiceBatchTest,PropertyParserServicePureTest,PropertyControllerTest`: 29/29 tests passed.
+  - `npm --prefix frontend-web run build`: Succeeded in 2.01s (0 errors).
+  - Scratch state machine verification: Single property and multi-property isolation passed.
+  - Zero responsive, layout, or dictation regressions.
+
+- **Commit Status**: NOT committed, NOT pushed per instructions.

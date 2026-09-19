@@ -351,4 +351,59 @@ public class PropertyParserServiceTest {
         assertEquals("2 Baths", dto2.getBathrooms());
         assertEquals("Mahalaxmi Nagar", dto2.getSector());
     }
+
+    @Test
+    public void testOwnerNameAndContactExtractionRegression() {
+        // 1. Minimum test 1: "Name is Piyushi Saha number is 9131670191"
+        ParsedPropertyDTO dto1 = propertyParserService.parseAndSave("2 BHK flat in Bhawarkuan Name is Piyushi Saha number is 9131670191");
+        assertNotNull(dto1);
+        assertEquals("Piyushi Saha", dto1.getOwnerName());
+        assertEquals("+91 91316 70191", dto1.getOwnerPhone());
+        assertTrue(dto1.getOwnerPhone().replace(" ", "").contains("9131670191"));
+
+        // 2. Minimum test 2: "Owner name is Rahul Sharma and contact is 9876543210"
+        ParsedPropertyDTO dto2 = propertyParserService.parseAndSave("2 BHK flat in Vijay Nagar Owner name is Rahul Sharma and contact is 9876543210");
+        assertNotNull(dto2);
+        assertEquals("Rahul Sharma", dto2.getOwnerName());
+        assertEquals("+91 98765 43210", dto2.getOwnerPhone());
+        assertTrue(dto2.getOwnerPhone().replace(" ", "").contains("9876543210"));
+
+        // 3. Minimum test 3: Description WITHOUT owner details does not invent an owner name
+        ParsedPropertyDTO dto3 = propertyParserService.parseAndSave("2 BHK flat in Nanda Nagar Indore with rent 25000 9876543210");
+        assertNotNull(dto3);
+        assertEquals("Not Specified", dto3.getOwnerName(), "Description without owner name must not invent an owner name");
+        assertEquals("+91 98765 43210", dto3.getOwnerPhone());
+
+        ParsedPropertyDTO dto3b = propertyParserService.parseAndSave("2 BHK flat in Vijay Nagar Indore with rent 20000 deposit 40000 2 baths");
+        assertNotNull(dto3b);
+        assertEquals("Not Specified", dto3b.getOwnerName());
+        assertEquals("Not Specified", dto3b.getOwnerPhone());
+
+        // 4. Minimum test 4: Unrelated words following the phone/name boundary are not swallowed into ownerName
+        ParsedPropertyDTO dto4 = propertyParserService.parseAndSave("2 BHK flat in Palasia Name is Piyushi Saha number is 9131670191 facing east ready to move");
+        assertNotNull(dto4);
+        assertEquals("Piyushi Saha", dto4.getOwnerName());
+        assertEquals("+91 91316 70191", dto4.getOwnerPhone());
+        assertEquals("East Facing", dto4.getVastuFacing());
+        assertEquals("Ready To Move", dto4.getPossessionDate());
+
+        // 5. Natural variations:
+        // Variation A: "Owner Piyushi Saha, contact 9131670191"
+        ParsedPropertyDTO dtoVarA = propertyParserService.parseAndSave("Flat in Rau Owner Piyushi Saha, contact 9131670191");
+        assertNotNull(dtoVarA);
+        assertEquals("Piyushi Saha", dtoVarA.getOwnerName());
+        assertEquals("+91 91316 70191", dtoVarA.getOwnerPhone());
+
+        // Variation B: "Contact person Piyushi Saha - 9131670191"
+        ParsedPropertyDTO dtoVarB = propertyParserService.parseAndSave("Flat in Rau Contact person Piyushi Saha - 9131670191");
+        assertNotNull(dtoVarB);
+        assertEquals("Piyushi Saha", dtoVarB.getOwnerName());
+        assertEquals("+91 91316 70191", dtoVarB.getOwnerPhone());
+
+        // Variation C: "Piyushi Saha 9131670191"
+        ParsedPropertyDTO dtoVarC = propertyParserService.parseAndSave("2 BHK flat in Rau rent 15000 Piyushi Saha 9131670191");
+        assertNotNull(dtoVarC);
+        assertEquals("Piyushi Saha", dtoVarC.getOwnerName());
+        assertEquals("+91 91316 70191", dtoVarC.getOwnerPhone());
+    }
 }

@@ -199,11 +199,20 @@ fi
 echo -e "${GREEN}✓ Frontend is healthy and accepting requests.${RESET}"
 echo ""
 
+LOCAL_HOSTNAME="$(scutil --get LocalHostName 2>/dev/null || hostname -s)"
+LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+
 echo -e "${BOLD}${GREEN}"
 echo "=========================================================================="
 echo "🚀 PATHOME APPLICATION IS LIVE! (Your Dreams, Our Efforts)"
-echo "   - Frontend Web App:  http://localhost:5173"
-echo "   - Backend REST APIs: http://localhost:8080/api/v1/properties"
+echo "   - Frontend (Local):   http://localhost:5173"
+if [ -n "${LOCAL_HOSTNAME}" ]; then
+echo "   - Frontend (Mobile):  http://${LOCAL_HOSTNAME}.local:5173"
+fi
+if [ -n "${LAN_IP}" ] && [ "${LAN_IP}" != "192.0.0.2" ]; then
+echo "   - Frontend (Wi-Fi):   http://${LAN_IP}:5173"
+fi
+echo "   - Backend REST APIs:  http://localhost:8080/api/v1/properties"
 echo "   - Press Ctrl+C in this terminal to stop both servers cleanly."
 echo "=========================================================================="
 echo -e "${RESET}"

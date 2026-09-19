@@ -231,11 +231,23 @@ public class PropertyParserService {
     // Listing Status & Owner Patterns
     private static final Pattern STATUS_PATTERN = Pattern.compile("\\b(live|pending|sold|expired|rented|removed)\\b",
             Pattern.CASE_INSENSITIVE);
-    private static final Pattern OWNER_NAME_PATTERN = Pattern.compile(
-            "\\b(?:owner\\s*name|owner|contact)\\s*[:\\-]?\\s*([A-Za-z]{2,20}(?:\\s+[A-Za-z]{2,20}){0,3})\\b",
+    private static final Pattern OWNER_NAME_WITH_CUE_PATTERN = Pattern.compile(
+            "\\b(?:owner\\s*(?:name|details)?|contact\\s*(?:person|name|details)?|(?<!\\b(?:sector|society|project|city|colony|building|apartment|township)\\s+)name)\\s*(?:is|are|:|;|-|=)?\\s+" +
+            "([A-Za-z]{2,25}(?:\\s+[A-Za-z]{2,25}){0,3}?)" +
+            "(?=\\s*(?:and\\s+)?(?:number|no\\b|num\\b|contact|phone|mobile|mob\\b|cell|call|whatsapp|details|at\\b|on\\b|rent|deposit|brokerage|facing|bhk|flat|house|villa|plot|floor|bath|furnished|ready|status|[+\\d]|[,;:|/\\-\\.\\n]|$))",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern REV_OWNER_NAME_PATTERN = Pattern.compile(
-            "\\b([A-Za-z]{2,20}(?:\\s+[A-Za-z]{2,20}){0,3})\\s+(?:owner|contact)\\b",
+            "(?<!\\b(?:in|at|near|opp|opposite|behind|sector|colony|nagar|road|flat|bhk)\\s+)" +
+            "\\b([A-Za-z]{2,25}(?:\\s+[A-Za-z]{2,25}){0,3}?)\\s+(?:is\\s+the\\s+)?(?:owner|contact\\s*person)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern DIRECT_OWNER_PHONE_PATTERN = Pattern.compile(
+            "(?<!\\b(?:in|at|near|opp|opposite|behind|from|for|facing|sector|colony|nagar|road|flat|house|villa|plot|deposit|brokerage|rent|bath|baths|ready)\\s+)" +
+            "\\b([A-Z][a-z]{1,20}\\s+[A-Z][a-z]{1,20})\\s*[:\\-,]?\\s*(?=(?:\\+?91[\\-\\s]?)?[6-9]\\d{9}\\b)");
+    private static final Pattern OWNER_NAME_NOISE_TOKENS = Pattern.compile(
+            "\\b(is|are|and|the|owner|name|contact|person|details|number|no|num|phone|mobile|mob|cell|call|whatsapp|at|on|for|with|having|facing|flat|house|villa|apartment|plot|furnished|fully|semi|unfurnished|bhk|rk|bedroom|bath|baths|live|ready|status)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern OWNER_NON_NAME_LOC_PATTERN = Pattern.compile(
+            ".*\\b(?:nagar|colony|city|township|road|street|lane|circle|sector|bazar|vihar|enclave|pur|ganj|heights|residency|villa|society|square|chowk|puri|dham|bagh|marg|block|phase|layout|extension|ext|estate|avenue|gali|path|bypass|highway|scheme|drive|park|hills|hill|valley|green|greens|campus|indore|bhopal|dewas|ujjain|mumbai|delhi|jaipur|pune|bangalore)\\b.*",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern PHONE_PATTERN = Pattern.compile(
             "(?<![+\\d])(?:\\+?91[\\-\\s]?)?([6-9](?:[\\-\\s]?\\d){9})\\b");
@@ -267,9 +279,6 @@ public class PropertyParserService {
             "(?:bhk|rk|bedroom|bedrooms|bed|beds|room|rooms|bk|bhkk|bhkks|dfbhk|sdfbhk)", Pattern.CASE_INSENSITIVE);
     private static final Pattern HOUSE_TYPE_PATTERN = Pattern.compile(
             "\\b(?:house|bungalow|independent|villa|duplex|bunglow|viila|vlla)\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern OWNER_NAME_NOISE_PATTERN = Pattern.compile(
-            "\\b(is|live|facing|flat|house|villa|apartment|plot|furnished|fully|semi|unfurnished|bhk|rk|bedroom|bath|baths)\\b",
-            Pattern.CASE_INSENSITIVE);
     private static final Pattern NON_DIGIT_PATTERN = Pattern.compile("\\D");
     private static final Pattern SECTOR_LONG_NUMBER_PATTERN = Pattern.compile(".*\\b\\d{4,}\\b.*");
     private static final Pattern LEADING_BATCH_MARKER_PATTERN = Pattern.compile("^(?:\\[?\\d+[\\]\\)\\.\\:\\-]|#\\d+)\\s*");
@@ -281,7 +290,8 @@ public class PropertyParserService {
     private static final Pattern AMENDMENT_DEPOSIT_CUE_PATTERN = Pattern.compile("\\b(?:security\\s+deposit|deposit|deposits|security)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern AMENDMENT_OWNER_PHONE_CUE_PATTERN = Pattern.compile(
             "\\b(?:owner\\s+(?:phone|mobile|contact|number)|phone|mobile|contact\\s+number)\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern AMENDMENT_OWNER_NAME_CUE_PATTERN = Pattern.compile("\\bowner\\s+name\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AMENDMENT_OWNER_NAME_CUE_PATTERN = Pattern.compile(
+            "\\b(?:owner(?:\\s*name)?|contact(?:\\s*person)?|name\\s+is)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern AMENDMENT_BATHROOM_CUE_PATTERN = Pattern.compile("\\b(?:bath|baths|bathroom|bathrooms|toilet|washroom)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern AMENDMENT_LAYOUT_CUE_PATTERN = Pattern.compile("\\b(?:bhk|rk|bedroom|bedrooms|layout)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern AMENDMENT_TYPE_CUE_PATTERN = Pattern.compile("\\b(?:flat|apartment|house|villa|plot|penthouse|studio)\\b", Pattern.CASE_INSENSITIVE);
@@ -528,20 +538,20 @@ public class PropertyParserService {
         }
 
         String ownerName = null;
-        Matcher ownerMatcher = OWNER_NAME_PATTERN.matcher(input);
-        if (ownerMatcher.find() && ownerMatcher.group(1) != null && !ownerMatcher.group(1).isBlank()) {
-            String candidate = OWNER_NAME_NOISE_PATTERN.matcher(ownerMatcher.group(1)).replaceAll("").trim();
-            if (!candidate.isBlank()) {
-                ownerName = capitalizeWords(candidate);
-            }
+        Matcher ownerMatcher = OWNER_NAME_WITH_CUE_PATTERN.matcher(input);
+        if (ownerMatcher.find() && ownerMatcher.group(1) != null) {
+            ownerName = sanitizeOwnerName(ownerMatcher.group(1));
         }
         if (ownerName == null) {
             Matcher revOwnerMatcher = REV_OWNER_NAME_PATTERN.matcher(input);
             if (revOwnerMatcher.find() && revOwnerMatcher.group(1) != null) {
-                String candidate = OWNER_NAME_NOISE_PATTERN.matcher(revOwnerMatcher.group(1)).replaceAll("").trim();
-                if (!candidate.isBlank()) {
-                    ownerName = capitalizeWords(candidate);
-                }
+                ownerName = sanitizeOwnerName(revOwnerMatcher.group(1));
+            }
+        }
+        if (ownerName == null) {
+            Matcher directPhoneMatcher = DIRECT_OWNER_PHONE_PATTERN.matcher(input);
+            if (directPhoneMatcher.find() && directPhoneMatcher.group(1) != null) {
+                ownerName = sanitizeOwnerName(directPhoneMatcher.group(1));
             }
         }
 
@@ -1428,6 +1438,28 @@ public class PropertyParserService {
             }
         }
         return sb.toString().trim();
+    }
+
+    private String sanitizeOwnerName(String rawCandidate) {
+        if (rawCandidate == null || rawCandidate.isBlank()) {
+            return null;
+        }
+        String clean = rawCandidate.replaceAll("^[\\s,;:|/\\-]+|[\\s,;:|/\\-]+$", "").trim();
+        clean = OWNER_NAME_NOISE_TOKENS.matcher(clean).replaceAll("").trim();
+        clean = WHITESPACE_PATTERN.matcher(clean).replaceAll(" ").trim();
+        if (clean.isBlank() || OWNER_NON_NAME_LOC_PATTERN.matcher(clean).matches()) {
+            return null;
+        }
+        String[] words = WHITESPACE_PATTERN.split(clean);
+        if (words.length == 0 || words.length > 4) {
+            return null;
+        }
+        for (String w : words) {
+            if (w.length() < 2 || !w.chars().allMatch(Character::isLetter)) {
+                return null;
+            }
+        }
+        return capitalizeWords(clean);
     }
 
     /**

@@ -12,6 +12,34 @@ export type RoomTag =
   | 'AMENITIES' 
   | 'FLOOR_PLAN';
 
+export interface RoomTagOption {
+  value: RoomTag;
+  label: string;
+}
+
+export const ROOM_TAG_OPTIONS: RoomTagOption[] = [
+  { value: 'GENERAL', label: '🌐 General' },
+  { value: 'LIVING_ROOM', label: '🛋️ Living' },
+  { value: 'MASTER_BEDROOM', label: '🛏️ Master' },
+  { value: 'BEDROOM', label: '🛏️ Bed' },
+  { value: 'KITCHEN', label: '🍳 Kitchen' },
+  { value: 'BATHROOM', label: '🚿 Bath' },
+  { value: 'BALCONY', label: '🌅 Balcony' },
+  { value: 'EXTERIOR', label: '🏢 Exterior' },
+  { value: 'AMENITIES', label: '🏊 Amenities' },
+  { value: 'FLOOR_PLAN', label: '📐 Plan' },
+];
+
+export const DEFAULT_SMART_TAG_SEQUENCE: RoomTag[] = [
+  'LIVING_ROOM',
+  'BEDROOM',
+  'KITCHEN',
+  'BATHROOM',
+  'BALCONY',
+  'EXTERIOR',
+  'GENERAL'
+];
+
 export interface PropertyMediaAsset {
   id?: number;
   listingId: number;

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 import {
@@ -12,6 +12,8 @@ import {
   Zap,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
   SlidersHorizontal,
   Plus,
   ToggleLeft,
@@ -31,13 +33,14 @@ import {
   Mic,
   MicOff,
   RefreshCw,
-  AlertTriangle
+  AlertTriangle,
+  AlertCircle
 } from 'lucide-react';
 import { propertyService } from '../services/propertyService';
 import { failedUploadService } from '../services/failedUploadService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
-import { RoomTag, Property } from '../types';
+import { RoomTag, Property, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 
 import { RevenueAreaChart } from './analytics/RevenueAreaChart';
@@ -234,6 +237,42 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [previewLightboxIndex, setPreviewLightboxIndex] = useState<number | null>(null);
   const [mediaViewMode, setMediaViewMode] = useState<'grid' | 'list'>('grid');
 
+  const mediaObjectUrlMapRef = useRef<Map<File, string>>(new Map());
+
+  const getMediaPreviewUrl = useCallback((file: File): string => {
+    let url = mediaObjectUrlMapRef.current.get(file);
+    if (!url) {
+      url = URL.createObjectURL(file);
+      mediaObjectUrlMapRef.current.set(file, url);
+    }
+    return url;
+  }, []);
+
+  const revokeMediaPreviewUrl = useCallback((file: File) => {
+    const url = mediaObjectUrlMapRef.current.get(file);
+    if (url) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+      mediaObjectUrlMapRef.current.delete(file);
+    }
+  }, []);
+
+  const revokeAllMediaPreviewUrls = useCallback(() => {
+    mediaObjectUrlMapRef.current.forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    });
+    mediaObjectUrlMapRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      revokeAllMediaPreviewUrls();
+    };
+  }, [revokeAllMediaPreviewUrls]);
+
   const handleOpenMediaUpload = () => {
     setIsMediaUploadModalOpen(true);
     setTimeout(() => {
@@ -266,6 +305,29 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
   const [dbSaveSuccessMsg, setDbSaveSuccessMsg] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
+  const [isAttributesCollapsed, setIsAttributesCollapsed] = useState<boolean>(true);
+
+  // Real Property Upload Pipeline Progress State (Zero Fake Percentages)
+  const [uploadPipeline, setUploadPipeline] = useState<{
+    active: boolean;
+    stage: 'idle' | 'validating' | 'saving_listing' | 'preparing_media' | 'uploading_media' | 'success' | 'partial_failure' | 'failure';
+    stageLabel: string;
+    totalMediaCount: number;
+    currentMediaIndex: number;
+    currentMediaName: string;
+    currentFilePercent?: number;
+    failedCount: number;
+    errorMessage?: string;
+    savedPropertyId?: number;
+  }>({
+    active: false,
+    stage: 'idle',
+    stageLabel: '',
+    totalMediaCount: 0,
+    currentMediaIndex: 0,
+    currentMediaName: '',
+    failedCount: 0
+  });
 
   // Fetch unresolved upload count for nav badge on mount
   useEffect(() => {
@@ -276,22 +338,41 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     failedUploadService.fetchUnresolvedCount().then(setFailedUploadsCount);
   };
 
+  // Robust iOS-safe background scroll lock preserving viewport scroll position
   useEffect(() => {
-    if (!isInlineEditOpen) return;
+    const isAnyOverlayActive = isMobileMenuOpen || isMediaUploadModalOpen || previewLightboxIndex !== null || isInlineEditOpen;
+    if (!isAnyOverlayActive) return;
 
-    const previousOverflow = document.body.style.overflow;
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsInlineEditOpen(false);
-    };
+    const scrollY = window.scrollY;
+    const originalPosition = document.body.style.position;
+    const originalTop = document.body.style.top;
+    const originalWidth = document.body.style.width;
+    const originalOverflow = document.body.style.overflow;
 
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
     document.body.style.overflow = 'hidden';
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsMobileMenuOpen(false);
+        setIsMediaUploadModalOpen(false);
+        setPreviewLightboxIndex(null);
+        setIsInlineEditOpen(false);
+      }
+    };
     window.addEventListener('keydown', handleEscape);
 
     return () => {
-      document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleEscape);
+      document.body.style.position = originalPosition;
+      document.body.style.top = originalTop;
+      document.body.style.width = originalWidth;
+      document.body.style.overflow = originalOverflow;
+      window.scrollTo(0, scrollY);
     };
-  }, [isInlineEditOpen]);
+  }, [isMobileMenuOpen, isMediaUploadModalOpen, previewLightboxIndex, isInlineEditOpen]);
 
   const handleOpenInlineEdit = () => {
     const activeData = lastExtractedResult || liveExtractedPreview;
@@ -383,11 +464,29 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   ) => {
     if (!targetPropertyId || pendingItems.length === 0) return;
     setIsUploadingMedia(true);
+    setUploadPipeline(prev => ({
+      ...prev,
+      active: true,
+      stage: 'uploading_media',
+      totalMediaCount: pendingItems.length,
+      failedCount: 0,
+      stageLabel: `Preparing ${pendingItems.length} media file(s) for listing #${targetPropertyId}…`
+    }));
+
     const failedItems: Array<{ file: File; originalIndex: number }> = [];
     const failureMessages: string[] = [];
 
     for (let pendingIndex = 0; pendingIndex < pendingItems.length; pendingIndex += 1) {
       const item = pendingItems[pendingIndex];
+      setUploadPipeline(prev => ({
+        ...prev,
+        currentMediaIndex: pendingIndex + 1,
+        currentMediaName: item.file.name,
+        currentFilePercent: 0,
+        stage: 'uploading_media',
+        stageLabel: `Uploading media item ${pendingIndex + 1} of ${pendingItems.length} (${item.file.name})…`
+      }));
+
       try {
         await propertyService.uploadTaggedMedia(targetPropertyId, item.file, {
           roomTag: attachedMediaTags[item.originalIndex] || (item.originalIndex === 0 ? 'LIVING_ROOM' : 'BEDROOM'),
@@ -399,14 +498,21 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           vastuFacing: metadata.vastuFacing
         }, {
           onProgress: (progress) => {
-            const overallProgress = Math.round(
-              ((pendingIndex + (progress.percent / 100)) / pendingItems.length) * 100
-            );
-            setUploadStatusMsg(progress.stage === 'retrying'
-              ? `Connection interrupted. Retrying media… ${overallProgress}%`
+            const itemLabel = `Media ${pendingIndex + 1} of ${pendingItems.length} (${item.file.name})`;
+            const statusText = progress.stage === 'retrying'
+              ? `Connection interrupted. Retrying ${itemLabel} (attempt ${progress.attempt}/${progress.maxAttempts})…`
               : progress.stage === 'preparing'
-                ? `Preparing media… ${overallProgress}%`
-                : `Uploading property media… ${overallProgress}%`);
+                ? `Preparing & compressing ${itemLabel}…`
+                : progress.percent > 0
+                  ? `Uploading ${itemLabel} • ${progress.percent}% byte progress`
+                  : `Uploading ${itemLabel}…`;
+
+            setUploadStatusMsg(statusText);
+            setUploadPipeline(prev => ({
+              ...prev,
+              currentFilePercent: progress.percent,
+              stageLabel: statusText
+            }));
           }
         });
       } catch (mediaError) {
@@ -420,6 +526,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     if (failedItems.length > 0) {
       setUploadStatusMsg(`${failedItems.length} of ${pendingItems.length} ${pendingItems.length === 1 ? 'file' : 'files'} could not be uploaded.`);
+      setUploadPipeline(prev => ({
+        ...prev,
+        stage: 'partial_failure',
+        failedCount: failedItems.length,
+        stageLabel: `Listing #${targetPropertyId} published, but ${failedItems.length} of ${pendingItems.length} media items failed.`
+      }));
       showErrorDialog({
         title: 'Property published, but some media needs attention',
         message: `${failedItems.length} of ${pendingItems.length} media files could not be uploaded for listing #${targetPropertyId}. You can retry only the failed media; successful uploads have been preserved.`,
@@ -433,7 +545,33 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
 
     setUploadStatusMsg('All property media uploaded successfully.');
-    notifySuccess('Media uploaded', 'All attached photos and videos have been uploaded to this listing.', undefined, 'PROPERTY');
+    setUploadPipeline(prev => ({
+      ...prev,
+      stage: 'success',
+      stageLabel: pendingItems.length > 0
+        ? `Listing #${targetPropertyId} and all ${pendingItems.length} media items uploaded successfully!`
+        : `Listing #${targetPropertyId} published successfully!`
+    }));
+    notifySuccess(
+      '1 property uploaded',
+      pendingItems.length > 0
+        ? `Listing #${targetPropertyId} and all ${pendingItems.length} media items published successfully.`
+        : `Listing #${targetPropertyId} published successfully.`,
+      undefined,
+      'PROPERTY'
+    );
+
+    // Reset single-property transient form state after confirmed success
+    setNewBhkLabel('');
+    if (singleMicBaseTextRef.current) {
+      singleMicBaseTextRef.current = '';
+    }
+    revokeAllMediaPreviewUrls();
+    setAttachedMediaFiles([]);
+    setAttachedMediaTags({});
+    setCoverPhotoIndex(0);
+    setLastExtractedResult(null);
+    setDbSaveSuccessMsg(null);
   };
 
   const handleRetryFailedMedia = async () => {
@@ -458,6 +596,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
     
     // Pre-flight validation for mandatory non-null database fields
+    setUploadPipeline({
+      active: true,
+      stage: 'validating',
+      stageLabel: 'Validating property details…',
+      totalMediaCount: attachedMediaFiles.length,
+      currentMediaIndex: 0,
+      currentMediaName: '',
+      failedCount: 0
+    });
+
     const missingReq: string[] = [];
     if (!lastExtractedResult.bhk || lastExtractedResult.bhk === 'Not Specified' || lastExtractedResult.bhk === 'Unspecified') {
       missingReq.push('BHK Layout Count');
@@ -483,6 +631,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
 
     if (missingReq.length > 0) {
+      setUploadPipeline(prev => ({ ...prev, active: false, stage: 'idle' }));
       showErrorDialog({
         title: 'Complete the property details',
         message: 'A few required details need your attention before this listing can be published.',
@@ -497,6 +646,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     setIsSavingDb(true);
     setDbSaveSuccessMsg(null);
+    setUploadPipeline(prev => ({
+      ...prev,
+      stage: 'saving_listing',
+      stageLabel: 'Saving property listing to database…'
+    }));
+
     try {
       const payload = {
         learningExampleId: lastExtractedResult.learningExampleId || '',
@@ -534,8 +689,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
       const saved = await propertyService.createPropertyFromParsed(payload);
       const propertyId = saved.propertyId;
+      setIsSavingDb(false);
       window.dispatchEvent(new Event('pathome_property_published'));
       setDbSaveSuccessMsg(`Property successfully published. Listing ID: #${propertyId}`);
+
       setLastExtractedResult((prev: any) => ({
         ...prev,
         ownerPhone: ownerPhoneForPublishing,
@@ -545,19 +702,57 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         extractedAt: `Just now (Listing #${saved.id})`
       }));
 
-      await uploadPendingMedia(
-        propertyId,
-        attachedMediaFiles.map((file, originalIndex) => ({ file, originalIndex })),
-        {
-          title: payload.title,
-          sector: payload.sector,
-          rentVal: payload.rentVal || `₹${rentAmountNum.toLocaleString('en-IN')} / month`,
-          vastuFacing: payload.vastuFacing
+      if (attachedMediaFiles.length > 0) {
+        setUploadPipeline(prev => ({
+          ...prev,
+          savedPropertyId: propertyId,
+          stage: 'uploading_media',
+          stageLabel: `Listing #${propertyId} created. Uploading ${attachedMediaFiles.length} media file(s)…`
+        }));
+        await uploadPendingMedia(
+          propertyId,
+          attachedMediaFiles.map((file, originalIndex) => ({ file, originalIndex })),
+          {
+            title: payload.title,
+            sector: payload.sector,
+            rentVal: payload.rentVal || `₹${rentAmountNum.toLocaleString('en-IN')} / month`,
+            vastuFacing: payload.vastuFacing
+          }
+        );
+      } else {
+        setUploadPipeline(prev => ({
+          ...prev,
+          savedPropertyId: propertyId,
+          stage: 'success',
+          stageLabel: `Listing #${propertyId} published successfully!`
+        }));
+        notifySuccess(
+          '1 property uploaded',
+          `Listing #${propertyId} published successfully.`,
+          undefined,
+          'PROPERTY'
+        );
+        // Reset single-property transient form state after confirmed success
+        setNewBhkLabel('');
+        if (singleMicBaseTextRef.current) {
+          singleMicBaseTextRef.current = '';
         }
-      );
+        revokeAllMediaPreviewUrls();
+        setAttachedMediaFiles([]);
+        setAttachedMediaTags({});
+        setCoverPhotoIndex(0);
+        setLastExtractedResult(null);
+        setDbSaveSuccessMsg(null);
+      }
     } catch (err: unknown) {
       console.warn('Backend endpoint status notice:', err);
       const message = getErrorMessage(err, 'Please check the required property details and try again.');
+      setUploadPipeline(prev => ({
+        ...prev,
+        stage: 'failure',
+        errorMessage: message,
+        stageLabel: `Unable to publish listing: ${message}`
+      }));
       showErrorDialog({
         title: 'Unable to publish this listing',
         message,
@@ -579,55 +774,43 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const singleInputSourceRef = useRef<'TYPED' | 'DICTATED' | 'MIXED'>('TYPED');
 
   useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-IN';
-
-    recognition.onresult = (event: any) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += (finalTranscript ? ' ' : '') + transcript.trim();
-        } else {
-          interimTranscript += (interimTranscript ? ' ' : '') + transcript.trim();
-        }
+    return () => {
+      if (singleRecognitionRef.current) {
+        try {
+          singleRecognitionRef.current.abort();
+        } catch (_) {}
       }
-
-      const formattedFinal = formatSingleVoiceTranscript(finalTranscript);
-      if (formattedFinal) {
-        const base = singleMicBaseTextRef.current || '';
-        const separator = base && !formattedFinal.startsWith('\n') ? ' ' : '';
-        singleMicBaseTextRef.current = `${base}${separator}${formattedFinal}`;
-      }
-
-      const confirmedText = singleMicBaseTextRef.current;
-      const interimSeparator = confirmedText && interimTranscript ? ' ' : '';
-      setNewBhkLabel(`${confirmedText}${interimSeparator}${interimTranscript}`);
     };
-
-    recognition.onerror = () => {
-      setIsSingleMicListening(false);
-      setIsSingleDictationChoiceOpen(false);
-    };
-    recognition.onend = () => {
-      setIsSingleMicListening(false);
-      setIsSingleDictationChoiceOpen(false);
-    };
-    singleRecognitionRef.current = recognition;
   }, []);
 
   const startSingleDictation = (mode: 'replace' | 'append') => {
-    if (!singleRecognitionRef.current) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      notifyWarning(
+        'Dictation not supported by this browser',
+        'Your mobile browser does not support the Web Speech API. Tip: You can tap the microphone button on your phone keyboard to dictate directly into the text field.'
+      );
+      return;
+    }
+
+    if (singleRecognitionRef.current) {
+      try {
+        singleRecognitionRef.current.abort();
+      } catch (_) {}
+    }
 
     try {
+      const isIOSOrSafari = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
+        /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = !isIOSOrSafari;
+      recognition.interimResults = true;
+      recognition.lang = 'en-IN';
+
       const currentDraft = newBhkLabel.trim();
       singleInputSourceRef.current = mode === 'append' && currentDraft ? 'MIXED' : 'DICTATED';
       singleMicBaseTextRef.current = mode === 'append' ? currentDraft : '';
@@ -635,17 +818,105 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         setNewBhkLabel('');
       }
       setIsSingleDictationChoiceOpen(false);
-      singleRecognitionRef.current.start();
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        let interimTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += (finalTranscript ? ' ' : '') + transcript.trim();
+          } else {
+            interimTranscript += (interimTranscript ? ' ' : '') + transcript.trim();
+          }
+        }
+
+        const formattedFinal = formatSingleVoiceTranscript(finalTranscript);
+        if (formattedFinal) {
+          const base = singleMicBaseTextRef.current || '';
+          const separator = base && !formattedFinal.startsWith('\n') ? ' ' : '';
+          singleMicBaseTextRef.current = `${base}${separator}${formattedFinal}`;
+        }
+
+        const confirmedText = singleMicBaseTextRef.current;
+        const interimSeparator = confirmedText && interimTranscript ? ' ' : '';
+        setNewBhkLabel(`${confirmedText}${interimSeparator}${interimTranscript}`);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn('Speech recognition notice:', event);
+        setIsSingleMicListening(false);
+        setIsSingleDictationChoiceOpen(false);
+        const errType = event?.error;
+        if (errType === 'no-speech') return;
+
+        if (errType === 'not-allowed' || errType === 'service-not-allowed') {
+          if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+            notifyWarning(
+              'Microphone requires HTTPS on mobile',
+              'Mobile browsers restrict voice dictation to HTTPS connections over Wi-Fi/LAN. Tip: Tap the microphone button on your phone keyboard to dictate directly into the text field!'
+            );
+          } else {
+            notifyWarning(
+              'Microphone permission needed',
+              'Please allow microphone access in your browser settings to dictate property details, or use the microphone button on your device keyboard.'
+            );
+          }
+        } else if (errType === 'network') {
+          notifyWarning(
+            'Speech recognition network error',
+            'Voice dictation could not connect to speech services. Please check your internet connection, or use the microphone button on your phone keyboard.'
+          );
+        } else if (errType) {
+          notifyWarning(
+            'Dictation paused',
+            `Dictation stopped (${errType}). You can also use the microphone button on your phone keyboard.`
+          );
+        }
+      };
+
+      recognition.onend = () => {
+        setIsSingleMicListening(false);
+        setIsSingleDictationChoiceOpen(false);
+      };
+
+      singleRecognitionRef.current = recognition;
+      recognition.start();
       setIsSingleMicListening(true);
-    } catch (err) {
-      console.warn('Mic error', err);
+    } catch (err: any) {
+      console.warn('Mic start error', err);
+      setIsSingleMicListening(false);
+      if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        notifyWarning(
+          'Microphone requires HTTPS on mobile',
+          'Mobile browsers restrict speech recognition to HTTPS connections over Wi-Fi/LAN. Tip: Tap the microphone button on your phone keyboard to dictate directly!'
+        );
+      } else {
+        notifyWarning(
+          'Dictation unavailable',
+          'Could not activate microphone. You can tap the microphone button on your phone keyboard to dictate directly.'
+        );
+      }
     }
   };
 
   const toggleSingleMic = () => {
-    if (!singleRecognitionRef.current) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      notifyWarning(
+        'Dictation not supported by this browser',
+        'Your mobile browser does not support the Web Speech API. You can use the microphone button on your phone keyboard to dictate directly into the text field.'
+      );
+      return;
+    }
+
     if (isSingleMicListening) {
-      singleRecognitionRef.current.stop();
+      try {
+        singleRecognitionRef.current?.stop();
+      } catch (_) {}
       setIsSingleMicListening(false);
       return;
     }
@@ -865,19 +1136,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
   };
 
-  const DEFAULT_SMART_TAG_SEQUENCE: RoomTag[] = [
-    'GENERAL',
-    'LIVING_ROOM',
-    'MASTER_BEDROOM',
-    'KITCHEN',
-    'BATHROOM',
-    'BALCONY',
-    'BEDROOM',
-    'EXTERIOR',
-    'AMENITIES',
-    'FLOOR_PLAN'
-  ];
-
   const prepareAndAttachMedia = async (files: FileList | File[]) => {
     const fileArray = Array.from(files).filter(
       f => f.type.startsWith('image/') || f.type.startsWith('video/')
@@ -934,6 +1192,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   };
 
   const handleRemoveAttachedMedia = (index: number) => {
+    const removedFile = attachedMediaFiles[index];
+    if (removedFile) {
+      revokeMediaPreviewUrl(removedFile);
+    }
     setAttachedMediaFiles(prev => prev.filter((_, i) => i !== index));
     setFailedMediaUploads(prev => prev.filter(item => item.originalIndex !== index));
     const updatedTags: Record<number, RoomTag> = {};
@@ -1017,48 +1279,68 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       {/* MOBILE DRAWER NAVIGATION MENU OVERLAY */}
       <AnimatePresence>
         {isMobileMenuOpen && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.25 }}
-            className="lg:hidden bg-slate-950 text-white border-b border-slate-800 px-4 py-4 space-y-2 z-40 shadow-2xl"
-          >
-            <div className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider mb-2">
-              Select Navigation Panel:
-            </div>
-            <div className="grid grid-cols-1 gap-2">
-              {adminNavItems.map((item, index) => {
-                const isActive = activeTab === item.id || (activeTab === 'overview' && item.id === 'funnel');
-                const Icon = item.icon;
-                return (
-                  <motion.button
-                    key={item.id}
-                    initial={{ opacity: 0, x: -14 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: index * 0.04, type: "spring", stiffness: 400, damping: 24 }}
-                    whileTap={{ scale: 0.97 }}
-                    onClick={() => handleTabSelect(item.id)}
-                    className={`w-full px-4 py-3 rounded-xl text-xs font-bold flex items-center justify-between transition-all cursor-pointer ${
-                      isActive
-                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/30 font-black'
-                        : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800/80'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-emerald-400'}`} />
-                      <span className="font-['Outfit']">{item.label}</span>
-                    </div>
-                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold border ${
-                      isActive ? 'bg-emerald-700 text-emerald-100 border-emerald-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'
-                    }`}>
-                      {item.badge}
-                    </span>
-                  </motion.button>
-                );
-              })}
-            </div>
-          </motion.div>
+          <div className="lg:hidden fixed inset-0 top-[124px] z-50 flex flex-col">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-10"
+            />
+            {/* Drawer Content */}
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="relative z-20 bg-slate-950 text-white border-b border-slate-800 px-4 py-4 space-y-2 shadow-2xl max-h-[calc(100dvh-130px)] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider mb-2">
+                <span>Select Navigation Panel:</span>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="text-slate-400 hover:text-white p-1"
+                  aria-label="Close menu"
+                >
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                {adminNavItems.map((item, index) => {
+                  const isActive = activeTab === item.id || (activeTab === 'overview' && item.id === 'funnel');
+                  const Icon = item.icon;
+                  return (
+                    <motion.button
+                      key={item.id}
+                      initial={{ opacity: 0, x: -14 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.04, type: "spring", stiffness: 400, damping: 24 }}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => handleTabSelect(item.id)}
+                      className={`w-full min-h-[44px] px-4 py-3 rounded-xl text-xs font-bold flex items-center justify-between transition-all cursor-pointer ${
+                        isActive
+                          ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/30 font-black'
+                          : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-emerald-400'}`} />
+                        <span className="font-['Outfit']">{item.label}</span>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold border ${
+                        isActive ? 'bg-emerald-700 text-emerald-100 border-emerald-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'
+                      }`}>
+                        {item.badge}
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -1612,45 +1894,160 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   )}
                 </AnimatePresence>
 
-                {/* 4-STEP VISUAL WORKFLOW STEPPER WITH SPRING HOVER */}
-                <div className="no-scrollbar relative z-10 mb-5 flex snap-x snap-mandatory touch-pan-x gap-2.5 overflow-x-auto rounded-2xl border border-slate-800/90 bg-slate-950/90 p-3 font-mono shadow-inner xl:grid xl:grid-cols-4 xl:overflow-visible">
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
+                {/* REAL PROPERTY UPLOAD STATUS PIPELINE CARD */}
+                <AnimatePresence>
+                  {uploadPipeline.active && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                      className={`relative z-20 mb-5 p-4 sm:p-5 rounded-2xl border shadow-xl transition-all ${
+                        uploadPipeline.stage === 'failure'
+                          ? 'bg-rose-950/90 border-rose-500/50 text-rose-100 shadow-rose-950/40'
+                          : uploadPipeline.stage === 'partial_failure'
+                          ? 'bg-amber-950/90 border-amber-500/50 text-amber-100 shadow-amber-950/40'
+                          : uploadPipeline.stage === 'success'
+                          ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-100 shadow-emerald-950/40'
+                          : 'bg-cyan-950/90 border-cyan-500/50 text-cyan-100 shadow-cyan-950/40'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0 flex-1">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                            uploadPipeline.stage === 'failure'
+                              ? 'bg-rose-900/60 border-rose-400/40 text-rose-300'
+                              : uploadPipeline.stage === 'partial_failure'
+                              ? 'bg-amber-900/60 border-amber-400/40 text-amber-300'
+                              : uploadPipeline.stage === 'success'
+                              ? 'bg-emerald-900/60 border-emerald-400/40 text-emerald-300'
+                              : 'bg-cyan-900/60 border-cyan-400/40 text-cyan-300'
+                          }`}>
+                            {uploadPipeline.stage === 'failure' ? (
+                              <AlertCircle className="w-5 h-5" />
+                            ) : uploadPipeline.stage === 'partial_failure' ? (
+                              <AlertTriangle className="w-5 h-5" />
+                            ) : uploadPipeline.stage === 'success' ? (
+                              <CheckCircle2 className="w-5 h-5" />
+                            ) : (
+                              <RefreshCw className="w-5 h-5 animate-spin" />
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="text-sm font-black font-['Outfit'] text-white">
+                                {uploadPipeline.stage === 'validating' && 'Validating property details…'}
+                                {uploadPipeline.stage === 'saving_listing' && 'Creating property listing in database…'}
+                                {uploadPipeline.stage === 'preparing_media' && 'Preparing property media…'}
+                                {uploadPipeline.stage === 'uploading_media' && `Uploading media (${uploadPipeline.currentMediaIndex} of ${uploadPipeline.totalMediaCount})…`}
+                                {uploadPipeline.stage === 'success' && 'Property listing published successfully!'}
+                                {uploadPipeline.stage === 'partial_failure' && 'Listing created with media upload notice'}
+                                {uploadPipeline.stage === 'failure' && 'Failed to publish property listing'}
+                              </h4>
+                              {uploadPipeline.savedPropertyId && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-900/80 border border-white/20 text-white">
+                                  Listing #{uploadPipeline.savedPropertyId}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-slate-300 mt-1 font-mono break-words">
+                              {uploadPipeline.stageLabel || uploadPipeline.errorMessage}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Pipeline Actions */}
+                        <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/10">
+                          {uploadPipeline.failedCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => void handleRetryFailedMedia()}
+                              disabled={isUploadingMedia}
+                              className="min-h-[40px] px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center justify-center gap-1.5"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                              <span>Retry failed ({uploadPipeline.failedCount})</span>
+                            </button>
+                          )}
+                          {(uploadPipeline.stage === 'success' || uploadPipeline.stage === 'failure' || uploadPipeline.stage === 'partial_failure') && (
+                            <button
+                              type="button"
+                              onClick={() => setUploadPipeline(prev => ({ ...prev, active: false }))}
+                              className="min-h-[40px] px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white font-bold text-xs rounded-xl border border-white/20 cursor-pointer transition-all"
+                            >
+                              Dismiss
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Real Progress Bar for Active Uploads */}
+                      {uploadPipeline.stage === 'uploading_media' && uploadPipeline.totalMediaCount > 0 && (
+                        <div className="mt-3 pt-3 border-t border-cyan-500/20 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px] font-mono text-cyan-300">
+                            <span className="truncate max-w-[70%]">
+                              {uploadPipeline.currentMediaName ? `Current file: ${uploadPipeline.currentMediaName}` : 'Uploading…'}
+                            </span>
+                            <span className="font-bold shrink-0">
+                              Item {uploadPipeline.currentMediaIndex} / {uploadPipeline.totalMediaCount}
+                              {uploadPipeline.currentFilePercent !== undefined && uploadPipeline.currentFilePercent > 0 ? ` (${uploadPipeline.currentFilePercent}%)` : ''}
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full bg-slate-900/80 rounded-full overflow-hidden border border-cyan-500/30">
+                            <div
+                              className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 rounded-full transition-all duration-300"
+                              style={{
+                                width: `${Math.min(100, Math.max(5, Math.round(
+                                  ((uploadPipeline.currentMediaIndex - 1 + ((uploadPipeline.currentFilePercent || 0) / 100)) / uploadPipeline.totalMediaCount) * 100
+                                )))}%`
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* 4-STEP VISUAL WORKFLOW STEPPER */}
+                <div className="relative z-10 mb-5 grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-2xl border border-slate-800/90 bg-slate-950/90 p-2.5 sm:p-3 font-mono shadow-inner w-full">
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-0 flex-1 items-center gap-2 rounded-xl p-2 sm:p-2.5 transition-all ${
                     newBhkLabel ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
-                    <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0 border border-emerald-500/30">1</div>
-                    <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-emerald-400 tracking-wider">Step 1: Add details</div>
-                      <div className="truncate font-sans font-bold text-slate-200">One or more listings</div>
+                    <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0 border border-emerald-500/30">1</div>
+                    <div className="text-[10px] sm:text-[11px] leading-tight min-w-0">
+                      <div className="font-black uppercase text-[8px] sm:text-[9px] text-emerald-400 tracking-wider truncate">Step 1: Details</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Listing details</div>
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-0 flex-1 items-center gap-2 rounded-xl p-2 sm:p-2.5 transition-all ${
                     liveExtractedPreview && !liveExtractedPreview.isGarbageInput ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
-                    <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0 border border-cyan-500/30">2</div>
-                    <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-cyan-400 tracking-wider">Step 2: Review details</div>
-                      <div className="truncate font-sans font-bold text-slate-200">Check the listing information</div>
+                    <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-xs shrink-0 border border-cyan-500/30">2</div>
+                    <div className="text-[10px] sm:text-[11px] leading-tight min-w-0">
+                      <div className="font-black uppercase text-[8px] sm:text-[9px] text-cyan-400 tracking-wider truncate">Step 2: Review</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Check fields</div>
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-0 flex-1 items-center gap-2 rounded-xl p-2 sm:p-2.5 transition-all ${
                     attachedMediaFiles.length > 0 ? 'bg-indigo-950/90 text-indigo-300 border border-indigo-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
-                    <div className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-black text-xs shrink-0 border border-indigo-500/30">3</div>
-                    <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-indigo-400 tracking-wider">Step 3: Add media</div>
-                      <div className="truncate font-sans font-bold text-slate-200">Photos and video</div>
+                    <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-black text-xs shrink-0 border border-indigo-500/30">3</div>
+                    <div className="text-[10px] sm:text-[11px] leading-tight min-w-0">
+                      <div className="font-black uppercase text-[8px] sm:text-[9px] text-indigo-400 tracking-wider truncate">Step 3: Media</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Photos & video</div>
                     </div>
                   </motion.div>
 
-                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-[210px] flex-1 snap-start items-center gap-2.5 rounded-xl p-2.5 transition-all xl:min-w-0 ${
+                  <motion.div whileHover={{ scale: 1.02, y: -1 }} className={`flex min-w-0 flex-1 items-center gap-2 rounded-xl p-2 sm:p-2.5 transition-all ${
                     lastExtractedResult?.savedToDatabase ? 'bg-purple-950/90 text-purple-300 border border-purple-500/40 shadow-sm' : 'bg-slate-900/80 text-slate-400 border border-slate-800/60'
                   }`}>
-                    <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-black text-xs shrink-0 border border-purple-500/30">4</div>
-                    <div className="text-[11px] leading-tight min-w-0">
-                      <div className="font-black uppercase text-[9px] text-purple-400 tracking-wider">Step 4: Publish</div>
-                      <div className="truncate font-sans font-bold text-slate-200">After confirmation</div>
+                    <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-black text-xs shrink-0 border border-purple-500/30">4</div>
+                    <div className="text-[10px] sm:text-[11px] leading-tight min-w-0">
+                      <div className="font-black uppercase text-[8px] sm:text-[9px] text-purple-400 tracking-wider truncate">Step 4: Publish</div>
+                      <div className="truncate font-sans font-bold text-slate-200">Live listing</div>
                     </div>
                   </motion.div>
                 </div>
@@ -1660,7 +2057,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   {/* FULL-WIDTH AI STUDIO CONSOLE CONTAINER */}
                   <div className="w-full space-y-5">
                     
-                    {/* 1-CLICK PRESET TOOLBAR (4-COLUMN COMPACT GRID - 100% FULL WIDTH) */}
+                    {/* 1-CLICK PRESET TOOLBAR */}
                     <div className="bg-slate-950/90 p-3.5 rounded-2xl border border-slate-800/90 shadow-md space-y-2.5 w-full">
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-mono font-extrabold text-slate-300 flex items-center gap-1.5 uppercase tracking-wide">
@@ -1680,7 +2077,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                         )}
                       </div>
 
-                      {/* 4-COLUMN COMPACT GRID (NO SCROLLBAR) */}
+                      {/* RESPONSIVE EXAMPLES CAROUSEL / GRID */}
                       <div className="no-scrollbar flex w-full snap-x snap-mandatory touch-pan-x gap-2.5 overflow-x-auto pb-1 xl:grid xl:grid-cols-4 xl:overflow-visible xl:pb-0">
                         {PRESET_PROMPTS.map((preset) => {
                           const isSelected = newBhkLabel === preset.text;
@@ -1695,13 +2092,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 singleInputSourceRef.current = 'TYPED';
                                 handleSinglePromptChange(preset.text);
                               }}
-                              className={`flex min-w-[220px] snap-start flex-col justify-between gap-1.5 rounded-xl border p-3 text-left transition-all cursor-pointer xl:min-w-0 ${
+                              className={`flex min-w-[250px] max-w-[300px] sm:min-w-[260px] flex-1 snap-start flex-col justify-between gap-1.5 rounded-xl border p-3 text-left transition-all cursor-pointer xl:min-w-0 xl:max-w-none ${
                                 isSelected
                                   ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200 shadow-lg shadow-emerald-950/80 ring-1 ring-emerald-500/50'
                                   : 'bg-slate-900/90 hover:bg-slate-800/90 text-slate-300 border-slate-800 hover:border-slate-700'
                               }`}
                             >
-                              <div className="flex items-center justify-between w-full gap-1">
+                              <div className="flex items-center justify-between w-full gap-2">
                                 <span className="text-xs font-black font-['Outfit'] text-white leading-tight truncate">{preset.label}</span>
                                 <span className="text-[9px] font-mono font-black text-amber-400 bg-amber-950/90 border border-amber-500/40 px-1.5 py-0.5 rounded-md shrink-0">
                                   {preset.badge}
@@ -1716,7 +2113,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                       </div>
                     </div>
 
-                    {/* WORLD-CLASS AI SMART LISTING PROMPT COMPOSER STUDIO (100% FULL WIDTH) */}
+                    {/* AI PROMPT COMPOSER STUDIO */}
                     <div className="space-y-2 w-full">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div>
@@ -1732,14 +2129,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             whileTap={{ scale: 0.96 }}
                             type="button"
                             onClick={toggleSingleMic}
-                            className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
                               isSingleMicListening
                                 ? 'bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-500/30 animate-pulse'
                                 : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700 hover:border-emerald-500/50'
                             }`}
                           >
                             {isSingleMicListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5 text-emerald-400" />}
-                            <span>{isSingleMicListening ? 'Listening…' : '🎤 Dictate details'}</span>
+                            <span>{isSingleMicListening ? 'Listening…' : 'Dictate details'}</span>
                           </motion.button>
                           <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-full border border-emerald-800/80">
                             {newBhkLabel.length} characters
@@ -1792,84 +2189,76 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                         )}
                       </AnimatePresence>
 
-                      {/* LUXURY GLOWING FULL-WIDTH PROMPT COMPOSER BOX */}
+                      {/* GLOWING FULL-WIDTH PROMPT COMPOSER BOX */}
                       <div className="relative group w-full">
-                        {/* AMBIENT AURORA GLOW BACKDROP ON HOVER */}
                         <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-500 rounded-3xl blur-md opacity-25 group-hover:opacity-50 transition duration-500 pointer-events-none" />
 
                         <div className="relative bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden w-full">
-                          {/* SCANNING LASER BEAM HEADER */}
                           <div className="h-1 w-full bg-gradient-to-r from-emerald-500 via-teal-400 via-cyan-400 to-amber-400 animate-scan-beam" />
 
-                          <div className="p-4 space-y-3">
+                          <div className="p-3.5 sm:p-4 space-y-3">
                             <textarea
                               rows={4}
                               value={newBhkLabel}
                               onChange={(e) => handleSinglePromptChange(e.target.value)}
                               placeholder="Type or edit property details here. Include layout, location, rent, deposit, owner contact, furnishing, and availability."
-                              className="w-full bg-transparent text-emerald-300 placeholder-slate-500 text-xs sm:text-sm font-mono border-0 focus:ring-0 outline-none leading-relaxed resize-none"
+                              className="w-full bg-transparent text-emerald-300 placeholder-slate-500 text-[16px] sm:text-sm font-mono border-0 focus:ring-0 outline-none leading-relaxed resize-none"
                             />
 
-                            {/* INTEGRATED BOTTOM TOOLBAR (ATTACH MEDIA & SAVE/PUBLISH BUTTON) */}
+                            {/* RESPONSIVE BOTTOM ACTION TOOLBAR */}
                             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pt-3 border-t border-slate-800/80 gap-3">
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto">
                                 <motion.button
-                                  whileHover={{ scale: 1.04, y: -1 }}
-                                  whileTap={{ scale: 0.96 }}
+                                  whileHover={{ scale: 1.02, y: -1 }}
+                                  whileTap={{ scale: 0.97 }}
                                   type="button"
                                   onClick={handleOpenMediaUpload}
-                                  className={`px-4 py-2 rounded-xl text-xs font-mono font-extrabold transition-all cursor-pointer flex items-center gap-2 border ${
+                                  className={`min-h-[44px] px-4 py-2.5 rounded-xl text-xs font-mono font-extrabold transition-all cursor-pointer flex items-center justify-center gap-2 border w-full sm:w-auto ${
                                     attachedMediaFiles.length > 0
                                       ? 'bg-cyan-950 text-cyan-300 border-cyan-500/50 shadow-md shadow-cyan-950/50'
                                       : 'bg-slate-900 hover:bg-slate-800 text-cyan-300 border-slate-800 hover:border-cyan-500/40'
                                   }`}
                                 >
-                                  <Camera className="w-4 h-4 text-cyan-400" />
-                                  <span>{attachedMediaFiles.length > 0 ? `Media added (${attachedMediaFiles.length})` : 'Add photos or video'}</span>
+                                  <Camera className="w-4 h-4 text-cyan-400 shrink-0" />
+                                  <span className="truncate">{attachedMediaFiles.length > 0 ? `Media added (${attachedMediaFiles.length})` : 'Add photos or video'}</span>
                                 </motion.button>
 
                                 {newBhkLabel.trim() && (
                                   <motion.button
-                                    whileHover={{ scale: 1.04, y: -1 }}
-                                    whileTap={{ scale: 0.96 }}
+                                    whileHover={{ scale: 1.02, y: -1 }}
+                                    whileTap={{ scale: 0.97 }}
                                     type="button"
                                     onClick={() => setNewBhkLabel((details) => {
                                       const nextDetails = `${details.trimEnd()}\n\nNext property\n`;
                                       singleMicBaseTextRef.current = nextDetails;
                                       return nextDetails;
                                     })}
-                                    className="px-4 py-2 rounded-xl text-xs font-extrabold text-amber-200 bg-amber-950/50 hover:bg-amber-950 border border-amber-500/40 hover:border-amber-400/70 transition-all cursor-pointer flex items-center gap-2"
+                                    className="min-h-[44px] px-4 py-2.5 rounded-xl text-xs font-extrabold text-amber-200 bg-amber-950/50 hover:bg-amber-950 border border-amber-500/40 hover:border-amber-400/70 transition-all cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
                                   >
-                                    <Layers className="w-4 h-4 text-amber-400" />
-                                    <span>Add another property</span>
+                                    <Layers className="w-4 h-4 text-amber-400 shrink-0" />
+                                    <span className="truncate">Add another property</span>
                                   </motion.button>
-                                )}
-
-                                {attachedMediaFiles.length > 0 && (
-                                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/80 px-2.5 py-1 rounded-full border border-cyan-800">
-                                    ✓ {attachedMediaFiles.length} {attachedMediaFiles.length === 1 ? 'file' : 'files'} added
-                                  </span>
                                 )}
                               </div>
 
                               <motion.button
                                 disabled={isSubmittingListing}
-                                whileHover={!isSubmittingListing ? { scale: 1.03, y: -1, boxShadow: "0 0 30px rgba(16, 185, 129, 0.6)" } : {}}
-                                whileTap={!isSubmittingListing ? { scale: 0.96 } : {}}
+                                whileHover={!isSubmittingListing ? { scale: 1.02, y: -1, boxShadow: "0 0 30px rgba(16, 185, 129, 0.6)" } : {}}
+                                whileTap={!isSubmittingListing ? { scale: 0.97 } : {}}
                                 transition={{ type: "spring", stiffness: 450, damping: 18 }}
                                 type="submit"
-                                className={`px-7 py-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-emerald-600/30 flex items-center gap-2 cursor-pointer ${
+                                className={`w-full sm:w-auto min-h-[44px] px-7 py-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer ${
                                   isSubmittingListing ? 'opacity-80 cursor-wait' : ''
                                 }`}
                               >
                                 {isSubmittingListing ? (
                                   <>
-                                    <Sparkles className="w-4 h-4 text-emerald-300 animate-spin" />
+                                    <Sparkles className="w-4 h-4 text-emerald-300 animate-spin shrink-0" />
                                     <span>Extracting property details...</span>
                                   </>
                                 ) : (
                                   <>
-                                    <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                                    <Sparkles className="w-4 h-4 text-amber-300 animate-pulse shrink-0" />
                                     <span>{MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel) ? 'Review multiple properties' : 'Review property details'}</span>
                                   </>
                                 )}
@@ -1960,108 +2349,197 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                           </div>
 
                           {!liveExtractedPreview.isGarbageInput && (
-                            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-800">
+                              {/* Primary Action Button - Full Width on Mobile with 44px min-height */}
                               <motion.button
-                                whileHover={{ scale: 1.04 }}
-                                whileTap={{ scale: 0.96 }}
-                                type="button"
-                                onClick={handleOpenInlineEdit}
-                                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-amber-300 text-[11px] font-extrabold rounded-xl transition-all border border-amber-500/40 flex items-center gap-1 cursor-pointer shadow-xs"
-                              >
-                                <SlidersHorizontal className="w-3.5 h-3.5" />
-                                <span>✏️ Edit Fields</span>
-                              </motion.button>
-
-                              <motion.button
-                                whileHover={{ scale: 1.04 }}
-                                whileTap={{ scale: 0.96 }}
-                                type="button"
-                                onClick={handleCopyJson}
-                                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 text-[11px] font-bold rounded-xl transition-all border border-slate-700 flex items-center gap-1 cursor-pointer shadow-xs"
-                              >
-                                {copiedJson ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-400" />}
-                                <span>{copiedJson ? 'Copied!' : '📋 Copy Summary'}</span>
-                              </motion.button>
-
-                              <motion.button
-                                whileHover={{ scale: 1.04 }}
-                                whileTap={{ scale: 0.96 }}
-                                type="button"
-                                onClick={() => {
-                                  handleFillMediaFromExtracted();
-                                  handleOpenMediaUpload();
-                                }}
-                                className="px-3 py-1.5 bg-cyan-950/90 hover:bg-cyan-900 text-cyan-200 text-[11px] font-extrabold rounded-xl transition-all border border-cyan-500/40 flex items-center gap-1 cursor-pointer shadow-xs"
-                              >
-                                <Tag className="w-3.5 h-3.5 text-cyan-400" />
-                                <span>🏷️ Tag Photos</span>
-                              </motion.button>
-
-                              <motion.button
-                                whileHover={{ scale: 1.04 }}
-                                whileTap={{ scale: 0.96 }}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
                                 type="button"
                                 onClick={handleSaveToDatabase}
                                 disabled={isSavingDb || isUploadingMedia || (liveExtractedPreview.savedToDatabase && failedMediaUploads.length === 0)}
-                                className={`px-3 py-1.5 ${
+                                aria-busy={isSavingDb || isUploadingMedia}
+                                className={`min-h-[44px] px-4 py-2.5 ${
                                   liveExtractedPreview.savedToDatabase && failedMediaUploads.length > 0
                                     ? 'bg-rose-700 hover:bg-rose-600 border-rose-400/40 text-white'
                                     : 'bg-emerald-700 hover:bg-emerald-600 border-emerald-400/40 text-white'
-                                } disabled:opacity-50 text-[11px] font-extrabold rounded-xl transition-all border flex items-center gap-1 cursor-pointer shadow-xs`}
+                                } disabled:opacity-50 text-xs font-black rounded-xl transition-all border flex items-center justify-center gap-2 cursor-pointer shadow-md order-first sm:order-last w-full sm:w-auto`}
                               >
                                 {liveExtractedPreview.savedToDatabase && failedMediaUploads.length > 0 ? (
                                   <>
-                                    <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                                    <RefreshCw className={`w-4 h-4 ${isUploadingMedia ? 'animate-spin' : ''}`} />
                                     <span>{isUploadingMedia ? 'Uploading media…' : `Retry failed media (${failedMediaUploads.length})`}</span>
+                                  </>
+                                ) : isSavingDb ? (
+                                  <>
+                                    <Database className="w-4 h-4 animate-pulse" />
+                                    <span>Publishing listing…</span>
+                                  </>
+                                ) : isUploadingMedia ? (
+                                  <>
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                    <span>Uploading media…</span>
+                                  </>
+                                ) : liveExtractedPreview.savedToDatabase ? (
+                                  <>
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                    <span>Listing Published</span>
                                   </>
                                 ) : (
                                   <>
-                                    <Database className="w-3.5 h-3.5" />
-                                    <span>{isSavingDb ? 'Publishing…' : liveExtractedPreview.savedToDatabase ? 'Published' : 'Publish Reviewed Listing'}</span>
+                                    <Database className="w-4 h-4" />
+                                    <span>Publish Reviewed Listing</span>
                                   </>
                                 )}
                               </motion.button>
+
+                              {/* Secondary Actions in Responsive Grid on Mobile */}
+                              <div className="grid grid-cols-3 sm:flex items-center gap-2 w-full sm:w-auto">
+                                <motion.button
+                                  whileHover={{ scale: 1.03 }}
+                                  whileTap={{ scale: 0.97 }}
+                                  type="button"
+                                  onClick={handleOpenInlineEdit}
+                                  className="min-h-[40px] px-2.5 sm:px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-amber-300 text-[11px] font-extrabold rounded-xl transition-all border border-amber-500/40 flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                >
+                                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                                  <span>Edit</span>
+                                </motion.button>
+
+                                <motion.button
+                                  whileHover={{ scale: 1.03 }}
+                                  whileTap={{ scale: 0.97 }}
+                                  type="button"
+                                  onClick={handleCopyJson}
+                                  className="min-h-[40px] px-2.5 sm:px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 text-[11px] font-bold rounded-xl transition-all border border-slate-700 flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                >
+                                  {copiedJson ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-400" />}
+                                  <span>{copiedJson ? 'Copied' : 'Copy'}</span>
+                                </motion.button>
+
+                                <motion.button
+                                  whileHover={{ scale: 1.03 }}
+                                  whileTap={{ scale: 0.97 }}
+                                  type="button"
+                                  onClick={() => {
+                                    handleFillMediaFromExtracted();
+                                    handleOpenMediaUpload();
+                                  }}
+                                  className="min-h-[40px] px-2.5 sm:px-3 py-1.5 bg-cyan-950/90 hover:bg-cyan-900 text-cyan-200 text-[11px] font-extrabold rounded-xl transition-all border border-cyan-500/40 flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                >
+                                  <Tag className="w-3.5 h-3.5 text-cyan-400" />
+                                  <span>Photos</span>
+                                </motion.button>
+                              </div>
                             </div>
                           )}
                         </div>
 
-                        {/* CATEGORY SEGMENTED FILTER TABS WITH SLIDING LIQUID PILL */}
-                        {!liveExtractedPreview.isGarbageInput && (
-                          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar relative">
-                            {[
-                              { id: 'all', label: '🌐 All 18 Attributes', activeStyle: 'text-emerald-300 border-emerald-500/50 bg-emerald-950' },
-                              { id: 'location', label: '📍 Location & Type (6)', activeStyle: 'text-blue-300 border-blue-500/50 bg-blue-950' },
-                              { id: 'pricing', label: '💰 Rent & Financials (5)', activeStyle: 'text-amber-300 border-amber-500/50 bg-amber-950' },
-                              { id: 'specs', label: '🛋️ Specs & Amenities (7)', activeStyle: 'text-purple-300 border-purple-500/50 bg-purple-950' }
-                            ].map(tab => {
-                              const isTabActive = activeAttributeTab === tab.id;
-                              return (
-                                <button
-                                  key={tab.id}
-                                  type="button"
-                                  onClick={() => setActiveAttributeTab(tab.id as any)}
-                                  className={`relative px-3 py-1.5 rounded-xl text-xs font-extrabold font-mono transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                                    isTabActive
-                                      ? tab.activeStyle + ' font-black shadow-xs border'
-                                      : 'bg-slate-900/80 text-slate-400 border border-slate-800 hover:text-slate-200'
-                                  }`}
-                                >
-                                  {isTabActive && (
-                                    <motion.div
-                                      layoutId="activeCategoryTabPill"
-                                      className="absolute inset-0 bg-white/5 rounded-xl pointer-events-none"
-                                      transition={{ type: "spring", stiffness: 450, damping: 30 }}
-                                    />
-                                  )}
-                                  <span className="relative z-10">{tab.label}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
+                        {/* COLLAPSED ATTRIBUTE OVERVIEW CARD OR FULL 18-CARD INSPECTION GRID */}
+                        {isAttributesCollapsed ? (
+                          <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-3.5 space-y-2.5">
+                            <div className="flex flex-col min-[480px]:flex-row min-[480px]:items-center justify-between gap-2.5">
+                              <div className="flex items-center gap-2 flex-wrap min-w-0">
+                                <span className="text-xs sm:text-sm font-black text-white font-['Outfit']">
+                                  {[liveExtractedPreview.bhk, liveExtractedPreview.propertyType, liveExtractedPreview.locality, liveExtractedPreview.city].filter(v => v && v !== 'Unspecified').join(' • ') || 'Property details extracted'}
+                                </span>
+                                {liveExtractedPreview.expectedRent && liveExtractedPreview.expectedRent !== 'Unspecified' && (
+                                  <span className="text-xs font-mono font-bold text-amber-300 bg-amber-950/80 px-2 py-0.5 rounded-md border border-amber-800/60">
+                                    {liveExtractedPreview.expectedRent}
+                                  </span>
+                                )}
+                              </div>
 
-                        {/* 18-CARD CATEGORIZED REAL-TIME PARAMETER INSPECTION GRID (6-COLUMNS SPANNING FULL WIDTH) */}
-                        <motion.div layout className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 w-full">
+                              <motion.button
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                type="button"
+                                onClick={() => setIsAttributesCollapsed(false)}
+                                className="min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold text-emerald-400 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                              >
+                                <span>View all 18 attributes</span>
+                                <ChevronDown className="w-4 h-4" />
+                              </motion.button>
+                            </div>
+
+                            {/* Quick mini-specs pill row */}
+                            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1 text-[11px] font-mono text-slate-400">
+                              {liveExtractedPreview.bathrooms && liveExtractedPreview.bathrooms !== 'Unspecified' && (
+                                <span className="bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 shrink-0">
+                                  🚿 {liveExtractedPreview.bathrooms} Baths
+                                </span>
+                              )}
+                              {liveExtractedPreview.furnishing && liveExtractedPreview.furnishing !== 'Unspecified' && (
+                                <span className="bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 shrink-0">
+                                  🛋️ {liveExtractedPreview.furnishing}
+                                </span>
+                              )}
+                              {liveExtractedPreview.floor && liveExtractedPreview.floor !== 'Unspecified' && (
+                                <span className="bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 shrink-0">
+                                  🏢 Floor {liveExtractedPreview.floor}
+                                </span>
+                              )}
+                              {liveExtractedPreview.vastuFacing && liveExtractedPreview.vastuFacing !== 'Unspecified' && (
+                                <span className="bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 shrink-0">
+                                  🧭 {liveExtractedPreview.vastuFacing} Facing
+                                </span>
+                              )}
+                              {liveExtractedPreview.deposit && liveExtractedPreview.deposit !== 'Unspecified' && (
+                                <span className="bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 shrink-0">
+                                  🔒 Deposit: {liveExtractedPreview.deposit}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                              {/* CATEGORY SEGMENTED FILTER TABS WITH SLIDING LIQUID PILL */}
+                              {!liveExtractedPreview.isGarbageInput && (
+                                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar relative flex-1">
+                                  {[
+                                    { id: 'all', label: '🌐 All 18 Attributes', activeStyle: 'text-emerald-300 border-emerald-500/50 bg-emerald-950' },
+                                    { id: 'location', label: '📍 Location & Type (6)', activeStyle: 'text-blue-300 border-blue-500/50 bg-blue-950' },
+                                    { id: 'pricing', label: '💰 Rent & Financials (5)', activeStyle: 'text-amber-300 border-amber-500/50 bg-amber-950' },
+                                    { id: 'specs', label: '🛋️ Specs & Amenities (7)', activeStyle: 'text-purple-300 border-purple-500/50 bg-purple-950' }
+                                  ].map(tab => {
+                                    const isTabActive = activeAttributeTab === tab.id;
+                                    return (
+                                      <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => setActiveAttributeTab(tab.id as any)}
+                                        className={`relative px-3 py-1.5 rounded-xl text-xs font-extrabold font-mono transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                                          isTabActive
+                                            ? tab.activeStyle + ' font-black shadow-xs border'
+                                            : 'bg-slate-900/80 text-slate-400 border border-slate-800 hover:text-slate-200'
+                                        }`}
+                                      >
+                                        {isTabActive && (
+                                          <motion.div
+                                            layoutId="activeCategoryTabPill"
+                                            className="absolute inset-0 bg-white/5 rounded-xl pointer-events-none"
+                                            transition={{ type: "spring", stiffness: 450, damping: 30 }}
+                                          />
+                                        )}
+                                        <span className="relative z-10">{tab.label}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => setIsAttributesCollapsed(true)}
+                                className="min-h-[36px] px-2.5 py-1 rounded-xl text-xs font-bold text-slate-400 hover:text-white bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition-all flex items-center gap-1 shrink-0 cursor-pointer"
+                              >
+                                <span>Collapse</span>
+                                <ChevronUp className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            {/* 18-CARD CATEGORIZED REAL-TIME PARAMETER INSPECTION GRID (RESPONSIVE AUTO-FIT) */}
+                            <motion.div layout className="grid grid-cols-1 min-[440px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 w-full">
                           {/* CATEGORY 1: LOCATION & TYPE */}
                           {(activeAttributeTab === 'all' || activeAttributeTab === 'location') && (
                             <>
@@ -2074,7 +2552,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏠 BHK Layout</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.bhk === 'Unspecified' ? 'text-slate-500 italic' : 'text-white'
                                 }`}>{liveExtractedPreview.bhk}</span>
                               </motion.div>
@@ -2088,7 +2566,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-indigo-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏷️ Property Type</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.type ? 'text-slate-500 italic' : 'text-indigo-300'
                                 }`}>
                                   {liveExtractedPreview.type === 'FLAT' ? 'Flat / Apartment' :
@@ -2111,7 +2589,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📍 Locality</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.sector === 'Not Specified' ? 'text-slate-500 italic' : 'text-emerald-300'
                                 }`} title={liveExtractedPreview.sector}>
                                   {liveExtractedPreview.sector}
@@ -2127,7 +2605,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-blue-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏙️ City</span>
-                                <span className="text-xs font-black font-['Outfit'] truncate block mt-0.5 text-blue-300">
+                                <span className="text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 text-blue-300">
                                   {liveExtractedPreview.city || 'Indore'}{liveExtractedPreview.state ? `, ${liveExtractedPreview.state}` : ''}
                                 </span>
                               </motion.div>
@@ -2141,7 +2619,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-yellow-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🏢 Landmark</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.landmark ? 'text-slate-500 italic' : 'text-yellow-300'
                                 }`} title={liveExtractedPreview.landmark || 'Unspecified'}>
                                   {liveExtractedPreview.landmark || 'Unspecified'}
@@ -2157,7 +2635,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-indigo-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📌 Pincode</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.pincode ? 'text-slate-500 italic' : 'text-indigo-400'
                                 }`}>{liveExtractedPreview.pincode || 'Unspecified'}</span>
                               </motion.div>
@@ -2176,7 +2654,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-amber-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">💰 Rent</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.rentVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-amber-300'
                                 }`}>{liveExtractedPreview.rentVal}</span>
                               </motion.div>
@@ -2190,7 +2668,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-purple-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">💼 Brokerage</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.brokerageVal === 'Unmentioned' ? 'text-slate-500 italic' : 'text-purple-300'
                                 }`}>{liveExtractedPreview.brokerageVal}</span>
                               </motion.div>
@@ -2204,7 +2682,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-rose-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛡️ Deposit</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.depositVal || liveExtractedPreview.depositVal === 'Unspecified' ? 'text-slate-500 italic' : 'text-rose-300'
                                 }`}>{liveExtractedPreview.depositVal || 'Unspecified'}</span>
                               </motion.div>
@@ -2218,7 +2696,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📅 Possession</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.possessionDate ? 'text-slate-500 italic' : 'text-emerald-400'
                                 }`}>{liveExtractedPreview.possessionDate || 'Unspecified'}</span>
                               </motion.div>
@@ -2232,7 +2710,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-lime-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">⚡ Status</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.status ? 'text-slate-500 italic' : 'text-lime-300'
                                 }`}>
                                   {liveExtractedPreview.status || 'LIVE'}
@@ -2253,7 +2731,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-orange-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📐 Carpet Area</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.areaSqFt || liveExtractedPreview.areaSqFt === 'Unspecified' ? 'text-slate-500 italic' : 'text-orange-300'
                                 }`}>{liveExtractedPreview.areaSqFt || 'Unspecified'}</span>
                               </motion.div>
@@ -2267,7 +2745,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛁 Bathrooms</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.bathrooms ? 'text-slate-500 italic' : 'text-cyan-300'
                                 }`}>{liveExtractedPreview.bathrooms || 'Unspecified'}</span>
                               </motion.div>
@@ -2281,7 +2759,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-cyan-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">👤 Owner Name</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.ownerName === 'Not Specified' ? 'text-slate-500 italic' : 'text-cyan-300'
                                 }`} title={liveExtractedPreview.ownerName}>
                                   {liveExtractedPreview.ownerName}
@@ -2297,7 +2775,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-sky-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">📞 Owner Contact</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.ownerPhone === 'Not Specified' ? 'text-slate-500 italic' : 'text-sky-300'
                                 }`} title={liveExtractedPreview.ownerPhone}>
                                   {liveExtractedPreview.ownerPhone}
@@ -2313,7 +2791,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-teal-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🧭 Vastu Facing</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.vastuFacing === 'Not Specified' ? 'text-slate-500 italic' : 'text-teal-300'
                                 }`}>{liveExtractedPreview.vastuFacing}</span>
                               </motion.div>
@@ -2327,7 +2805,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-fuchsia-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">🛋️ Furnishing</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   liveExtractedPreview.furnishingStatus === 'UNSPECIFIED' ? 'text-slate-500 italic' : 'text-fuchsia-300'
                                 }`}>
                                   {liveExtractedPreview.furnishingStatus === 'FULLY_FURNISHED' || liveExtractedPreview.furnishingStatus === 'Fully Furnished' ? 'Furnished' :
@@ -2346,7 +2824,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                 className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 hover:border-violet-500/50 transition-colors"
                               >
                                 <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold tracking-wider">✨ Key Amenities</span>
-                                <span className={`text-xs font-black font-['Outfit'] truncate block mt-0.5 ${
+                                <span className={`text-xs font-black font-['Outfit'] break-words leading-tight block mt-0.5 ${
                                   !liveExtractedPreview.amenities || liveExtractedPreview.amenities.length === 0 ? 'text-slate-500 italic' : 'text-violet-300'
                                 }`} title={liveExtractedPreview.amenities?.join(', ') || 'Standard'}>
                                   {liveExtractedPreview.amenities && liveExtractedPreview.amenities.length > 0 ? liveExtractedPreview.amenities.join(', ') : 'Standard'}
@@ -2355,6 +2833,20 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             </>
                           )}
                         </motion.div>
+
+                        {/* Bottom Collapse Button */}
+                        <div className="flex justify-center pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsAttributesCollapsed(true)}
+                            className="min-h-[40px] px-4 py-1.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-850 border border-slate-800 transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          >
+                            <span>Collapse 18 attributes</span>
+                            <ChevronUp className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                         {/* Optional Missing Fields Indicator */}
                         {liveExtractedPreview.missingFields && liveExtractedPreview.missingFields.length > 0 && !liveExtractedPreview.isGarbageInput && (
@@ -2387,11 +2879,23 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     onClose={() => setUploadMode('single')}
                     onSuccess={(count) => {
                       notifySuccess(
-                        'Properties published',
-                        `${count} ${count === 1 ? 'property was' : 'properties were'} published successfully.`,
+                        `${count} ${count === 1 ? 'property' : 'properties'} uploaded`,
+                        `${count} ${count === 1 ? 'property was' : 'properties were'} uploaded successfully.`,
                         undefined,
                         'PROPERTY'
                       );
+                      // Clear parent upload state so next upload starts completely clean
+                      setBatchDetails('');
+                      setNewBhkLabel('');
+                      if (singleMicBaseTextRef.current) {
+                        singleMicBaseTextRef.current = '';
+                      }
+                      revokeAllMediaPreviewUrls();
+                      setAttachedMediaFiles([]);
+                      setAttachedMediaTags({});
+                      setCoverPhotoIndex(0);
+                      setUploadPipeline(prev => ({ ...prev, active: false, stage: 'idle' }));
+                      setUploadMode('single');
                     }}
                   />
                 )}
@@ -2492,32 +2996,32 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.25 }}
-              className="fixed inset-0 z-[999] bg-slate-950/95 backdrop-blur-3xl flex items-center justify-center p-4 sm:p-6"
+              className="fixed inset-0 z-[999] bg-slate-950 sm:bg-slate-950/95 backdrop-blur-2xl flex flex-col sm:items-center sm:justify-center p-0 sm:p-4 overflow-hidden"
               onClick={() => setIsMediaUploadModalOpen(false)}
             >
               <motion.div
-                initial={{ scale: 0.92, y: 20, opacity: 0 }}
+                initial={{ scale: 0.95, y: 20, opacity: 0 }}
                 animate={{ scale: 1, y: 0, opacity: 1 }}
-                exit={{ scale: 0.92, y: 20, opacity: 0 }}
+                exit={{ scale: 0.95, y: 20, opacity: 0 }}
                 transition={{ type: "spring", stiffness: 450, damping: 28 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-slate-900 border-2 border-cyan-500/40 text-white rounded-3xl p-6 sm:p-7 max-w-2xl w-full shadow-2xl shadow-cyan-500/20 space-y-5 relative overflow-hidden my-auto"
+                className="bg-slate-900 border-0 sm:border-2 sm:border-cyan-500/40 text-white rounded-none sm:rounded-3xl max-w-2xl w-full h-[100dvh] sm:h-auto sm:max-h-[90dvh] flex flex-col shadow-2xl shadow-cyan-500/20 relative overflow-hidden"
               >
                 {/* AMBIENT AURORA GLOW ORB */}
                 <div className="absolute -top-24 -right-24 w-72 h-72 bg-cyan-500/15 rounded-full blur-3xl pointer-events-none animate-pulse" />
                 <div className="absolute -bottom-24 -left-24 w-72 h-72 bg-emerald-500/15 rounded-full blur-3xl pointer-events-none animate-pulse" style={{ animationDelay: '1s' }} />
 
-                {/* MODAL HEADER */}
-                <div className="flex items-center justify-between pb-4 border-b border-slate-800 relative z-10">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-cyan-950 text-cyan-400 border border-cyan-700/60 flex items-center justify-center font-bold shadow-lg shadow-cyan-950/60">
+                {/* MODAL HEADER - PINNED TOP WITH SOLID OPACITY AND SAFE AREA */}
+                <div className="shrink-0 flex items-center justify-between p-4 sm:p-6 pb-3 sm:pb-4 border-b border-slate-800 bg-slate-900 relative z-20 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] sm:pt-6">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-2xl bg-cyan-950 text-cyan-400 border border-cyan-700/60 flex items-center justify-center font-bold shadow-lg shadow-cyan-950/60 shrink-0">
                       <Camera className="w-5 h-5 animate-pulse" />
                     </div>
-                    <div>
-                      <h3 className="text-lg sm:text-xl font-black text-white font-['Outfit'] flex items-center gap-2">
+                    <div className="min-w-0">
+                      <h3 className="text-lg sm:text-xl font-black text-white font-['Outfit'] flex items-center gap-2 truncate">
                         Property media
                       </h3>
-                      <p className="text-[11px] text-slate-400 font-mono">
+                      <p className="text-[11px] text-slate-400 font-mono truncate">
                         Add photos and walkthrough videos to this listing.
                       </p>
                     </div>
@@ -2526,306 +3030,338 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   <button
                     type="button"
                     onClick={() => setIsMediaUploadModalOpen(false)}
-                    className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer border border-slate-700"
+                    aria-label="Close dialog"
+                    className="min-h-[44px] min-w-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer border border-slate-700 shrink-0"
                   >
-                    <X className="w-4.5 h-4.5" />
+                    <X className="w-5 h-5" />
                   </button>
                 </div>
 
-                {/* DRAG & DROP MEDIA ZONE */}
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setIsDragOverMedia(true); }}
-                  onDragLeave={() => setIsDragOverMedia(false)}
-                  onDrop={handleMediaDrop}
-                  className={`p-7 rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center gap-4 relative z-10 ${
-                    isDragOverMedia
-                      ? 'bg-cyan-950/80 border-cyan-400 text-cyan-200 scale-[1.01] shadow-lg shadow-cyan-950/80'
-                      : 'bg-slate-950/80 border-slate-800 hover:border-cyan-500/50 text-slate-400'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-cyan-400 shadow-md">
-                      <Camera className="w-6 h-6" />
-                    </div>
-                    <div className="w-11 h-11 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-indigo-400 shadow-md">
-                      <Video className="w-6 h-6" />
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-slate-200 font-['Outfit']">
-                      Drag & drop property photos or walkthrough videos here
-                    </p>
-                    <p className="text-[10px] text-slate-500 mt-1 font-mono">
-                      {describeMediaLimits()}
-                    </p>
-                  </div>
-
-                  <label className="cursor-pointer px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-extrabold font-mono rounded-xl border border-cyan-500/40 transition-all shadow-md flex items-center gap-2">
-                    <Plus className="w-4 h-4 text-cyan-400" />
-                    <span>Select / Browse Files</span>
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*,video/*"
-                      onChange={handleMediaSelect}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-
-                {/* ATTACHED FILE PREVIEW LIST & VISUAL GALLERY */}
-                {attachedMediaFiles.length > 0 && (
-                  <div className="space-y-3 relative z-10">
-                    <div className="flex items-center justify-between text-[11px] font-mono font-bold text-slate-300 border-b border-slate-800 pb-2">
-                      <div className="flex items-center gap-2">
-                        <span>Added media ({attachedMediaFiles.length})</span>
-                        <span className="text-[10px] text-emerald-400 font-normal">
-                          Ready to organize
-                        </span>
+                {/* MODAL BODY - INDEPENDENTLY SCROLLABLE */}
+                <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4 relative z-10 overscroll-contain">
+                  {/* DRAG & DROP MEDIA ZONE */}
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setIsDragOverMedia(true); }}
+                    onDragLeave={() => setIsDragOverMedia(false)}
+                    onDrop={handleMediaDrop}
+                    className={`p-5 sm:p-7 rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center gap-3 sm:gap-4 relative z-10 ${
+                      isDragOverMedia
+                        ? 'bg-cyan-950/80 border-cyan-400 text-cyan-200 scale-[1.01] shadow-lg shadow-cyan-950/80'
+                        : 'bg-slate-950/80 border-slate-800 hover:border-cyan-500/50 text-slate-400'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-cyan-400 shadow-md">
+                        <Camera className="w-5 h-5 sm:w-6 sm:h-6" />
                       </div>
+                      <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-indigo-400 shadow-md">
+                        <Video className="w-5 h-5 sm:w-6 sm:h-6" />
+                      </div>
+                    </div>
 
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
+                    <div>
+                      <p className="text-xs sm:text-sm font-bold text-slate-200 font-['Outfit']">
+                        Drag & drop photos or walkthrough videos here
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-1 font-mono">
+                        {describeMediaLimits()}
+                      </p>
+                    </div>
+
+                    <label className="cursor-pointer min-h-[44px] px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-extrabold font-mono rounded-xl border border-cyan-500/40 transition-all shadow-md flex items-center justify-center gap-2">
+                      <Plus className="w-4 h-4 text-cyan-400" />
+                      <span>Select / Browse Files</span>
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*,video/*"
+                        onChange={handleMediaSelect}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {/* ATTACHED FILE PREVIEW LIST & VISUAL GALLERY */}
+                  {attachedMediaFiles.length > 0 && (
+                    <div className="space-y-3 relative z-10">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] font-mono font-bold text-slate-300 border-b border-slate-800 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span>Attached media ({attachedMediaFiles.length})</span>
+                          <span className="text-[10px] text-emerald-400 font-normal">
+                            Ready to upload
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between sm:justify-end gap-2">
+                          <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
+                            <button
+                              type="button"
+                              onClick={() => setMediaViewMode('grid')}
+                              className={`min-h-[28px] px-2.5 py-0.5 rounded text-[10px] font-bold transition-all ${
+                                mediaViewMode === 'grid'
+                                  ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                                  : 'text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              📷 Gallery
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMediaViewMode('list')}
+                              className={`min-h-[28px] px-2.5 py-0.5 rounded text-[10px] font-bold transition-all ${
+                                mediaViewMode === 'list'
+                                  ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                                  : 'text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              📋 List
+                            </button>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => setMediaViewMode('grid')}
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                              mediaViewMode === 'grid'
-                                ? 'bg-cyan-500 text-slate-950 shadow-sm'
-                                : 'text-slate-400 hover:text-slate-200'
-                            }`}
+                            onClick={handleFillMediaFromExtracted}
+                            className="min-h-[28px] text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1 cursor-pointer font-bold bg-slate-900 border border-cyan-500/30 px-2.5 py-1 rounded-lg"
                           >
-                            📷 Gallery
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setMediaViewMode('list')}
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                              mediaViewMode === 'list'
-                                ? 'bg-cyan-500 text-slate-950 shadow-sm'
-                                : 'text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            📋 List
+                            <Tag className="w-3 h-3" /> Auto-tag
                           </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleFillMediaFromExtracted}
-                          className="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1 cursor-pointer font-bold bg-slate-900 border border-cyan-500/30 px-2 py-1 rounded-lg"
-                        >
-                          <Tag className="w-3 h-3" /> Update photo details
-                        </button>
                       </div>
-                    </div>
 
-                    {mediaViewMode === 'grid' ? (
-                      <div className="max-h-64 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2.5 pr-1 font-mono">
-                        {attachedMediaFiles.map((file, idx) => {
-                          const isImage = file.type.startsWith('image/');
-                          const imgUrl = isImage ? URL.createObjectURL(file) : null;
-                          const currentTag = attachedMediaTags[idx] || DEFAULT_SMART_TAG_SEQUENCE[idx % DEFAULT_SMART_TAG_SEQUENCE.length];
+                      {mediaViewMode === 'grid' ? (
+                        <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 gap-3 font-mono">
+                          {attachedMediaFiles.map((file, idx) => {
+                            const isImage = file.type.startsWith('image/');
+                            const imgUrl = isImage ? getMediaPreviewUrl(file) : null;
+                            const currentTag = attachedMediaTags[idx] || DEFAULT_SMART_TAG_SEQUENCE[idx % DEFAULT_SMART_TAG_SEQUENCE.length];
 
-                          return (
-                            <div
-                              key={idx}
-                              className="group relative bg-slate-950 rounded-xl border border-slate-800 hover:border-cyan-500/60 overflow-hidden flex flex-col justify-between transition-all shadow-md"
-                            >
+                            return (
                               <div
-                                onClick={() => isImage && setPreviewLightboxIndex(idx)}
-                                className="relative h-28 w-full bg-slate-900 cursor-pointer overflow-hidden flex items-center justify-center"
+                                key={idx}
+                                className="group relative bg-slate-950 rounded-xl border border-slate-800 hover:border-cyan-500/60 overflow-hidden flex flex-col justify-between transition-all shadow-md"
                               >
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setCoverPhotoIndex(idx);
-                                    notifySuccess('⭐ Cover Photo Selected', `Photo #${idx + 1} (${file.name}) set as primary listing cover`);
-                                  }}
-                                  className={`absolute top-1.5 left-1.5 px-2 py-0.5 rounded-lg text-[9px] font-extrabold flex items-center gap-1 shadow-md z-10 transition-all cursor-pointer ${
-                                    coverPhotoIndex === idx
-                                      ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300 shadow-amber-500/40 scale-105'
-                                      : 'bg-slate-950/80 hover:bg-slate-900 text-slate-300 hover:text-amber-300 border border-white/20'
-                                  }`}
+                                {/* Media Thumbnail Card */}
+                                <div
+                                  onClick={() => isImage && setPreviewLightboxIndex(idx)}
+                                  className="relative h-32 w-full bg-slate-900 cursor-pointer overflow-hidden flex items-center justify-center"
                                 >
-                                  <Star className={`w-3 h-3 ${coverPhotoIndex === idx ? 'fill-current text-slate-950' : 'text-slate-400'}`} />
-                                  <span>{coverPhotoIndex === idx ? 'Cover Photo' : 'Set Cover'}</span>
-                                </button>
-                                {isImage && imgUrl ? (
-                                  <>
-                                    <img
-                                      src={imgUrl}
-                                      alt={file.name}
-                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                    />
-                                    <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                                      <span className="bg-slate-900/90 text-cyan-300 text-[10px] font-bold px-2 py-1 rounded-lg border border-cyan-500/40 shadow-lg flex items-center gap-1">
-                                        <Sparkles className="w-3 h-3 text-cyan-400" /> Inspect
+                                  {/* Non-overlapping top action buttons */}
+                                  <div className="absolute inset-x-0 top-0 p-1.5 flex items-center justify-between gap-1 z-10 bg-gradient-to-b from-slate-950/80 via-slate-950/40 to-transparent">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCoverPhotoIndex(idx);
+                                        notifySuccess('⭐ Cover Photo Selected', `Photo #${idx + 1} (${file.name}) set as primary listing cover`);
+                                      }}
+                                      className={`px-2 py-1 rounded-lg text-[9px] font-extrabold flex items-center gap-1 shadow-md transition-all cursor-pointer ${
+                                        coverPhotoIndex === idx
+                                          ? 'bg-amber-400 text-slate-950 ring-2 ring-amber-300 shadow-amber-500/40 scale-105'
+                                          : 'bg-slate-950/90 hover:bg-slate-900 text-slate-300 hover:text-amber-300 border border-white/20'
+                                      }`}
+                                    >
+                                      <Star className={`w-3 h-3 ${coverPhotoIndex === idx ? 'fill-current text-slate-950' : 'text-slate-400'}`} />
+                                      <span>{coverPhotoIndex === idx ? 'Cover Photo' : 'Set Cover'}</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      aria-label={`Remove file ${file.name}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRemoveAttachedMedia(idx);
+                                      }}
+                                      className="min-h-[30px] min-w-[30px] rounded-full bg-slate-950/90 hover:bg-rose-600 text-white flex items-center justify-center text-xs font-bold border border-white/20 transition-colors shadow-lg cursor-pointer"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+
+                                  {isImage && imgUrl ? (
+                                    <>
+                                      <img
+                                        src={imgUrl}
+                                        alt={file.name}
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                      />
+                                      <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                        <span className="bg-slate-900/90 text-cyan-300 text-[10px] font-bold px-2 py-1 rounded-lg border border-cyan-500/40 shadow-lg flex items-center gap-1">
+                                          <Sparkles className="w-3 h-3 text-cyan-400" /> Inspect
+                                        </span>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center gap-1 p-2 text-center">
+                                      <Video className="w-8 h-8 text-indigo-400 animate-pulse" />
+                                      <span className="text-[10px] font-bold text-slate-300 truncate max-w-full">
+                                        {file.name}
                                       </span>
                                     </div>
-                                  </>
-                                ) : (
-                                  <div className="flex flex-col items-center justify-center gap-1 p-2 text-center">
-                                    <Video className="w-8 h-8 text-indigo-400 animate-pulse" />
-                                    <span className="text-[10px] font-bold text-slate-300 truncate max-w-full">
+                                  )}
+                                </div>
+
+                                {/* File Details & Tag Selector */}
+                                <div className="p-2.5 bg-slate-900/90 border-t border-slate-800 flex flex-col gap-1.5">
+                                  <div className="flex items-center justify-between gap-1 min-w-0">
+                                    <span className="text-[10px] text-slate-300 truncate font-mono font-medium flex-1" title={file.name}>
                                       {file.name}
                                     </span>
+                                    <span className="text-[9px] text-slate-400 font-mono shrink-0">
+                                      {(file.size / 1024 / 1024).toFixed(1)}MB
+                                    </span>
                                   </div>
-                                )}
 
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRemoveAttachedMedia(idx);
-                                  }}
-                                  className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-slate-900/80 hover:bg-rose-600 text-white flex items-center justify-center text-xs font-bold border border-white/20 transition-colors shadow-lg"
-                                >
-                                  ✕
-                                </button>
+                                  <select
+                                    value={currentTag}
+                                    onChange={(e) => setAttachedMediaTags({ ...attachedMediaTags, [idx]: e.target.value as RoomTag })}
+                                    className="bg-slate-950 text-cyan-300 font-mono text-xs font-bold border border-slate-700 rounded-lg px-2 py-1.5 outline-none focus:border-cyan-500 cursor-pointer w-full"
+                                  >
+                                    <option value="GENERAL">🌐 None / General</option>
+                                    <option value="LIVING_ROOM">🛋️ Living Room</option>
+                                    <option value="MASTER_BEDROOM">🛏️ Master Bedroom</option>
+                                    <option value="BEDROOM">🛏️ Guest Bedroom</option>
+                                    <option value="KITCHEN">🍳 Kitchen</option>
+                                    <option value="BATHROOM">🚿 Bathroom</option>
+                                    <option value="BALCONY">🌅 Balcony & View</option>
+                                    <option value="ELEVATION">🏢 Elevation & Exterior</option>
+                                    <option value="AMENITIES">🏊 Amenities</option>
+                                    <option value="FLOOR_PLAN">📐 Floor Plan</option>
+                                  </select>
+                                </div>
                               </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {attachedMediaFiles.map((file, idx) => {
+                            const isImage = file.type.startsWith('image/');
+                            const imgUrl = isImage ? getMediaPreviewUrl(file) : null;
+                            const currentTag = attachedMediaTags[idx] || DEFAULT_SMART_TAG_SEQUENCE[idx % DEFAULT_SMART_TAG_SEQUENCE.length];
 
-                              <div className="p-2 bg-slate-900/80 border-t border-slate-800 flex flex-col gap-1">
-                                <span className="text-[10px] text-slate-400 truncate font-mono font-medium">
-                                  {file.name} ({(file.size / 1024 / 1024).toFixed(1)}MB)
-                                </span>
-
-                                <select
-                                  value={currentTag}
-                                  onChange={(e) => setAttachedMediaTags({ ...attachedMediaTags, [idx]: e.target.value as RoomTag })}
-                                  className="bg-slate-950 text-cyan-300 font-mono text-[10px] font-bold border border-slate-700 rounded-lg px-1.5 py-1 outline-none focus:border-cyan-500 cursor-pointer w-full"
-                                >
-                                  <option value="GENERAL">🌐 None / General</option>
-                                  <option value="LIVING_ROOM">🛋️ Living Room</option>
-                                  <option value="MASTER_BEDROOM">🛏️ Master Bedroom</option>
-                                  <option value="BEDROOM">🛏️ Guest Bedroom</option>
-                                  <option value="KITCHEN">🍳 Kitchen</option>
-                                  <option value="BATHROOM">🚿 Bathroom</option>
-                                  <option value="BALCONY">🌅 Balcony & View</option>
-                                  <option value="ELEVATION">🏢 Elevation & Exterior</option>
-                                  <option value="AMENITIES">🏊 Amenities</option>
-                                  <option value="FLOOR_PLAN">📐 Floor Plan</option>
-                                </select>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="max-h-52 overflow-y-auto space-y-2 pr-1 font-mono">
-                        {attachedMediaFiles.map((file, idx) => {
-                          const isImage = file.type.startsWith('image/');
-                          const imgUrl = isImage ? URL.createObjectURL(file) : null;
-                          const currentTag = attachedMediaTags[idx] || DEFAULT_SMART_TAG_SEQUENCE[idx % DEFAULT_SMART_TAG_SEQUENCE.length];
-
-                          return (
-                            <div
-                              key={idx}
-                              className="bg-slate-950 p-2 rounded-xl border border-slate-800 flex items-center justify-between text-xs gap-3 hover:border-slate-700 transition-colors"
-                            >
-                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                            return (
+                              <div
+                                key={idx}
+                                className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-start gap-3.5 hover:border-slate-700 transition-colors relative group"
+                              >
+                                {/* Photo Thumbnail - Prominent & Crisp */}
                                 {isImage && imgUrl ? (
                                   <div
                                     onClick={() => setPreviewLightboxIndex(idx)}
-                                    className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 cursor-pointer shrink-0 group"
+                                    className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 cursor-pointer shrink-0 group/thumb shadow-sm"
                                   >
                                     <img
                                       src={imgUrl}
                                       alt={file.name}
-                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                      className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform"
                                     />
-                                    <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                                      <Sparkles className="w-3 h-3 text-cyan-300" />
+                                    <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition-opacity">
+                                      <Sparkles className="w-4 h-4 text-cyan-300" />
                                     </div>
+                                    {coverPhotoIndex === idx && (
+                                      <div className="absolute top-1 left-1 bg-amber-400 text-slate-950 rounded-md p-0.5 shadow-sm">
+                                        <Star className="w-3 h-3 fill-current text-slate-950" />
+                                      </div>
+                                    )}
                                   </div>
                                 ) : (
-                                  <div className="w-12 h-12 rounded-lg bg-indigo-950/60 border border-indigo-500/40 flex items-center justify-center shrink-0">
-                                    <Video className="w-5 h-5 text-indigo-400" />
+                                  <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-indigo-950/60 border border-indigo-500/40 flex items-center justify-center shrink-0 shadow-sm">
+                                    <Video className="w-6 h-6 text-indigo-400" />
                                   </div>
                                 )}
 
-                                <div className="truncate">
-                                  <p className="font-bold text-slate-200 truncate text-xs">{file.name}</p>
-                                  <p className="text-[10px] text-slate-500">
-                                    {(file.size / 1024 / 1024).toFixed(1)} MB • Tag: <span className="text-cyan-400 font-bold">{currentTag}</span>
-                                  </p>
+                                {/* File Details & Compact Controls */}
+                                <div className="flex-1 min-w-0 pr-7 flex flex-col justify-between self-stretch py-0.5">
+                                  <div>
+                                    <p className="font-bold text-slate-200 truncate text-xs sm:text-sm font-['Outfit']" title={file.name}>
+                                      {file.name}
+                                    </p>
+                                    <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                      {(file.size / 1024 / 1024).toFixed(1)} MB
+                                    </p>
+                                  </div>
+
+                                  {/* Compact inline chip controls */}
+                                  <div className="flex items-center gap-2 flex-wrap mt-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCoverPhotoIndex(idx);
+                                        notifySuccess('⭐ Cover Photo Selected', `Photo #${idx + 1} (${file.name}) set as primary listing cover`);
+                                      }}
+                                      className={`min-h-[28px] px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                                        coverPhotoIndex === idx
+                                          ? 'bg-amber-400 text-slate-950 ring-1 ring-amber-300 font-extrabold shadow-xs'
+                                          : 'bg-slate-900 text-slate-400 hover:text-amber-300 border border-slate-800 hover:border-slate-700'
+                                      }`}
+                                    >
+                                      <Star className={`w-3 h-3 ${coverPhotoIndex === idx ? 'fill-current text-slate-950' : 'text-slate-400'}`} />
+                                      <span>{coverPhotoIndex === idx ? 'Cover photo' : 'Set cover'}</span>
+                                    </button>
+
+                                    <div className="relative inline-flex items-center">
+                                      <select
+                                        value={currentTag}
+                                        onChange={(e) => setAttachedMediaTags({ ...attachedMediaTags, [idx]: e.target.value as RoomTag })}
+                                        className="min-h-[28px] bg-slate-900 text-cyan-300 font-mono text-[10px] sm:text-[11px] font-bold border border-slate-800 rounded-lg pl-2 pr-5 outline-none focus:border-cyan-500 cursor-pointer appearance-none"
+                                      >
+                                        <option value="GENERAL">🌐 General</option>
+                                        <option value="LIVING_ROOM">🛋️ Living</option>
+                                        <option value="MASTER_BEDROOM">🛏️ Master</option>
+                                        <option value="BEDROOM">🛏️ Bed</option>
+                                        <option value="KITCHEN">🍳 Kitchen</option>
+                                        <option value="BATHROOM">🚿 Bath</option>
+                                        <option value="BALCONY">🌅 Balcony</option>
+                                        <option value="ELEVATION">🏢 Exterior</option>
+                                        <option value="AMENITIES">🏊 Amenities</option>
+                                        <option value="FLOOR_PLAN">📐 Plan</option>
+                                      </select>
+                                      <ChevronDown className="w-3 h-3 text-slate-500 absolute right-1 pointer-events-none" />
+                                    </div>
+                                  </div>
                                 </div>
-                              </div>
 
-                              <div className="flex items-center gap-2 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setCoverPhotoIndex(idx);
-                                    notifySuccess('⭐ Cover Photo Selected', `Photo #${idx + 1} (${file.name}) set as primary listing cover`);
-                                  }}
-                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer ${
-                                    coverPhotoIndex === idx
-                                      ? 'bg-amber-400 text-slate-950 ring-1 ring-amber-300 font-extrabold shadow-sm'
-                                      : 'bg-slate-900 text-slate-400 hover:text-amber-300 border border-slate-700'
-                                  }`}
-                                >
-                                  <Star className={`w-3 h-3 ${coverPhotoIndex === idx ? 'fill-current text-slate-950' : 'text-slate-400'}`} />
-                                  <span>{coverPhotoIndex === idx ? 'Cover Photo' : 'Set as Cover'}</span>
-                                </button>
-                                <select
-                                  value={currentTag}
-                                  onChange={(e) => setAttachedMediaTags({ ...attachedMediaTags, [idx]: e.target.value as RoomTag })}
-                                  className="bg-slate-900 text-cyan-300 font-mono text-[10px] font-bold border border-slate-700 rounded-lg px-2 py-1 outline-none focus:border-cyan-500 cursor-pointer"
-                                >
-                                  <option value="GENERAL">🌐 None / General</option>
-                                  <option value="LIVING_ROOM">🛋️ Living Room</option>
-                                  <option value="MASTER_BEDROOM">🛏️ Master Bedroom</option>
-                                  <option value="BEDROOM">🛏️ Guest Bedroom</option>
-                                  <option value="KITCHEN">🍳 Kitchen</option>
-                                  <option value="BATHROOM">🚿 Bathroom</option>
-                                  <option value="BALCONY">🌅 Balcony & View</option>
-                                  <option value="ELEVATION">🏢 Elevation & Exterior</option>
-                                  <option value="AMENITIES">🏊 Amenities</option>
-                                  <option value="FLOOR_PLAN">📐 Floor Plan</option>
-                                </select>
-
+                                {/* Delete / Remove Button - top-right corner */}
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveAttachedMedia(idx)}
-                                  className="text-rose-400 hover:text-rose-300 font-bold px-2 py-1 rounded-lg hover:bg-rose-950/50 transition-colors cursor-pointer text-xs"
+                                  aria-label={`Remove file ${file.name}`}
+                                  className="absolute top-2.5 right-2.5 w-8 h-8 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer"
                                 >
-                                  ✕
+                                  <X className="w-4 h-4" />
                                 </button>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                {uploadStatusMsg && (
-                  <div
-                    aria-live="polite"
-                    className="relative z-10 rounded-xl border border-cyan-500/30 bg-cyan-950/35 px-3 py-2 text-[11px] font-semibold text-cyan-200"
-                  >
-                    {uploadStatusMsg}
-                  </div>
-                )}
+                  {uploadStatusMsg && (
+                    <div
+                      aria-live="polite"
+                      className="rounded-xl border border-cyan-500/30 bg-cyan-950/35 px-3 py-2 text-[11px] font-semibold text-cyan-200 break-words"
+                    >
+                      {uploadStatusMsg}
+                    </div>
+                  )}
+                </div>
 
-                {/* MODAL FOOTER */}
-                <div className="flex items-center justify-between pt-4 border-t border-slate-800 relative z-10">
-                  <span className="text-[11px] font-mono text-slate-400">
-                    {attachedMediaFiles.length} file(s) ready • Images are compressed before upload
+                {/* MODAL FOOTER - PINNED BOTTOM WITH SAFE AREA */}
+                <div className="shrink-0 p-4 sm:p-6 pt-3 sm:pt-4 border-t border-slate-800 bg-slate-900/95 backdrop-blur-md flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 relative z-20 safe-area-bottom">
+                  <span className="text-[11px] font-mono text-slate-400 text-center sm:text-left">
+                    {attachedMediaFiles.length} file(s) attached • Images are optimized before upload
                   </span>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     {failedMediaUploads.length > 0 && lastExtractedResult?.databaseId && (
                       <button
                         type="button"
                         disabled={isUploadingMedia}
                         onClick={() => void handleRetryFailedMedia()}
-                        className="px-4 py-2 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center gap-1.5"
+                        className="min-h-[44px] px-4 py-2.5 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center justify-center gap-1.5"
                       >
-                        <RefreshCw className={`w-3.5 h-3.5 ${isUploadingMedia ? 'animate-spin' : ''}`} />
+                        <RefreshCw className={`w-4 h-4 ${isUploadingMedia ? 'animate-spin' : ''}`} />
                         <span>Retry failed media ({failedMediaUploads.length})</span>
                       </button>
                     )}
@@ -2833,9 +3369,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     <button
                       type="button"
                       onClick={() => setIsMediaUploadModalOpen(false)}
-                      className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs rounded-xl shadow-lg shadow-emerald-600/30 cursor-pointer transition-all flex items-center gap-1.5"
+                      className="min-h-[44px] px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs rounded-xl shadow-lg shadow-emerald-600/30 cursor-pointer transition-all flex items-center justify-center gap-2 w-full sm:w-auto active:scale-95"
                     >
-                      ✓ Done / Save Attachments
+                      <Check className="w-4 h-4" />
+                      <span>Done / Save Attachments</span>
                     </button>
                   </div>
                 </div>
@@ -2900,7 +3437,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               <div className="relative flex-1 flex items-center justify-center my-4 overflow-hidden">
                 {attachedMediaFiles[previewLightboxIndex].type.startsWith('image/') ? (
                   <img
-                    src={URL.createObjectURL(attachedMediaFiles[previewLightboxIndex])}
+                    src={getMediaPreviewUrl(attachedMediaFiles[previewLightboxIndex])}
                     alt={attachedMediaFiles[previewLightboxIndex].name}
                     className="max-h-[65vh] max-w-full object-contain rounded-2xl border border-slate-800 shadow-2xl"
                   />
