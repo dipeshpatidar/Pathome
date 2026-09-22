@@ -19,7 +19,8 @@ import {
   Trash2,
   RefreshCw,
   Star,
-  Video
+  Video,
+  Clock
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { getErrorDetails, getErrorMessage } from '../services/apiError';
@@ -239,7 +240,7 @@ const validateCard = (card: StagedProperty): StagedProperty => {
   return {
     ...card,
     missingFields: missing,
-    isValid: card.isConfirmed && missing.length === 0 && !card.publishedId
+    isValid: (card.isConfirmed || Boolean(card.publishedId)) && missing.length === 0
   };
 };
 
@@ -551,6 +552,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
     if (payload.mobileWorkspaceView) {
       setMobileWorkspaceView(payload.mobileWorkspaceView);
+    } else if (Array.isArray(payload.stagedCards) && payload.stagedCards.length > 0) {
+      setMobileWorkspaceView('review');
     }
     if (Array.isArray(payload.completedListings)) {
       setCompletedListings(payload.completedListings);
@@ -949,6 +952,16 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   const parseBatchDetails = useCallback(async (details: string) => {
     if (!details.trim()) return;
+
+    // Publication recovery guard: Stable card identity invariant.
+    // If the draft has completed listings or any staged card with publishedId,
+    // authoritative listing correlation exists in PostgreSQL. Never re-parse over active publication state.
+    if (completedListings.length > 0 || stagedCards.some((c) => Boolean(c.publishedId))) {
+      console.warn('Batch parse prevented: Draft is in publication recovery state with active listing correlations.');
+      setMobileWorkspaceView('review');
+      return;
+    }
+
     const requestId = ++parseRequestIdRef.current;
     setIsParsing(true);
     initialMediaAddedRef.current = false;
@@ -1048,18 +1061,32 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         setIsParsing(false);
       }
     }
-  }, [showErrorDialog]);
+  }, [showErrorDialog, completedListings, stagedCards]);
 
   useEffect(() => {
     if (!initialDetails.trim() || importedDetailsRef.current === initialDetails) return;
+    if (completedListings.length > 0 || stagedCards.some((c) => Boolean(c.publishedId))) return;
 
     importedDetailsRef.current = initialDetails;
     updateRawPrompts(initialDetails);
     inputSourceRef.current = 'TYPED';
     void parseBatchDetails(initialDetails);
-  }, [initialDetails, parseBatchDetails, updateRawPrompts]);
+  }, [initialDetails, parseBatchDetails, updateRawPrompts, completedListings, stagedCards]);
 
-  const handleParseBatch = () => parseBatchDetails(rawPrompts);
+  const handleParseBatch = () => {
+    // If draft has completed listings or partially published cards, merely switch to review workspace
+    if (stagedCards.length > 0 && (completedListings.length > 0 || stagedCards.some((c) => Boolean(c.publishedId)))) {
+      setMobileWorkspaceView('review');
+      return;
+    }
+    // If staged cards already exist and raw prompts have not changed since last parse,
+    // just switch to review workspace without re-parsing
+    if (stagedCards.length > 0 && parsedPromptsRef.current === rawPrompts.trim()) {
+      setMobileWorkspaceView('review');
+      return;
+    }
+    void parseBatchDetails(rawPrompts);
+  };
 
   const attachMediaToCard = useCallback(async (cardId: string, files: FileList | File[]) => {
     const fileArray = Array.from(files).filter(
@@ -1628,7 +1655,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   // Batch Publish All Staged Properties
   const handlePublishAll = async () => {
-    const validCards = stagedCards.filter((c) => c.isValid && !c.publishedId);
+    const validCards = stagedCards.filter((c) => c.isValid);
     if (validCards.length === 0) {
       showErrorDialog({
         title: 'Review the property details',
@@ -1643,78 +1670,95 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     try {
       const draftId = batchDraft.ensureDraftId();
 
-      const payloadListings = validCards.map((c) => ({
-        draftId,
-        cardId: c.id,
-        learningExampleId: c.learningExampleId,
-        promptIndex: c.promptIndex,
-        rawPrompt: c.rawPrompt,
-        title: c.title,
-        description: c.description,
-        bhk: c.bhk,
-        type: c.type,
-        status: c.status,
-        sector: c.sector,
-        city: c.city,
-        colony: c.colony,
-        address: c.address,
-        state: c.state,
-        pincode: c.pincode,
-        landmark: c.landmark,
-        rentAmount: c.rentAmount,
-        rentVal: c.rentVal,
-        depositVal: c.depositVal,
-        brokerageVal: c.brokerageVal,
-        brokerageDays: c.brokerageDays,
-        areaSqFt: c.areaSqFt,
-        bathrooms: c.bathrooms,
-        possessionDate: c.possessionDate,
-        availabilityStatus: c.availabilityStatus,
-        availableFrom: c.availableFrom,
-        ownerName: c.ownerName,
-        ownerPhone: c.ownerPhone,
-        furnishingStatus: c.furnishingStatus,
-        vastuFacing: c.vastuFacing,
-        amenities: c.amenities,
-        floor: typeof c.floor === 'number' ? c.floor : null,
-        totalFloors: typeof c.totalFloors === 'number' ? c.totalFloors : null,
-        preferredTenants: Array.isArray(c.preferredTenants) ? c.preferredTenants : [],
-        mediaUrls: c.mediaUrls,
-        adminVerified: c.isConfirmed
-      }));
-
-      const res = await propertyService.createBatchProperties(payloadListings, draftId);
-
-      const createdResults = Array.isArray(res.createdListings)
-        ? res.createdListings.filter((item: any) =>
-            Number.isInteger(item?.requestIndex)
-            && item.requestIndex >= 0
-            && item.requestIndex < validCards.length
-            && Number.isFinite(Number(item?.id)))
-        : [];
-      const uniqueRequestIndexes = new Set(
-        createdResults.map((item: any) => item.requestIndex)
-      );
-      if (createdResults.length !== Number(res.successCount || 0)
-          || uniqueRequestIndexes.size !== createdResults.length) {
-        throw new Error('The publish response could not be matched safely to the submitted properties.');
-      }
+      const cardsNeedingListing = validCards.filter((c) => !c.publishedId);
       const publishedIdsByCardId = new Map<string, number>();
+
+      for (const card of validCards) {
+        if (card.publishedId) {
+          publishedIdsByCardId.set(card.id, Number(card.publishedId));
+        }
+      }
+
+      let res: any = null;
+      if (cardsNeedingListing.length > 0) {
+        const payloadListings = cardsNeedingListing.map((c) => ({
+          draftId,
+          cardId: c.id,
+          learningExampleId: c.learningExampleId,
+          promptIndex: c.promptIndex,
+          rawPrompt: c.rawPrompt,
+          title: c.title,
+          description: c.description,
+          bhk: c.bhk,
+          type: c.type,
+          status: c.status,
+          sector: c.sector,
+          city: c.city,
+          colony: c.colony,
+          address: c.address,
+          state: c.state,
+          pincode: c.pincode,
+          landmark: c.landmark,
+          rentAmount: c.rentAmount,
+          rentVal: c.rentVal,
+          depositVal: c.depositVal,
+          brokerageVal: c.brokerageVal,
+          brokerageDays: c.brokerageDays,
+          areaSqFt: c.areaSqFt,
+          bathrooms: c.bathrooms,
+          possessionDate: c.possessionDate,
+          availabilityStatus: c.availabilityStatus,
+          availableFrom: c.availableFrom,
+          ownerName: c.ownerName,
+          ownerPhone: c.ownerPhone,
+          furnishingStatus: c.furnishingStatus,
+          vastuFacing: c.vastuFacing,
+          amenities: c.amenities,
+          floor: typeof c.floor === 'number' ? c.floor : null,
+          totalFloors: typeof c.totalFloors === 'number' ? c.totalFloors : null,
+          preferredTenants: Array.isArray(c.preferredTenants) ? c.preferredTenants : [],
+          mediaUrls: c.mediaUrls,
+          adminVerified: c.isConfirmed
+        }));
+
+        res = await propertyService.createBatchProperties(payloadListings, draftId);
+
+        const createdResults = Array.isArray(res.createdListings)
+          ? res.createdListings.filter((item: any) =>
+              Number.isInteger(item?.requestIndex)
+              && item.requestIndex >= 0
+              && item.requestIndex < cardsNeedingListing.length
+              && Number.isFinite(Number(item?.id)))
+          : [];
+        const uniqueRequestIndexes = new Set(
+          createdResults.map((item: any) => item.requestIndex)
+        );
+        if (createdResults.length !== Number(res.successCount || 0)
+            || uniqueRequestIndexes.size !== createdResults.length) {
+          throw new Error('The publish response could not be matched safely to the submitted properties.');
+        }
+
+        for (const created of createdResults) {
+          const card = cardsNeedingListing[created.requestIndex];
+          if (card) {
+            publishedIdsByCardId.set(card.id, Number(created.id));
+          }
+        }
+      }
 
       // Upload media only after its listing exists, preserving the selected images and videos.
       const mediaUploadErrors: string[] = [];
-      for (let i = 0; i < createdResults.length; i++) {
-        const created = createdResults[i];
-        const propId = Number(created.id);
-        const card = validCards[created.requestIndex];
-        publishedIdsByCardId.set(card.id, propId);
+      for (let i = 0; i < validCards.length; i++) {
+        const card = validCards[i];
+        const propId = publishedIdsByCardId.get(card.id);
+        if (!propId) continue;
 
-        // Per-property publishing state isolation: mark this card specifically as publishing & confirmed published
+        // Per-property publishing state isolation: mark this card specifically as publishing
         setPublishingCardId(card.id);
         setActiveCardId(card.id);
         setStagedCards((current) =>
           current.map((c) =>
-            c.id === card.id ? { ...c, publishedId: propId, isValid: false, isConfirmed: true } : c
+            c.id === card.id ? { ...c, publishedId: propId, isConfirmed: true } : c
           )
         );
 
@@ -1726,8 +1770,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         }
 
         // Once this property finishes, auto-advance active view to next property immediately without blocking sequential upload
-        if (i + 1 < createdResults.length) {
-          const nextCard = validCards[createdResults[i + 1].requestIndex];
+        if (i + 1 < validCards.length) {
+          const nextCard = validCards[i + 1];
           if (nextCard) {
             setActiveCardId(nextCard.id);
           }
@@ -1836,7 +1880,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       // Authoritative completion check from server
       const isServerBatchComplete = remainingDraft === null || (remainingDraft && remainingDraft.itemCount === 0);
 
-      if (isServerBatchComplete && mediaUploadErrors.length === 0 && Number(res.failedCount || 0) === 0) {
+      const failedCreateCount = res ? Number(res.failedCount || 0) : 0;
+      if (isServerBatchComplete && mediaUploadErrors.length === 0 && failedCreateCount === 0) {
         // FULL BATCH SUCCESS (confirmed by server tombstone)
         await batchDraft.onPublishSuccess();
         const totalPublishedCount = updatedCompleted.length;
@@ -1900,9 +1945,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   if (!isOpen) return null;
 
   const totalOriginalCount = completedListings.length + stagedCards.length;
-  const readyToPublishCount = stagedCards.filter((card) => card.isValid && !card.publishedId).length;
+  const readyToPublishCount = stagedCards.filter((card) => card.isValid).length;
   const totalCardsCount = stagedCards.length;
-  const unconfirmedCount = stagedCards.filter((card) => !card.isValid && !card.publishedId).length;
+  const unconfirmedCount = stagedCards.filter((card) => !card.isValid).length;
 
   const getPublishCtaText = () => {
     if (completedListings.length > 0) {
@@ -2226,8 +2271,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                             <span className="font-mono">#{idx + 1}</span>
                             <span>{getPropertyTabLabel(card)}</span>
                             {card.publishedId ? (
-                              <span className="px-1.5 py-0.5 rounded-md bg-sky-950/80 text-[10px] text-sky-300 font-mono flex items-center gap-1 border border-sky-600/40">
-                                <CheckCircle2 className="w-2.5 h-2.5" /> Published
+                              <span className="px-1.5 py-0.5 rounded-md bg-amber-950/80 text-[10px] text-amber-300 font-mono flex items-center gap-1 border border-amber-600/40">
+                                <Clock className="w-2.5 h-2.5" /> Media Pending
                               </span>
                             ) : publishingCardId === card.id ? (
                               <span className="px-1.5 py-0.5 rounded-md bg-cyan-950/80 text-[10px] text-cyan-300 font-mono flex items-center gap-1 border border-cyan-600/40">
@@ -2319,8 +2364,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
                             <div className="flex shrink-0 items-center gap-2 self-start min-[560px]:self-auto">
                               {card.publishedId ? (
-                                <span className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-full border border-sky-500/30">
-                                  <CheckCircle2 className="w-3 h-3" /> Published
+                                <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30">
+                                  <Clock className="w-3 h-3" /> Media Pending
                                 </span>
                               ) : publishingCardId === card.id ? (
                                 <span className="flex items-center gap-1 text-[11px] font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/30">

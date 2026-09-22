@@ -46,9 +46,9 @@ describe('P0 Batch Property Publishing + Media Recovery Hardening Suite', () => 
   }
 
   function computeCtaTexts(stagedCards) {
-    const readyToPublishCount = stagedCards.filter((c) => c.isValid && !c.publishedId).length;
+    const readyToPublishCount = stagedCards.filter((c) => c.isValid).length;
     const totalCardsCount = stagedCards.length;
-    const unconfirmedCount = stagedCards.filter((c) => !c.isValid && !c.publishedId).length;
+    const unconfirmedCount = stagedCards.filter((c) => !c.isValid).length;
 
     let desktopCta = '';
     if (readyToPublishCount === 0) {

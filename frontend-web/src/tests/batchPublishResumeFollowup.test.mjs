@@ -42,8 +42,8 @@ describe('P0 Follow-Up: Batch Draft Authority + Partial Publish Resume + Media R
   function computeBatchCta({ stagedCards, completedListings }) {
     const totalOriginalCount = stagedCards.length + completedListings.length;
     const remainingCount = stagedCards.length;
-    const readyToPublishCount = stagedCards.filter((c) => c.isValid && !c.publishedId).length;
-    const unconfirmedCount = stagedCards.filter((c) => !c.isValid && !c.publishedId).length;
+    const readyToPublishCount = stagedCards.filter((c) => c.isValid).length;
+    const unconfirmedCount = stagedCards.filter((c) => !c.isValid).length;
 
     let desktopCta = '';
     let mobileCta = '';
