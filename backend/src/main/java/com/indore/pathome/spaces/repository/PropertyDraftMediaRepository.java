@@ -29,5 +29,9 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
     @Query("UPDATE PropertyDraftMedia m SET m.isCover = false WHERE m.draftId = :draftId AND m.adminId = :adminId AND m.cardId = :cardId")
     int clearCoverFlagForCard(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("cardId") String cardId);
 
+    @Modifying
+    @Query("UPDATE PropertyDraftMedia m SET m.cardId = :cardId WHERE m.draftId = :draftId AND m.adminId = :adminId AND (m.cardId IS NULL OR m.cardId = '')")
+    int reassignUnassignedMediaToCard(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("cardId") String cardId);
+
     long deleteAllByDraftIdAndAdminId(String draftId, String adminId);
 }

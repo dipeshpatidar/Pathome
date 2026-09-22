@@ -5,10 +5,15 @@ import com.indore.pathome.spaces.dto.draft.DraftDetailDTO;
 import com.indore.pathome.spaces.dto.draft.DraftMediaDTO;
 import com.indore.pathome.spaces.dto.draft.DraftSummaryDTO;
 import com.indore.pathome.spaces.dto.draft.SaveDraftRequest;
+import com.indore.pathome.spaces.entity.Listing;
+import com.indore.pathome.spaces.entity.MediaType;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
+import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.OptimisticLockException;
@@ -22,6 +27,7 @@ import java.io.ByteArrayInputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,6 +42,8 @@ class PropertyDraftServiceTest {
     private PropertyDraftMediaRepository draftMediaRepository;
     private MediaStagingService mediaStagingService;
     private ObjectMapper objectMapper;
+    private ListingRepository listingRepository;
+    private PropertyMediaAssetRepository mediaAssetRepository;
     private PropertyDraftService service;
 
     private static final String ADMIN_ID = "admin@pathome.in";
@@ -47,8 +55,12 @@ class PropertyDraftServiceTest {
         draftRepository = mock(PropertyUploadDraftRepository.class);
         draftMediaRepository = mock(PropertyDraftMediaRepository.class);
         mediaStagingService = mock(MediaStagingService.class);
+        listingRepository = mock(ListingRepository.class);
+        mediaAssetRepository = mock(PropertyMediaAssetRepository.class);
         objectMapper = new ObjectMapper();
         service = new PropertyDraftService(draftRepository, draftMediaRepository, mediaStagingService, objectMapper);
+        service.setListingRepository(listingRepository);
+        service.setMediaAssetRepository(mediaAssetRepository);
     }
 
     @Test
@@ -230,6 +242,197 @@ class PropertyDraftServiceTest {
     }
 
     @Test
+    void reconcileBatchDraft_withCompletedListings_storesCompletedListingsAndUpdatesTitle() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setItemCount(2);
+        draft.setTitleSummary("Batch (2 properties)");
+        draft.setVersion(1);
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-1\",\"title\":\"Prop 1\"},{\"id\":\"card-2\",\"title\":\"Prop 2\"}]}");
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Map<String, Object> completedItem = Map.of(
+                "cardId", "card-1",
+                "listingId", 49L,
+                "title", "Prop 1"
+        );
+
+        DraftDetailDTO reconciled = service.reconcileBatchDraft(ADMIN_ID, DRAFT_ID, List.of("card-1"), List.of(completedItem));
+
+        assertNotNull(reconciled);
+        assertEquals(1, draft.getItemCount());
+        assertEquals("Batch — 1 property remaining", draft.getTitleSummary());
+        assertTrue(draft.getPayload().contains("completedListings"));
+        assertTrue(draft.getPayload().contains("49"));
+        assertTrue(draft.getPayload().contains("card-2"));
+        verify(draftRepository).save(draft);
+    }
+
+    @Test
+    void reconcileBatchDraft_whenAllCardsPublished_tombstonesSuccessfullyWithoutPrematureWarning() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setItemCount(1);
+        draft.setStatus("PUBLISHING");
+        draft.setVersion(2);
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-1\",\"title\":\"Final Property\"}]}");
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PropertyDraftMedia media = new PropertyDraftMedia();
+        media.setDraftId(DRAFT_ID);
+        media.setAdminId(ADMIN_ID);
+        media.setCardId("card-1");
+        media.setStagingObjectKey("drafts/admin/card-1_img.webp");
+        when(draftMediaRepository.findAllByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(List.of(media));
+
+        DraftDetailDTO result = service.reconcileBatchDraft(ADMIN_ID, DRAFT_ID, List.of("card-1"));
+
+        // When all cards are published, returns null (tombstone)
+        assertNull(result);
+        assertEquals("PUBLISHED", draft.getStatus());
+        assertEquals("{}", draft.getPayload());
+        assertEquals(0, draft.getItemCount());
+        verify(mediaStagingService).delete("drafts/admin/card-1_img.webp");
+        verify(draftMediaRepository).deleteAllByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID);
+        verify(draftRepository).save(draft);
+    }
+
+    @Test
+    void reconcileBatchDraft_doesNotDeleteStagedMediaBeforePayloadSaved() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setItemCount(2);
+        draft.setVersion(1);
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-1\",\"title\":\"Prop 1\"},{\"id\":\"card-2\",\"title\":\"Prop 2\"}]}");
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        // Simulate DB failure during payload update
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenThrow(new RuntimeException("DB Connection Timeout"));
+
+        PropertyDraftMedia media = new PropertyDraftMedia();
+        media.setDraftId(DRAFT_ID);
+        media.setAdminId(ADMIN_ID);
+        media.setCardId("card-1");
+        media.setStagingObjectKey("drafts/admin/card-1_img.webp");
+        when(draftMediaRepository.findAllByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(List.of(media));
+
+        assertThrows(RuntimeException.class, () -> service.reconcileBatchDraft(ADMIN_ID, DRAFT_ID, List.of("card-1")));
+
+        // Staging media must NOT have been deleted because payload save failed
+        verify(draftMediaRepository, never()).delete(any(PropertyDraftMedia.class));
+        verify(mediaStagingService, never()).delete(anyString());
+    }
+
+    @Test
+    void getDraft_autoReconcilesInterruptedCardsWithExistingListingsAndPermanentAssets() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setStatus("PUBLISHING");
+        draft.setItemCount(1);
+        draft.setVersion(5);
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-int\",\"title\":\"Interrupted Property\",\"stagedMedia\":[{\"id\":\"m-1\"},{\"id\":\"m-2\"}]}]}");
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Listing exists in DB for this card
+        Listing existingListing = mock(Listing.class);
+        when(existingListing.getId()).thenReturn(99L);
+        when(existingListing.getTitle()).thenReturn("Interrupted Property");
+        when(existingListing.getOriginDraftId()).thenReturn(DRAFT_ID + ":card-int");
+        when(listingRepository.findByOriginDraftId(DRAFT_ID + ":card-int")).thenReturn(Optional.of(existingListing));
+
+        // Both media items are present in property_media_assets
+        PropertyMediaAsset asset1 = new PropertyMediaAsset();
+        asset1.setId(1L);
+        asset1.setListingId(99L);
+        asset1.setUploadRequestId("m-1");
+        asset1.setMediaUrl("https://cloudinary.com/m-1.webp");
+
+        PropertyMediaAsset asset2 = new PropertyMediaAsset();
+        asset2.setId(2L);
+        asset2.setListingId(99L);
+        asset2.setUploadRequestId("m-2");
+        asset2.setMediaUrl("https://cloudinary.com/m-2.webp");
+
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(99L)).thenReturn(List.of(asset1, asset2));
+
+        DraftDetailDTO detail = service.getDraft(ADMIN_ID, DRAFT_ID);
+
+        assertNotNull(detail);
+        // Since card-int had all media completed, it was auto-reconciled and converted to PUBLISHED tombstone with completedListings summary
+        assertEquals("PUBLISHED", detail.status());
+        assertTrue(detail.payload().contains("\"completedListings\""));
+        assertTrue(detail.payload().contains("\"listingId\":99"));
+        assertFalse(detail.payload().contains("\"stagedCards\""));
+        assertEquals(0, detail.itemCount());
+    }
+
+    @Test
+    void getDraft_reconstructsMediaFromPermanentAssets_whenStagedMediaRowsDeleted() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setStatus("PUBLISHING");
+        draft.setItemCount(1);
+        draft.setVersion(3);
+        // Card expected 3 media files, but only 2 reached permanent storage (partial publish)
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-partial\",\"title\":\"Partial Prop\",\"stagedMedia\":[{\"id\":\"m-1\"},{\"id\":\"m-2\"},{\"id\":\"m-3\"}]}]}");
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Listing exists in DB
+        Listing existingListing = mock(Listing.class);
+        when(existingListing.getId()).thenReturn(101L);
+        when(existingListing.getTitle()).thenReturn("Partial Prop");
+        when(existingListing.getOriginDraftId()).thenReturn(DRAFT_ID + ":card-partial");
+        when(listingRepository.findByOriginDraftId(DRAFT_ID + ":card-partial")).thenReturn(Optional.of(existingListing));
+
+        // Only 2 of 3 assets reached DB
+        PropertyMediaAsset asset1 = new PropertyMediaAsset();
+        asset1.setId(201L);
+        asset1.setListingId(101L);
+        asset1.setUploadRequestId("m-1");
+        asset1.setMediaUrl("https://cloudinary.com/m-1.webp");
+
+        PropertyMediaAsset asset2 = new PropertyMediaAsset();
+        asset2.setId(202L);
+        asset2.setListingId(101L);
+        asset2.setUploadRequestId("m-2");
+        asset2.setMediaUrl("https://cloudinary.com/m-2.webp");
+
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(101L)).thenReturn(List.of(asset1, asset2));
+        // Staged media table was wiped (0 rows)
+        when(draftMediaRepository.findAllByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(List.of());
+
+        DraftDetailDTO detail = service.getDraft(ADMIN_ID, DRAFT_ID);
+
+        assertNotNull(detail);
+        // Staged card remains because 1 media file is still pending
+        assertEquals(1, detail.itemCount());
+        // Media reconstructed from permanent assets!
+        assertEquals(2, detail.media().size());
+        assertEquals("m-1", detail.media().get(0).mediaId());
+        assertEquals("https://cloudinary.com/m-1.webp", detail.media().get(0).previewUrl());
+        assertEquals("m-2", detail.media().get(1).mediaId());
+        assertEquals("https://cloudinary.com/m-2.webp", detail.media().get(1).previewUrl());
+    }
+
+    @Test
     void stageDraftMedia_autoEstablishesDraftIfAbsent() {
         // Draft does not exist yet on server
         when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.empty());
@@ -386,6 +589,7 @@ class PropertyDraftServiceTest {
         PropertyUploadDraft draft = new PropertyUploadDraft();
         draft.setDraftId(DRAFT_ID);
         draft.setAdminId(ADMIN_ID);
+        draft.setVersion(1);
         LocalDateTime oldUpdatedAt = LocalDateTime.now().minusDays(10);
         draft.setUpdatedAt(oldUpdatedAt);
 
@@ -396,9 +600,63 @@ class PropertyDraftServiceTest {
         MockMultipartFile file = new MockMultipartFile("file", "photo.jpg", "image/jpeg", new byte[500]);
         service.stageDraftMedia(ADMIN_ID, DRAFT_ID, file, "c-1", "BEDROOM", false);
 
-        // Verify draft updatedAt was updated from the 10-day-old timestamp
-        assertTrue(draft.getUpdatedAt().isAfter(oldUpdatedAt));
-        verify(draftRepository).save(draft);
+        // Verify draft updatedAt is updated exclusively in DB via touchUpdatedAt, leaving managed entity clean
+        verify(draftRepository).touchUpdatedAt(eq(DRAFT_ID), eq(ADMIN_ID), any(LocalDateTime.class));
+        verify(draftRepository, never()).save(draft);
+        assertEquals(oldUpdatedAt, draft.getUpdatedAt(), "Managed draft entity must remain clean in memory");
+        assertEquals(1, draft.getVersion(), "Media staging must not increment parent draft @Version");
+    }
+
+    @Test
+    void stageDraftMedia_multipleOperationsDoNotAdvanceParentOptimisticVersion() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setVersion(1);
+        LocalDateTime oldUpdatedAt = LocalDateTime.now().minusHours(1);
+        draft.setUpdatedAt(oldUpdatedAt);
+
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID))
+                .thenReturn(Optional.of(draft));
+        when(draftMediaRepository.save(any(PropertyDraftMedia.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Stage multiple media files
+        for (int i = 0; i < 5; i++) {
+            MockMultipartFile file = new MockMultipartFile("file", "photo_" + i + ".jpg", "image/jpeg", new byte[500]);
+            service.stageDraftMedia(ADMIN_ID, DRAFT_ID, file, "c-1", "ROOM", false);
+        }
+
+        // Verify version remains completely unchanged at 1 and entity remains untouched
+        assertEquals(1, draft.getVersion(), "Multiple media stagings must never advance parent draft version");
+        assertEquals(oldUpdatedAt, draft.getUpdatedAt(), "Managed draft entity must remain clean across multiple stagings");
+        verify(draftRepository, times(5)).touchUpdatedAt(eq(DRAFT_ID), eq(ADMIN_ID), any(LocalDateTime.class));
+        verify(draftRepository, never()).save(draft);
+    }
+
+    @Test
+    void saveOrUpdateDraft_legitimatePayloadEditStillAdvancesVersionAndProtectsOptimisticLock() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setVersion(1);
+        draft.setPayload("{\"step\":1}");
+
+        when(draftRepository.findByDraftId(DRAFT_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // 1. Legitimate save with version 1 -> advances version to 2
+        SaveDraftRequest req1 = new SaveDraftRequest(DRAFT_ID, "BATCH", "DRAFT", "Updated Title", 2, 1, "{\"step\":2}");
+        DraftDetailDTO res1 = service.saveOrUpdateDraft(ADMIN_ID, req1);
+        assertEquals(2, res1.version(), "Legitimate content save must advance draft version");
+        verify(draftRepository, times(1)).save(draft);
+
+        // 2. Outdated client sends stale version 1 when server is at version 2 -> DraftConflictException
+        SaveDraftRequest staleReq = new SaveDraftRequest(DRAFT_ID, "BATCH", "DRAFT", "Stale Title", 2, 1, "{\"step\":3}");
+        DraftConflictException ex = assertThrows(DraftConflictException.class, () ->
+                service.saveOrUpdateDraft(ADMIN_ID, staleReq)
+        );
+        assertEquals(2, ex.getServerVersion());
+        assertTrue(ex.getMessage().contains("newer version"));
     }
 
     @Test
@@ -866,6 +1124,28 @@ class PropertyDraftServiceTest {
 
         assertThrows(IllegalStateException.class, () ->
                 service.saveOrUpdateDraft(ADMIN_ID, req)
+        );
+    }
+
+    @Test
+    void reassignUnassignedMediaToCard_updatesMatchingRecordsAndTouchesDraft() {
+        String targetCardId = "staged-0-1789853815627";
+        when(draftMediaRepository.reassignUnassignedMediaToCard(DRAFT_ID, ADMIN_ID, targetCardId)).thenReturn(3);
+
+        int updated = service.reassignUnassignedMediaToCard(ADMIN_ID, DRAFT_ID, targetCardId);
+
+        assertEquals(3, updated);
+        verify(draftMediaRepository).reassignUnassignedMediaToCard(DRAFT_ID, ADMIN_ID, targetCardId);
+        verify(draftRepository).touchUpdatedAt(eq(DRAFT_ID), eq(ADMIN_ID), any(LocalDateTime.class));
+    }
+
+    @Test
+    void reassignUnassignedMediaToCard_rejectsBlankCardId() {
+        assertThrows(IllegalArgumentException.class, () ->
+                service.reassignUnassignedMediaToCard(ADMIN_ID, DRAFT_ID, "")
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+                service.reassignUnassignedMediaToCard(ADMIN_ID, DRAFT_ID, "   ")
         );
     }
 }

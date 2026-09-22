@@ -1,5 +1,5 @@
 import { API_ROOT_URL } from '../config/endpoints';
-import { ApiRequestError, createApiRequestError } from './apiError';
+import { ApiRequestError, createApiRequestError, notifySessionExpired } from './apiError';
 import { RoomTag } from '../types';
 
 const BASE_URL = `${API_ROOT_URL}/admin/drafts`;
@@ -68,6 +68,7 @@ export const getCurrentAdminEmail = (): string => {
 const getAuthHeaders = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
   if (!token) {
+    notifySessionExpired();
     throw new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
   }
   return {
@@ -182,9 +183,37 @@ export const draftService = {
   },
 
   /**
+   * Reassigns unassigned media items in a draft to a target card ID.
+   */
+  async reassignCardMedia(draftId: string, targetCardId: string): Promise<number> {
+    try {
+      const response = await fetch(`${BASE_URL}/${encodeURIComponent(draftId)}/reassign-media`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ targetCardId })
+      });
+      if (!response.ok) {
+        return 0;
+      }
+      const data = await response.json();
+      return typeof data?.reassignedCount === 'number' ? data.reassignedCount : 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  /**
    * Reconciles a batch draft after partial publication: removes published cards and their media.
    */
-  async reconcileBatch(draftId: string, publishedCardIds: string[]): Promise<DraftDetail | null> {
+  async reconcileBatch(
+    draftId: string,
+    publishedCardIds: string[],
+    completedListings?: Array<{ cardId: string; listingId: number; title: string }>
+  ): Promise<DraftDetail | null> {
     const response = await fetch(`${BASE_URL}/${encodeURIComponent(draftId)}/reconcile-batch`, {
       method: 'POST',
       headers: {
@@ -192,7 +221,7 @@ export const draftService = {
         Accept: 'application/json',
         ...getAuthHeaders()
       },
-      body: JSON.stringify({ publishedCardIds })
+      body: JSON.stringify({ publishedCardIds, completedListings })
     });
     if (!response.ok) {
       throw await createApiRequestError(response, 'Unable to reconcile batch draft.');
@@ -221,6 +250,13 @@ export const draftService = {
   },
 
   /**
+   * Returns authentication headers for draft API requests.
+   */
+  getAuthHeaders(): Record<string, string> {
+    return getAuthHeaders();
+  },
+
+  /**
    * Formats media stream URL for draft preview with authentication query/header where required.
    */
   getMediaStreamUrl(draftId: string, mediaId: string): string {
@@ -239,9 +275,10 @@ export const draftService = {
     tags: Record<number, RoomTag>;
     coverIndex: number;
     mediaIds: Record<number, string>;
+    byMediaId: Map<string, File>;
   }> {
     if (!mediaItems || mediaItems.length === 0) {
-      return { files: [], tags: {}, coverIndex: 0, mediaIds: {} };
+      return { files: [], tags: {}, coverIndex: 0, mediaIds: {}, byMediaId: new Map() };
     }
 
     const CONCURRENCY_LIMIT = 3;
@@ -298,10 +335,11 @@ export const draftService = {
     }
     await Promise.all(workers);
 
-    // Reconstruct files and tags in original order for all successful items
+    // Reconstruct files, tags, and mediaId map in original order for all successful items
     const files: File[] = [];
     const tags: Record<number, RoomTag> = {};
     const mediaIds: Record<number, string> = {};
+    const byMediaId = new Map<string, File>();
     let coverIndex = 0;
 
     for (let i = 0; i < total; i += 1) {
@@ -317,10 +355,11 @@ export const draftService = {
         }
         if (res.draftMediaId) {
           mediaIds[finalIndex] = res.draftMediaId;
+          byMediaId.set(res.draftMediaId, res.file);
         }
       }
     }
 
-    return { files, tags, coverIndex, mediaIds };
+    return { files, tags, coverIndex, mediaIds, byMediaId };
   }
 };

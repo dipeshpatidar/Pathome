@@ -37,6 +37,41 @@ const SECTORS_TAB = [
   'LIG Circle'
 ];
 
+const getOrdinal = (n: number): string => {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
+
+const formatFloorDisplay = (floor: number | null | undefined, totalFloors: number | null | undefined): string | null => {
+  if (floor === null || floor === undefined) {
+    if (typeof totalFloors === 'number' && totalFloors > 0) {
+      return `${totalFloors} Floors Building`;
+    }
+    return null;
+  }
+  const floorName = floor === 0 ? 'Ground Floor' : `${getOrdinal(floor)} Floor`;
+  if (typeof totalFloors === 'number' && totalFloors > 0) {
+    return `${floorName} of ${totalFloors}`;
+  }
+  return floorName;
+};
+
+const formatPreferredTenantDisplay = (pref: string | null | undefined): string | null => {
+  if (!pref || !pref.trim()) return null;
+  const labelMap: Record<string, string> = {
+    FAMILY: 'Family',
+    WORKING_PROFESSIONALS: 'Working Professionals',
+    BACHELORS: 'Bachelors',
+    STUDENTS: 'Students',
+    ANY: 'No Preference'
+  };
+  const parts = pref.split(',').map((p) => p.trim().toUpperCase()).filter(Boolean);
+  const formatted = parts.map((p) => labelMap[p] || p);
+  if (formatted.length === 0) return null;
+  return `Preferred: ${formatted.join(', ')}`;
+};
+
 export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
   properties,
   onBookTour,
@@ -319,10 +354,26 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
                             {/* Property Title */}
                             <h3 
                               onClick={() => onBookTour(prop)}
-                              className="text-lg sm:text-xl font-extrabold text-slate-900 line-clamp-2 mb-3.5 font-['Outfit',sans-serif] group-hover:text-emerald-700 transition-colors leading-snug cursor-pointer"
+                              className="text-lg sm:text-xl font-extrabold text-slate-900 line-clamp-2 mb-3 font-['Outfit',sans-serif] group-hover:text-emerald-700 transition-colors leading-snug cursor-pointer"
                             >
                               {prop.title}
                             </h3>
+
+                            {/* Floor & Preferred Tenant Specs Row */}
+                            {(formatFloorDisplay(prop.floor, prop.totalFloors) || formatPreferredTenantDisplay(prop.preferredTenant)) && (
+                              <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[11px] font-medium text-slate-600">
+                                {formatFloorDisplay(prop.floor, prop.totalFloors) && (
+                                  <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-xl border border-slate-200/80 font-mono text-[11px]">
+                                    🏢 {formatFloorDisplay(prop.floor, prop.totalFloors)}
+                                  </span>
+                                )}
+                                {formatPreferredTenantDisplay(prop.preferredTenant) && (
+                                  <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 px-2.5 py-0.5 rounded-xl border border-emerald-200/80 text-[11px]">
+                                    👥 {formatPreferredTenantDisplay(prop.preferredTenant)}
+                                  </span>
+                                )}
+                              </div>
+                            )}
 
                             {/* Rent & Security Deposit Box */}
                             <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 mb-4 flex items-center justify-between shadow-inner">

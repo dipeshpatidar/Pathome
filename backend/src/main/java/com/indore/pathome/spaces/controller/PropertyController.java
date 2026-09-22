@@ -25,10 +25,12 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -58,6 +60,9 @@ public class PropertyController {
     private static final ZoneId INDIA_ZONE = ZoneId.of("Asia/Kolkata");
     private static final DateTimeFormatter DISPLAY_POSSESSION_DATE_FORMATTER =
             DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH);
+    private static final Set<String> VALID_PREFERRED_TENANTS = Set.of(
+            "FAMILY", "WORKING_PROFESSIONALS", "BACHELORS", "STUDENTS", "ANY"
+    );
 
     private final ListingRepository listingRepository;
     private final PropertyMediaAssetRepository mediaAssetRepository;
@@ -451,6 +456,38 @@ public class PropertyController {
         rental.setStatus(toListingStatus(readString(body, "status")));
         rental.setPropertyType(toPropertyType(propertyType));
 
+        Double floorVal = readDouble(body.get("floor"));
+        if (floorVal == null) floorVal = readDouble(body.get("floorNumber"));
+        if (floorVal != null) {
+            if (floorVal < 0) throw new IllegalArgumentException("Property Creation Rejected: Floor must be 0 (Ground) or greater");
+            rental.setFloorNumber(floorVal.intValue());
+        }
+        Double totalFloorsVal = readDouble(body.get("totalFloors"));
+        if (totalFloorsVal != null) {
+            if (totalFloorsVal < 1) throw new IllegalArgumentException("Property Creation Rejected: Total Floors must be at least 1");
+            rental.setTotalFloors(totalFloorsVal.intValue());
+        }
+        PropertyType pt = toPropertyType(propertyType);
+        boolean isLanded = pt == PropertyType.PLOT || pt == PropertyType.LAND || pt == PropertyType.HOUSE;
+        if (!isLanded && rental.getFloorNumber() != null && rental.getTotalFloors() != null
+                && rental.getFloorNumber() > rental.getTotalFloors()) {
+            throw new IllegalArgumentException("Property Creation Rejected: Floor (" + rental.getFloorNumber()
+                    + ") cannot exceed Total Floors (" + rental.getTotalFloors() + ")");
+        }
+        Object ptObj = body.get("preferredTenants");
+        if (ptObj == null) ptObj = body.get("preferredTenant");
+        if (ptObj instanceof List<?> list) {
+            List<String> valid = list.stream().filter(Objects::nonNull).map(Object::toString).map(String::trim).map(s -> s.toUpperCase(Locale.ROOT)).filter(VALID_PREFERRED_TENANTS::contains).toList();
+            List<String> mutable = new ArrayList<>(valid);
+            if (mutable.contains("ANY") && mutable.size() > 1) mutable.remove("ANY");
+            if (!mutable.isEmpty()) rental.setPreferredTenant(String.join(",", mutable));
+        } else if (ptObj != null && !ptObj.toString().isBlank()) {
+            List<String> valid = Arrays.stream(ptObj.toString().split(",")).map(String::trim).map(s -> s.toUpperCase(Locale.ROOT)).filter(VALID_PREFERRED_TENANTS::contains).toList();
+            List<String> mutable = new ArrayList<>(valid);
+            if (mutable.contains("ANY") && mutable.size() > 1) mutable.remove("ANY");
+            if (!mutable.isEmpty()) rental.setPreferredTenant(String.join(",", mutable));
+        }
+
         Listing saved = listingRepository.save(rental);
         propertyParserService.confirmLocality(rental.getCity(), sector, rentAmount);
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
@@ -666,6 +703,7 @@ public class PropertyController {
     public ResponseEntity<Map<String, Object>> createBatchProperties(@RequestBody Map<String, Object> request) {
         Objects.requireNonNull(request, "Batch request must not be null");
 
+        String topDraftId = readString(request, "draftId");
         List<?> rawListings = (List<?>) request.getOrDefault("listings", Collections.emptyList());
         List<Long> createdIds = new ArrayList<>();
         List<Map<String, Object>> createdListings = new ArrayList<>();
@@ -683,8 +721,82 @@ public class PropertyController {
                     continue;
                 }
 
+                String draftId = (dto.getDraftId() != null && !dto.getDraftId().isBlank())
+                        ? dto.getDraftId().trim()
+                        : topDraftId;
+                if (dto.getDraftId() == null && draftId != null) {
+                    dto.setDraftId(draftId);
+                }
+                String cardId = dto.getCardId();
+
+                // Compute durable composite origin draft ID (e.g. draft_xxx:card_yyy)
+                String compositeOriginDraftId = null;
+                if (draftId != null && !draftId.isBlank()) {
+                    if (cardId != null && !cardId.isBlank()) {
+                        compositeOriginDraftId = draftId.trim() + ":" + cardId.trim();
+                    } else {
+                        compositeOriginDraftId = draftId.trim();
+                    }
+                    if (compositeOriginDraftId.length() > 64 && cardId != null) {
+                        String hash = DigestUtils.md5DigestAsHex(cardId.trim().getBytes(StandardCharsets.UTF_8));
+                        compositeOriginDraftId = draftId.trim() + ":" + hash;
+                        if (compositeOriginDraftId.length() > 64) {
+                            compositeOriginDraftId = compositeOriginDraftId.substring(0, 64);
+                        }
+                    }
+                }
+
+                // 1. Check idempotency: if this card already has a listing created, replay it
+                if (compositeOriginDraftId != null) {
+                    Optional<Listing> existing = listingRepository.findByOriginDraftId(compositeOriginDraftId);
+                    if (existing.isPresent()) {
+                        Listing replayed = existing.get();
+                        log.info("Durable batch idempotency: card [{}] in draft [{}] already linked to listing #{}. Replaying existing record.",
+                                cardId, draftId, replayed.getId());
+                        createdIds.add(replayed.getId());
+                        createdListings.add(Map.of(
+                                "id", replayed.getId(),
+                                "requestIndex", i,
+                                "propertyNumber", i + 1,
+                                "title", replayed.getTitle() != null ? replayed.getTitle() : "",
+                                "sector", replayed.getSector() != null ? replayed.getSector() : "",
+                                "status", "REPLAYED"
+                        ));
+                        continue;
+                    }
+                }
+
                 RentalDetails listing = buildRentalDetailsFromDTO(dto);
-                Listing saved = batchPropertyPublishingService.publish(listing, dto.getMediaUrls());
+                if (compositeOriginDraftId != null) {
+                    listing.setOriginDraftId(compositeOriginDraftId);
+                }
+
+                Listing saved;
+                try {
+                    saved = batchPropertyPublishingService.publish(listing, dto.getMediaUrls());
+                } catch (DataIntegrityViolationException e) {
+                    // Concurrent duplicate publication race resolved via unique constraint on origin_draft_id
+                    if (compositeOriginDraftId != null) {
+                        Optional<Listing> concurrentWinning = listingRepository.findByOriginDraftId(compositeOriginDraftId);
+                        if (concurrentWinning.isPresent()) {
+                            Listing winning = concurrentWinning.get();
+                            log.info("Concurrent batch race resolved via DB unique constraint for [{}]. Returning listing #{}.",
+                                    compositeOriginDraftId, winning.getId());
+                            createdIds.add(winning.getId());
+                            createdListings.add(Map.of(
+                                    "id", winning.getId(),
+                                    "requestIndex", i,
+                                    "propertyNumber", i + 1,
+                                    "title", winning.getTitle() != null ? winning.getTitle() : "",
+                                    "sector", winning.getSector() != null ? winning.getSector() : "",
+                                    "status", "REPLAYED"
+                            ));
+                            continue;
+                        }
+                    }
+                    throw e;
+                }
+
                 recordPublishedParserReview(dto, saved.getId());
 
                 createdIds.add(saved.getId());
@@ -692,8 +804,8 @@ public class PropertyController {
                         "id", saved.getId(),
                         "requestIndex", i,
                         "propertyNumber", i + 1,
-                        "title", saved.getTitle(),
-                        "sector", saved.getSector(),
+                        "title", saved.getTitle() != null ? saved.getTitle() : "",
+                        "sector", saved.getSector() != null ? saved.getSector() : "",
                         "status", "CREATED"
                 ));
             } catch (Exception e) {
@@ -703,6 +815,27 @@ public class PropertyController {
                         "error", "Review this property's required details and try publishing it again."
                 ));
             }
+        }
+
+        // Transition batch draft to PUBLISHING lifecycle
+        String effectiveBatchDraftId = topDraftId;
+        if (effectiveBatchDraftId == null && !rawListings.isEmpty()) {
+            Object first = rawListings.get(0);
+            if (first instanceof Map<?, ?> m) {
+                effectiveBatchDraftId = readString((Map<String, Object>) m, "draftId");
+            }
+        }
+        if (effectiveBatchDraftId != null && draftRepository != null && !createdIds.isEmpty()) {
+            final String bDraftId = effectiveBatchDraftId;
+            draftRepository.findByDraftId(bDraftId).ifPresent(draft -> {
+                if (!"PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
+                    draft.setStatus("PUBLISHING");
+                    draft.setUpdatedAt(LocalDateTime.now());
+                    draftRepository.save(draft);
+                    log.info("Transitioned batch draft [{}] to PUBLISHING after publishing/replaying {} listings",
+                            bDraftId, createdIds.size());
+                }
+            });
         }
 
         return ResponseEntity.ok(Map.of(
@@ -720,6 +853,7 @@ public class PropertyController {
         dto.setRawPrompt(readString(map, "rawPrompt"));
         dto.setLearningExampleId(readString(map, "learningExampleId"));
         dto.setDraftId(readString(map, "draftId"));
+        dto.setCardId(readString(map, "cardId"));
         Double promptIndex = readDouble(map.get("promptIndex"));
         dto.setPromptIndex(promptIndex == null ? 1 : Math.max(1, promptIndex.intValue()));
         dto.setTitle(readString(map, "title"));
@@ -769,6 +903,38 @@ public class PropertyController {
             }
             dto.setAmenities(amenities);
         }
+
+        Double floorVal = readDouble(map.get("floor"));
+        if (floorVal == null) floorVal = readDouble(map.get("floorNumber"));
+        dto.setFloor(floorVal == null ? null : floorVal.intValue());
+
+        Double totalFloorsVal = readDouble(map.get("totalFloors"));
+        dto.setTotalFloors(totalFloorsVal == null ? null : totalFloorsVal.intValue());
+
+        Object tenantObj = map.get("preferredTenants");
+        if (tenantObj == null) tenantObj = map.get("preferredTenant");
+        if (tenantObj instanceof List<?> l) {
+            List<String> tenants = new ArrayList<>();
+            for (Object o : l) {
+                if (o != null && !o.toString().isBlank()) {
+                    tenants.add(o.toString().trim());
+                }
+            }
+            if (tenants.contains("ANY") && tenants.size() > 1) {
+                tenants.remove("ANY");
+            }
+            dto.setPreferredTenants(tenants);
+        } else if (tenantObj instanceof String s && !s.isBlank()) {
+            List<String> tenants = new ArrayList<>(Arrays.stream(s.split(","))
+                    .map(String::trim)
+                    .filter(val -> !val.isBlank())
+                    .toList());
+            if (tenants.contains("ANY") && tenants.size() > 1) {
+                tenants.remove("ANY");
+            }
+            dto.setPreferredTenants(tenants);
+        }
+
         return dto;
     }
 
@@ -864,6 +1030,41 @@ public class PropertyController {
         listing.setOwnerPhoneNumber(dto.getOwnerPhone().trim());
         listing.setStatus(toListingStatus(dto.getStatus()));
         listing.setPropertyType(toPropertyType(dto.getType()));
+
+        PropertyType propType = toPropertyType(dto.getType());
+        if (dto.getFloor() != null && dto.getFloor() < 0) {
+            throw new IllegalArgumentException("Property Creation Rejected: Floor must be 0 (Ground) or greater");
+        }
+        if (dto.getTotalFloors() != null && dto.getTotalFloors() < 1) {
+            throw new IllegalArgumentException("Property Creation Rejected: Total Floors must be at least 1");
+        }
+        boolean isLandedType = propType == PropertyType.PLOT || propType == PropertyType.LAND
+                || propType == PropertyType.HOUSE;
+        if (!isLandedType && dto.getFloor() != null && dto.getTotalFloors() != null
+                && dto.getFloor() > dto.getTotalFloors()) {
+            throw new IllegalArgumentException("Property Creation Rejected: Floor (" + dto.getFloor()
+                    + ") cannot exceed Total Floors (" + dto.getTotalFloors() + ")");
+        }
+
+        listing.setFloorNumber(dto.getFloor());
+        listing.setTotalFloors(dto.getTotalFloors());
+
+        if (dto.getPreferredTenants() != null && !dto.getPreferredTenants().isEmpty()) {
+            List<String> validTenants = new ArrayList<>();
+            for (String t : dto.getPreferredTenants()) {
+                String normalized = t.trim().toUpperCase(Locale.ROOT);
+                if (VALID_PREFERRED_TENANTS.contains(normalized)) {
+                    validTenants.add(normalized);
+                }
+            }
+            if (validTenants.contains("ANY") && validTenants.size() > 1) {
+                validTenants.remove("ANY");
+            }
+            if (!validTenants.isEmpty()) {
+                listing.setPreferredTenant(String.join(",", validTenants));
+            }
+        }
+
         if (dto.getDraftId() != null && !dto.getDraftId().isBlank()) {
             listing.setOriginDraftId(dto.getDraftId().trim());
         }

@@ -47,6 +47,10 @@ public class ParsedPropertyDTO {
     private List<String> appliedAmendments = new ArrayList<>();
     private String learningExampleId;
     private String draftId;
+    private String cardId;
+    private Integer floor;
+    private Integer totalFloors;
+    private List<String> preferredTenants = new ArrayList<>();
 
     public ParsedPropertyDTO() {
     }
@@ -406,5 +410,37 @@ public class ParsedPropertyDTO {
 
     public void setDraftId(String draftId) {
         this.draftId = draftId;
+    }
+
+    public String getCardId() {
+        return cardId;
+    }
+
+    public void setCardId(String cardId) {
+        this.cardId = cardId;
+    }
+
+    public Integer getFloor() {
+        return floor;
+    }
+
+    public void setFloor(Integer floor) {
+        this.floor = floor;
+    }
+
+    public Integer getTotalFloors() {
+        return totalFloors;
+    }
+
+    public void setTotalFloors(Integer totalFloors) {
+        this.totalFloors = totalFloors;
+    }
+
+    public List<String> getPreferredTenants() {
+        return preferredTenants;
+    }
+
+    public void setPreferredTenants(List<String> preferredTenants) {
+        this.preferredTenants = preferredTenants != null ? preferredTenants : new ArrayList<>();
     }
 }

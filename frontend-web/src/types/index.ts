@@ -102,4 +102,7 @@ export interface Property {
   latitude: number;
   longitude: number;
   bachelorAllowed?: boolean;
+  floor?: number | null;
+  totalFloors?: number | null;
+  preferredTenant?: string | null;
 }

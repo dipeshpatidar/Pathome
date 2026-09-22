@@ -1,6 +1,6 @@
 import { Property, PropertyMediaAsset, RoomTag } from '../types';
 import { API_ROOT_URL } from '../config/endpoints';
-import { ApiRequestError, createApiRequestError } from './apiError';
+import { ApiRequestError, createApiRequestError, notifySessionExpired } from './apiError';
 import { prepareMediaForUpload } from '../utils/imageOptimizer';
 
 const API_BASE_URL = `${API_ROOT_URL}/properties`;
@@ -22,6 +22,7 @@ export interface MediaUploadOptions {
 const getAdminAuthorizationHeader = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
   if (!token) {
+    notifySessionExpired();
     throw new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
   }
   return { Authorization: `Bearer ${token}` };
@@ -32,7 +33,7 @@ const wait = (durationMs: number): Promise<void> =>
 
 export const createStableUploadRequestId = (
   propertyId: number,
-  file: File,
+  file?: File | null,
   draftMediaId?: string | null
 ): string => {
   const effectiveDraftMediaId = draftMediaId || (file as any)?.draftMediaId;
@@ -41,13 +42,17 @@ export const createStableUploadRequestId = (
     return `media-${propertyId}-${cleanId}`;
   }
 
-  const source = `${propertyId}:${file.name}:${file.size}:${file.lastModified}`;
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+  if (file) {
+    const source = `${propertyId}:${file.name}:${file.size}:${file.lastModified}`;
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `media-${propertyId}-${(hash >>> 0).toString(16)}`;
   }
-  return `media-${propertyId}-${(hash >>> 0).toString(16)}`;
+
+  return `media-${propertyId}-${Date.now()}`;
 };
 
 const parseXhrError = (xhr: XMLHttpRequest, fallback: string): ApiRequestError => {
@@ -59,7 +64,10 @@ const parseXhrError = (xhr: XMLHttpRequest, fallback: string): ApiRequestError =
     // Proxies can return an empty or non-JSON error body.
   }
 
-  if (xhr.status === 401) return new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
+  if (xhr.status === 401) {
+    notifySessionExpired();
+    return new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
+  }
   if (xhr.status === 403) return new ApiRequestError('You do not have permission to upload property media.', 403);
   if (xhr.status === 413) {
     return new ApiRequestError(
@@ -218,7 +226,10 @@ export const propertyService = {
         verified: item.status === 'ACTIVE',
         ownerPhone: item.ownerPhoneNumber || '',
         latitude: item.latitude,
-        longitude: item.longitude
+        longitude: item.longitude,
+        floor: typeof item.floorNumber === 'number' ? item.floorNumber : (typeof item.floor === 'number' ? item.floor : null),
+        totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
+        preferredTenant: item.preferredTenant || null
       };
     });
   },
@@ -409,7 +420,7 @@ export const propertyService = {
   /**
    * Batch Persist Verified Property Listings to PostgreSQL
    */
-  async createBatchProperties(listings: any[]): Promise<any> {
+  async createBatchProperties(listings: any[], draftId?: string): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/create-batch`, {
       method: 'POST',
       headers: {
@@ -417,7 +428,7 @@ export const propertyService = {
         'Accept': 'application/json',
         ...getAdminAuthorizationHeader()
       },
-      body: JSON.stringify({ listings })
+      body: JSON.stringify(draftId ? { draftId, listings } : { listings })
     });
 
     if (!response.ok) {

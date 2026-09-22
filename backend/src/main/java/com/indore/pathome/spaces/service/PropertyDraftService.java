@@ -9,11 +9,15 @@ import com.indore.pathome.spaces.dto.draft.DraftDetailDTO;
 import com.indore.pathome.spaces.dto.draft.DraftMediaDTO;
 import com.indore.pathome.spaces.dto.draft.DraftSummaryDTO;
 import com.indore.pathome.spaces.dto.draft.SaveDraftRequest;
+import com.indore.pathome.spaces.entity.Listing;
+import com.indore.pathome.spaces.entity.MediaType;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
+import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.OptimisticLockException;
@@ -69,6 +73,13 @@ public class PropertyDraftService {
 
     public void setListingRepository(ListingRepository listingRepository) {
         this.listingRepository = listingRepository;
+    }
+
+    @Autowired(required = false)
+    private PropertyMediaAssetRepository mediaAssetRepository;
+
+    public void setMediaAssetRepository(PropertyMediaAssetRepository mediaAssetRepository) {
+        this.mediaAssetRepository = mediaAssetRepository;
     }
 
     // L1 in-memory cache: (adminId + ":" + draftId) -> draftId for fast O(1) checks
@@ -132,8 +143,9 @@ public class PropertyDraftService {
 
     /**
      * Retrieves full draft detail and its associated staged media records.
+     * For BATCH drafts, auto-reconciles against backend listings to resolve interrupted publications.
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public DraftDetailDTO getDraft(String adminId, String draftId) {
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
@@ -141,8 +153,19 @@ public class PropertyDraftService {
         PropertyUploadDraft draft = draftRepository.findByDraftIdAndAdminId(draftId, cleanAdminId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found or access denied: " + draftId));
 
+        // Auto-reconcile backend truth for BATCH drafts (interrupted publication recovery)
+        if ("BATCH".equalsIgnoreCase(draft.getDraftType()) && listingRepository != null) {
+            reconcileInterruptedBatchDraftState(draft, cleanAdminId);
+        }
+
         List<PropertyDraftMedia> mediaEntities = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
         List<DraftMediaDTO> mediaList = toMediaDtos(mediaEntities);
+
+        // Fallback: If mediaEntities is empty for some staged cards, but listings exist with permanent assets,
+        // reconstruct DraftMediaDTO from permanent property_media_assets
+        if (mediaAssetRepository != null && listingRepository != null && "BATCH".equalsIgnoreCase(draft.getDraftType())) {
+            reconstructMediaFromPermanentAssets(draft, mediaList);
+        }
 
         return new DraftDetailDTO(
                 draft.getDraftId(),
@@ -526,10 +549,10 @@ public class PropertyDraftService {
 
         PropertyDraftMedia saved = draftMediaRepository.save(draftMedia);
 
-        // 4. Update draft updatedAt timestamp and save if it existed prior to this media staging
+        // 4. Touch draft updatedAt timestamp directly without advancing parent entity @Version
         if (wasExistingDraft) {
-            draft.setUpdatedAt(LocalDateTime.now());
-            draftRepository.save(draft);
+            LocalDateTime now = LocalDateTime.now();
+            draftRepository.touchUpdatedAt(draftId, adminId, now);
         }
 
         return saved;
@@ -586,65 +609,346 @@ public class PropertyDraftService {
     }
 
     /**
-     * Reconciles a batch draft after a publish attempt.
-     * Removes successfully published cards and their temporary media from the draft payload.
-     * If all cards were published, discards the entire draft.
+     * Reassigns unassigned media items (cardId is null or empty) in a draft to a specific card ID.
+     * Used when transitioning a SINGLE draft with staged media to a BATCH draft, binding existing
+     * property A media to the actual first card ID created in the batch workspace.
      */
     @Transactional
-    public DraftDetailDTO reconcileBatchDraft(String adminId, String draftId, List<String> publishedCardIds) {
+    public int reassignUnassignedMediaToCard(String adminId, String draftId, String targetCardId) {
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
+        if (targetCardId == null || targetCardId.isBlank()) {
+            throw new IllegalArgumentException("targetCardId cannot be null or empty");
+        }
 
-        PropertyUploadDraft draft = draftRepository.findByDraftIdAndAdminId(draftId, cleanAdminId)
-                .orElseThrow(() -> new EntityNotFoundException("Draft not found or access denied: " + draftId));
+        int updated = draftMediaRepository.reassignUnassignedMediaToCard(draftId, cleanAdminId, targetCardId.trim());
+        if (updated > 0) {
+            draftRepository.touchUpdatedAt(draftId, cleanAdminId, LocalDateTime.now());
+            log.info("Reassigned {} unassigned media items in draft [{}] to card [{}] for admin [{}]",
+                    updated, draftId, targetCardId, cleanAdminId);
+        }
+        return updated;
+    }
+
+    /**
+     * Reconciles a batch draft after a publish attempt.
+     * Removes successfully published cards and their temporary media from the draft payload.
+     * If all cards were published, converts the draft to a PUBLISHED tombstone.
+     *
+     * <p><b>Concurrency design:</b> The method is split into two phases to prevent
+     * {@code StaleObjectStateException} caused by a concurrent autosave racing the commit:
+     * <ol>
+     *   <li><b>Phase A — short {@code @Transactional} with pessimistic write lock:</b>
+     *       Loads the entity under a DB-level exclusive lock, mutates and saves it, and
+     *       deletes the {@code property_draft_media} rows for published cards. No external
+     *       I/O is performed. The transaction commits quickly.</li>
+     *   <li><b>Phase B — post-commit B2 cleanup (no transaction):</b>
+     *       Performs the object-storage DELETE calls after the DB transaction has already
+     *       committed. B2 failures are non-fatal and logged.</li>
+     * </ol>
+     */
+    public DraftDetailDTO reconcileBatchDraft(String adminId, String draftId, List<String> publishedCardIds) {
+        return reconcileBatchDraft(adminId, draftId, publishedCardIds, Collections.emptyList());
+    }
+
+    public DraftDetailDTO reconcileBatchDraft(String adminId, String draftId, List<String> publishedCardIds, List<Map<String, Object>> newCompletedListings) {
+        String cleanAdminId = sanitizeAdminId(adminId);
+        validateDraftId(draftId);
 
         if (publishedCardIds == null || publishedCardIds.isEmpty()) {
             return getDraft(adminId, draftId);
         }
 
-        Set<String> publishedSet = new HashSet<>(publishedCardIds);
+        // Phase A: short DB-only transaction via TransactionTemplate (avoids Spring self-invocation
+        // proxy bypass that would occur with a @Transactional protected method called via this.x()).
+        // The pessimistic write lock inside prevents any concurrent autosave from bumping @Version
+        // between the entity load and the save.
+        final String safeAdminId = cleanAdminId;
+        final List<String> safePublishedIds = publishedCardIds;
+        final List<Map<String, Object>> safeCompleted = newCompletedListings;
 
-        // Delete staged media associated with the published cards
-        List<PropertyDraftMedia> allMedia = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
-        for (PropertyDraftMedia media : allMedia) {
-            if (media.getCardId() != null && publishedSet.contains(media.getCardId())) {
-                cleanupStagedMedia(media.getStagingObjectKey());
-                draftMediaRepository.delete(media);
+        ReconcileResult result;
+        if (transactionTemplate != null) {
+            result = transactionTemplate.execute(status ->
+                    reconcileBatchDraftInTx(safeAdminId, draftId, safePublishedIds, safeCompleted));
+            if (result == null) {
+                result = new ReconcileResult(Collections.emptyList(), false);
             }
+        } else {
+            result = reconcileBatchDraftInTx(cleanAdminId, draftId, publishedCardIds, newCompletedListings);
         }
 
-        // Reconcile structured JSON payload
+        // Phase B: B2 deletes happen AFTER the transaction has committed. Failures are non-fatal.
+        for (String key : result.b2KeysToDelete()) {
+            cleanupStagedMedia(key);
+        }
+
+        return result.tombstoned() ? null : getDraft(adminId, draftId);
+    }
+
+    /** Result carrier for the inner transactional phase of reconcileBatchDraft. */
+    private record ReconcileResult(List<String> b2KeysToDelete, boolean tombstoned) {}
+
+    /**
+     * Inner transactional body of {@link #reconcileBatchDraft}.
+     * Called programmatically via {@link TransactionTemplate} to guarantee a real JDBC transaction
+     * is created regardless of the call stack (avoids Spring AOP self-invocation bypass).
+     * Acquires a pessimistic write lock on the draft, performs all DB mutations, and returns a
+     * {@link ReconcileResult} with the B2 keys to delete post-commit and a tombstone flag.
+     */
+    private ReconcileResult reconcileBatchDraftInTx(
+            String cleanAdminId, String draftId,
+            List<String> publishedCardIds, List<Map<String, Object>> newCompletedListings) {
+
+        // Pessimistic write lock prevents any concurrent saveOrUpdateDraft from committing
+        // a version increment between our load and our save.
+        PropertyUploadDraft draft = draftRepository.findByDraftIdForUpdate(draftId)
+                .or(() -> draftRepository.findByDraftIdAndAdminId(draftId, cleanAdminId))
+                .filter(d -> d.getAdminId().equals(cleanAdminId))
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found or access denied: " + draftId));
+
+        Set<String> publishedSet = new HashSet<>(publishedCardIds);
+
         try {
             JsonNode root = objectMapper.readTree(draft.getPayload());
-            if (root.has("stagedCards") && root.get("stagedCards").isArray()) {
-                ArrayNode cardsArray = (ArrayNode) root.get("stagedCards");
-                ArrayNode remainingCards = objectMapper.createArrayNode();
+            if (!root.has("stagedCards") || !root.get("stagedCards").isArray()) {
+                return new ReconcileResult(Collections.emptyList(), false);
+            }
 
-                for (JsonNode cardNode : cardsArray) {
-                    String cardId = cardNode.has("id") ? cardNode.get("id").asText() : "";
-                    if (!publishedSet.contains(cardId)) {
-                        remainingCards.add(cardNode);
+            ArrayNode cardsArray = (ArrayNode) root.get("stagedCards");
+            ArrayNode remainingCards = objectMapper.createArrayNode();
+
+            // Maintain completed listings with idempotency (keyed by cardId)
+            Map<String, ObjectNode> completedMap = new LinkedHashMap<>();
+            if (root.has("completedListings") && root.get("completedListings").isArray()) {
+                for (JsonNode node : root.get("completedListings")) {
+                    String cid = node.has("cardId") ? node.get("cardId").asText() : "";
+                    if (!cid.isBlank() && node.isObject()) {
+                        completedMap.put(cid, (ObjectNode) node);
                     }
                 }
+            }
 
-                if (remainingCards.isEmpty()) {
-                    // All cards published! Complete cleanup and retain tombstone
-                    onPropertyPublished(adminId, draftId);
-                    return null;
+            // Merge explicitly passed newCompletedListings
+            if (newCompletedListings != null && !newCompletedListings.isEmpty()) {
+                for (Map<String, Object> comp : newCompletedListings) {
+                    String cid = comp.get("cardId") != null ? String.valueOf(comp.get("cardId")) : "";
+                    if (!cid.isBlank()) {
+                        ObjectNode node = objectMapper.createObjectNode();
+                        node.put("cardId", cid);
+                        if (comp.get("listingId") instanceof Number n) {
+                            node.put("listingId", n.longValue());
+                        } else if (comp.get("listingId") != null) {
+                            try {
+                                node.put("listingId", Long.parseLong(String.valueOf(comp.get("listingId"))));
+                            } catch (NumberFormatException ignored) {}
+                        }
+                        node.put("title", comp.get("title") != null ? String.valueOf(comp.get("title")) : "");
+                        completedMap.put(cid, node);
+                    }
+                }
+            }
+
+            for (JsonNode cardNode : cardsArray) {
+                String cardId = cardNode.has("id") ? cardNode.get("id").asText() : "";
+                if (!publishedSet.contains(cardId)) {
+                    remainingCards.add(cardNode);
+                }
+            }
+
+            if (remainingCards.isEmpty()) {
+                // All cards are published — collect B2 keys, delete DB rows, tombstone the draft.
+                List<PropertyDraftMedia> allMedia = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
+                List<String> keysToDelete = new ArrayList<>(allMedia.size());
+                for (PropertyDraftMedia media : allMedia) {
+                    keysToDelete.add(media.getStagingObjectKey());
                 }
 
-                ((ObjectNode) root).set("stagedCards", remainingCards);
+                // DB-only operations — no B2 calls inside this transaction
+                draftMediaRepository.deleteAllByDraftIdAndAdminId(draftId, cleanAdminId);
+
+                draft.setStatus("PUBLISHED");
+                ObjectNode tombstonePayload = objectMapper.createObjectNode();
+                if (!completedMap.isEmpty()) {
+                    ArrayNode completedArray = objectMapper.createArrayNode();
+                    completedMap.values().forEach(completedArray::add);
+                    tombstonePayload.set("completedListings", completedArray);
+                }
+                draft.setPayload(tombstonePayload.toString());
+                draft.setItemCount(0);
+                draft.setUpdatedAt(LocalDateTime.now());
+                draftRepository.save(draft);
+
+                activeDraftCache.remove(cleanAdminId + ":" + draftId);
+                log.info("Converted completed BATCH draft [{}] into PUBLISHED tombstone (all properties published) and queued {} staged media items for B2 cleanup for admin [{}]",
+                        draftId, keysToDelete.size(), cleanAdminId);
+
+                return new ReconcileResult(keysToDelete, true);
+            }
+
+            // Partial — update payload for remaining cards
+            ((ObjectNode) root).set("stagedCards", remainingCards);
+            if (!completedMap.isEmpty()) {
+                ArrayNode completedArray = objectMapper.createArrayNode();
+                completedMap.values().forEach(completedArray::add);
+                ((ObjectNode) root).set("completedListings", completedArray);
+            }
+
+            int remainingCount = remainingCards.size();
+            String titleSummary = remainingCount == 1
+                    ? "Batch — 1 property remaining"
+                    : "Batch — " + remainingCount + " properties remaining";
+
+            draft.setPayload(objectMapper.writeValueAsString(root));
+            draft.setItemCount(remainingCount);
+            draft.setTitleSummary(titleSummary);
+            draft.setVersion(draft.getVersion() + 1);
+            draft.setUpdatedAt(LocalDateTime.now());
+            draftRepository.save(draft);
+
+            // Collect B2 keys for published cards' media; delete DB rows in this transaction.
+            List<PropertyDraftMedia> allMedia = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
+            List<String> keysToDelete = new ArrayList<>();
+            for (PropertyDraftMedia media : allMedia) {
+                if (media.getCardId() != null && publishedSet.contains(media.getCardId())) {
+                    keysToDelete.add(media.getStagingObjectKey());
+                    draftMediaRepository.delete(media);
+                }
+            }
+            return new ReconcileResult(keysToDelete, false);
+
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to parse batch draft payload JSON during reconciliation for draft [{}]: {}", draftId, e.getMessage());
+            return new ReconcileResult(Collections.emptyList(), false);
+        }
+    }
+
+
+    private void reconcileInterruptedBatchDraftState(PropertyUploadDraft draft, String cleanAdminId) {
+        String payload = draft.getPayload();
+        if (payload == null || payload.isBlank() || "{}".equals(payload.trim())) {
+            return;
+        }
+
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            if (!root.has("stagedCards") || !root.get("stagedCards").isArray()) {
+                return;
+            }
+
+            ArrayNode cardsArray = (ArrayNode) root.get("stagedCards");
+            if (cardsArray.isEmpty()) {
+                return;
+            }
+
+            List<String> newlyCompletedCardIds = new ArrayList<>();
+            List<Map<String, Object>> newCompletedListings = new ArrayList<>();
+            boolean payloadModified = false;
+
+            for (JsonNode cardNode : cardsArray) {
+                String cardId = cardNode.has("id") ? cardNode.get("id").asText() : "";
+                if (cardId.isBlank()) continue;
+
+                String compositeOriginDraftId = draft.getDraftId() + ":" + cardId;
+                Optional<Listing> existing = listingRepository.findByOriginDraftId(compositeOriginDraftId);
+                if (existing.isPresent()) {
+                    Listing listing = existing.get();
+                    Long listingId = listing.getId();
+                    String title = listing.getTitle() != null ? listing.getTitle() : cardNode.path("title").asText("Property #" + listingId);
+
+                    int permanentAssetsCount = 0;
+                    if (mediaAssetRepository != null) {
+                        permanentAssetsCount = mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listingId).size();
+                    }
+
+                    int expectedMedia = cardNode.has("stagedMedia") && cardNode.get("stagedMedia").isArray()
+                            ? cardNode.get("stagedMedia").size() : 0;
+
+                    // If all expected media reached permanent storage (or if card had 0 expected media), card is fully published!
+                    if (permanentAssetsCount >= expectedMedia) {
+                        newlyCompletedCardIds.add(cardId);
+                        newCompletedListings.add(Map.of("cardId", cardId, "listingId", listingId, "title", title));
+                        log.info("Interrupted batch draft [{}] recovery: card [{}] is fully published on backend as listing #{}. Auto-reconciling.",
+                                draft.getDraftId(), cardId, listingId);
+                    } else {
+                        // Card is partially published (listing exists, but some media missing)
+                        // Mark publishedId on card if not already set to prevent duplicate listing creation
+                        if (!cardNode.has("publishedId") || cardNode.get("publishedId").isNull()) {
+                            ((ObjectNode) cardNode).put("publishedId", listingId);
+                            payloadModified = true;
+                        }
+                    }
+                }
+            }
+
+            if (!newlyCompletedCardIds.isEmpty()) {
+                reconcileBatchDraft(cleanAdminId, draft.getDraftId(), newlyCompletedCardIds, newCompletedListings);
+                // Refresh draft entity from database after reconciliation
+                draftRepository.findByDraftIdAndAdminId(draft.getDraftId(), cleanAdminId).ifPresent(updated -> {
+                    draft.setStatus(updated.getStatus());
+                    draft.setPayload(updated.getPayload());
+                    draft.setItemCount(updated.getItemCount());
+                    draft.setTitleSummary(updated.getTitleSummary());
+                    draft.setVersion(updated.getVersion());
+                    draft.setUpdatedAt(updated.getUpdatedAt());
+                });
+            } else if (payloadModified) {
                 draft.setPayload(objectMapper.writeValueAsString(root));
-                draft.setItemCount(remainingCards.size());
-                draft.setVersion(draft.getVersion() + 1);
                 draft.setUpdatedAt(LocalDateTime.now());
                 draftRepository.save(draft);
             }
-        } catch (JsonProcessingException e) {
-            log.warn("Failed to parse batch draft payload JSON during reconciliation for draft [{}]: {}", draftId, e.getMessage());
+        } catch (Exception e) {
+            log.warn("Non-fatal error inspecting batch draft [{}] for interrupted recovery: {}", draft.getDraftId(), e.getMessage());
+        }
+    }
+
+    private void reconstructMediaFromPermanentAssets(PropertyUploadDraft draft, List<DraftMediaDTO> mediaList) {
+        String payload = draft.getPayload();
+        if (payload == null || payload.isBlank() || "{}".equals(payload.trim())) {
+            return;
         }
 
-        return getDraft(adminId, draftId);
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            if (!root.has("stagedCards") || !root.get("stagedCards").isArray()) {
+                return;
+            }
+
+            for (JsonNode cardNode : root.get("stagedCards")) {
+                String cardId = cardNode.has("id") ? cardNode.get("id").asText() : "";
+                if (cardId.isBlank()) continue;
+
+                boolean hasExistingMedia = mediaList.stream().anyMatch(m -> cardId.equals(m.cardId()));
+                if (hasExistingMedia) continue;
+
+                String compositeOriginDraftId = draft.getDraftId() + ":" + cardId;
+                Optional<Listing> existing = listingRepository.findByOriginDraftId(compositeOriginDraftId);
+                if (existing.isPresent()) {
+                    Long listingId = existing.get().getId();
+                    List<PropertyMediaAsset> assets = mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listingId);
+                    for (PropertyMediaAsset asset : assets) {
+                        String mediaId = asset.getUploadRequestId() != null && !asset.getUploadRequestId().isBlank()
+                                ? asset.getUploadRequestId()
+                                : "asset-" + asset.getId();
+                        String contentType = asset.getMediaType() == MediaType.VIDEO_WALKTHROUGH ? "video/mp4" : "image/webp";
+                        mediaList.add(new DraftMediaDTO(
+                                mediaId,
+                                draft.getDraftId(),
+                                cardId,
+                                asset.getCaption() != null ? asset.getCaption() : "photo",
+                                null,
+                                contentType,
+                                asset.getRoomTag() != null ? asset.getRoomTag().name() : "LIVING_ROOM",
+                                Boolean.TRUE.equals(asset.getIsPrimaryCover()),
+                                asset.getMediaUrl(),
+                                asset.getUploadedAt() != null ? asset.getUploadedAt() : LocalDateTime.now()
+                        ));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Non-fatal error reconstructing media from permanent assets for draft [{}]: {}", draft.getDraftId(), e.getMessage());
+        }
     }
 
     @Transactional
@@ -693,6 +997,34 @@ public class PropertyDraftService {
                 draft.setPublishedPropertyId(listingId);
             }
 
+            // Safeguard against premature batch draft tombstoning:
+            // If this is a BATCH draft and its payload still contains unpublished cards, refuse to wipe payload.
+            if ("BATCH".equalsIgnoreCase(draft.getDraftType())) {
+                try {
+                    String payload = draft.getPayload();
+                    if (payload != null && !payload.isBlank() && !"{}".equals(payload.trim())) {
+                        JsonNode root = objectMapper.readTree(payload);
+                        if (root.has("stagedCards") && root.get("stagedCards").isArray()) {
+                            ArrayNode cards = (ArrayNode) root.get("stagedCards");
+                            int unpublishedCount = 0;
+                            for (JsonNode c : cards) {
+                                boolean hasPubId = c.has("publishedId") && !c.get("publishedId").isNull();
+                                if (!hasPubId) {
+                                    unpublishedCount++;
+                                }
+                            }
+                            if (unpublishedCount > 0) {
+                                log.warn("Refusing premature PUBLISHED tombstone for BATCH draft [{}] because {} unpublished cards remain in payload.",
+                                        draftId, unpublishedCount);
+                                return;
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Non-fatal error inspecting batch payload during tombstone verification for draft [{}]: {}", draftId, e.getMessage());
+                }
+            }
+
             // 1. Purge all staged media files belonging to this draft from object storage
             List<PropertyDraftMedia> mediaList = draftMediaRepository.findAllByDraftIdAndAdminId(draftId, cleanAdminId);
             for (PropertyDraftMedia media : mediaList) {
@@ -700,16 +1032,32 @@ public class PropertyDraftService {
             }
             draftMediaRepository.deleteAllByDraftIdAndAdminId(draftId, cleanAdminId);
 
-            // 2. Mark draft record as lightweight PUBLISHED tombstone, wiping payload to free storage
+            // 2. Mark draft record as lightweight PUBLISHED tombstone, wiping raw payload but retaining minimal completion summary
+            ObjectNode tombstonePayload = objectMapper.createObjectNode();
+            try {
+                String existingPayload = draft.getPayload();
+                if (existingPayload != null && !existingPayload.isBlank() && !"{}".equals(existingPayload.trim())) {
+                    JsonNode existingRoot = objectMapper.readTree(existingPayload);
+                    if (existingRoot.has("completedListings") && existingRoot.get("completedListings").isArray()) {
+                        tombstonePayload.set("completedListings", existingRoot.get("completedListings"));
+                    }
+                }
+            } catch (Exception ignored) {}
+
             draft.setStatus("PUBLISHED");
-            draft.setPayload("{}");
+            draft.setPayload(tombstonePayload.toString());
             draft.setItemCount(0);
             draft.setUpdatedAt(LocalDateTime.now());
             draftRepository.save(draft);
 
             activeDraftCache.remove(cleanAdminId + ":" + draftId);
-            log.info("Converted draft [{}] into PUBLISHED tombstone linked to listing #{} and cleaned {} staged media items for admin [{}]",
-                    draftId, draft.getPublishedPropertyId(), mediaList.size(), cleanAdminId);
+            if ("BATCH".equalsIgnoreCase(draft.getDraftType())) {
+                log.info("Converted completed BATCH draft [{}] into PUBLISHED tombstone (all properties published) and cleaned {} staged media items for admin [{}]",
+                        draftId, mediaList.size(), cleanAdminId);
+            } else {
+                log.info("Converted draft [{}] into PUBLISHED tombstone linked to listing #{} and cleaned {} staged media items for admin [{}]",
+                        draftId, draft.getPublishedPropertyId(), mediaList.size(), cleanAdminId);
+            }
         } catch (EntityNotFoundException e) {
             log.debug("Draft [{}] was already cleaned up", draftId);
         } catch (IllegalArgumentException | IllegalStateException e) {

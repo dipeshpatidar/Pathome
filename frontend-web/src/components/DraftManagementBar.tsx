@@ -14,7 +14,8 @@ import {
   FileText,
   X,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  ShieldAlert
 } from 'lucide-react';
 import { DraftSummary } from '../services/draftService';
 
@@ -31,6 +32,7 @@ interface DraftManagementBarProps {
   onSelectDraft: (draftId: string) => void;
   onStartNewDraft: () => void;
   onDiscardDraft: (draftId: string) => Promise<void> | void;
+  onDiscardDrafts?: (draftIds: string[]) => Promise<{ succeeded: string[]; failed: string[]; isAuthError?: boolean }>;
   onResolveConflictKeepLocal?: () => void;
   onResolveConflictReloadServer?: () => void;
   compact?: boolean;
@@ -71,6 +73,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
   onSelectDraft,
   onStartNewDraft,
   onDiscardDraft,
+  onDiscardDrafts,
   onResolveConflictKeepLocal,
   onResolveConflictReloadServer,
   compact = false,
@@ -79,10 +82,21 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [draftToDiscard, setDraftToDiscard] = useState<DraftSummary | null>(null);
   const [isDiscarding, setIsDiscarding] = useState(false);
+  const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
+  const [bulkDiscardDialogOpen, setBulkDiscardDialogOpen] = useState(false);
+  const [isBulkDiscarding, setIsBulkDiscarding] = useState(false);
+  const [bulkDiscardFeedback, setBulkDiscardFeedback] = useState<{
+    type: 'success' | 'partial' | 'error';
+    message: string;
+  } | null>(null);
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const mobileSelectAllRef = useRef<HTMLInputElement>(null);
+  const keepBulkDraftsBtnRef = useRef<HTMLButtonElement>(null);
   const [dropdownCoords, setDropdownCoords] = useState<{ top: number; right: number } | null>(null);
   const dropdownButtonRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const keepDraftBtnRef = useRef<HTMLButtonElement>(null);
+  const [tappedTooltipId, setTappedTooltipId] = useState<string | null>(null);
 
   // Responsive breakpoint tracking: <640px is mobile bottom sheet, >=640px is desktop/tablet popover
   const [isMobile, setIsMobile] = useState<boolean>(() => {
@@ -229,6 +243,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
     setIsDiscarding(true);
     try {
       await onDiscardDraft(draftToDiscard.draftId);
+      setSelectedDraftIds((prev) => prev.filter((id) => id !== draftToDiscard.draftId));
       setDraftToDiscard(null);
       setIsDropdownOpen(false);
     } catch {
@@ -238,11 +253,262 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
     }
   };
 
+  // PUBLISHING / interrupted drafts are excluded from bulk selection for safety
+  const isDraftEligible = useCallback((draft: DraftSummary): boolean => {
+    return draft.status !== 'PUBLISHING';
+  }, []);
+
+  const eligibleDrafts = drafts.filter(isDraftEligible);
+  const selectedEligibleCount = selectedDraftIds.filter((id) =>
+    eligibleDrafts.some((d) => d.draftId === id)
+  ).length;
+  const isAllSelected = eligibleDrafts.length > 0 && selectedEligibleCount === eligibleDrafts.length;
+  const isIndeterminate = selectedEligibleCount > 0 && selectedEligibleCount < eligibleDrafts.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = isIndeterminate;
+    }
+    if (mobileSelectAllRef.current) {
+      mobileSelectAllRef.current.indeterminate = isIndeterminate;
+    }
+  }, [isIndeterminate]);
+
+  // Clean stale selection IDs if draft list changes or draft was deleted
+  useEffect(() => {
+    setSelectedDraftIds((prev) =>
+      prev.filter((id) => drafts.some((d) => d.draftId === id && isDraftEligible(d)))
+    );
+  }, [drafts, isDraftEligible]);
+
+  // Reset selection and dialog when closing dropdown
+  useEffect(() => {
+    if (!isDropdownOpen) {
+      setSelectedDraftIds([]);
+      setBulkDiscardDialogOpen(false);
+      setBulkDiscardFeedback(null);
+      setTappedTooltipId(null);
+    }
+  }, [isDropdownOpen]);
+
+  // Auto-dismiss tapped tooltip after delay
+  useEffect(() => {
+    if (!tappedTooltipId) return;
+    const timer = setTimeout(() => setTappedTooltipId(null), 3500);
+    return () => clearTimeout(timer);
+  }, [tappedTooltipId]);
+
+  const handleToggleSelect = (draftId: string) => {
+    setSelectedDraftIds((prev) =>
+      prev.includes(draftId) ? prev.filter((id) => id !== draftId) : [...prev, draftId]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedDraftIds([]);
+    } else {
+      setSelectedDraftIds(eligibleDrafts.map((d) => d.draftId));
+    }
+  };
+
+  // Robust viewport modal for bulk discard: lock background page scrolling & support Escape
+  useEffect(() => {
+    if (!bulkDiscardDialogOpen) return;
+    const scrollY = window.scrollY;
+    const originalOverflow = document.body.style.overflow;
+    const originalPosition = document.body.style.position;
+    const originalTop = document.body.style.top;
+    const originalWidth = document.body.style.width;
+
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isBulkDiscarding) {
+        setBulkDiscardDialogOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    const timer = setTimeout(() => {
+      keepBulkDraftsBtnRef.current?.focus();
+    }, 50);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+      document.body.style.position = originalPosition;
+      document.body.style.top = originalTop;
+      document.body.style.width = originalWidth;
+      window.scrollTo(0, scrollY);
+    };
+  }, [bulkDiscardDialogOpen, isBulkDiscarding]);
+
+  const handleExecuteBulkDiscard = async () => {
+    if (selectedDraftIds.length === 0 || isBulkDiscarding) return;
+    setIsBulkDiscarding(true);
+    setBulkDiscardFeedback(null);
+
+    try {
+      let result: { succeeded: string[]; failed: string[]; isAuthError?: boolean };
+      if (onDiscardDrafts) {
+        result = await onDiscardDrafts(selectedDraftIds);
+      } else {
+        const succeeded: string[] = [];
+        const failed: string[] = [];
+        let authErr = false;
+        for (const id of selectedDraftIds) {
+          try {
+            await onDiscardDraft(id);
+            succeeded.push(id);
+          } catch (err: any) {
+            if (err?.status === 401 || err?.message === 'Your session has ended. Please sign in again to continue.') {
+              authErr = true;
+            }
+            failed.push(id);
+            if (authErr) break;
+          }
+        }
+        result = { succeeded, failed, isAuthError: authErr };
+      }
+
+      if (result.isAuthError) {
+        setBulkDiscardFeedback({
+          type: 'error',
+          message: 'Your session has ended. Please sign in again to continue.'
+        });
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('pathome_session_expired'));
+        }
+        return;
+      }
+
+      if (result.failed.length === 0) {
+        setSelectedDraftIds([]);
+        setBulkDiscardDialogOpen(false);
+      } else if (result.succeeded.length > 0) {
+        setSelectedDraftIds(result.failed);
+        setBulkDiscardFeedback({
+          type: 'partial',
+          message: `${result.succeeded.length} discarded, ${result.failed.length} failed to discard.`
+        });
+      } else {
+        setBulkDiscardFeedback({
+          type: 'error',
+          message: 'Failed to discard selected drafts. Please try again.'
+        });
+      }
+    } catch (err: any) {
+      setBulkDiscardFeedback({
+        type: 'error',
+        message: err?.message || 'Failed to discard drafts.'
+      });
+    } finally {
+      setIsBulkDiscarding(false);
+    }
+  };
+
+  // VIEWPORT-ATTACHED BULK DISCARD MODAL (PORTAL TO DOCUMENT.BODY)
+  const renderBulkDiscardModal = () => {
+    if (typeof document === 'undefined') return null;
+    const count = selectedDraftIds.length;
+    return createPortal(
+      <AnimatePresence>
+        {bulkDiscardDialogOpen && (
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md min-h-[100dvh]"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bulk-discard-dialog-title"
+            onClick={() => {
+              if (!isBulkDiscarding) setBulkDiscardDialogOpen(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ duration: 0.15 }}
+              className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 p-6 text-white shadow-2xl relative my-auto max-h-[90dvh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 text-rose-400 mb-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5 text-rose-400" />
+                </div>
+                <div className="min-w-0">
+                  <h3 id="bulk-discard-dialog-title" className="text-base font-black font-['Outfit'] text-white">
+                    {count === 1 ? 'Discard 1 draft?' : `Discard ${count} drafts?`}
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">
+                    {count === 1 ? '1 draft selected' : `${count} drafts selected`}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed my-4">
+                These {count === 1 ? 'draft' : `${count} drafts`} and their recoverable staged media will be permanently discarded. Published properties will not be affected. This action cannot be undone.
+              </p>
+
+              {bulkDiscardFeedback && (
+                <div
+                  className={`p-3 rounded-xl mb-4 text-xs font-mono ${
+                    bulkDiscardFeedback.type === 'error'
+                      ? 'bg-rose-950/60 border border-rose-800 text-rose-300'
+                      : 'bg-amber-950/60 border border-amber-800 text-amber-300'
+                  }`}
+                >
+                  {bulkDiscardFeedback.message}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3 mt-6">
+                <button
+                  ref={keepBulkDraftsBtnRef}
+                  type="button"
+                  disabled={isBulkDiscarding}
+                  onClick={() => setBulkDiscardDialogOpen(false)}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition-colors disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-slate-500 cursor-pointer"
+                >
+                  Keep drafts
+                </button>
+                <button
+                  type="button"
+                  disabled={isBulkDiscarding}
+                  onClick={handleExecuteBulkDiscard}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-lg shadow-rose-900/30 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                >
+                  {isBulkDiscarding ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Discarding…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{count === 1 ? 'Discard 1 Draft' : `Discard ${count} Drafts`}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>,
+      document.body
+    );
+  };
+
   const currentDraftSummary = drafts.find((d) => d.draftId === currentDraftId);
 
-  // VIEWPORT-ATTACHED DISCARD MODAL (PORTAL TO DOCUMENT.BODY)
+  // INDIVIDUAL DRAFT DISCARD MODAL (PORTAL TO DOCUMENT.BODY)
   const renderDiscardModal = () => {
     if (typeof document === 'undefined') return null;
+    const isInterrupted = draftToDiscard?.status === 'PUBLISHING';
+
     return createPortal(
       <AnimatePresence>
         {draftToDiscard && (
@@ -263,40 +529,73 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
               className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 p-6 text-white shadow-2xl relative my-auto max-h-[90dvh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center gap-3 text-rose-400 mb-3">
-                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
-                  <Trash2 className="w-5 h-5 text-rose-400" />
+              <div className="flex items-center gap-3 mb-3">
+                <div
+                  className={`w-10 h-10 rounded-2xl ${
+                    isInterrupted
+                      ? 'bg-amber-500/10 border border-amber-500/20 text-amber-400'
+                      : 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+                  } flex items-center justify-center shrink-0`}
+                >
+                  {isInterrupted ? (
+                    <AlertTriangle className="w-5 h-5 text-amber-400" />
+                  ) : (
+                    <Trash2 className="w-5 h-5 text-rose-400" />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <h3 id="discard-draft-dialog-title" className="text-base font-black font-['Outfit'] text-white">
-                    Discard this draft?
+                    {isInterrupted ? 'Discard interrupted draft?' : 'Discard this draft?'}
                   </h3>
-                  <p className="text-xs text-slate-400 font-mono truncate">
-                    {draftToDiscard.titleSummary || 'Untitled Draft'}
-                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {isInterrupted && (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                        Publishing interrupted
+                      </span>
+                    )}
+                    <p className="text-xs text-slate-400 font-mono truncate">
+                      {draftToDiscard.titleSummary || 'Untitled Draft'}
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              <p className="text-xs text-slate-300 leading-relaxed my-4">
-                Your unpublished property details and temporary staged draft media will be permanently removed.
-                This action cannot be undone.
-              </p>
+              {isInterrupted ? (
+                <div className="text-xs text-slate-300 leading-relaxed my-4 space-y-2">
+                  <p>
+                    This draft has an interrupted publishing operation. Resume is recommended so Pathome can reconcile
+                    any property or media that may already have been published.
+                  </p>
+                  <p className="text-slate-400">
+                    Discarding will remove the recoverable draft state. Already-published listings will not be deleted.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-300 leading-relaxed my-4">
+                  Your unpublished property details and temporary staged draft media will be permanently removed.
+                  This action cannot be undone.
+                </p>
+              )}
 
-              <div className="flex items-center justify-end gap-3 mt-6">
+              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2.5 mt-6">
                 <button
-                  ref={keepDraftBtnRef}
+                  ref={isInterrupted ? undefined : keepDraftBtnRef}
                   type="button"
                   disabled={isDiscarding}
                   onClick={() => setDraftToDiscard(null)}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition-colors disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 transition-colors disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-slate-500 cursor-pointer"
                 >
-                  Keep draft
+                  {isInterrupted ? 'Cancel' : 'Keep draft'}
                 </button>
                 <button
                   type="button"
                   disabled={isDiscarding}
                   onClick={handleConfirmDiscard}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-lg shadow-rose-900/30 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  className={`min-h-[44px] px-4 py-2 rounded-xl ${
+                    isInterrupted
+                      ? 'bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-700/50'
+                      : 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-900/30'
+                  } text-xs font-bold transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer`}
                 >
                   {isDiscarding ? (
                     <>
@@ -304,16 +603,115 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                     </>
                   ) : (
                     <>
-                      <Trash2 className="w-3.5 h-3.5" /> Confirm discard
+                      <Trash2 className="w-3.5 h-3.5" /> {isInterrupted ? 'Discard Draft' : 'Confirm discard'}
                     </>
                   )}
                 </button>
+                {isInterrupted && (
+                  <button
+                    ref={keepDraftBtnRef}
+                    type="button"
+                    disabled={isDiscarding}
+                    onClick={() => {
+                      const targetId = draftToDiscard.draftId;
+                      setDraftToDiscard(null);
+                      setIsDropdownOpen(false);
+                      onSelectDraft(targetId);
+                    }}
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400 cursor-pointer"
+                  >
+                    <span>Keep & Resume</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-emerald-100" />
+                  </button>
+                )}
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>,
       document.body
+    );
+  };
+
+  // CHECKBOX RENDERING WITH ACCESSIBLE BULK DISCARD PROTECTION EXPLANATION
+  const renderDraftCheckbox = (draft: DraftSummary, isMobileLayout = false) => {
+    const isProtected = !isDraftEligible(draft);
+    const isSelected = selectedDraftIds.includes(draft.draftId);
+    const protectionText = 'Protected from bulk discard. Resume or discard this draft individually.';
+    const isTooltipTapped = tappedTooltipId === draft.draftId;
+
+    return (
+      <div
+        className="relative flex items-center shrink-0 group/checkbox"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (isProtected) {
+            setTappedTooltipId((prev) => (prev === draft.draftId ? null : draft.draftId));
+          }
+        }}
+      >
+        <label
+          className={`${
+            isMobileLayout ? 'min-w-[44px] min-h-[44px] -ml-1 rounded-xl' : 'p-1 rounded-lg'
+          } flex items-center justify-center ${
+            isProtected
+              ? 'cursor-not-allowed opacity-40'
+              : isMobileLayout
+              ? 'active:bg-slate-800 cursor-pointer'
+              : 'hover:bg-slate-800/80 cursor-pointer'
+          }`}
+          title={isProtected ? protectionText : undefined}
+          onClick={(e) => {
+            if (isProtected) {
+              e.preventDefault();
+              e.stopPropagation();
+              setTappedTooltipId((prev) => (prev === draft.draftId ? null : draft.draftId));
+            } else {
+              e.stopPropagation();
+            }
+          }}
+        >
+          <input
+            type="checkbox"
+            disabled={isProtected || isBulkDiscarding}
+            checked={isSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              if (!isProtected) {
+                handleToggleSelect(draft.draftId);
+              }
+            }}
+            aria-label={
+              isProtected
+                ? protectionText
+                : `Select draft ${draft.titleSummary || 'Untitled Draft'}`
+            }
+            aria-description={isProtected ? protectionText : undefined}
+            className={`w-4 h-4 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 ${
+              isProtected ? 'cursor-not-allowed pointer-events-none' : 'cursor-pointer'
+            } transition-colors`}
+          />
+        </label>
+
+        {/* Accessible Tooltip for Protected Drafts */}
+        {isProtected && (
+          <div
+            role="tooltip"
+            aria-hidden={!isTooltipTapped}
+            className={`absolute left-0 top-full mt-1.5 z-50 w-60 sm:w-64 p-2.5 rounded-xl bg-slate-950/95 border border-amber-500/40 text-amber-200 text-[11px] font-medium leading-snug shadow-2xl backdrop-blur-md transition-all duration-150 ${
+              isTooltipTapped
+                ? 'opacity-100 visible pointer-events-auto'
+                : 'opacity-0 invisible pointer-events-none group-hover/checkbox:opacity-100 group-hover/checkbox:visible'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-1.5">
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+              <span>{protectionText}</span>
+            </div>
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -364,6 +762,40 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                 </div>
               </div>
 
+              {/* SELECT ALL / BULK ACTION BAR */}
+              {eligibleDrafts.length > 0 && (
+                <div className="shrink-0 px-4 py-2 bg-slate-950/60 border-b border-slate-800/80 flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:text-white transition-colors">
+                    <input
+                      ref={mobileSelectAllRef}
+                      type="checkbox"
+                      checked={isAllSelected}
+                      disabled={isBulkDiscarding || eligibleDrafts.length === 0}
+                      onChange={handleToggleSelectAll}
+                      aria-label="Select all eligible drafts"
+                      className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 disabled:opacity-30 cursor-pointer"
+                    />
+                    <span className="font-semibold text-xs font-mono">
+                      {selectedDraftIds.length > 0
+                        ? `${selectedDraftIds.length} selected`
+                        : 'Select all'}
+                    </span>
+                  </label>
+
+                  {selectedDraftIds.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={isBulkDiscarding}
+                      onClick={() => setBulkDiscardDialogOpen(true)}
+                      className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition-colors active:scale-95 disabled:opacity-50 cursor-pointer focus:outline-none focus:ring-2 focus:ring-rose-500"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Discard ({selectedDraftIds.length})</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* SCROLLABLE DRAFT LIST (FLEX-1 OVERFLOW-Y-AUTO) */}
               <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-2 divide-y divide-slate-800/60 min-h-0">
                 {isLoadingDrafts ? (
@@ -383,10 +815,13 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                     return (
                       <div
                         key={draft.draftId}
-                        className={`flex items-center justify-between gap-3 py-3 px-2 rounded-xl transition-colors ${
+                        className={`flex items-center justify-between gap-2.5 py-3 px-2 rounded-xl transition-colors ${
                           isCurrent ? 'bg-emerald-950/30' : 'active:bg-slate-800/50'
                         }`}
                       >
+                        {/* Checkbox for selection with protected state explanation */}
+                        {renderDraftCheckbox(draft, true)}
+
                         <div
                           className="min-w-0 flex-1 cursor-pointer"
                           onClick={() => {
@@ -518,6 +953,40 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
               </button>
             </div>
 
+            {/* SELECT ALL / BULK ACTION BAR */}
+            {eligibleDrafts.length > 0 && (
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-950/60 border-b border-slate-800/80 text-xs">
+                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:text-white transition-colors">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={isAllSelected}
+                    disabled={isBulkDiscarding || eligibleDrafts.length === 0}
+                    onChange={handleToggleSelectAll}
+                    aria-label="Select all eligible drafts"
+                    className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 disabled:opacity-30 cursor-pointer"
+                  />
+                  <span className="font-semibold text-xs font-mono">
+                    {selectedDraftIds.length > 0
+                      ? `${selectedDraftIds.length} selected`
+                      : 'Select all'}
+                  </span>
+                </label>
+
+                {selectedDraftIds.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isBulkDiscarding}
+                    onClick={() => setBulkDiscardDialogOpen(true)}
+                    className="min-h-[32px] px-3 py-1 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition-colors active:scale-95 disabled:opacity-50 cursor-pointer focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Discard Selected ({selectedDraftIds.length})</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             {isLoadingDrafts ? (
               <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
                 <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" /> Loading drafts…
@@ -536,10 +1005,13 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                   return (
                     <div
                       key={draft.draftId}
-                      className={`flex items-center justify-between gap-3 p-2.5 rounded-xl transition-colors ${
+                      className={`flex items-center justify-between gap-2.5 p-2.5 rounded-xl transition-colors ${
                         isCurrent ? 'bg-emerald-950/40 border border-emerald-800/60' : 'hover:bg-slate-800/60'
                       }`}
                     >
+                      {/* Checkbox for selection with protected state explanation */}
+                      {renderDraftCheckbox(draft, false)}
+
                       <div
                         className="min-w-0 flex-1 cursor-pointer"
                         onClick={() => {
@@ -678,6 +1150,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
 
         {renderDropdownContent()}
         {renderDiscardModal()}
+        {renderBulkDiscardModal()}
       </div>
     );
   }
@@ -796,6 +1269,7 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
 
       {renderDropdownContent()}
       {renderDiscardModal()}
+      {renderBulkDiscardModal()}
     </div>
   );
 };

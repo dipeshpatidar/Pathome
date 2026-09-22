@@ -24,9 +24,10 @@ import { useNotification } from '../context/NotificationContext';
 
 const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   try {
+    const savedToken = localStorage.getItem('pathome_auth_token');
     const savedRole = localStorage.getItem('pathome_role') as UserRole | null;
     const savedUserStr = localStorage.getItem('pathome_user');
-    if (savedRole && savedUserStr) {
+    if (savedToken && savedRole && savedUserStr) {
       const parsedUser = JSON.parse(savedUserStr);
       return { role: savedRole, user: parsedUser };
     }
@@ -785,13 +786,30 @@ export const Home: React.FC = () => {
     return () => window.removeEventListener('storage', handleCrossTabSync);
   }, [navigate]);
 
+  // 1b. SESSION EXPIRATION LISTENER (Triggered by 401 / expired token)
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setRole('GUEST');
+      setUser(null);
+      localStorage.removeItem('pathome_role');
+      localStorage.removeItem('pathome_user');
+      localStorage.removeItem('pathome_auth_token');
+      navigate('/', { replace: true });
+      setShowAuthModal(true);
+    };
+
+    window.addEventListener('pathome_session_expired', handleSessionExpired);
+    return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
+  }, [navigate]);
+
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
     const path = location.pathname.toLowerCase();
     const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm';
+    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
-    // GUARD CHECK 1: If user is logged out (no user session in memory or localStorage)
-    if (!user || role === 'GUEST') {
+    // GUARD CHECK 1: If user is logged out or lacks auth token on protected route
+    if (!user || role === 'GUEST' || (isProtectedRoute && !hasToken)) {
       if (isProtectedRoute) {
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
         setRole('GUEST');

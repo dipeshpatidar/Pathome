@@ -27,16 +27,36 @@ import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimi
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, ROOM_TAG_OPTIONS, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
 import { DraftManagementBar } from './DraftManagementBar';
-import { usePropertyDraft } from '../hooks/usePropertyDraft';
-import { draftService, DraftMedia } from '../services/draftService';
+import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
+import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
+import { countDetectedProperties } from '../utils/propertyPromptComposer';
 
 export interface StagedMediaItem {
   id: string;
-  file: File;
+  file?: File;
   previewUrl: string;
   roomTag: RoomTag;
   isCover: boolean;
+  originalFilename?: string;
+  fileSizeBytes?: number;
+  contentType?: string;
+  stagingStatus?: 'staging' | 'staged' | 'failed';
 }
+
+export const isMediaVideo = (item: StagedMediaItem): boolean => {
+  if (item.file?.type) return item.file.type.startsWith('video/');
+  if (item.contentType) return item.contentType.startsWith('video/');
+  if (item.originalFilename) return /\.(mp4|mov|webm|m4v|3gp)$/i.test(item.originalFilename);
+  return false;
+};
+
+export const getMediaFilename = (item: StagedMediaItem): string => {
+  return item.file?.name || item.originalFilename || 'Media file';
+};
+
+export const getMediaFileSize = (item: StagedMediaItem): number => {
+  return item.file?.size ?? item.fileSizeBytes ?? 0;
+};
 
 interface StagedProperty {
   id: string;
@@ -73,6 +93,9 @@ interface StagedProperty {
   parserMissingFields: string[];
   conflicts: string[];
   appliedAmendments: string[];
+  floor?: number | null;
+  totalFloors?: number | null;
+  preferredTenants?: string[];
   mediaUrls: string[];
   stagedMedia: StagedMediaItem[];
   localPhotos: File[];
@@ -93,11 +116,13 @@ interface BatchPropertyIngestionStudioProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (publishedCount: number) => void;
+  onPartialSuccess?: (publishedCount: number, remainingCount: number) => void;
   embedded?: boolean;
   initialDetails?: string;
   initialMediaFiles?: File[];
   initialDraftId?: string | null;
   onSwitchToSingleDraft?: (draftId: string) => void;
+  onAlreadyPublished?: (detail: DraftDetail, count: number, listings?: CompletedListingSummary[]) => void;
 }
 
 const COLOR_PALETTES = [
@@ -204,6 +229,12 @@ const validateCard = (card: StagedProperty): StagedProperty => {
   if (!isProvided(card.type)) missing.push('Property type');
   if (!isProvided(card.depositVal) || !/\d/.test(card.depositVal)) missing.push('Security deposit');
   if (card.conflicts.length > 0) missing.push('Resolve conflicting details');
+  if (typeof card.floor === 'number' && card.floor < 0) missing.push('Floor must be 0 (Ground) or greater');
+  if (typeof card.totalFloors === 'number' && card.totalFloors < 1) missing.push('Total floors must be at least 1');
+  const isLandedType = ['PLOT', 'LAND', 'HOUSE', 'VILLA'].includes(String(card.type || '').toUpperCase());
+  if (!isLandedType && typeof card.floor === 'number' && typeof card.totalFloors === 'number' && card.floor > card.totalFloors) {
+    missing.push('Floor cannot exceed total floors');
+  }
 
   return {
     ...card,
@@ -353,6 +384,89 @@ const AvailabilityEditor: React.FC<AvailabilityEditorProps> = ({
   );
 };
 
+const PREFERRED_TENANT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'FAMILY', label: 'Family' },
+  { value: 'WORKING_PROFESSIONALS', label: 'Working Professionals' },
+  { value: 'BACHELORS', label: 'Bachelors' },
+  { value: 'STUDENTS', label: 'Students' },
+  { value: 'ANY', label: 'Any / No Preference' }
+];
+
+interface PreferredTenantEditorProps {
+  selected: string[];
+  onChange: (updated: string[]) => void;
+  className?: string;
+}
+
+const PreferredTenantEditor: React.FC<PreferredTenantEditorProps> = ({
+  selected = [],
+  onChange,
+  className = ''
+}) => {
+  const toggleOption = (val: string) => {
+    let next: string[];
+    if (val === 'ANY') {
+      if (selected.includes('ANY')) {
+        next = [];
+      } else {
+        next = ['ANY'];
+      }
+    } else {
+      const withoutAny = selected.filter((s) => s !== 'ANY');
+      if (withoutAny.includes(val)) {
+        next = withoutAny.filter((s) => s !== val);
+      } else {
+        next = [...withoutAny, val];
+      }
+    }
+    onChange(next);
+  };
+
+  const hasSelection = Array.isArray(selected) && selected.length > 0;
+  const accent = hasSelection ? 'bg-emerald-400' : 'bg-amber-400';
+  const cardBorder = hasSelection
+    ? 'border-slate-700/80 bg-slate-900/90 hover:border-emerald-500/40'
+    : 'border-dashed border-slate-700/90 bg-slate-950/35 hover:border-amber-400/45';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+      className={`relative overflow-hidden rounded-2xl border p-3 transition-colors duration-200 ${cardBorder} ${className}`}
+    >
+      <span
+        aria-label={hasSelection ? 'Preferred tenant specified' : 'No tenant preference specified'}
+        title={hasSelection ? 'Preferred tenant specified' : 'No tenant preference specified'}
+        className={`absolute inset-x-3 top-0 h-px ${accent}`}
+      />
+      <label className="mb-2 block text-[11px] font-semibold tracking-[0.04em] text-slate-400">
+        Preferred tenant
+      </label>
+      <div className="flex flex-wrap gap-1.5 pt-0.5">
+        {PREFERRED_TENANT_OPTIONS.map((opt) => {
+          const isSelected = Array.isArray(selected) && selected.includes(opt.value);
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => toggleOption(opt.value)}
+              className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-all ${
+                isSelected
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                  : 'bg-slate-800/60 text-slate-400 border border-slate-700/50 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+};
+
 export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudioProps> = ({
   isOpen,
   onClose,
@@ -361,11 +475,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   initialDetails = '',
   initialMediaFiles = [],
   initialDraftId = null,
-  onSwitchToSingleDraft
+  onSwitchToSingleDraft,
+  onPartialSuccess,
+  onAlreadyPublished
 }) => {
   const { showErrorDialog, notifyWarning } = useNotification();
   const [rawPrompts, setRawPrompts] = useState<string>('');
   const [stagedCards, setStagedCards] = useState<StagedProperty[]>([]);
+  const [completedListings, setCompletedListings] = useState<Array<{ cardId: string; listingId: number; title: string }>>([]);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isPublishing, setIsPublishing] = useState<boolean>(false);
   const [publishingCardId, setPublishingCardId] = useState<string | null>(null);
@@ -410,13 +527,21 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     };
   }, [revokeCardMediaUrls]);
 
+  const pendingSingleMediaRef = useRef<DraftMedia[]>([]);
+
   // Admin Draft & Recovery System for Batch Upload
-  const handleRestoreBatchDraft = useCallback(async (payload: any) => {
+  const handleRestoreBatchDraft = useCallback(async (payload: any, media?: DraftMedia[]) => {
     if (!payload) return;
     if (typeof payload.rawPrompts === 'string') {
       rawPromptsRef.current = payload.rawPrompts;
       parsedPromptsRef.current = payload.rawPrompts;
       setRawPrompts(payload.rawPrompts);
+    } else if (typeof payload.newBhkLabel === 'string' && !rawPromptsRef.current.trim()) {
+      const transitionText = payload.newBhkLabel;
+      rawPromptsRef.current = transitionText;
+      parsedPromptsRef.current = transitionText;
+      setRawPrompts(transitionText);
+      void parseBatchDetails(transitionText);
     }
     if (typeof payload.detectedCount === 'number') {
       setDetectedCount(payload.detectedCount);
@@ -427,10 +552,107 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     if (payload.mobileWorkspaceView) {
       setMobileWorkspaceView(payload.mobileWorkspaceView);
     }
+    if (Array.isArray(payload.completedListings)) {
+      setCompletedListings(payload.completedListings);
+    }
+    if (Array.isArray(media)) {
+      pendingSingleMediaRef.current = media.filter((m) => !m.cardId);
+    }
     if (Array.isArray(payload.stagedCards) && payload.stagedCards.length > 0) {
-      setStagedCards(payload.stagedCards);
-      if (!payload.activeCardId && payload.stagedCards[0]) {
-        setActiveCardId(payload.stagedCards[0].id);
+      const serverMedia = Array.isArray(media) ? media : [];
+      const restoredCards: StagedProperty[] = payload.stagedCards.map((card: StagedProperty, idx: number) => {
+        const cardMedia = serverMedia.filter((m) => m.cardId === card.id || (!m.cardId && idx === 0));
+        const existingStaged = Array.isArray(card.stagedMedia) ? card.stagedMedia : [];
+
+        // Build composite media items from serverMedia and saved card.stagedMedia
+        const mergedMediaMap = new Map<string, StagedMediaItem>();
+
+        // 1. Add saved staged media metadata from payload
+        existingStaged.forEach((item) => {
+          mergedMediaMap.set(item.id, {
+            ...item,
+            originalFilename: item.originalFilename || item.file?.name || '',
+            fileSizeBytes: item.fileSizeBytes || item.file?.size || 0,
+            previewUrl: item.previewUrl || ''
+          });
+        });
+
+        // 2. Overlay server media records with payload-authoritative metadata precedence
+        cardMedia.forEach((m) => {
+          const prev = mergedMediaMap.get(m.mediaId);
+          const isVideo = isMediaVideo({
+            id: m.mediaId,
+            file: prev?.file,
+            previewUrl: '',
+            roomTag: (prev?.roomTag || m.roomTag || 'LIVING_ROOM') as RoomTag,
+            isCover: false,
+            originalFilename: m.originalFilename || prev?.originalFilename || '',
+            contentType: m.contentType || prev?.contentType || ''
+          });
+          const candidateCover = typeof prev?.isCover === 'boolean'
+            ? prev.isCover
+            : typeof m.isCover === 'boolean'
+              ? m.isCover
+              : false;
+
+          mergedMediaMap.set(m.mediaId, {
+            id: m.mediaId,
+            file: prev?.file,
+            previewUrl: m.previewUrl || prev?.previewUrl || '',
+            roomTag: prev?.roomTag || m.roomTag || 'LIVING_ROOM',
+            isCover: !isVideo && candidateCover,
+            originalFilename: m.originalFilename || prev?.originalFilename || '',
+            fileSizeBytes: m.fileSizeBytes || prev?.fileSizeBytes || 0,
+            contentType: m.contentType || prev?.contentType || 'image/jpeg',
+            stagingStatus: 'staged'
+          });
+        });
+
+        const stagedMedia = Array.from(mergedMediaMap.values());
+        return {
+          ...card,
+          floor: typeof card.floor === 'number' ? card.floor : null,
+          totalFloors: typeof card.totalFloors === 'number' ? card.totalFloors : null,
+          preferredTenants: Array.isArray(card.preferredTenants) ? card.preferredTenants : [],
+          stagedMedia,
+          localPhotos: stagedMedia.map((m) => m.file).filter(Boolean) as File[],
+          localPhotoPreviews: stagedMedia.map((m) => m.previewUrl).filter(Boolean)
+        };
+      });
+
+      setStagedCards(restoredCards);
+      if (!payload.activeCardId && restoredCards[0]) {
+        setActiveCardId(restoredCards[0].id);
+      }
+
+      // Background binary File download from B2 staging to reconstruct File objects
+      if (serverMedia.length > 0) {
+        draftService.restoreMediaFiles(serverMedia).then((restored) => {
+          if (restored.byMediaId && restored.byMediaId.size > 0) {
+            setStagedCards((current) =>
+              current.map((c) => {
+                let changed = false;
+                const updatedMedia = (c.stagedMedia || []).map((item) => {
+                  const matchingFile = restored.byMediaId.get(item.id);
+                  if (matchingFile && !item.file) {
+                    changed = true;
+                    return { ...item, file: matchingFile, previewUrl: URL.createObjectURL(matchingFile) };
+                  }
+                  return item;
+                });
+                if (!changed) return c;
+                return {
+                  ...c,
+                  stagedMedia: updatedMedia,
+                  localPhotos: updatedMedia.map((m) => m.file).filter(Boolean) as File[],
+                  localPhotoPreviews: updatedMedia.map((m) => m.previewUrl).filter(Boolean)
+                };
+              })
+            );
+          }
+        }).catch((err) => {
+          console.warn('Background batch media restoration notice:', err);
+        });
       }
     }
   }, []);
@@ -438,6 +660,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const handleClearBatchDraftState = useCallback(() => {
     stagedCardsRef.current.forEach(revokeCardMediaUrls);
     setStagedCards([]);
+    setCompletedListings([]);
     setRawPrompts('');
     rawPromptsRef.current = '';
     parsedPromptsRef.current = '';
@@ -446,20 +669,39 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     setMobileWorkspaceView('descriptions');
   }, [revokeCardMediaUrls]);
 
+  const handleBatchDraftAlreadyPublished = useCallback((
+    detail: DraftDetail,
+    completedCount: number,
+    completedListings: CompletedListingSummary[]
+  ) => {
+    if (onAlreadyPublished) {
+      onAlreadyPublished(detail, completedCount, completedListings);
+    }
+    onClose();
+  }, [onAlreadyPublished, onClose]);
+
   const batchDraft = usePropertyDraft({
     draftType: 'BATCH',
     initialDraftId,
     onRestoreDraft: handleRestoreBatchDraft,
-    onClearDraftState: handleClearBatchDraftState
+    onClearDraftState: handleClearBatchDraftState,
+    onDraftAlreadyPublished: handleBatchDraftAlreadyPublished
   });
 
   useEffect(() => {
-    const hasMeaningfulWork = Boolean(rawPrompts.trim() || stagedCards.length > 0);
+    if (isPublishing) return;
+    const hasMeaningfulWork = Boolean(rawPrompts.trim() || stagedCards.length > 0 || completedListings.length > 0);
     if (!hasMeaningfulWork) return;
 
-    const summary = stagedCards.length > 0
-      ? `Batch (${stagedCards.length} ${stagedCards.length === 1 ? 'property' : 'properties'})`
-      : `Batch draft (${detectedCount || 1} ${detectedCount === 1 ? 'listing' : 'listings'})`;
+    const remainingCount = stagedCards.length;
+    let summary = '';
+    if (completedListings.length > 0) {
+      summary = remainingCount === 1 ? 'Batch — 1 property remaining' : `Batch — ${remainingCount} properties remaining`;
+    } else if (stagedCards.length > 0) {
+      summary = `Batch (${stagedCards.length} ${stagedCards.length === 1 ? 'property' : 'properties'})`;
+    } else {
+      summary = `Batch draft (${detectedCount || 1} ${detectedCount === 1 ? 'listing' : 'listings'})`;
+    }
 
     batchDraft.scheduleAutosave(
       {
@@ -467,23 +709,33 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         detectedCount,
         activeCardId,
         mobileWorkspaceView,
+        completedListings,
         stagedCards: stagedCards.map((card) => ({
           ...card,
           localPhotos: [],
           localPhotoPreviews: [],
-          stagedMedia: (card.stagedMedia || []).map((m) => ({
-            id: m.id,
-            roomTag: m.roomTag,
-            isCover: m.isCover,
-            originalFilename: m.file?.name || '',
-            fileSizeBytes: m.file?.size || 0
-          }))
+          stagedMedia: (card.stagedMedia || [])
+            // Only persist media with confirmed durable B2 staging.
+            // 'staging' items (upload in flight or silently failed) must not become
+            // ghost payload entries that cannot be resolved after a hard refresh.
+            // When B2 staging succeeds, setStagedCards flips status to 'staged' and
+            // the stagedCards dependency re-fires this autosave effect, guaranteeing
+            // the item is captured in the next autosave cycle.
+            .filter((m) => m.stagingStatus === 'staged')
+            .map((m) => ({
+              id: m.id,
+              roomTag: m.roomTag,
+              isCover: m.isCover,
+              originalFilename: getMediaFilename(m),
+              fileSizeBytes: getMediaFileSize(m),
+              contentType: m.contentType || m.file?.type || 'image/jpeg'
+            }))
         }))
       },
       summary,
       stagedCards.length || detectedCount || 1
     );
-  }, [rawPrompts, stagedCards, detectedCount, activeCardId, mobileWorkspaceView, batchDraft.scheduleAutosave]);
+  }, [rawPrompts, stagedCards, completedListings, detectedCount, activeCardId, mobileWorkspaceView, batchDraft.scheduleAutosave, isPublishing]);
 
   const updateRawPrompts = useCallback((details: string) => {
     rawPromptsRef.current = details;
@@ -529,16 +781,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     };
   }, [isOpen, embedded]);
 
-  // Live Delimiter Property Counting
+  // Live Delimiter Property Counting (two-tier detection matching backend PropertyParserService)
   useEffect(() => {
-    if (!rawPrompts.trim()) {
-      setDetectedCount(0);
-      return;
-    }
-    const chunks = rawPrompts
-      .split(/(?:\r?\n\s*\r?\n+|---|(?:\b(?:next\s*property|next\s*flat)\b)|^(?:\d+[\)\.]|#\d+)\s+)/gmi)
-      .filter((c) => c && c.trim().length >= 8);
-    setDetectedCount(Math.max(1, chunks.length));
+    setDetectedCount(countDetectedProperties(rawPrompts));
   }, [rawPrompts]);
 
   // Initialize Web Speech Recognition
@@ -742,6 +987,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           furnishingStatus: toEditableValue(dto.furnishingStatus),
           vastuFacing: toEditableValue(dto.vastuFacing),
           amenities: Array.isArray(dto.amenities) ? dto.amenities.filter(isProvided) : [],
+          floor: typeof dto.floor === 'number' ? dto.floor : null,
+          totalFloors: typeof dto.totalFloors === 'number' ? dto.totalFloors : null,
+          preferredTenants: Array.isArray(dto.preferredTenants) ? dto.preferredTenants : [],
           description: toEditableValue(dto.description),
           parserMissingFields: Array.isArray(dto.missingFields) ? dto.missingFields : [],
           conflicts: Array.isArray(dto.conflicts) ? dto.conflicts : [],
@@ -764,6 +1012,25 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       if (requestId !== parseRequestIdRef.current || rawPromptsRef.current !== details) return;
 
       parsedPromptsRef.current = details;
+      if (pendingSingleMediaRef.current.length > 0 && mapped.length > 0) {
+        const firstCardId = mapped[0].id;
+        const unassignedServerMedia = pendingSingleMediaRef.current;
+        pendingSingleMediaRef.current = [];
+        const activeDraftId = initialDraftId || batchDraft.ensureDraftId();
+        void draftService.reassignCardMedia(activeDraftId, firstCardId);
+
+        mapped[0].stagedMedia = unassignedServerMedia.map((m) => ({
+          id: m.mediaId,
+          previewUrl: m.previewUrl || '',
+          roomTag: m.roomTag || 'LIVING_ROOM',
+          isCover: Boolean(m.isCover),
+          originalFilename: m.originalFilename || '',
+          fileSizeBytes: m.fileSizeBytes || 0,
+          contentType: m.contentType || 'image/jpeg',
+          stagingStatus: 'staged'
+        }));
+        mapped[0].localPhotoPreviews = mapped[0].stagedMedia.map((m) => m.previewUrl).filter(Boolean);
+      }
       setStagedCards(mapped);
       if (mapped.length > 0) {
         setActiveCardId(mapped[0].id);
@@ -812,34 +1079,44 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       }
     }
 
+    const draftId = batchDraft.ensureDraftId();
+    const targetCard = stagedCardsRef.current.find((c) => c.id === cardId);
+    const currentMedia: StagedMediaItem[] = targetCard?.stagedMedia || [];
+    const hasExistingCover = currentMedia.some((m) => m.isCover);
+    const newItems: StagedMediaItem[] = [];
+
+    for (let i = 0; i < compressedFiles.length; i++) {
+      const file = compressedFiles[i];
+      const isVideo = file.type.startsWith('video/');
+      const smartTag = DEFAULT_SMART_TAG_SEQUENCE[(currentMedia.length + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
+      const willBeCover = !hasExistingCover && !isVideo && !newItems.some((item) => item.isCover);
+      const mediaId = (file as any)?.draftMediaId || `dm-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}_${i}`;
+      (file as any).draftMediaId = mediaId;
+
+      newItems.push({
+        id: mediaId,
+        file,
+        previewUrl: previews[i],
+        roomTag: smartTag,
+        isCover: willBeCover,
+        originalFilename: file.name,
+        fileSizeBytes: file.size,
+        contentType: file.type,
+        stagingStatus: 'staging'
+      });
+    }
+
+    // 1. Pure state updater: synchronously register staging items
     setStagedCards((prev) =>
       prev.map((c) => {
         if (c.id !== cardId) return c;
-        const currentMedia: StagedMediaItem[] = c.stagedMedia || [];
-        const hasExistingCover = currentMedia.some((m) => m.isCover);
-        const newItems: StagedMediaItem[] = [];
-
-        for (let i = 0; i < compressedFiles.length; i++) {
-          const file = compressedFiles[i];
-          const isVideo = file.type.startsWith('video/');
-          const smartTag = DEFAULT_SMART_TAG_SEQUENCE[(currentMedia.length + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
-          const willBeCover = !hasExistingCover && !isVideo && !newItems.some((item) => item.isCover);
-
-          newItems.push({
-            id: `${cardId}_media_${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${i}`,
-            file,
-            previewUrl: previews[i],
-            roomTag: smartTag,
-            isCover: willBeCover
-          });
-        }
-
-        const combinedMedia = [...currentMedia, ...newItems];
+        const existingMedia = c.stagedMedia || [];
+        const combinedMedia = [...existingMedia, ...newItems];
 
         return {
           ...c,
           stagedMedia: combinedMedia,
-          localPhotos: combinedMedia.map((m) => m.file),
+          localPhotos: combinedMedia.map((m) => m.file).filter(Boolean) as File[],
           localPhotoPreviews: combinedMedia.map((m) => m.previewUrl),
           mediaUploadStatus: 'idle',
           mediaUploadProgress: 0,
@@ -848,6 +1125,46 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         };
       })
     );
+
+    // 2. Network side effects executed strictly OUTSIDE the React state updater (exactly once per item)
+    for (const item of newItems) {
+      const { id: mediaId, file, roomTag, isCover } = item;
+      if (!file) continue;
+      draftService.stageMedia(draftId, file, {
+        cardId,
+        roomTag,
+        isCover,
+        mediaId
+      }).then((staged) => {
+        if (staged?.mediaId) {
+          (file as any).draftMediaId = staged.mediaId;
+          setStagedCards((current) =>
+            current.map((card) => {
+              if (card.id !== cardId) return card;
+              return {
+                ...card,
+                stagedMedia: (card.stagedMedia || []).map((m) =>
+                  m.id === mediaId ? { ...m, stagingStatus: 'staged' } : m
+                )
+              };
+            })
+          );
+        }
+      }).catch((err) => {
+        console.warn(`Draft media staging notice for card [${cardId}]:`, err);
+        setStagedCards((current) =>
+          current.map((card) => {
+            if (card.id !== cardId) return card;
+            return {
+              ...card,
+              stagedMedia: (card.stagedMedia || []).map((m) =>
+                m.id === mediaId ? { ...m, stagingStatus: 'failed' } : m
+              )
+            };
+          })
+        );
+      });
+    }
 
     if (preparationErrors.length > 0) {
       showErrorDialog({
@@ -858,7 +1175,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         details: preparationErrors.join(' • ')
       });
     }
-  }, [showErrorDialog]);
+  }, [batchDraft, showErrorDialog]);
 
   // Set cover photo for a specific staged card (only images can be cover, strictly per-card isolation)
   const handleSetCoverPhoto = (cardId: string, mediaId: string) => {
@@ -866,7 +1183,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       prev.map((card) => {
         if (card.id !== cardId) return card;
         const updatedMedia = (card.stagedMedia || []).map((m) => {
-          if (m.file.type.startsWith('video/')) return { ...m, isCover: false };
+          if (isMediaVideo(m)) return { ...m, isCover: false };
           return { ...m, isCover: m.id === mediaId };
         });
         return {
@@ -895,6 +1212,13 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   // Remove media item from a card with URL revocation and automatic cover fallback
   const handleRemoveStagedMedia = (cardId: string, mediaId: string) => {
+    const draftId = batchDraft.currentDraftId;
+    if (draftId && mediaId) {
+      draftService.deleteMedia(draftId, mediaId).catch((err) => {
+        console.warn('Non-fatal media deletion notice from staging:', err);
+      });
+    }
+
     setStagedCards((prev) =>
       prev.map((c) => {
         if (c.id !== cardId) return c;
@@ -909,7 +1233,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         let updated = remaining;
         // If removed item was cover, assign cover to first remaining eligible image
         if (target?.isCover && remaining.length > 0) {
-          const firstImgIdx = remaining.findIndex((m) => !m.file.type.startsWith('video/'));
+          const firstImgIdx = remaining.findIndex((m) => !isMediaVideo(m));
           if (firstImgIdx !== -1) {
             updated = remaining.map((m, idx) => ({
               ...m,
@@ -920,7 +1244,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         return {
           ...c,
           stagedMedia: updated,
-          localPhotos: updated.map((m) => m.file),
+          localPhotos: updated.map((m) => m.file).filter(Boolean) as File[],
           localPhotoPreviews: updated.map((m) => m.previewUrl),
           failedMediaFiles: c.failedMediaFiles.filter((file) => file !== target?.file),
           mediaUploadStatus: 'idle',
@@ -935,8 +1259,54 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     if (initialMediaAddedRef.current || initialMediaFiles.length === 0 || stagedCards.length === 0) return;
 
     initialMediaAddedRef.current = true;
+    if (initialDraftId) {
+      const firstCardId = stagedCards[0].id;
+      void draftService.reassignCardMedia(initialDraftId, firstCardId);
+
+      setStagedCards((current) =>
+        current.map((c) => {
+          if (c.id !== firstCardId) return c;
+          const currentMedia: StagedMediaItem[] = c.stagedMedia || [];
+          const existingIds = new Set(currentMedia.map((m) => m.id));
+          const newItems: StagedMediaItem[] = [];
+
+          for (let i = 0; i < initialMediaFiles.length; i++) {
+            const file = initialMediaFiles[i];
+            const isVideo = file.type.startsWith('video/');
+            const smartTag = DEFAULT_SMART_TAG_SEQUENCE[(currentMedia.length + i) % DEFAULT_SMART_TAG_SEQUENCE.length];
+            const willBeCover = !currentMedia.some((m) => m.isCover) && !isVideo && !newItems.some((m) => m.isCover);
+            const mediaId = (file as any)?.draftMediaId || `dm-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36)}_${i}`;
+            (file as any).draftMediaId = mediaId;
+
+            if (!existingIds.has(mediaId)) {
+              newItems.push({
+                id: mediaId,
+                file,
+                previewUrl: URL.createObjectURL(file),
+                roomTag: smartTag,
+                isCover: willBeCover,
+                originalFilename: file.name,
+                fileSizeBytes: file.size,
+                contentType: file.type,
+                stagingStatus: 'staged'
+              });
+            }
+          }
+
+          const combined = [...currentMedia, ...newItems];
+          return {
+            ...c,
+            stagedMedia: combined,
+            localPhotos: combined.map((m) => m.file).filter(Boolean) as File[],
+            localPhotoPreviews: combined.map((m) => m.previewUrl)
+          };
+        })
+      );
+      return;
+    }
+
     void attachMediaToCard(stagedCards[0].id, initialMediaFiles);
-  }, [attachMediaToCard, initialMediaFiles, stagedCards]);
+  }, [attachMediaToCard, initialDraftId, initialMediaFiles, stagedCards]);
 
   // Direct Clipboard Pasting (Cmd+V / Ctrl+V) onto Active Card
   const handleCardPaste = useCallback(
@@ -1006,6 +1376,28 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       };
       return validateCard(updated);
     }));
+  };
+
+  const handleFloorChange = (cardId: string, val: string) => {
+    const trimmed = val.trim().toLowerCase();
+    if (trimmed === '') {
+      handleUpdateField(cardId, 'floor', null);
+    } else if (trimmed === 'ground' || trimmed === 'g' || trimmed === '0') {
+      handleUpdateField(cardId, 'floor', 0);
+    } else {
+      const num = parseInt(trimmed, 10);
+      handleUpdateField(cardId, 'floor', Number.isNaN(num) ? null : num);
+    }
+  };
+
+  const handleTotalFloorsChange = (cardId: string, val: string) => {
+    const trimmed = val.trim();
+    if (trimmed === '') {
+      handleUpdateField(cardId, 'totalFloors', null);
+    } else {
+      const num = parseInt(trimmed, 10);
+      handleUpdateField(cardId, 'totalFloors', Number.isNaN(num) ? null : num);
+    }
   };
 
   const handleConfirmCard = (cardId: string, isConfirmed: boolean) => {
@@ -1085,8 +1477,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         if (abortController.signal.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
           const unstarted = items[nextIndex];
           if (unstarted) {
-            failedFiles.push(unstarted.file);
-            errors.push(`${unstarted.file.name} was interrupted because the network disconnected.`);
+            if (unstarted.file) failedFiles.push(unstarted.file);
+            const fname = getMediaFilename(unstarted);
+            errors.push(`${fname} was interrupted because the network disconnected.`);
           }
           nextIndex += 1;
           continue;
@@ -1095,13 +1488,43 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         const fileIndex = nextIndex;
         nextIndex += 1;
         const mediaItem = items[fileIndex];
-        const file = mediaItem.file;
+        let file = mediaItem.file;
+
+        if (!file && mediaItem.id) {
+          const draftId = batchDraft.currentDraftId;
+          if (draftId) {
+            try {
+              const streamUrl = draftService.getMediaStreamUrl(draftId, mediaItem.id);
+              const res = await fetch(streamUrl, {
+                headers: draftService.getAuthHeaders()
+              });
+              if (res.ok) {
+                const blob = await res.blob();
+                file = new File([blob], getMediaFilename(mediaItem), {
+                  type: mediaItem.contentType || (isMediaVideo(mediaItem) ? 'video/mp4' : 'image/jpeg')
+                });
+                (file as any).draftMediaId = mediaItem.id;
+                mediaItem.file = file;
+              }
+            } catch (err) {
+              console.warn('On-demand stream restore notice:', err);
+            }
+          }
+        }
+
+        if (!file) {
+          const fname = getMediaFilename(mediaItem);
+          failedFiles.push(new File([], fname));
+          errors.push(`Could not read media file for ${fname}`);
+          continue;
+        }
 
         try {
           const draftMediaId = mediaItem.id || (file as any)?.draftMediaId;
+          const fname = getMediaFilename(mediaItem);
           await propertyService.uploadTaggedMedia(propertyId, file, {
             roomTag: mediaItem.roomTag,
-            mediaType: file.type.startsWith('video/') ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
+            mediaType: isMediaVideo(mediaItem) ? 'VIDEO_WALKTHROUGH' : 'IMAGE',
             caption: `${card.title} - ${mediaItem.roomTag.replace('_', ' ')}`,
             isPrimaryCover: mediaItem.isCover,
             sector: card.sector,
@@ -1120,7 +1543,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                   ? 'preparing'
                   : 'uploading';
               const message = progress.stage === 'retrying'
-                ? `Connection interrupted. Retrying file (${file.name})…`
+                ? `Connection interrupted. Retrying file (${fname})…`
                 : `Uploading file (${completedCount + 1} of ${totalFiles})…`;
               setStagedCards((current) => current.map((item) => item.id === card.id
                 ? {
@@ -1134,7 +1557,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           });
         } catch (error) {
           failedFiles.push(file);
-          errors.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
+          errors.push(getErrorMessage(error, `${getMediaFilename(mediaItem)} could not be uploaded.`));
         } finally {
           completedCount += 1;
           const overallProgress = Math.round((completedCount / totalFiles) * 100);
@@ -1182,11 +1605,12 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     if (!card?.publishedId || card.failedMediaFiles.length === 0) return;
 
     const itemsToRetry = (card.stagedMedia || []).filter((m) =>
-      card.failedMediaFiles.includes(m.file)
+      Boolean(m.file && card.failedMediaFiles.includes(m.file))
     );
     if (itemsToRetry.length === 0) return;
 
     setIsPublishing(true);
+    batchDraft.suspendAutosave();
     try {
       const result = await uploadMediaFilesForCard(card, card.publishedId, itemsToRetry);
       if (result.failedFiles.length > 0) {
@@ -1198,6 +1622,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       }
     } finally {
       setIsPublishing(false);
+      batchDraft.resumeAutosave();
     }
   };
 
@@ -1213,9 +1638,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
 
     setIsPublishing(true);
+    batchDraft.suspendAutosave();
 
     try {
+      const draftId = batchDraft.ensureDraftId();
+
       const payloadListings = validCards.map((c) => ({
+        draftId,
+        cardId: c.id,
         learningExampleId: c.learningExampleId,
         promptIndex: c.promptIndex,
         rawPrompt: c.rawPrompt,
@@ -1246,11 +1676,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         furnishingStatus: c.furnishingStatus,
         vastuFacing: c.vastuFacing,
         amenities: c.amenities,
+        floor: typeof c.floor === 'number' ? c.floor : null,
+        totalFloors: typeof c.totalFloors === 'number' ? c.totalFloors : null,
+        preferredTenants: Array.isArray(c.preferredTenants) ? c.preferredTenants : [],
         mediaUrls: c.mediaUrls,
         adminVerified: c.isConfirmed
       }));
 
-      const res = await propertyService.createBatchProperties(payloadListings);
+      const res = await propertyService.createBatchProperties(payloadListings, draftId);
 
       const createdResults = Array.isArray(res.createdListings)
         ? res.createdListings.filter((item: any) =>
@@ -1302,102 +1735,220 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       }
       setPublishingCardId(null);
 
-      window.dispatchEvent(new Event('pathome_property_published'));
-      const publishedCount = res.successCount || 0;
-      const isFullBatchSuccess = res.failedCount === 0 && mediaUploadErrors.length === 0 && publishedCount > 0;
+      // Distinguish cards whose listing and media succeeded completely from those needing attention
+      const successfulCardIds: string[] = [];
+      const newlyCompleted: Array<{ cardId: string; listingId: number; title: string }> = [];
 
-      if (isFullBatchSuccess) {
-        // FULL SUCCESS:
-        void batchDraft.onPublishSuccess();
-        // 1. Send dynamic confirmed count to parent callback FIRST
-        onSuccess(publishedCount);
+      for (const [cardId, listingId] of publishedIdsByCardId.entries()) {
+        const card = validCards.find((c) => c.id === cardId);
+        const cardHadMediaErrors = mediaUploadErrors.some((err) => err.startsWith(`Property ${card?.promptIndex}:`));
+        if (!cardHadMediaErrors) {
+          successfulCardIds.push(cardId);
+          newlyCompleted.push({
+            cardId,
+            listingId,
+            title: card?.title || `Property #${listingId}`
+          });
+        }
+      }
 
-        // 2. Revoke all object URLs for preview media to prevent memory leaks
-        stagedCards.forEach((card) => {
+      // If no cards were completely successful (e.g. all encountered media errors or network interrupted)
+      if (successfulCardIds.length === 0) {
+        if (mediaUploadErrors.length > 0) {
+          showErrorDialog({
+            title: 'Publishing interrupted',
+            message: 'Some media could not be uploaded because the connection was interrupted. The listing was created and your progress is saved. Click Resume when connection is restored.',
+            details: mediaUploadErrors.join(' • ')
+          });
+        }
+        return;
+      }
+
+      // Reconcile with server to get authoritative remaining state.
+      // Cancel any pending debounced autosave first — state mutations from the publish loop
+      // (setStagedCards, setActiveCardId) schedule an autosave that would otherwise race the
+      // reconcile-batch backend transaction and cause a StaleObjectStateException.
+      batchDraft.cancelAutosave();
+
+      let remainingDraft: any = null;
+      let reconcileError: 'network' | 'server' | null = null;
+      try {
+        remainingDraft = await batchDraft.onBatchPublished(successfulCardIds, newlyCompleted);
+      } catch (err: unknown) {
+        // Distinguish real network loss (TypeError: Failed to fetch / NetworkError / offline) from
+        // server-side errors (HTTP 500, 409 StaleObjectStateException, etc.).
+        const isNetworkLoss =
+          (typeof navigator !== 'undefined' && !navigator.onLine) ||
+          (err instanceof TypeError && /fetch|network|load/i.test((err as TypeError).message)) ||
+          (err as any)?.status === 0;
+        reconcileError = isNetworkLoss ? 'network' : 'server';
+      }
+
+      if (reconcileError === 'network') {
+        // Network was interrupted before reconciliation could be confirmed by the server
+        // DO NOT show green success notification!
+        showErrorDialog({
+          title: 'Publishing interrupted',
+          message: 'The network connection was interrupted before publication could be verified. Use Resume to reconcile your draft.'
+        });
+        return;
+      }
+
+      if (reconcileError === 'server') {
+        // Backend acknowledged the publish but failed to update the draft status.
+        // The listings were created successfully — the draft just needs reconciliation.
+        showErrorDialog({
+          title: 'Properties published',
+          message: 'Your properties were published successfully. There was an issue updating the draft record. Use Resume to restore your draft to the correct state.'
+        });
+        return;
+      }
+
+      // Update completed listings in state
+      const updatedCompleted = [...completedListings];
+      newlyCompleted.forEach((nc) => {
+        if (!updatedCompleted.some((e) => e.cardId === nc.cardId || e.listingId === nc.listingId)) {
+          updatedCompleted.push(nc);
+        }
+      });
+      setCompletedListings(updatedCompleted);
+
+      // Revoke object URLs ONLY for the completely successful cards
+      stagedCards.forEach((card) => {
+        if (successfulCardIds.includes(card.id)) {
           (card.stagedMedia || []).forEach((item) => {
             try { URL.revokeObjectURL(item.previewUrl); } catch (_) {}
           });
-          (card.localPhotoPreviews || []).forEach((url) => {
-            try { URL.revokeObjectURL(url); } catch (_) {}
-          });
-        });
+        }
+      });
 
-        // 3. Clear completed session and batch form state
+      // Update stagedCards removing only the confirmed published cards
+      const remainingCardsAfterPublish = stagedCards.filter((c) => !successfulCardIds.includes(c.id));
+      setStagedCards(remainingCardsAfterPublish);
+      if (remainingCardsAfterPublish.length > 0) {
+        setActiveCardId(remainingCardsAfterPublish[0].id);
+      }
+
+      window.dispatchEvent(new Event('pathome_property_published'));
+
+      const publishedThisRun = successfulCardIds.length;
+
+      // Authoritative completion check from server
+      const isServerBatchComplete = remainingDraft === null || (remainingDraft && remainingDraft.itemCount === 0);
+
+      if (isServerBatchComplete && mediaUploadErrors.length === 0 && Number(res.failedCount || 0) === 0) {
+        // FULL BATCH SUCCESS (confirmed by server tombstone)
+        await batchDraft.onPublishSuccess();
+        const totalPublishedCount = updatedCompleted.length;
+        onSuccess(totalPublishedCount);
+
         setStagedCards([]);
+        setCompletedListings([]);
         updateRawPrompts('');
         setDetectedCount(0);
         rawPromptsRef.current = '';
         parsedPromptsRef.current = '';
         setMobileWorkspaceView('descriptions');
-
         onClose();
         return;
       }
 
-      // PARTIAL SUCCESS / ATTENTION NEEDED:
-      if (publishedCount > 0) {
-        onSuccess(publishedCount);
-        const publishedCardIds = Array.from(publishedIdsByCardId.keys());
-        void batchDraft.onBatchPublished(publishedCardIds);
-
-        // Revoke object URLs ONLY for the completely successful cards
-        stagedCards.forEach((card) => {
-          const pubId = publishedIdsByCardId.get(card.id);
-          const hasFailedMedia = card.failedMediaFiles && card.failedMediaFiles.length > 0;
-          if (pubId && !hasFailedMedia) {
-            (card.stagedMedia || []).forEach((item) => {
-              try { URL.revokeObjectURL(item.previewUrl); } catch (_) {}
-            });
-          }
-        });
-
-        // Update cards: mark published ones, preserve failed ones and cards with failed media
-        setStagedCards((current) => current.map((card) => {
-          const publishedId = publishedIdsByCardId.get(card.id);
-          return publishedId === undefined
-            ? card
-            : { ...card, publishedId, isValid: false, isConfirmed: true };
-        }));
-
-        if (mediaUploadErrors.length > 0) {
-          showErrorDialog({
-            title: 'Property published, but some media needs attention',
-            message: 'The listing details were published. Use Retry failed media below; the property will not be created again.',
-            details: mediaUploadErrors.join(' • ')
-          });
-          return;
-        }
-
-        if (res.failedCount > 0) {
-          showErrorDialog({
-            title: 'Some properties still need attention',
-            message: `${publishedCount} ${publishedCount === 1 ? 'property was' : 'properties were'} published. Review the remaining entries and try again.`,
-            details: Array.isArray(res.failedListings)
-              ? res.failedListings.map((item: any) => item.error).filter(Boolean).join(' • ')
-              : undefined
-          });
-          return;
-        }
+      // PARTIAL SUCCESS (confirmed by server remaining count)
+      const serverRemainingCount = remainingDraft != null ? remainingDraft.itemCount : remainingCardsAfterPublish.length;
+      if (publishedThisRun > 0 && onPartialSuccess) {
+        onPartialSuccess(publishedThisRun, serverRemainingCount);
       }
 
-      onClose();
+      if (mediaUploadErrors.length > 0) {
+        showErrorDialog({
+          title: 'Property published, but some media needs attention',
+          message: 'The listing details were published. Use Retry failed media below; the property will not be created again.',
+          details: mediaUploadErrors.join(' • ')
+        });
+      }
+
+      if (res.failedCount > 0) {
+        showErrorDialog({
+          title: 'Some properties still need attention',
+          message: `${publishedThisRun} ${publishedThisRun === 1 ? 'property was' : 'properties were'} published. Review the remaining entries and try again.`,
+          details: Array.isArray(res.failedListings)
+            ? res.failedListings.map((item: any) => item.error).filter(Boolean).join(' • ')
+            : undefined
+        });
+      }
     } catch (err: unknown) {
       console.error('Batch publish failed:', err);
+      const isNetworkLoss =
+        (typeof navigator !== 'undefined' && !navigator.onLine) ||
+        (err instanceof TypeError && /fetch|network|load/i.test((err as TypeError).message)) ||
+        (err as any)?.status === 0;
+
       showErrorDialog({
-        title: 'Unable to publish the selected properties',
-        message: getErrorMessage(err, 'Please try again after reviewing the property details.'),
+        title: isNetworkLoss ? 'Publishing interrupted' : 'Unable to publish the selected properties',
+        message: isNetworkLoss
+          ? 'The network connection was interrupted. Your progress is saved. Click Resume when connection is restored.'
+          : getErrorMessage(err, 'Please try again after reviewing the property details.'),
         details: getErrorDetails(err)
       });
     } finally {
       setPublishingCardId(null);
       setIsPublishing(false);
+      batchDraft.resumeAutosave();
     }
   };
 
   if (!isOpen) return null;
 
+  const totalOriginalCount = completedListings.length + stagedCards.length;
   const readyToPublishCount = stagedCards.filter((card) => card.isValid && !card.publishedId).length;
-  const unpublishedCount = stagedCards.filter((card) => !card.publishedId).length;
+  const totalCardsCount = stagedCards.length;
+  const unconfirmedCount = stagedCards.filter((card) => !card.isValid && !card.publishedId).length;
+
+  const getPublishCtaText = () => {
+    if (completedListings.length > 0) {
+      if (readyToPublishCount === 0) {
+        return totalCardsCount === 1 ? 'Confirm remaining property' : 'Confirm remaining properties';
+      }
+      if (readyToPublishCount === totalCardsCount) {
+        return totalCardsCount === 1 ? 'Publish remaining property' : `Publish all ${totalCardsCount} remaining properties`;
+      }
+      return `Publish ${readyToPublishCount} of ${totalCardsCount} remaining properties`;
+    }
+
+    if (readyToPublishCount === 0) {
+      return 'Confirm properties to publish';
+    }
+    if (totalCardsCount === 1) {
+      return 'Publish 1 property';
+    }
+    if (readyToPublishCount === totalCardsCount) {
+      return `Publish all ${totalCardsCount} properties`;
+    }
+    return `Publish ${readyToPublishCount} of ${totalCardsCount} confirmed properties`;
+  };
+
+  const getMobileCtaText = () => {
+    if (completedListings.length > 0) {
+      if (readyToPublishCount === 0) {
+        return totalCardsCount === 1 ? 'Confirm property' : 'Confirm properties';
+      }
+      if (readyToPublishCount === totalCardsCount) {
+        return totalCardsCount === 1 ? 'Publish remaining' : `Publish all ${totalCardsCount} remaining`;
+      }
+      return `Publish ${readyToPublishCount} of ${totalCardsCount} remaining`;
+    }
+
+    if (readyToPublishCount === 0) {
+      return 'Confirm properties';
+    }
+    if (totalCardsCount === 1) {
+      return 'Publish 1 property';
+    }
+    if (readyToPublishCount === totalCardsCount) {
+      return `Publish all ${totalCardsCount} properties`;
+    }
+    return `Publish ${readyToPublishCount} of ${totalCardsCount} confirmed`;
+  };
 
   return (
     <AnimatePresence>
@@ -1480,6 +2031,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
               }}
               onStartNewDraft={() => void batchDraft.startNewDraft()}
               onDiscardDraft={(id) => batchDraft.discardDraft(id)}
+              onDiscardDrafts={(ids) => batchDraft.discardMultipleDrafts(ids)}
               onResolveConflictKeepLocal={batchDraft.resolveConflictKeepLocal}
               onResolveConflictReloadServer={batchDraft.resolveConflictReloadServer}
             />
@@ -1692,13 +2244,44 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                     </div>
                   </div>
 
+                  {/* Read-Only Completed Summary Banner for Partial Batch */}
+                  {completedListings.length > 0 && (
+                    <div className="mb-3 rounded-2xl border border-emerald-500/40 bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-slate-900/40 p-3.5 sm:p-4 text-slate-100 shadow-sm">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 pb-2.5 border-b border-emerald-500/20">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span className="text-xs sm:text-sm font-bold text-emerald-300">
+                            ✓ {completedListings.length} of {completedListings.length + stagedCards.length} properties published
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-emerald-400/90 font-semibold">
+                          {stagedCards.length} {stagedCards.length === 1 ? 'property remaining' : 'properties remaining'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 pt-2.5">
+                        {completedListings.map((item) => (
+                          <span
+                            key={item.cardId || item.listingId}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-900/30 border border-emerald-500/30 text-[11px] font-medium text-emerald-200"
+                          >
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            <span className="font-semibold">{item.title}</span>
+                            <span className="font-mono text-emerald-400/80">Listing #{item.listingId}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Staged Cards Grid */}
                   <div className="flex flex-col gap-3.5">
                     {stagedCards.map((card, idx) => {
                       if (activeCardId && card.id !== activeCardId) return null;
 
                       const palette = COLOR_PALETTES[idx % COLOR_PALETTES.length];
-                      const totalMedia = card.localPhotos.length + card.mediaUrls.length;
+                      const totalMedia = (card.stagedMedia && card.stagedMedia.length > 0)
+                        ? card.stagedMedia.length
+                        : (card.localPhotos.length + card.mediaUrls.length);
                       const requiredSnapshot = [
                         { label: 'Layout', value: card.bhk, ready: isProvided(card.bhk) },
                         { label: 'Property type', value: card.type, ready: isProvided(card.type) },
@@ -1861,6 +2444,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                   <ReviewField label="Brokerage terms" value={card.brokerageDays} onValueChange={(value) => handleUpdateField(card.id, 'brokerageDays', value)} placeholder="Enter brokerage terms" />
                                   <ReviewField label="Area" value={card.areaSqFt} onValueChange={(value) => handleUpdateField(card.id, 'areaSqFt', value)} placeholder="Enter area" />
                                   <ReviewField label="Bathrooms" value={card.bathrooms} onValueChange={(value) => handleUpdateField(card.id, 'bathrooms', value)} placeholder="Enter bathroom count" />
+                                  <ReviewField label="Floor" value={card.floor !== null && card.floor !== undefined ? String(card.floor) : ''} onValueChange={(value) => handleFloorChange(card.id, value)} placeholder="e.g. 0 (Ground), 3" />
+                                  <ReviewField label="Total floors" value={card.totalFloors !== null && card.totalFloors !== undefined ? String(card.totalFloors) : ''} type="number" onValueChange={(value) => handleTotalFloorsChange(card.id, value)} placeholder="e.g. 7" />
                                   <ReviewField label="Furnishing" value={card.furnishingStatus} onValueChange={(value) => handleUpdateField(card.id, 'furnishingStatus', value)} placeholder="Enter furnishing" />
                                   <ReviewField label="Facing" value={card.vastuFacing} onValueChange={(value) => handleUpdateField(card.id, 'vastuFacing', value)} placeholder="Enter facing" />
                                   <AvailabilityEditor
@@ -1869,6 +2454,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                     onChange={(status, availableFrom) => handleAvailabilityChange(card.id, status, availableFrom)}
                                   />
                                   <ReviewField label="Listing status" value={card.status} onValueChange={(value) => handleUpdateField(card.id, 'status', value.toUpperCase())} placeholder="Enter listing status" />
+                                  <PreferredTenantEditor
+                                    selected={card.preferredTenants || []}
+                                    onChange={(updated) => handleUpdateField(card.id, 'preferredTenants', updated)}
+                                    className="min-[480px]:col-span-2"
+                                  />
                                   <ReviewField label="Owner name" value={card.ownerName} onValueChange={(value) => handleUpdateField(card.id, 'ownerName', value)} placeholder="Enter owner name" />
                                   <ReviewField label="Amenities" value={card.amenities.join(', ')} onValueChange={(value) => handleUpdateField(card.id, 'amenities', value.split(',').map((amenity) => amenity.trim()).filter(isProvided))} placeholder="Enter amenities" />
                                   <ReviewField label="Description" value={card.description} multiline className="min-[480px]:col-span-2" onValueChange={(value) => handleUpdateField(card.id, 'description', value)} placeholder="Enter useful listing details" />
@@ -1896,6 +2486,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                 <ReviewField label="Brokerage terms" value={card.brokerageDays} onValueChange={(value) => handleUpdateField(card.id, 'brokerageDays', value)} placeholder="Enter brokerage terms" />
                                 <ReviewField label="Area" value={card.areaSqFt} onValueChange={(value) => handleUpdateField(card.id, 'areaSqFt', value)} placeholder="Enter area" />
                                 <ReviewField label="Bathrooms" value={card.bathrooms} onValueChange={(value) => handleUpdateField(card.id, 'bathrooms', value)} placeholder="Enter bathroom count" />
+                                <ReviewField label="Floor" value={card.floor !== null && card.floor !== undefined ? String(card.floor) : ''} onValueChange={(value) => handleFloorChange(card.id, value)} placeholder="e.g. 0 (Ground), 3" />
+                                <ReviewField label="Total floors" value={card.totalFloors !== null && card.totalFloors !== undefined ? String(card.totalFloors) : ''} type="number" onValueChange={(value) => handleTotalFloorsChange(card.id, value)} placeholder="e.g. 7" />
                                 <ReviewField label="Furnishing" value={card.furnishingStatus} onValueChange={(value) => handleUpdateField(card.id, 'furnishingStatus', value)} placeholder="Enter furnishing" />
                                 <ReviewField label="Facing" value={card.vastuFacing} onValueChange={(value) => handleUpdateField(card.id, 'vastuFacing', value)} placeholder="Enter facing" />
                                 <AvailabilityEditor
@@ -1904,6 +2496,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                   onChange={(status, availableFrom) => handleAvailabilityChange(card.id, status, availableFrom)}
                                 />
                                 <ReviewField label="Listing status" value={card.status} onValueChange={(value) => handleUpdateField(card.id, 'status', value.toUpperCase())} placeholder="Enter listing status" />
+                                <PreferredTenantEditor
+                                  selected={card.preferredTenants || []}
+                                  onChange={(updated) => handleUpdateField(card.id, 'preferredTenants', updated)}
+                                  className="min-[480px]:col-span-2 sm:col-span-4"
+                                />
                               </div>
                             </section>
 
@@ -1944,7 +2541,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                             {totalMedia > 0 ? (
                               <div className="space-y-2.5 py-1">
                                 {(card.stagedMedia || []).map((item) => {
-                                  const isVideo = item.file.type.startsWith('video/');
+                                  const isVideo = isMediaVideo(item);
+                                  const filename = getMediaFilename(item);
+                                  const fileSize = getMediaFileSize(item);
                                   return (
                                     <div
                                       key={item.id}
@@ -1955,7 +2554,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                         <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 shrink-0 shadow-sm">
                                           <img
                                             src={item.previewUrl}
-                                            alt={item.file.name}
+                                            alt={filename}
                                             className="w-full h-full object-cover"
                                           />
                                           {item.isCover && (
@@ -1976,11 +2575,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                       {/* File Details & Compact Controls */}
                                       <div className="flex-1 min-w-0 pr-7 flex flex-col justify-between self-stretch py-0.5">
                                         <div>
-                                          <p className="font-bold text-slate-200 truncate text-xs sm:text-sm font-['Outfit']" title={item.file.name}>
-                                            {item.file.name}
+                                          <p className="font-bold text-slate-200 truncate text-xs sm:text-sm font-['Outfit']" title={filename}>
+                                            {filename}
                                           </p>
                                           <p className="text-[10px] font-mono text-slate-500 mt-0.5">
-                                            {(item.file.size / 1024 / 1024).toFixed(1)} MB
+                                            {(fileSize / 1024 / 1024).toFixed(1)} MB
                                           </p>
                                         </div>
 
@@ -2016,7 +2615,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                                 e.stopPropagation();
                                                 handleSetMediaRoomTag(card.id, item.id, e.target.value as RoomTag);
                                               }}
-                                              aria-label={`Room category for ${item.file.name}`}
+                                              aria-label={`Room category for ${filename}`}
                                               className="min-h-[28px] bg-slate-900 text-cyan-300 font-mono text-[10px] sm:text-[11px] font-bold border border-slate-800 rounded-lg pl-2 pr-5 outline-none focus:border-cyan-500 cursor-pointer appearance-none"
                                             >
                                               {ROOM_TAG_OPTIONS.map((opt) => (
@@ -2037,7 +2636,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                           e.stopPropagation();
                                           handleRemoveStagedMedia(card.id, item.id);
                                         }}
-                                        aria-label={`Remove file ${item.file.name}`}
+                                        aria-label={`Remove file ${filename}`}
                                         className="absolute top-2.5 right-2.5 w-8 h-8 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer"
                                       >
                                         <X className="w-4 h-4" />
@@ -2069,19 +2668,38 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                                   </div>
                                 ))}
 
-                                {totalMedia > 0 && stagedCards.length > 1 && idx < stagedCards.length - 1 && (
-                                  <div className="pt-2 flex justify-end">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setActiveCardId(stagedCards[idx + 1].id);
-                                      }}
-                                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 hover:bg-slate-850 px-3 py-1.5 text-xs font-bold text-slate-300 hover:border-amber-400/50 hover:text-white transition-all cursor-pointer shadow-xs"
-                                    >
-                                      <span>Next property ({stagedCards[idx + 1].bhk || stagedCards[idx + 1].title || `#${idx + 2}`})</span>
-                                      <ChevronRight className="w-3.5 h-3.5 text-amber-400" />
-                                    </button>
+                                {totalMedia > 0 && stagedCards.length > 1 && (
+                                  <div className="pt-2 flex items-center justify-between gap-2">
+                                    <div>
+                                      {idx > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setActiveCardId(stagedCards[idx - 1].id);
+                                          }}
+                                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 hover:bg-slate-850 px-3 py-1.5 text-xs font-bold text-slate-300 hover:border-amber-400/50 hover:text-white transition-all cursor-pointer shadow-xs"
+                                        >
+                                          <ChevronLeft className="w-3.5 h-3.5 text-amber-400" />
+                                          <span>Previous property ({stagedCards[idx - 1].bhk || stagedCards[idx - 1].title || `#${idx}`})</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div>
+                                      {idx < stagedCards.length - 1 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setActiveCardId(stagedCards[idx + 1].id);
+                                          }}
+                                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 hover:bg-slate-850 px-3 py-1.5 text-xs font-bold text-slate-300 hover:border-amber-400/50 hover:text-white transition-all cursor-pointer shadow-xs"
+                                        >
+                                          <span>Next property ({stagedCards[idx + 1].bhk || stagedCards[idx + 1].title || `#${idx + 2}`})</span>
+                                          <ChevronRight className="w-3.5 h-3.5 text-amber-400" />
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -2194,9 +2812,34 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           <div className={`${embedded ? 'hidden lg:flex' : 'flex'} z-20 flex-col gap-3 border-t border-slate-800 bg-slate-950/95 px-4 py-3 shadow-[0_-12px_30px_rgba(2,6,23,0.55)] backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4 lg:shadow-none`}>
             <div className="text-xs text-slate-400">
               {stagedCards.length > 0 && (
-                <span>
-                  <strong className="text-white">{readyToPublishCount}</strong> of{' '}
-                  <strong className="text-white">{unpublishedCount}</strong> properties ready to publish.
+                <span className="block truncate text-xs text-slate-400">
+                  {completedListings.length > 0 ? (
+                    <>
+                      <strong className="text-emerald-300">{completedListings.length}</strong> of{' '}
+                      <strong className="text-white">{totalOriginalCount}</strong> published •{' '}
+                      {unconfirmedCount > 0 ? (
+                        <>
+                          <strong className="text-amber-300">{unconfirmedCount}</strong>{' '}
+                          {unconfirmedCount === 1 ? 'property still needs' : 'properties still need'} confirmation.
+                        </>
+                      ) : (
+                        <>
+                          <strong className="text-emerald-300">{totalCardsCount}</strong>{' '}
+                          {totalCardsCount === 1 ? 'property' : 'properties'} ready to publish.
+                        </>
+                      )}
+                    </>
+                  ) : unconfirmedCount > 0 ? (
+                    <>
+                      <strong className="text-white">{unconfirmedCount}</strong>{' '}
+                      {unconfirmedCount === 1 ? 'property still needs' : 'properties still need'} confirmation.
+                    </>
+                  ) : (
+                    <>
+                      <strong className="text-white">{totalCardsCount}</strong> of{' '}
+                      <strong className="text-white">{totalCardsCount}</strong> properties confirmed and ready to publish.
+                    </>
+                  )}
                 </span>
               )}
             </div>
@@ -2223,7 +2866,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                  <span>Publish confirmed properties ({readyToPublishCount})</span>
+                    <span>{getPublishCtaText()}</span>
                   </>
                 )}
               </motion.button>
@@ -2242,8 +2885,17 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           >
             <div className="mx-auto flex max-w-3xl items-center gap-3">
               <div className="min-w-[58px] text-center" aria-live="polite">
-                <span className="block text-sm font-black text-white">{readyToPublishCount}/{unpublishedCount}</span>
-                <span className="block text-[9px] font-semibold uppercase tracking-wide text-slate-400">ready</span>
+                {completedListings.length > 0 ? (
+                  <>
+                    <span className="block text-sm font-black text-emerald-300">{completedListings.length}/{totalOriginalCount}</span>
+                    <span className="block text-[9px] font-semibold uppercase tracking-wide text-slate-400">published</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="block text-sm font-black text-white">{readyToPublishCount}/{totalCardsCount}</span>
+                    <span className="block text-[9px] font-semibold uppercase tracking-wide text-slate-400">confirmed</span>
+                  </>
+                )}
               </div>
               <motion.button
                 whileTap={{ scale: 0.98 }}
@@ -2253,7 +2905,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                 className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 text-sm font-black text-slate-950 shadow-lg shadow-emerald-500/20 transition-all disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <CheckCircle2 className="h-4 w-4" />
-                {isPublishing ? 'Publishing properties…' : `Publish confirmed (${readyToPublishCount})`}
+                {isPublishing ? 'Publishing properties…' : getMobileCtaText()}
               </motion.button>
             </div>
           </motion.div>,

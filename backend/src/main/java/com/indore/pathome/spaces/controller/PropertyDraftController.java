@@ -20,6 +20,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -179,16 +180,48 @@ public class PropertyDraftController {
     }
 
     /**
+     * Reassigns unassigned media items in a draft to a target card ID.
+     */
+    @PostMapping("/{draftId}/reassign-media")
+    public ResponseEntity<Map<String, Object>> reassignMedia(
+            @PathVariable String draftId,
+            @RequestBody Map<String, String> body
+    ) {
+        String adminId = getCurrentAdminId();
+        String targetCardId = body != null ? body.get("targetCardId") : null;
+        int count = draftService.reassignUnassignedMediaToCard(adminId, draftId, targetCardId);
+        return ResponseEntity.ok(Map.of("draftId", draftId, "targetCardId", targetCardId != null ? targetCardId : "", "reassignedCount", count));
+    }
+
+    /**
      * Reconciles a batch draft after partial publication, retaining unpublished cards.
      */
     @PostMapping("/{draftId}/reconcile-batch")
     public ResponseEntity<?> reconcileBatch(
             @PathVariable String draftId,
-            @RequestBody Map<String, List<String>> body
+            @RequestBody(required = false) Map<String, ?> body
     ) {
         String adminId = getCurrentAdminId();
-        List<String> publishedCardIds = body != null ? body.get("publishedCardIds") : List.of();
-        DraftDetailDTO remaining = draftService.reconcileBatchDraft(adminId, draftId, publishedCardIds);
+        List<String> publishedCardIds = new ArrayList<>();
+        if (body != null && body.get("publishedCardIds") instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof String s) publishedCardIds.add(s);
+            }
+        }
+        List<Map<String, Object>> completedListings = new ArrayList<>();
+        if (body != null && body.get("completedListings") instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> m) {
+                    completedListings.add((Map<String, Object>) m);
+                }
+            }
+        }
+        DraftDetailDTO remaining;
+        if (!completedListings.isEmpty()) {
+            remaining = draftService.reconcileBatchDraft(adminId, draftId, publishedCardIds, completedListings);
+        } else {
+            remaining = draftService.reconcileBatchDraft(adminId, draftId, publishedCardIds);
+        }
         if (remaining == null) {
             return ResponseEntity.ok(Map.of("message", "Batch fully published. Draft cleared.", "cleared", true));
         }

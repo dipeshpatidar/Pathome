@@ -23,6 +23,12 @@ const messageForStatus = (status: number, fallback: string): string => {
   return fallback;
 };
 
+export const notifySessionExpired = (): void => {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('pathome_session_expired'));
+  }
+};
+
 export const createApiRequestError = async (response: Response, fallback: string): Promise<ApiRequestError> => {
   let payload: ApiErrorPayload | null = null;
 
@@ -30,6 +36,10 @@ export const createApiRequestError = async (response: Response, fallback: string
     payload = await response.json() as ApiErrorPayload;
   } catch {
     // Some security and proxy responses do not contain a JSON body.
+  }
+
+  if (response.status === 401) {
+    notifySessionExpired();
   }
 
   const message = messageForStatus(response.status, payload?.message || fallback);

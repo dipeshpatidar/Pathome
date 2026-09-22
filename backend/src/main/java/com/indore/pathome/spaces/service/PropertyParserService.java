@@ -41,6 +41,18 @@ public class PropertyParserService {
             "seventeen|eighteen|nineteen|twenty|\\d{1,3}(?:st|nd|rd|th)?";
 
     // Pre-compiled Thread-Safe Static RegEx Patterns (Zero runtime recompilation overhead)
+    private static final Pattern EXPLICIT_MULTI_PROMPT_DELIMITER_PATTERN = Pattern.compile(
+            "(?m)(?:^[\\s]*[-=_*~]{3,}[\\s]*$)|" +
+            "(?m)(?:^[\\s]*(?:property|flat|listing|house|unit)\\s*#?\\d+[:\\.\\-]?\\s*)|" +
+            "(?m)(?:^[\\s]*(?:\\[?\\d+[\\]\\)\\.\\:\\-]|#\\d+)\\s+)|" +
+            "(?i)\\b(?:next\\s*(?:property|flat|house|listing|unit|one)|agli\\s*property|dusra\\s*flat)\\b|" +
+            "(?i)\\b(?:and\\s+)?(?:the\\s+)?(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|" +
+            "eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|another)" +
+            "\\s+(?:property|flat|house|listing|unit)(?:\\s+is)?\\b"
+    );
+    private static final Pattern FALLBACK_DOUBLE_NEWLINE_PATTERN = Pattern.compile(
+            "(?:\\r?\\n\\s*\\r?\\n+)"
+    );
     private static final Pattern MULTI_PROMPT_SPLIT_PATTERN = Pattern.compile(
             "(?m)(?:^[\\s]*[-=_*~]{3,}[\\s]*$)|" +
             "(?m)(?:^[\\s]*(?:property|flat|listing|house|unit)\\s*#?\\d+[:\\.\\-]?\\s*)|" +
@@ -51,6 +63,18 @@ public class PropertyParserService {
             "\\s+(?:property|flat|house|listing|unit)(?:\\s+is)?\\b|" +
             "(?:\\r?\\n\\s*\\r?\\n+)"
     );
+    private static final Pattern SECURITY_AMENITY_PATTERN = Pattern.compile(
+            "\\b(?:gated|24\\s*[/x]?\\s*7\\s*security|security\\s*(?:guards?|services?|personnel)?|security)\\b(?!\\s*dep(?:osit)?)",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern POWER_BACKUP_AMENITY_PATTERN = Pattern.compile(
+            "\\b(?:power\\s*backup|powerbackup|power\\s*back\\s*up|power\\s*backup\\s*available)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern CLUBHOUSE_AMENITY_PATTERN = Pattern.compile(
+            "\\b(?:club\\s*house|clubhouse)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern CCTV_AMENITY_PATTERN = Pattern.compile(
+            "\\b(?:cctv|surveillance\\s*cameras?)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern TARGETED_AMENDMENT_PREFIX_PATTERN = Pattern.compile(
             "\\b(?:and\\s+)?(?:in|for|to|about|regarding)\\s+(?:the\\s+)?(?:" +
             "(" + TARGET_PROPERTY_INDEX_REGEX + ")\\s+(?:property|flat|house|listing|unit)|" +
@@ -119,6 +143,86 @@ public class PropertyParserService {
             "\\b(?:bath|baths|bathroom|bathrooms|bathromm|bathrom|toilet|washroom)\\s+(?:is|are)\\s+(?:to|too)\\b",
             Pattern.CASE_INSENSITIVE);
 
+    // High-Precision Floor & Total Floors Patterns
+    private static final Pattern LABELLED_FLOOR_PATTERN = Pattern.compile(
+            "(?<!\\b(?:st|nd|rd|th|ground|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|total)\\s+)\\b(?:floor|floor\\s*(?:no\\.?|number|num\\.?)|unit\\s*floor)\\s*[:\\-]?\\s*(ground|gf|g/f|\\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\\b(?!\\s*(?:bhk|rk|bedroom|bedrooms|bed|beds|bath|baths|bathroom|bathrooms|balcony|balconies))",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern LABELLED_TOTAL_FLOORS_PATTERN = Pattern.compile(
+            "\\b(?:total\\s*floors?|total\\s*floor|total\\s*levels?|building\\s*floors?)\\s*[:\\-]?\\s*(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOP_FLOOR_OF_BUILDING_PATTERN = Pattern.compile(
+            "\\btop\\s*floor\\s*(?:out\\s+of|of|in\\s+a|in)\\s*(?:a\\s+)?(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)(?:\\s*(?:-|\\s*)(?:floors?|storeys?|stor(?:y|ies))(?:\\s*building)?)?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOP_FLOOR_WITH_ORDINAL_PATTERN = Pattern.compile(
+            "\\b(\\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\\s*(?:and|&)\\s*top\\s*floor\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FLOOR_X_OF_Y_PATTERN = Pattern.compile(
+            "\\bfloor\\s*[:\\-]?\\s*(\\d{1,2}|ground|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\\s*(?:of|out\\s*of|/)\\s*(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FLOOR_SLASH_FLOORS_PATTERN = Pattern.compile(
+            "\\b(\\d{1,2}(?:st|nd|rd|th)?|ground|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\\s*floor\\s*/\\s*(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*floors?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FLOOR_AND_TOTAL_PATTERN = Pattern.compile(
+            "\\b(?:located\\s+(?:on|at)\\s+(?:the\\s+)?)?(?:((?<!\\b(?:lower|upper)\\s+)ground|gf|g/f|top|\\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\\s*floor)\\s*(?:out\\s+of|of|in\\s+a|in)\\s*(?:a\\s+)?(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)(?:\\s*(?:-|\\s*)(?:floors?|storeys?|stor(?:y|ies))(?:\\s*building)?)?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern G_PLUS_N_PATTERN = Pattern.compile(
+            "\\b(?:g|ground)\\s*(?:\\+|\\s*plus\\s+|\\s*and\\s+)\\s*(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)(?:\\s*(?:-|\\s*)floors?)?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern UNIT_FLOOR_PHRASED_PATTERN = Pattern.compile(
+            "\\b(?:located\\s+(?:on|at)\\s+(?:the\\s+)?|(?:flat|property|apartment|unit|portion)\\s+(?:is\\s+)?(?:on|at)\\s+(?:the\\s+)?|on\\s+(?:the\\s+)?|at\\s+(?:the\\s+)?)\\s*" +
+            "((?<!\\b(?:lower|upper)\\s+)ground|gf|g/f|\\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteen|seventeen|eighteen|nineteen|twentieth)\\s*floor\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern STANDALONE_UNIT_FLOOR_PATTERN = Pattern.compile(
+            "\\b((?<!\\b(?:lower|upper)\\s+)ground|gf|g/f|\\d{1,2}(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteen|twentieth)\\s*-?\\s*floor(?:\\s+(?:flat|apartment|unit|portion))?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern DIGIT_FLOOR_UNIT_PATTERN = Pattern.compile(
+            "\\b(\\d{1,2})\\s*floor\\s+(?:flat|apartment|unit|portion)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern THIRD_FLOOR_ALONE_PATTERN = Pattern.compile(
+            "\\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteen|twentieth)\\s*floor\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern STANDALONE_GF_PATTERN = Pattern.compile("\\b(?:g/?f)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BASEMENT_OR_LG_PATTERN = Pattern.compile(
+            "\\b(basement|lower\\s*ground|lg|upper\\s*ground|ug)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern BUILDING_HEIGHT_PATTERN = Pattern.compile(
+            "\\b(?:building\\s+(?:has|is|of)\\s*(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*(?:floors?|storeys?|stor(?:y|ies))|" +
+            "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*-?\\s*(?:floors?|storeys?|stor(?:y|ies))\\s*building|" +
+            "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*total\\s*floors?|" +
+            "total\\s*(?:of\\s*)?(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*floors?|" +
+            "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*(?:storeys?|stor(?:y|ies))\\s*building|" +
+            "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\s*floors?\\b)",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern LEADING_DIGITS_PATTERN = Pattern.compile("^(\\d{1,2})");
+
+    // Preferred Tenant Patterns
+    private static final Pattern TENANT_NOISE_LOCATION_PATTERN = Pattern.compile(
+            "\\b(?:students?\\s+(?:hostel|mess|pg|accommodation)|family\\s+(?:restaurant|park|hospital|clinic|mall|market|dhaba|store|shop)|working\\s*professionals?\\s+(?:area|locality|zone|colony|hub))\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TENANT_NEGATION_PATTERN = Pattern.compile(
+            "\\b(?:no|not\\s*(?:allowed|permitted|preferred|for|welcome)?|never)\\s*(?:for\\s+)?(bachelors?|male\\s*bachelors?|female\\s*bachelors?|students?|college\\s*students?|famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|professionals?)\\b|" +
+            "\\b(bachelors?|male\\s*bachelors?|female\\s*bachelors?|students?|college\\s*students?|famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|professionals?)\\s*(?:not\\s*(?:allowed|permitted|preferred|welcome)|strictly\\s*not\\s*allowed)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern PREFERRED_TENANT_PHRASE_PATTERN = Pattern.compile(
+            "\\b(?:preferred\\s*(?:for|tenant|tenants)?|preference|tenant\\s*preference|preferred\\s*tenants?\\s*(?:are)?|looking\\s*for|suitable\\s*for|ideal\\s*for|available\\s*for|open\\s*for|open\\s*to|only\\s*for|allowed\\s*for|tenants?\\s*(?:allowed|preferred)?)\\b\\s*[:\\-]?\\s*([^.\\n;]+)",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SPECIFIC_TENANT_ALLOWED_PATTERN = Pattern.compile(
+            "\\b(bachelors?|male\\s*bachelors?|female\\s*bachelors?|students?|college\\s*students?|famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|working\\s*(?:person|people)|professionals?)\\s*(?:only|allowed|preferred|permitted|welcome|tenants?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SPECIFIC_TENANT_PREFIX_PATTERN = Pattern.compile(
+            "\\b(?:only\\s+for|only|for)\\s+(bachelors?|students?|famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TENANT_ORDERED_TOKEN_PATTERN = Pattern.compile(
+            "\\b(famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|working\\s*(?:person|people)|professionals?|male\\s*bachelors?|female\\s*bachelors?|bachelors?|college\\s*students?|students?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TENANT_CHAIN_PATTERN = Pattern.compile(
+            "\\b(?:famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|working\\s*(?:person|people)|professionals?|male\\s*bachelors?|female\\s*bachelors?|bachelors?|college\\s*students?|students?)" +
+            "(?:\\s*(?:/|&|\\band\\b|\\bor\\b|,)\\s*(?:famil(?:y|ies)|working\\s*professionals?|salaried\\s*professionals?|corporate\\s*employees?|working\\s*(?:person|people)|professionals?|male\\s*bachelors?|female\\s*bachelors?|bachelors?|college\\s*students?|students?))+\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern NO_PREFERENCE_PATTERN = Pattern.compile(
+            "\\b(?:no\\s*(?:tenant\\s*)?preference|all\\s*(?:are\\s*)?welcome|everyone\\s*welcome|no\\s*restriction|open\\s*for\\s*all|open\\s*to\\s*all|any\\s*tenants?|anyone)\\b",
+            Pattern.CASE_INSENSITIVE);
+
     // Immediate & High-Precision Forward/Reverse Rent Patterns (Strict word boundaries & zero cross-field bleeding)
     private static final Pattern FWD_RENT_PATTERN = Pattern.compile(
             "\\b(?:monthly\\s*rent|rent|per\\s*month|/month|pm|rnt|ren)\\b(?:\\s+(?:is|of|amount|fee|charge|rs|around|about|approximately|approx|roughly|the)){0,5}\\s*[:\\-]?\\s*(?:rs\\.?|₹)?\\s*\\b(\\d{1,3}(?:,\\d{2,3})+|\\d{4,6}|\\d{1,2}k)\\b",
@@ -161,8 +265,8 @@ public class PropertyParserService {
             "\\b(?:ready\\s*to\\s*move|immediate[\\s\\-]?possession|available\\s*from|available|possession\\s*date|possession)\\b" +
             "(?:\\s+(?:is|on|from|by|will\\s+be|would\\s+be)){0,3}\\s*[:\\-]?\\s*" +
             "(\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?\\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\\s+\\d{4})?|" +
-            "\\d{1,2}[-\\/]\\d{1,2}[-\\/]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|ready\\s*to\\s*move|immediate)\\b|" +
-            "\\b(ready\\s*to\\s*move|immediate[\\s\\-]?possession|immediate|available\\s*now)\\b",
+            "\\d{1,2}[-\\/]\\d{1,2}[-\\/]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|ready\\s*to\\s*move|immediate(?:ly)?)\\b|" +
+            "\\b(ready\\s*to\\s*move|immediate[\\s\\-]?possession|immediate(?:ly)?|available\\s*now|available\\s*immediately|immediately\\s*available)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern RELATIVE_POSSESSION_PATTERN = Pattern.compile(
             "\\b(?:(?:available|availability|possession|ready(?:\\s*to\\s*move)?|move\\s*in)\\s*(?:is\\s*)?(?:after|in|from)\\s*|(?:after|in)\\s+)(\\d{1,2})\\s*(days?|weeks?|months?|years?|mahina|mahine)\\b",
@@ -897,28 +1001,41 @@ public class PropertyParserService {
 
         // 7. Amenities Extractor
         List<String> amenities = new ArrayList<>();
-        if (cleanLower.contains("balcony"))
+        if (cleanLower.contains("balcony") && !amenities.contains("Balcony & City View"))
             amenities.add("Balcony & City View");
-        if (cleanLower.contains("garden"))
+        if (cleanLower.contains("garden") && !amenities.contains("Private Garden"))
             amenities.add("Private Garden");
-        if ("Fully Furnished".equalsIgnoreCase(furnishingStatus))
+        if ("Fully Furnished".equalsIgnoreCase(furnishingStatus) && !amenities.contains("Fully Furnished"))
             amenities.add("Fully Furnished");
-        if (cleanLower.contains("parking"))
+        if (cleanLower.contains("parking") && !amenities.contains("Covered Parking"))
             amenities.add("Covered Parking");
-        if (cleanLower.contains("gated"))
+        if ((cleanLower.contains("gated") || SECURITY_AMENITY_PATTERN.matcher(input).find())
+                && !amenities.contains("Gated Security"))
             amenities.add("Gated Security");
-        if (cleanLower.contains("lift"))
+        if (cleanLower.contains("lift") && !amenities.contains("High-Speed Lift"))
             amenities.add("High-Speed Lift");
-        if (cleanLower.contains("gym"))
+        if (cleanLower.contains("gym") && !amenities.contains("Fitness Center & Gym"))
             amenities.add("Fitness Center & Gym");
-        if (cleanLower.contains("swimming") || cleanLower.contains("pool"))
+        if ((cleanLower.contains("swimming") || cleanLower.contains("pool")) && !amenities.contains("Swimming Pool"))
             amenities.add("Swimming Pool");
+        if (CCTV_AMENITY_PATTERN.matcher(input).find() && !amenities.contains("CCTV"))
+            amenities.add("CCTV");
+        if (POWER_BACKUP_AMENITY_PATTERN.matcher(input).find() && !amenities.contains("Power Backup"))
+            amenities.add("Power Backup");
+        if (CLUBHOUSE_AMENITY_PATTERN.matcher(input).find() && !amenities.contains("Clubhouse"))
+            amenities.add("Clubhouse");
 
         List<String> conflicts = detectConflicts(normalized);
         if (possession.status() == AvailabilityStatus.AVAILABLE_FROM_DATE
                 && possession.availableFrom() != null
                 && possession.availableFrom().isBefore(LocalDate.now(clock))) {
             conflicts.add("Possession date is in the past: " + possession.displayText());
+        }
+
+        FloorInfo floorInfo = extractFloorInfo(input);
+        List<String> preferredTenants = extractPreferredTenants(input, normalized);
+        if (floorInfo.floor() != null && floorInfo.totalFloors() != null && floorInfo.floor() > floorInfo.totalFloors()) {
+            conflicts.add("Floor (" + floorInfo.floor() + ") exceeds total building floors (" + floorInfo.totalFloors() + ")");
         }
 
         // 9. Parsing must not persist inferred localities. The publish workflow
@@ -950,6 +1067,9 @@ public class PropertyParserService {
         dto.setOwnerPhone(ownerPhone != null ? ownerPhone : "Not Specified");
         dto.setVastuFacing(vastuFacing);
         dto.setAmenities(amenities);
+        dto.setFloor(floorInfo.floor());
+        dto.setTotalFloors(floorInfo.totalFloors());
+        dto.setPreferredTenants(preferredTenants);
         dto.setSavedToDatabase(newlySaved);
         dto.setRawPrompt(input);
         dto.setConflicts(conflicts);
@@ -1121,7 +1241,7 @@ public class PropertyParserService {
             }
 
             String matchedText = possessionMatcher.group(0).toLowerCase(Locale.ROOT);
-            if (matchedText.contains("ready to move") || matchedText.contains("immediate")) {
+            if (matchedText.contains("ready to move") || matchedText.contains("immediate") || matchedText.contains("available now")) {
                 immediateAvailabilityFound = true;
             }
         }
@@ -1475,7 +1595,7 @@ public class PropertyParserService {
 
         BatchAmendmentExtraction amendmentExtraction = extractTargetedAmendments(multiPrompt.trim());
         String promptWithoutAmendments = amendmentExtraction.promptWithoutAmendments();
-        String[] chunks = MULTI_PROMPT_SPLIT_PATTERN.split(promptWithoutAmendments);
+        String[] chunks = splitRawPromptIntoItems(promptWithoutAmendments);
         List<ParsedPropertyDTO> results = new ArrayList<>();
         int index = 1;
 
@@ -1513,6 +1633,20 @@ public class PropertyParserService {
         applyTargetedAmendments(results, amendmentExtraction.amendments());
 
         return results;
+    }
+
+    public String[] splitRawPromptIntoItems(String prompt) {
+        if (prompt == null || prompt.isBlank()) {
+            return new String[0];
+        }
+        if (hasExplicitMultiPromptDelimiters(prompt)) {
+            return EXPLICIT_MULTI_PROMPT_DELIMITER_PATTERN.split(prompt);
+        }
+        return FALLBACK_DOUBLE_NEWLINE_PATTERN.split(prompt);
+    }
+
+    public boolean hasExplicitMultiPromptDelimiters(String prompt) {
+        return prompt != null && EXPLICIT_MULTI_PROMPT_DELIMITER_PATTERN.matcher(prompt).find();
     }
 
     private BatchAmendmentExtraction extractTargetedAmendments(String prompt) {
@@ -1579,7 +1713,10 @@ public class PropertyParserService {
     }
 
     private int findNextBatchBoundary(String prompt, int searchStart, int candidateEnd) {
-        Matcher boundaryMatcher = MULTI_PROMPT_SPLIT_PATTERN.matcher(prompt);
+        Pattern boundaryPattern = hasExplicitMultiPromptDelimiters(prompt)
+                ? EXPLICIT_MULTI_PROMPT_DELIMITER_PATTERN
+                : MULTI_PROMPT_SPLIT_PATTERN;
+        Matcher boundaryMatcher = boundaryPattern.matcher(prompt);
         boundaryMatcher.region(searchStart, candidateEnd);
         return boundaryMatcher.find() ? boundaryMatcher.start() : candidateEnd;
     }
@@ -1755,8 +1892,287 @@ public class PropertyParserService {
             if (amenities.addAll(patch.getAmenities())) applied++;
             target.setAmenities(new ArrayList<>(amenities));
         }
+        if (patch.getFloor() != null) {
+            target.setFloor(patch.getFloor());
+            applied++;
+        }
+        if (patch.getTotalFloors() != null) {
+            target.setTotalFloors(patch.getTotalFloors());
+            applied++;
+        }
+        if (patch.getPreferredTenants() != null && !patch.getPreferredTenants().isEmpty()) {
+            target.setPreferredTenants(patch.getPreferredTenants());
+            applied++;
+        }
         return applied;
     }
+
+    private FloorInfo extractFloorInfo(String input) {
+        String lower = input.toLowerCase(Locale.ROOT);
+        boolean mightHaveFloor = lower.contains("floor") || lower.contains("flr")
+                || lower.contains("ground") || lower.contains("gf")
+                || lower.contains("g/") || lower.contains("g+")
+                || lower.contains("g +") || lower.contains("storey")
+                || lower.contains("story") || lower.contains("top");
+        if (!mightHaveFloor) {
+            return new FloorInfo(null, null);
+        }
+
+        Integer floor = null;
+        Integer totalFloors = null;
+
+        // 1. Explicit labelled values: Floor: 3, Total Floors: 7, Floor no 3, etc.
+        // Labelled total floors is checked first so "Total floor 7" is claimed as totalFloors
+        Matcher lblTotal = LABELLED_TOTAL_FLOORS_PATTERN.matcher(input);
+        if (lblTotal.find()) {
+            totalFloors = parseTotalFloorsValue(lblTotal.group(1));
+        }
+        Matcher lblFloor = LABELLED_FLOOR_PATTERN.matcher(input);
+        if (lblFloor.find()) {
+            floor = parseFloorValue(lblFloor.group(1));
+        }
+
+        // 2. Top floor with building height: "top floor of a 5-floor building"
+        if (floor == null) {
+            Matcher topBuilding = TOP_FLOOR_OF_BUILDING_PATTERN.matcher(input);
+            if (topBuilding.find()) {
+                Integer height = parseTotalFloorsValue(topBuilding.group(1));
+                if (height != null) {
+                    floor = height;
+                    if (totalFloors == null) totalFloors = height;
+                }
+            }
+        }
+
+        // 3. Top floor with ordinal: "5th and top floor"
+        if (floor == null) {
+            Matcher topOrdinal = TOP_FLOOR_WITH_ORDINAL_PATTERN.matcher(input);
+            if (topOrdinal.find()) {
+                floor = parseFloorValue(topOrdinal.group(1));
+            }
+        }
+
+        // 4. Combined Floor of Total expressions:
+        //    "Floor 3 of 7", "Floor 3/7", "3rd floor / 7 floors", "3rd floor of a 7-floor building"
+        Matcher xyMatcher = FLOOR_X_OF_Y_PATTERN.matcher(input);
+        if (xyMatcher.find()) {
+            if (floor == null) floor = parseFloorValue(xyMatcher.group(1));
+            if (totalFloors == null) totalFloors = parseTotalFloorsValue(xyMatcher.group(2));
+        }
+        if (floor == null || totalFloors == null) {
+            Matcher slashFloors = FLOOR_SLASH_FLOORS_PATTERN.matcher(input);
+            if (slashFloors.find()) {
+                if (floor == null) floor = parseFloorValue(slashFloors.group(1));
+                if (totalFloors == null) totalFloors = parseTotalFloorsValue(slashFloors.group(2));
+            }
+        }
+        if (floor == null || totalFloors == null) {
+            Matcher combMatcher = FLOOR_AND_TOTAL_PATTERN.matcher(input);
+            if (combMatcher.find()) {
+                if (floor == null) floor = parseFloorValue(combMatcher.group(1));
+                if (totalFloors == null && combMatcher.group(2) != null) {
+                    totalFloors = parseTotalFloorsValue(combMatcher.group(2));
+                }
+            }
+        }
+
+        // 5. Indian G+N Notation: G+1 -> 2, G+2 -> 3, G+3 -> 4, Ground plus 2 -> 3
+        // Sets totalFloors ONLY. Does NOT set floor!
+        if (totalFloors == null) {
+            Matcher gnMatcher = G_PLUS_N_PATTERN.matcher(input);
+            if (gnMatcher.find()) {
+                Integer n = parseWordOrNumber(gnMatcher.group(1));
+                if (n != null) {
+                    totalFloors = 1 + n;
+                }
+            }
+        }
+
+        // 6. Clear natural-language unit-floor expressions (if floor is still null)
+        if (floor == null) {
+            Matcher phrased = UNIT_FLOOR_PHRASED_PATTERN.matcher(input);
+            if (phrased.find()) {
+                floor = parseFloorValue(phrased.group(1));
+            } else {
+                Matcher standalone = STANDALONE_UNIT_FLOOR_PATTERN.matcher(input);
+                if (standalone.find()) {
+                    floor = parseFloorValue(standalone.group(1));
+                } else {
+                    Matcher digitFloor = DIGIT_FLOOR_UNIT_PATTERN.matcher(input);
+                    if (digitFloor.find()) {
+                        floor = parseFloorValue(digitFloor.group(1));
+                    } else {
+                        Matcher thirdAlone = THIRD_FLOOR_ALONE_PATTERN.matcher(input);
+                        if (thirdAlone.find()) {
+                            floor = parseFloorValue(thirdAlone.group(1));
+                        } else if (STANDALONE_GF_PATTERN.matcher(input).find()) {
+                            floor = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 7. Clear building-height / standalone total floors (if totalFloors is still null)
+        if (totalFloors == null) {
+            Matcher bldMatcher = BUILDING_HEIGHT_PATTERN.matcher(input);
+            if (bldMatcher.find()) {
+                for (int i = 1; i <= bldMatcher.groupCount(); i++) {
+                    if (bldMatcher.group(i) != null) {
+                        totalFloors = parseTotalFloorsValue(bldMatcher.group(i));
+                        if (totalFloors != null) break;
+                    }
+                }
+            }
+        }
+
+        return new FloorInfo(floor, totalFloors);
+    }
+
+    private Integer parseWordOrNumber(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String val = raw.trim().toLowerCase(Locale.ROOT);
+        if ("ground".equals(val) || "gf".equals(val) || "g/f".equals(val)) return 0;
+        return switch (val) {
+            case "first", "1st", "1", "one" -> 1;
+            case "second", "2nd", "2", "two" -> 2;
+            case "third", "3rd", "3", "three" -> 3;
+            case "fourth", "4th", "4", "four" -> 4;
+            case "fifth", "5th", "5", "five" -> 5;
+            case "sixth", "6th", "6", "six" -> 6;
+            case "seventh", "7th", "7", "seven" -> 7;
+            case "eighth", "8th", "8", "eight" -> 8;
+            case "ninth", "9th", "9", "nine" -> 9;
+            case "tenth", "10th", "10", "ten" -> 10;
+            case "eleven", "11th", "11", "eleventh" -> 11;
+            case "twelve", "12th", "12", "twelfth" -> 12;
+            case "thirteen", "13th", "13", "thirteenth" -> 13;
+            case "fourteen", "14th", "14", "fourteenth" -> 14;
+            case "fifteen", "15th", "15", "fifteenth" -> 15;
+            case "sixteen", "16th", "16", "sixteenth" -> 16;
+            case "seventeen", "17th", "17", "seventeenth" -> 17;
+            case "eighteen", "18th", "18", "eighteenth" -> 18;
+            case "nineteen", "19th", "19", "nineteenth" -> 19;
+            case "twenty", "20th", "20", "twentieth" -> 20;
+            default -> {
+                Matcher m = LEADING_DIGITS_PATTERN.matcher(val);
+                yield m.find() ? Integer.valueOf(m.group(1)) : null;
+            }
+        };
+    }
+
+    private Integer parseFloorValue(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        if (BASEMENT_OR_LG_PATTERN.matcher(raw).find()) return null;
+        return parseWordOrNumber(raw);
+    }
+
+    private Integer parseTotalFloorsValue(String raw) {
+        Integer val = parseWordOrNumber(raw);
+        if (val != null && val >= 1) return val;
+        return null;
+    }
+
+    private List<String> extractPreferredTenants(String input, String normalized) {
+        boolean mightHaveTenants = normalized.contains("fam") || normalized.contains("profess")
+                || normalized.contains("bachelor") || normalized.contains("student")
+                || normalized.contains("any") || normalized.contains("tenant")
+                || normalized.contains("people") || normalized.contains("person")
+                || normalized.contains("employee") || normalized.contains("salaried")
+                || normalized.contains("preference") || normalized.contains("welcome")
+                || normalized.contains("restriction") || normalized.contains("allow")
+                || normalized.contains("open") || normalized.contains("all");
+        if (!mightHaveTenants) {
+            return Collections.emptyList();
+        }
+
+        Set<String> set = new LinkedHashSet<>();
+        Set<String> negated = new HashSet<>();
+
+        // 1. Detect Negations (e.g. "no bachelors", "bachelors not allowed", "no students", "students not allowed")
+        Matcher negMatcher = TENANT_NEGATION_PATTERN.matcher(input);
+        while (negMatcher.find()) {
+            String target = negMatcher.group(1) != null ? negMatcher.group(1) : negMatcher.group(2);
+            if (target != null) {
+                String norm = target.toLowerCase(Locale.ROOT);
+                if (norm.contains("bachelor")) negated.add("BACHELORS");
+                else if (norm.contains("student")) negated.add("STUDENTS");
+                else if (norm.contains("fam")) negated.add("FAMILY");
+                else if (norm.contains("working") || norm.contains("professional") || norm.contains("employee") || norm.contains("salaried")) negated.add("WORKING_PROFESSIONALS");
+            }
+        }
+
+        // 2. Sanitize noise location context (e.g. "near students hostel", "family restaurant", "working professionals area")
+        String sanitized = TENANT_NOISE_LOCATION_PATTERN.matcher(input).replaceAll(" ");
+
+        // 3. Match explicit phrased preferences (e.g. "Preferred for family or working professionals", "Looking for family", "Suitable for family", "Ideal for working professionals")
+        Matcher phraseMatcher = PREFERRED_TENANT_PHRASE_PATTERN.matcher(sanitized);
+        while (phraseMatcher.find()) {
+            String phrase = phraseMatcher.group(1).toLowerCase(Locale.ROOT);
+            if (phrase.contains("no preference") || phrase.contains("any") || phrase.contains("anyone") || phrase.contains("open to all") || phrase.contains("open for all") || phrase.contains("all welcome") || phrase.contains("everyone welcome") || phrase.contains("no restriction") || phrase.trim().equals("all")) {
+                set.add("ANY");
+            }
+            Matcher tokenMatcher = TENANT_ORDERED_TOKEN_PATTERN.matcher(phrase);
+            while (tokenMatcher.find()) {
+                addTenantCategoryFromToken(set, tokenMatcher.group(1));
+            }
+        }
+
+        // 4. Match specific allowed / preferred / only suffixes (e.g. "Family only", "Families preferred", "Bachelors allowed", "Students only")
+        Matcher specificAllowed = SPECIFIC_TENANT_ALLOWED_PATTERN.matcher(sanitized);
+        while (specificAllowed.find()) {
+            addTenantCategoryFromToken(set, specificAllowed.group(1));
+        }
+
+        // 5. Match specific tenant prefixes (e.g. "Only for family", "For family", "For bachelors", "Only family")
+        Matcher prefixMatcher = SPECIFIC_TENANT_PREFIX_PATTERN.matcher(sanitized);
+        while (prefixMatcher.find()) {
+            addTenantCategoryFromToken(set, prefixMatcher.group(1));
+        }
+
+        // 6. Match multi-tenant connector chains (e.g. "Families, bachelors and working professionals", "Family or working professionals", "Family / bachelors", "Family & students")
+        Matcher chainMatcher = TENANT_CHAIN_PATTERN.matcher(sanitized);
+        while (chainMatcher.find()) {
+            Matcher tokenMatcher = TENANT_ORDERED_TOKEN_PATTERN.matcher(chainMatcher.group(0));
+            while (tokenMatcher.find()) {
+                addTenantCategoryFromToken(set, tokenMatcher.group(1));
+            }
+        }
+
+        // 7. Match ANY / No preference patterns
+        if (NO_PREFERENCE_PATTERN.matcher(sanitized).find()) {
+            set.add("ANY");
+        }
+
+        // 8. Remove any negated tenant categories
+        for (String neg : negated) {
+            set.remove(neg);
+        }
+
+        // 9. Enforce ANY exclusivity: if ANY is present with specific tenant types, remove ANY
+        if (set.contains("ANY") && set.size() > 1) {
+            set.remove("ANY");
+        }
+
+        // 10. Return in deterministic order (LinkedHashSet preserves first-seen order)
+        return new ArrayList<>(set);
+    }
+
+    private void addTenantCategoryFromToken(Set<String> set, String rawToken) {
+        if (rawToken == null) return;
+        String token = rawToken.toLowerCase(Locale.ROOT);
+        if (token.contains("fam")) {
+            set.add("FAMILY");
+        } else if (token.contains("working") || token.contains("professional") || token.contains("employee") || token.contains("salaried")) {
+            set.add("WORKING_PROFESSIONALS");
+        } else if (token.contains("bachelor") || token.contains("single")) {
+            set.add("BACHELORS");
+        } else if (token.contains("student")) {
+            set.add("STUDENTS");
+        }
+    }
+
+    private record FloorInfo(Integer floor, Integer totalFloors) {}
 
     private void replaceFieldConflicts(ParsedPropertyDTO target, ParsedPropertyDTO patch, String field) {
         List<String> retained = new ArrayList<>();

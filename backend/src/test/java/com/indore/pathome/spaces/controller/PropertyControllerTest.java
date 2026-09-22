@@ -610,4 +610,103 @@ public class PropertyControllerTest {
         assertEquals(202L, draft.getPublishedPropertyId());
         assertEquals("PUBLISHING", draft.getStatus());
     }
+
+    @Test
+    public void createFromParsedPromptMapsFloorTotalFloorsAndPreferredTenants() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setBhk("2 BHK");
+        dto.setType("Flat");
+        dto.setStatus("LIVE");
+        dto.setCity("Indore");
+        dto.setSector("Bhawarkua");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(21000.0);
+        dto.setDepositVal("₹42,000 Security Deposit");
+        dto.setFloor(3);
+        dto.setTotalFloors(7);
+        dto.setPreferredTenants(List.of("FAMILY", "WORKING_PROFESSIONALS"));
+
+        when(listingRepository.save(any(Listing.class))).thenAnswer(invocation -> {
+            Listing listing = invocation.getArgument(0);
+            listing.setId(301L);
+            return listing;
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+        assertEquals(200, response.getStatusCode().value());
+
+        var captor = org.mockito.ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository, atLeastOnce()).save(captor.capture());
+        RentalDetails saved = (RentalDetails) captor.getValue();
+        assertEquals(3, saved.getFloorNumber());
+        assertEquals(7, saved.getTotalFloors());
+        assertEquals("FAMILY,WORKING_PROFESSIONALS", saved.getPreferredTenant());
+        assertEquals(Boolean.TRUE, saved.getBachelorAllowed(), "bachelorAllowed must NOT be modified or derived from preferredTenants");
+    }
+
+    @Test
+    public void createFromParsedPromptPreservesFloorZero() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setBhk("1 BHK");
+        dto.setType("Flat");
+        dto.setStatus("LIVE");
+        dto.setCity("Indore");
+        dto.setSector("Vijay Nagar");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(15000.0);
+        dto.setDepositVal("₹30,000 Security Deposit");
+        dto.setFloor(0);
+        dto.setTotalFloors(4);
+        dto.setPreferredTenants(List.of("ANY"));
+
+        when(listingRepository.save(any(Listing.class))).thenAnswer(invocation -> {
+            Listing listing = invocation.getArgument(0);
+            listing.setId(302L);
+            return listing;
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+        assertEquals(200, response.getStatusCode().value());
+
+        var captor = org.mockito.ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository, atLeastOnce()).save(captor.capture());
+        RentalDetails saved = (RentalDetails) captor.getValue();
+        assertEquals(0, saved.getFloorNumber(), "Ground Floor 0 must be preserved");
+        assertEquals(4, saved.getTotalFloors());
+        assertEquals("ANY", saved.getPreferredTenant());
+        assertEquals(Boolean.TRUE, saved.getBachelorAllowed(), "bachelorAllowed must NOT be modified by preferredTenants");
+    }
+
+    @Test
+    public void createFromParsedPromptBackwardCompatibilityWhenFloorAndTenantAbsent() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setBhk("3 BHK");
+        dto.setType("House");
+        dto.setStatus("LIVE");
+        dto.setCity("Indore");
+        dto.setSector("Saket");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(35000.0);
+        dto.setDepositVal("₹70,000 Security Deposit");
+        // floor, totalFloors, preferredTenants absent (null)
+
+        when(listingRepository.save(any(Listing.class))).thenAnswer(invocation -> {
+            Listing listing = invocation.getArgument(0);
+            listing.setId(303L);
+            return listing;
+        });
+
+        ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
+        assertEquals(200, response.getStatusCode().value());
+
+        var captor = org.mockito.ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository, atLeastOnce()).save(captor.capture());
+        RentalDetails saved = (RentalDetails) captor.getValue();
+        assertNull(saved.getFloorNumber());
+        assertNull(saved.getTotalFloors());
+        assertNull(saved.getPreferredTenant());
+    }
 }

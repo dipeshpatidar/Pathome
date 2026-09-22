@@ -42,6 +42,7 @@ import { getErrorDetails, getErrorMessage } from '../services/apiError';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, Property, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
+import { composeNextPropertyPrompt, scrollPromptTextareaToNextProperty } from '../utils/propertyPromptComposer';
 
 import { RevenueAreaChart } from './analytics/RevenueAreaChart';
 import { FunnelStepGraph } from './analytics/FunnelStepGraph';
@@ -51,8 +52,8 @@ import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
 import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 import { FailedUploadsPanel } from './FailedUploadsPanel';
 import { DraftManagementBar } from './DraftManagementBar';
-import { usePropertyDraft } from '../hooks/usePropertyDraft';
-import { draftService, DraftMedia } from '../services/draftService';
+import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
+import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
 
 interface MasterAdminDashboardProps {
   activeTab: string;
@@ -236,6 +237,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [leaves, setLeaves] = useState(mockLeaveRequests);
 
   const uploadConsoleRef = useRef<HTMLDivElement>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [bhkConfigs, setBhkConfigs] = useState<any[]>(initialBhkConfigs);
   const [newBhkLabel, setNewBhkLabel] = useState('');
   const [failedUploadsCount, setFailedUploadsCount] = useState<number>(0);
@@ -329,6 +331,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       Boolean(lastExtractedResult?.rawInput && MULTIPLE_PROPERTY_ENTRY_PATTERN.test(lastExtractedResult.rawInput));
 
     if (isMultiple) {
+      singleDraft.cancelAutosave();
+      if (singleDraft.currentDraftId && !selectedBatchDraftId) {
+        setSelectedBatchDraftId(singleDraft.currentDraftId);
+      }
       const details =
         newBhkLabel.trim() ||
         (typeof lastExtractedResult?.rawInput === 'string' ? lastExtractedResult.rawInput.trim() : '') ||
@@ -399,13 +405,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     if (!payload) return;
     if (typeof payload.newBhkLabel === 'string') {
       setNewBhkLabel(payload.newBhkLabel);
-      if (MULTIPLE_PROPERTY_ENTRY_PATTERN.test(payload.newBhkLabel)) {
-        setBatchDetails(payload.newBhkLabel);
-        setUploadMode('multiple');
-      }
-    }
-    if (payload.draftType === 'BATCH' || payload.isBatch) {
-      setUploadMode('multiple');
     }
     if (payload.lastExtractedResult !== undefined) {
       setLastExtractedResult(payload.lastExtractedResult);
@@ -466,14 +465,80 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     setUploadMode('single');
   }, [revokeAllMediaPreviewUrls]);
 
+  const lastRecoveryToastRef = useRef<number>(0);
+
+  const handleDraftAlreadyPublished = useCallback((
+    detail?: DraftDetail | null,
+    completedCount?: number,
+    completedListings?: CompletedListingSummary[]
+  ) => {
+    // Prevent duplicate toasts if called by both onSelectDraft and studio mount within 2s
+    if (lastRecoveryToastRef.current && Date.now() - lastRecoveryToastRef.current < 2000) {
+      return;
+    }
+    lastRecoveryToastRef.current = Date.now();
+
+    let count = completedCount || 0;
+    let listings = completedListings || [];
+
+    if (count === 0 && detail?.payload && detail.payload !== '{}') {
+      try {
+        const parsed = JSON.parse(detail.payload);
+        if (Array.isArray(parsed.completedListings)) {
+          listings = parsed.completedListings;
+          count = listings.length;
+        }
+      } catch {}
+    }
+    if (count === 0 && detail?.publishedPropertyId) {
+      count = 1;
+    }
+
+    const title = 'Publishing recovered';
+    let message = '';
+    if (count > 0) {
+      message = `All ${count} ${count === 1 ? 'property was' : 'properties were'} already published successfully.`;
+    } else {
+      message = 'This draft was already fully published.';
+    }
+
+    let secondaryDetail: string | undefined = undefined;
+    if (listings.length > 0) {
+      const listingIds = listings.map(l => l.listingId ? `#${l.listingId}` : '').filter(Boolean);
+      if (listingIds.length > 0) {
+        secondaryDetail = `Listings: ${listingIds.join(', ')}`;
+      }
+    } else if (detail?.publishedPropertyId) {
+      secondaryDetail = `Listing #${detail.publishedPropertyId}`;
+    }
+
+    setSelectedBatchDraftId(null);
+    setUploadMode('single');
+    notifySuccess(title, message, secondaryDetail, 'PROPERTY');
+  }, [notifySuccess]);
+
   const singleDraft = usePropertyDraft({
     draftType: 'SINGLE',
     onRestoreDraft: handleRestoreSingleDraft,
-    onClearDraftState: handleClearSingleDraftState
+    onClearDraftState: handleClearSingleDraftState,
+    onDraftAlreadyPublished: handleDraftAlreadyPublished
   });
+
+  // Cancel pending singleDraft autosave immediately whenever transitioning to multiple mode
+  useEffect(() => {
+    if (uploadMode === 'multiple') {
+      singleDraft.cancelAutosave();
+    }
+  }, [uploadMode, singleDraft.cancelAutosave]);
 
   // Automatically autosave on changes
   useEffect(() => {
+    // Strictly prevent saving single draft if multiple mode is active or prompt has multiple properties
+    if (uploadMode === 'multiple' || MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)) {
+      singleDraft.cancelAutosave();
+      return;
+    }
+
     const hasMeaningfulWork = Boolean(
       newBhkLabel.trim() ||
       lastExtractedResult ||
@@ -502,6 +567,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       1
     );
   }, [
+    uploadMode,
     newBhkLabel,
     lastExtractedResult,
     editForm,
@@ -509,7 +575,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     attachedMediaTags,
     coverPhotoIndex,
     attachedMediaFiles.length,
-    singleDraft.scheduleAutosave
+    singleDraft.scheduleAutosave,
+    singleDraft.cancelAutosave
   ]);
 
   // Robust iOS-safe background scroll lock preserving viewport scroll position
@@ -1430,6 +1497,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
 
     if (MULTIPLE_PROPERTY_ENTRY_PATTERN.test(newBhkLabel)) {
+      singleDraft.cancelAutosave();
+      if (singleDraft.currentDraftId) {
+        setSelectedBatchDraftId(singleDraft.currentDraftId);
+      }
       setBatchDetails(newBhkLabel);
       setUploadMode('multiple');
       return;
@@ -2182,6 +2253,23 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             onSelectDraft={async (id) => {
                               const selected = singleDraft.draftsList.find((d) => d.draftId === id);
                               const isBatch = selected ? selected.draftType === 'BATCH' : id.includes('batch');
+                              const isPublishing = selected?.status === 'PUBLISHING';
+
+                              // For publishing/interrupted drafts, fetch authoritative detail first to allow backend
+                              // reconciliation to run before switching modes or mounting workspaces!
+                              if (isPublishing) {
+                                try {
+                                  const detail = await draftService.getDraft(id);
+                                  if (detail && detail.status === 'PUBLISHED') {
+                                    handleDraftAlreadyPublished(detail);
+                                    await singleDraft.refreshDraftsList();
+                                    return;
+                                  }
+                                } catch (err) {
+                                  console.warn('Draft reconciliation check notice:', err);
+                                }
+                              }
+
                               if (isBatch) {
                                 setSelectedBatchDraftId(id);
                                 setUploadMode('multiple');
@@ -2193,6 +2281,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             }}
                             onStartNewDraft={() => void singleDraft.startNewDraft()}
                             onDiscardDraft={(id) => singleDraft.discardDraft(id)}
+                            onDiscardDrafts={(ids) => singleDraft.discardMultipleDrafts(ids)}
                             onResolveConflictKeepLocal={singleDraft.resolveConflictKeepLocal}
                             onResolveConflictReloadServer={singleDraft.resolveConflictReloadServer}
                             fetchingMediaProgress={mediaRestorationProgress}
@@ -2492,7 +2581,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                               transition={{ type: "spring", stiffness: 450, damping: 18 }}
                               onClick={() => {
                                 singleInputSourceRef.current = 'TYPED';
-                                handleSinglePromptChange(preset.text);
+                                const nextPrompt = composeNextPropertyPrompt(newBhkLabel, preset.text);
+                                handleSinglePromptChange(nextPrompt);
+                                if (newBhkLabel.trim()) {
+                                  scrollPromptTextareaToNextProperty(promptTextareaRef.current, nextPrompt);
+                                }
                               }}
                               className={`flex min-w-[250px] max-w-[300px] sm:min-w-[260px] flex-1 snap-start flex-col justify-between gap-1.5 rounded-xl border p-3 text-left transition-all cursor-pointer xl:min-w-0 xl:max-w-none ${
                                 isSelected
@@ -2600,6 +2693,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
                           <div className="p-3.5 sm:p-4 space-y-3">
                             <textarea
+                              ref={promptTextareaRef}
                               rows={4}
                               value={newBhkLabel}
                               onChange={(e) => handleSinglePromptChange(e.target.value)}
@@ -2637,11 +2731,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                                     whileHover={{ scale: 1.02, y: -1 }}
                                     whileTap={{ scale: 0.97 }}
                                     type="button"
-                                    onClick={() => setNewBhkLabel((details) => {
-                                      const nextDetails = `${details.trimEnd()}\n\nNext property\n`;
-                                      singleMicBaseTextRef.current = nextDetails;
-                                      return nextDetails;
-                                    })}
+                                    onClick={() => {
+                                      const nextDetails = composeNextPropertyPrompt(newBhkLabel);
+                                      handleSinglePromptChange(nextDetails);
+                                      scrollPromptTextareaToNextProperty(promptTextareaRef.current, nextDetails);
+                                    }}
                                     className="min-h-[44px] px-4 py-2.5 rounded-xl text-xs font-extrabold text-amber-200 bg-amber-950/50 hover:bg-amber-950 border border-amber-500/40 hover:border-amber-400/70 transition-all cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
                                   >
                                     <Layers className="w-4 h-4 text-amber-400 shrink-0" />
@@ -3477,6 +3571,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                     initialDetails={batchDetails}
                     initialDraftId={selectedBatchDraftId}
                     initialMediaFiles={attachedMediaFiles}
+                    onAlreadyPublished={(detail, count, listings) => {
+                      handleDraftAlreadyPublished(detail, count, listings);
+                      void singleDraft.refreshDraftsList();
+                    }}
                     onClose={() => {
                       setSelectedBatchDraftId(null);
                       setUploadMode('single');
@@ -3506,6 +3604,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                       setCoverPhotoIndex(0);
                       setUploadPipeline(prev => ({ ...prev, active: false, stage: 'idle' }));
                       setUploadMode('single');
+                    }}
+                    onPartialSuccess={(publishedCount, remainingCount) => {
+                      notifySuccess(
+                        `${publishedCount} ${publishedCount === 1 ? 'property' : 'properties'} published`,
+                        `${publishedCount} ${publishedCount === 1 ? 'property was' : 'properties were'} published. ${remainingCount} ${remainingCount === 1 ? 'property remains' : 'properties remain'} in draft.`,
+                        undefined,
+                        'PROPERTY'
+                      );
                     }}
                   />
                 )}

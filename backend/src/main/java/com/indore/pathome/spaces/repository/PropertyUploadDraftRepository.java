@@ -27,9 +27,10 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
     @Query("SELECT d FROM PropertyUploadDraft d WHERE d.draftId = :draftId")
     Optional<PropertyUploadDraft> findByDraftIdForUpdate(@Param("draftId") String draftId);
 
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE PropertyUploadDraft d SET d.updatedAt = :now WHERE d.draftId = :draftId AND d.adminId = :adminId")
     int touchUpdatedAt(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("now") LocalDateTime now);
+
 
     List<PropertyUploadDraft> findAllByStatusNotInAndUpdatedAtBefore(
             List<String> statuses,

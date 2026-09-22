@@ -97,6 +97,12 @@ public abstract class Listing {
     @Column(name = "origin_draft_id", length = 64)
     private String originDraftId;
 
+    @Column(name = "floor_number")
+    private Integer floorNumber;
+
+    @Column(name = "total_floors")
+    private Integer totalFloors;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -182,6 +188,12 @@ public abstract class Listing {
 
     public String getOriginDraftId() { return originDraftId; }
     public void setOriginDraftId(String originDraftId) { this.originDraftId = originDraftId; }
+
+    public Integer getFloorNumber() { return floorNumber; }
+    public void setFloorNumber(Integer floorNumber) { this.floorNumber = floorNumber; }
+
+    public Integer getTotalFloors() { return totalFloors; }
+    public void setTotalFloors(Integer totalFloors) { this.totalFloors = totalFloors; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

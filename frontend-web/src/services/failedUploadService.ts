@@ -1,5 +1,5 @@
 import { API_ROOT_URL } from '../config/endpoints';
-import { ApiRequestError, createApiRequestError } from './apiError';
+import { ApiRequestError, createApiRequestError, notifySessionExpired } from './apiError';
 
 const BASE_URL = `${API_ROOT_URL}/admin/failed-uploads`;
 
@@ -27,6 +27,7 @@ export interface FailedUpload {
 const getAuthHeaders = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
   if (!token) {
+    notifySessionExpired();
     throw new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
   }
   return { Authorization: `Bearer ${token}` };

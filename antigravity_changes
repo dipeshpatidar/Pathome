@@ -4,6 +4,334 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+---
+
+## 2026-09-22 13:52 IST — Final Pathome Acceptance Test: Physical Network Interruption During Batch Publish
+
+### Why this work was requested
+- User requested execution of the comprehensive acceptance test for real physical network interruption and recovery during batch publishing in Pathome Spaces.
+- Critical constraints: Physical network interruption performed strictly by the user (no artificial simulation, no CDP setOffline, no request interception), strictly new draft (preserving all historical drafts and listings), exactly 4 properties, exactly 13 staged media files with verified valid video (`property_walkthrough_1.mp4`, rejecting corrupt `property_walkthrough_4.mp4`), zero source code modifications, zero manual DB/storage edits, no git commit/push.
+
+### Files / Areas Involved
+- Browser automation & live session testing on `http://localhost:5173/admin`
+- Backend Spring Boot & PostgreSQL database verification (`listings`, `property_media_assets`, `property_draft_media`, `property_upload_drafts`)
+- Private B2 draft media staging & Cloudinary permanent media storage verification
+
+### Summary of Outcome
+1. **Phase 1 Baseline**: Baseline highest listing ID recorded as 65 (listing count: 54). Historical drafts #45, #44, #43, #41, #40, #34, #23, #20 preserved intact with zero errors in logs.
+2. **Phase 2 Batch Creation**: Brand new fresh batch created via UI using approved 4-property prompt. Ingestion studio parsed exactly 4 property review cards. Fresh draft ID `draft-single-muccntb0-7l4pr` (DB #48) created with `item_count = 4`.
+3. **Phase 3 Media Staging**: Attached exactly 13 media files across 4 properties (Property 1: 3 images, Property 2: 3 images, Property 3: 3 images, Property 4: 3 images + 1 verified valid video `property_walkthrough_1.mp4`). Verified all 13 media items successfully staged in B2 private storage (HTTP 200 streams confirmed). Durable draft media IDs, living room cover flags, and room tags confirmed.
+4. **Phase 4 & Checkpoint #1**: Published via normal UI "Publish all 4 properties". Monitored in real-time until Property 1 (Listing #66) completed with all 3 permanent media uploaded to Cloudinary, and Property 2 was in flight. Automated progression halted immediately. Prompted user with mandatory checkpoint: `ACTION REQUIRED FROM YOU — TURN INTERNET OFF NOW`. User confirmed `NETWORK OFF`.
+5. **Phase 5 Offline Observation & Checkpoint #2**: Observed application state and verified zero false success or duplicate listings. Prompted user with mandatory checkpoint: `ACTION REQUIRED FROM YOU — TURN INTERNET BACK ON NOW`. User confirmed `NETWORK ON`.
+6. **Phase 6 & 7 Verification**: Authoritative PostgreSQL records confirmed:
+   - Exactly 4 new listings created: #66, #67, #68, #69 (zero duplicates).
+   - Exactly 13 permanent media assets created in `property_media_assets` with full CDN URLs (zero duplicates, zero ghost media).
+   - Video `property_walkthrough_1.mp4` successfully made permanent and unique on Listing #69.
+   - Primary cover photos (`is_primary_cover = true`) and room tags (Living Room, Bedroom, Kitchen, Bathroom) preserved on every listing.
+   - Final draft #48 status: `PUBLISHED`, `item_count = 0` (tombstone pattern).
+   - B2 staging cleanup executed cleanly (`property_draft_media` count = 0).
+   - Zero optimistic locking exceptions, zero 409 conflicts, zero reconciliation failures, zero unexpected 5xx errors.
+   - Source code modified: NO. Database manually modified: NO. Storage manually modified: NO. Git commit/push: NO.
+
+---
+
+## 2026-09-22 01:18 IST — Approved Feature Implementation: Floor + Total Floors + Preferred Tenants
+
+### Why this work was requested
+- User requested end-to-end support for `Floor`, `Total Floors`, and `Preferred Tenants` across the entire Pathome stack: natural-language prompt → parser → review card → manual editing → draft autosave → hard refresh → Continue → publish → PostgreSQL → backend response → frontend Property model/display.
+- Critical business invariant: `bachelorAllowed` must NEVER be modified, derived, synchronized, or changed based on `preferredTenants`. They are independent fields.
+- Backward compatibility: All database columns nullable. Missing fields in legacy drafts/listings must safely map to null or empty arrays without breaking changes.
+- Numeric 0 (Ground Floor) must strictly survive rendering, editing, draft autosave, hard-refresh restoration, and publishing without being dropped by falsy checks.
+
+### Files created / modified
+
+**Database Migration**
+- `backend/src/main/resources/db/migration/V10__add_floor_and_tenant_preference.sql` [NEW]:
+  - `ALTER TABLE listings ADD COLUMN IF NOT EXISTS floor_number INTEGER NULL;`
+  - `ALTER TABLE listings ADD COLUMN IF NOT EXISTS total_floors INTEGER NULL;`
+  - `ALTER TABLE rental_details ADD COLUMN IF NOT EXISTS preferred_tenant VARCHAR(100) NULL;`
+
+**Backend Entities & DTOs**
+- `backend/src/main/java/com/indore/pathome/spaces/entity/Listing.java`:
+  - Added `@Column(name = "floor_number") private Integer floorNumber;` and `@Column(name = "total_floors") private Integer totalFloors;` with getters/setters.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/RentalDetails.java`:
+  - Added `@Column(name = "preferred_tenant") private String preferredTenant;` with getters/setters. `bachelorAllowed` remains completely independent.
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`:
+  - Added `Integer floor; Integer totalFloors; List<String> preferredTenants;` with getters/setters.
+
+**Backend Services & Controllers**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`:
+  - Added pre-compiled static regexes: `FLOOR_AND_TOTAL_PATTERN`, `FLOOR_X_OF_Y_PATTERN`, `STANDALONE_TOTAL_FLOORS_PATTERN`, `LEADING_DIGITS_PATTERN`, `PREFERRED_TENANT_PHRASE_PATTERN`, `STUDENTS_ALLOWED_PATTERN`, `NO_PREFERENCE_PATTERN`, `FAMILY_OR_PROFESSIONALS_PATTERN`, `SPECIFIC_TENANT_ALLOWED_PATTERN`.
+  - Implemented `extractFloorInfo()` supporting: "3rd floor of a 7-floor building" (floor=3, totalFloors=7), "Ground floor" (floor=0), "Floor 4 of 10", "5th floor out of 12 floors", "3rd floor", "1st floor of 8".
+  - Implemented `extractPreferredTenants()` extracting canonical tokens: `FAMILY`, `WORKING_PROFESSIONALS`, `BACHELORS`, `STUDENTS`, `ANY`.
+  - Implemented ANY exclusivity normalization: If `ANY` is present alongside specific tenant preferences, `ANY` is excluded.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - Added `VALID_PREFERRED_TENANTS` canonical set (`FAMILY`, `WORKING_PROFESSIONALS`, `BACHELORS`, `STUDENTS`, `ANY`).
+  - Added validation: floor >= 0, totalFloors >= 1; floor <= totalFloors (exempted for landed types: PLOT, LAND, HOUSE, VILLA).
+  - Updated `createProperty` and `buildRentalDetailsFromDTO` to map `floorNumber`, `totalFloors`, and comma-separated `preferredTenant`. `bachelorAllowed` is completely untouched.
+  - Updated `convertMapToParsedDTO` to map `floor`, `totalFloors`, `preferredTenants`.
+
+**Frontend Model & Services**
+- `frontend-web/src/types/index.ts`:
+  - Added `floor?: number | null; totalFloors?: number | null; preferredTenant?: string | null;` to `Property` interface.
+- `frontend-web/src/services/propertyService.ts`:
+  - Mapped `floor`, `totalFloors`, `preferredTenant` in `getActiveProperties()`.
+
+**Frontend Review Cards & Ingestion Studio**
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Extended `StagedProperty` interface: `floor?: number | null; totalFloors?: number | null; preferredTenants?: string[];`.
+  - Added `validateCard` rules for floor (>= 0), totalFloors (>= 1), and floor <= totalFloors.
+  - Added `PreferredTenantEditor` compact chip multi-select with ANY exclusivity toggle behavior: selecting `ANY` clears specific selections; selecting specific selections clears `ANY`.
+  - Updated draft restoration mapping to strictly preserve numeric 0 (`floor: typeof card.floor === 'number' ? card.floor : ...`).
+  - Integrated `Floor` and `Total Floors` number inputs and `Preferred Tenant` multi-select in Property and Commercial Details for both mobile and desktop views.
+  - Updated `handlePublishAll` payload builder to include `floor`, `totalFloors`, and `preferredTenants`.
+
+**Frontend Showcase Display**
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Added `formatFloorDisplay` (e.g. "Ground Floor", "3rd Floor of 7", "10 Floors Building") and `formatPreferredTenantDisplay` (e.g. "Preferred: Family, Working Professionals").
+  - Cleanly displayed in specs badges only when present; zero display of "null", "undefined", or empty tags.
+
+**Automated Tests**
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServicePureTest.java`:
+  - Added `parsesFloorAndTotalFloorsVariationsAccurately` and `parsesPreferredTenantVariationsAndEnforcesAnyExclusivity`.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`:
+  - Added `testOriginalFourPropertyPromptWithFloorAndPreferredTenants` (4 properties, Bhawarkuan floor=3, totalFloors=7, preferredTenants=["FAMILY", "WORKING_PROFESSIONALS"]).
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+  - Added `createFromParsedPromptMapsFloorTotalFloorsAndPreferredTenants`, `createFromParsedPromptPreservesFloorZero`, and `createFromParsedPromptBackwardCompatibilityWhenFloorAndTenantAbsent`.
+- `frontend-web/src/tests/floorAndTenantPreferenceDraftPersistence.test.mjs` [NEW]:
+  - 8 test cases: parsed DTO mapping, floor 0 preservation, draft serialization/deserialization, ANY exclusivity, publish payload, legacy draft restoration, showcase formatting.
+
+### Verification
+- Backend tests: 261/261 PASS (`mvn test`, BUILD SUCCESS, 0 failures, 0 errors).
+- Frontend tests: 263/263 PASS (`node --test src/tests/*.test.mjs`, 11 suites, 0 failures).
+- Frontend production build: `npm run build` (`tsc && vite build`) PASS with 0 errors.
+- `git diff --check`: PASS (clean diff, 0 whitespace errors).
+- Regression check: 4-property prompt segments into exactly 4 properties (NOT 8). All monetary, availability, deposit, area, and amenity fields intact.
+- Invariant check: `bachelorAllowed` is completely independent of `preferredTenants`.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-22 00:55 IST — Targeted UI Fix: Property Descriptions Badge Uses Two-Tier Segmentation Matching Backend
+
+### Why this work was requested
+- Runtime validation of the backend parser fix confirmed that the 4-property prompt successfully parsed into exactly 4 review cards, 4 stagedCards in draft payload, and `item_count: 4` in PostgreSQL database draft #43 (`draft-batch-mublxe44-0odoe`).
+- However, the left textarea badge still displayed `"Property descriptions — 8 properties"`, while the right panel correctly displayed `"4 properties awaiting review"`.
+- Root cause: `BatchPropertyIngestionStudio.tsx` computed `detectedCount` using an independent client-side regex that still treated internal blank lines / double newlines (`\r?\n\s*\r?\n+`) as property boundaries even when explicit delimiters like `"Next property"` were present.
+- User requested targeted frontend implementation to align the property descriptions badge detector with the authoritative two-tier explicit/fallback segmentation semantics.
+
+### Files modified
+
+**Frontend — Source files**
+- `frontend-web/src/utils/propertyPromptComposer.ts`:
+  - Added `EXPLICIT_PROPERTY_DELIMITER_REGEX`, `EXPLICIT_PROPERTY_DELIMITER_SPLIT_PATTERN`, `FALLBACK_DOUBLE_NEWLINE_SPLIT_PATTERN`, and `CONTINUATION_PARAGRAPH_START_PATTERN`.
+  - Exported `countDetectedProperties(rawPrompt: string): number`:
+    - Tier 1 (Explicit Delimiters): If explicit delimiters exist (e.g. `Next property`, `Next flat`, `agli property`, `1.`, `Property #1`, `---`), splits ONLY on those explicit boundaries and preserves internal paragraph breaks.
+    - Tier 2 (No Explicit Delimiters Fallback): Splits on blank lines / double newlines, distinguishing distinct properties from continuation paragraphs (attributes like rent, area, amenities) using `CONTINUATION_PARAGRAPH_START_PATTERN`.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Imported `countDetectedProperties` from `../utils/propertyPromptComposer`.
+  - Refactored `useEffect` on `[rawPrompts]` to call `setDetectedCount(countDetectedProperties(rawPrompts))` instead of using the obsolete, fragile inline regex.
+
+**Frontend — Test files**
+- `frontend-web/src/tests/twoTierPropertyDetectionBadge.test.mjs`:
+  - Added 10 regression tests verifying:
+    1. Exact 4-property incident prompt returns exactly 4 (not 8).
+    2. Internal multiple blank lines with explicit delimiters do not increase count.
+    3. One property with normal paragraph breaks detects exactly 1.
+    4. Existing blank-line-only multi-property fallback correctly counts distinct properties.
+    5. Numbered property delimiters (1), 2., 3)) are recognized authoritatively.
+    6. "Next property" delimiter cue is recognized.
+    7. "Next flat" delimiter cue is recognized.
+    8. Hinglish delimiter cues ("agli property", "dusra flat") are recognized.
+    9. Markdown separator lines (---) are recognized as explicit boundaries.
+    10. Empty and blank prompts return 0.
+
+### Verification & Test Results
+- Frontend tests: 255/255 PASS across 11 test suites (`node --test src/tests/*.test.mjs`).
+- Backend tests: 255/255 PASS (`mvn test`) with 0 failures, 0 errors.
+- Frontend production build: `npm run build` (`tsc && vite build`) passed in 2.00s.
+- `git diff --check`: Clean (no whitespace or formatting errors).
+- Zero modifications to actual parser, card generation, draft persistence, security deposit, publish/recovery, or database.
+
+### Why this work was requested
+- Following approval of the forensic investigation for incident draft #43 (`draft-batch-mublxe44-0odoe`), implemented targeted fixes to resolve:
+  1. Multi-property segmentation splitting each property on internal blank lines / double newlines (`\n\n`) alongside explicit delimiters like `"Next property"`.
+  2. Availability pattern missing `"available immediately"`, `"immediately"`, and `"immediately available"` due to regex word boundary limitations.
+  3. Amenity extractor missing `"security"`, `"CCTV"`, `"power backup"`, and `"clubhouse"`.
+
+### Files modified
+
+**Backend — Source files**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`:
+  - Introduced two-tier prompt segmentation:
+    - Added `EXPLICIT_MULTI_PROMPT_DELIMITER_PATTERN` covering markdown rules, named property headers, numbered items, `"next property"`/`"agli property"`/`"dusra flat"`, and ordinal property phrases.
+    - Added `FALLBACK_DOUBLE_NEWLINE_PATTERN` for prompts without explicit multi-property delimiters.
+    - Created `splitRawPromptIntoItems(String prompt)`: if explicit multi-property delimiters are detected anywhere in the prompt, splits ONLY on explicit boundaries and preserves all internal paragraph formatting / blank lines (`\n\n`); falls back to double newline splitting only when no explicit delimiters exist.
+    - Updated `findNextBatchBoundary(...)` to also use explicit boundaries when present.
+  - Extended `POSSESSION_PATTERN`:
+    - Updated `immediate` to `immediate(?:ly)?` in both prefix-date and stand-alone capture groups.
+    - Added `available\s*immediately` and `immediately\s*available` to guarantee matching natural language variations.
+    - Updated `resolvePossession(...)` to match `"available now"` and `"immediately"` to `AvailabilityStatus.READY_NOW` ("Ready To Move").
+  - Extended Amenities Extractor:
+    - Added pre-compiled static patterns: `SECURITY_AMENITY_PATTERN`, `POWER_BACKUP_AMENITY_PATTERN`, `CLUBHOUSE_AMENITY_PATTERN`, `CCTV_AMENITY_PATTERN`.
+    - `SECURITY_AMENITY_PATTERN` uses negative lookahead `(?!\\s*dep(?:osit)?)` to match security amenities (guards, services, etc.) without false positive extraction from financial "security deposit" phrases.
+    - Maps canonical amenities: `"Gated Security"`, `"CCTV"`, `"Power Backup"`, `"Clubhouse"`.
+    - Added duplicate check guards before appending to the amenities list.
+
+**Backend — Test files**
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServiceBatchTest.java`:
+  - Added 5 comprehensive regression tests:
+    1. `testExactFourPropertyIncidentFormatWithInternalBlankLines`: Reproduces the exact 4-property incident prompt (Bhawarkuan, Rau, Mari Mata Square, Nipania) with internal blank lines and "Next property" separators. Verifies result count is exactly 4 (not 8) and verifies all parsed attributes across all 4 properties.
+    2. `testMultipleParagraphBreaksWithinOnePropertyWithExplicitDelimiters`: Verifies multiple internal blank lines within a single property are preserved.
+    3. `testNoExplicitDelimiterFallbackDoubleNewline`: Verifies backward-compatible double-newline splitting when no explicit delimiters are present.
+    4. `testAvailabilityVariationsImmediateAndDates`: Verifies all immediate availability variations ("Property is available immediately", "Available immediately", "Immediately available", "ready to move", "immediate possession", "available now").
+    5. `testExtendedAmenitiesRecognitionAndSecurityDepositIsolation`: Verifies all canonical amenities are extracted and financial "security deposit" does not trigger "Gated Security".
+
+### Verification & Test Results
+- Backend tests: 255/255 PASS (5 new unit & regression tests added, 0 failures, 0 errors).
+- Frontend tests: 244/244 PASS across 11 test suites (`node --test src/tests/*.test.mjs`).
+- Frontend production build: `tsc && vite build` built successfully in 2.03s.
+- `git diff --check`: Clean (no whitespace or formatting errors).
+- No schema changes, no database migrations, no floor/tenant field changes.
+- Preserved historical drafts (#43, #40, etc.), B2, Cloudinary, and publish/recovery code untouched.
+
+### Why this work was requested
+- User entered a 4-property prompt (Bhawarkuan, Rau, Mari Mata Square, Nipania) separated by "Next property".
+- UI and Database showed "Batch (8 properties)" (draft row 43, `draft-batch-mublxe44-0odoe`).
+- Property #1 visibly failed to parse rent, deposit, area, bathrooms, furnishing, facing, availability, and amenities.
+- Strict read-only investigation requested to determine first divergence, 8-card pattern, parser rules, and test gaps without modifying source code, tests, or database.
+
+### Key findings
+1. **8-Property Root Cause**:
+   - `PropertyParserService.java` line 52 contains `MULTI_PROMPT_SPLIT_PATTERN` with `(?:\r?\n\s*\r?\n+)`.
+   - The user prompt formatted each property with a paragraph break (`\n\n`) between the headline sentence and the attribute details block.
+   - The backend split on every double newline, splitting each of the 4 properties into 2 separate items:
+     - Part 1: Headline (Layout, Type, Locality, City, Landmark).
+     - Part 2: Details (Rent, Deposit, Area, Bathrooms, Furnishing, Facing, Amenities).
+   - This produced 8 cards in draft payload and `item_count: 8` in the database.
+2. **Missing Attributes on Card #1**:
+   - Card #1 was solely Part 1 of Property #1. The rental attributes were isolated in Card #2.
+3. **Genuine Parser Gaps Identified**:
+   - Availability: `POSSESSION_PATTERN` has `\bimmediate\b`, which fails to match `immediately` due to word boundary `\b`.
+   - Amenities: Hardcoded keyword list misses "security", "CCTV", "power backup", "clubhouse".
+   - Floor and Tenant preferences are not modeled in `ParsedPropertyDTO` or database entity.
+4. **Test Gap**:
+   - `PropertyParserServiceBatchTest` only tested single-paragraph properties separated by "Next property", never multi-paragraph listings with internal `\n\n`.
+
+### Outcome & Safety
+- Full forensic report completed.
+- Source code modified: NO.
+- Tests modified: NO.
+- Database modified: NO.
+- B2/Cloudinary modified: NO.
+- Commit/Push: NOT PERFORMED.
+
+---
+
+## 2026-09-22 00:00 IST — P0 Implementation: Fix Normal-Publish Reconciliation Race & False Network Interrupted Error
+
+### Why this work was requested
+- Investigation of diagnostic draft #40 (`draft-batch-mub825hk-6jtw7`) revealed a concurrency race during batch publication:
+  1. Frontend started publishing batch properties and transferred media.
+  2. Frontend React state changes (`stagedCards`, `activeCardId`) during the publish loop scheduled debounced autosaves.
+  3. Reconcile-batch started on backend, holding open a database transaction while external B2 network DELETE calls were performed.
+  4. Concurrently, a scheduled debounced autosave fired from the frontend carrying an older version number.
+  5. The autosave triggered version drift or race, causing `StaleObjectStateException` / HTTP 500 in reconciliation.
+  6. Frontend catch block in `BatchPropertyIngestionStudio.tsx` misclassified server errors as network interruption ("Publishing interrupted"), showing a false error despite successful publication of listings.
+
+### Files modified
+
+**Backend — Modified files**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - Refactored `reconcileBatchDraft`:
+    - Moved B2 object storage network I/O completely outside the database transaction.
+    - Used programmatic `TransactionTemplate.execute(...)` for the inner DB phase (`reconcileBatchDraftInTx`) to guarantee a true transactional boundary, eliminating Spring AOP proxy self-invocation bypass issues.
+    - Wrapped draft row access with pessimistic write lock (`findByDraftIdForUpdate`) inside the short DB transaction, preventing concurrent version increments during reconciliation.
+    - Ensured DB reconciliation failure aborts before any B2 deletion.
+    - Ensured B2 cleanup failure post-commit is non-fatal and cannot roll back completed DB reconciliation.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - Maintained `@Version` optimistic locking protection on the `DRAFT -> PUBLISHING` transition: uses standard `draftRepository.findByDraftId(bDraftId)` and `draftRepository.save(draft)`. No unversioned bulk updates.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java`:
+  - Preserved standard JPA repository methods without unversioned status transitions.
+
+**Frontend — Modified files**
+- `frontend-web/src/hooks/usePropertyDraft.ts`:
+  - Added `isSuspendedRef`, `suspendAutosave()`, and `resumeAutosave()` to the hook:
+    - `suspendAutosave()` immediately marks autosave as suspended, clears any pending debounce timers, and resets `pendingPayload`.
+    - While suspended, any invocations of `scheduleAutosave` or `flushPendingSave` return immediately without scheduling timers or sending network requests.
+    - `resumeAutosave()` safely resumes autosave for subsequent user interactions.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Guarded autosave `useEffect` with `if (isPublishing) return;`.
+  - In `handlePublishAll` and `handleRetryCardMedia`:
+    - Called `batchDraft.suspendAutosave()` at publish initiation to prevent publish-loop state mutations (`setPublishingCardId`, `setActiveCardId`, `setStagedCards`) from scheduling autosaves.
+    - Defensively called `batchDraft.cancelAutosave()` immediately before calling `onBatchPublished` (reconcile).
+    - In `finally` block, called `batchDraft.resumeAutosave()` to restore autosave capability on any exit (success or error).
+  - Error classification:
+    - Distinguishes true transport network loss (`!navigator.onLine`, `TypeError: Failed to fetch / NetworkError`, `status === 0`) -> Displays `"Publishing interrupted"`.
+    - HTTP 500 / HTTP 409 / server reconciliation failures -> Displays `"Properties published"` / `"Unable to publish the selected properties"`, strictly avoiding false "network interrupted" claims.
+
+**Tests — New files**
+- `frontend-web/src/tests/batchPublishAutosaveLifecycleAndReconciliation.test.mjs`:
+  - Added 8 comprehensive regression tests verifying:
+    1. Publish start cancels pending autosave and suspends autosave.
+    2. Publish loop state mutations do not issue autosaves.
+    3. Pending autosave is defensively cancelled before reconcile.
+    4. Autosave resumes normally after recoverable publish exit.
+    5. Real transport failure displays "Publishing interrupted".
+    6. HTTP 500 error does NOT claim network interruption.
+    7. HTTP 409 error does NOT claim network interruption.
+    8. Post-reconcile autosave correctly uses authoritative updated version.
+
+### Outcome
+- Concurrency race eliminated: B2 DELETE network calls run strictly post-commit outside the DB transaction.
+- Frontend autosave is cleanly suspended throughout publishing and reconciliation, and resumes on completion or recoverable failure.
+- Optimistic locking remains 100% intact and `@Version` protects `PUBLISHING` status.
+- Zero false "Publishing interrupted" error dialogs on HTTP 500 or 409.
+- Diagnostic drafts (#40, #41, #39, #38, #34) and listings (#50, #51, #52, #53, #54) in PostgreSQL and Backblaze B2 remain completely untouched.
+
+### Verification
+- Frontend unit tests: 244/244 PASS across 11 test suites (`node --test src/tests/*.test.mjs`).
+- Backend unit tests: 250/250 PASS (`mvn test` in `backend`, BUILD SUCCESS, 0 failures, 0 errors).
+- Frontend production build: `npm run build` (`tsc && vite build`) succeeded in 1.99s with 0 errors.
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 (IST) — P0 Fix: Prevent Ghost Media Accumulation After Batch Draft Restore
+
+### Why this work was requested
+A real hard-refresh failure was observed on the 3-property BATCH draft `draft-batch-muaw982e-zqvsz` (DB id=38). After clicking Continue (hard refresh → load draft), Property 3 (Scheme 140) displayed 7 media slots instead of the correct 3, with 4 slots showing broken/empty thumbnails. A full forensic investigation (read-only, no DB/B2 mutations) was conducted before any fix was approved.
+
+### Forensic Findings (confirmed from actual runtime data)
+
+**Expected counts:** property_draft_media DB: P1=4, P2=4, P3=3 Total=11 | B2: P1=4, P2=4, P3=3 Total=11 | Backend response: P1=4, P2=4, P3=3 Total=11 — all correct.
+
+**Corrupted counts:** Persisted draft payload and frontend after restore: P1=4, P2=4, P3=7 Total=15 — WRONG. 4 ghost entries for P3 (dm-i27jgyh5muax8gr3_0, dm-c4ilwt5emuax8gr4_1, dm-040rjkiomuax8gr4_2, dm-i2n6696zmuax8gr4_3) had no DB row and no B2 binary. HTTP 403/404 confirmed on B2.
+
+**Root cause (confirmed):** Autosave serializer used `.filter(m => m.stagingStatus !== 'failed')`, letting items stuck in 'staging' (upload interrupted before .catch() fired) persist as ghost entries. Bug 1 (null-cardId fallback), Bug 2, Bug 3 confirmed UNRELATED to this incident. Race guarantee verified: setStagedCards on staging success changes stagedCards which re-fires the autosave useEffect — successfully uploaded media is never silently lost.
+
+### Approved change (minimum safe fix)
+
+**File changed:** `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`
+
+Autosave serializer filter changed from `.filter(m => m.stagingStatus !== 'failed')` to `.filter(m => m.stagingStatus === 'staged')`. One line changed, comment block added. Null-cardId fallback at line 471 intentionally NOT changed (latent hardening, separate decision).
+
+### Regression test added
+
+**File added:** `frontend-web/src/tests/ghostMediaAccumulationPrevention.test.mjs` — 7 cases: staged included, staging excluded, failed excluded, realistic 3-card batch 4/4/3=11 not 4/4/7=15 (actual incident IDs), hard-refresh restore 4/4/3=11 no ghosts, staging→staged subsequent autosave guarantee, undefined stagingStatus guard.
+
+### Verification
+
+- New regression tests: 7/7 PASS
+- Full frontend suite: 224/224 PASS
+- Frontend production build: PASS (tsc + vite)
+- git diff --check: PASS
+- Backend: NOT TOUCHED
+- Draft #38 / historical #34 / listings #50 #51 / B2 / Cloudinary / DB: NOT MODIFIED
+- No migration required
+- Commit: NOT performed. Push: NOT performed.
+
 ## 2026-09-18 (IST) — Failed Upload Management Feature
 
 ### Why this work was requested
@@ -1750,3 +2078,823 @@ Verification Results:
   - Zero application code, frontend code, APIs, or existing tables modified.
   - `git diff --check`: 100% clean.
   - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 02:30 IST - Example Prompt Append & Next Property Visibility UX
+
+- **Why**:
+  - The user requested UX improvements for Property Upload prompt composition:
+    1. Clicking an Example Prompt when property content already exists must append the example as the next property instead of overwriting existing details.
+    2. Whenever "Next Property" is added (via Example Prompt append or clicking "Add another property"), the prompt textarea must automatically scroll internally so the "Next Property" boundary and new content are clearly visible to the admin.
+    3. Mobile responsiveness must avoid unintended software keyboard popup caused by forced focus.
+
+- **Root Cause & Architectural Context**:
+  - Previously, clicking an Example Prompt unconditionally called `handleSinglePromptChange(preset.text)`, overwriting any entered prompt text.
+  - The prompt editor is a native HTML `<textarea>` with `rows={4}`. When appended text exceeded 4 lines, `textarea.scrollTop` remained at 0, leaving "Next property" hidden below the bottom fold.
+  - Clicking "Add another property" had custom string concatenation without internal scroll adjustment or delimiter normalization.
+
+- **Exact Files & Areas Changed**:
+  - `frontend-web/src/utils/propertyPromptComposer.ts`:
+    - Created `composeNextPropertyPrompt`: canonical helper normalizing trailing whitespace, preventing duplicate delimiters, handling empty vs populated prompts cleanly using existing `\n\nNext property\n` format.
+    - Created `scrollPromptTextareaToNextProperty`: calculates target scroll using character offset ratio for monospace font with 24px breathing room, updates `scrollTop` with smooth scrolling respecting `prefers-reduced-motion`, updates selection position to end of text, and avoids calling `.focus()` on mobile to prevent unwanted virtual keyboard display.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Integrated `composeNextPropertyPrompt` and `scrollPromptTextareaToNextProperty` into both the Example Prompts click handler and the "Add another property" button.
+    - Attached `promptTextareaRef` to the `<textarea>`.
+  - `frontend-web/src/tests/examplePromptAppendAndVisibility.test.mjs`:
+    - Added comprehensive test suite with 20 focused tests verifying empty prompt insertion, multi-property append, repeated examples, mixed manual/example/add-another flow, whitespace safety, delimiter deduplication, scroll calculations, lack of forced focus, and draft autosave compatibility.
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - Focused tests: `examplePromptAppendAndVisibility.test.mjs` passed 20/20 test assertions (21 subtests including parent suite).
+  - All frontend tests: 82/82 PASS across all 7 test suites (zero regressions).
+  - Frontend build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.23s).
+  - `git diff --check`: 100% clean.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 03:00 IST - P0 Batch Property Publishing + Media Recovery Hardening
+
+- **Why**:
+  - Fix proven P0 reliability defects in MULTI/BATCH property publishing so batch publishing has recovery guarantees equivalent to the hardened SINGLE-property workflow.
+  - Proven defects addressed:
+    1. Premature Batch Tombstoning: Batch publish previously treated `failedCount === 0` as entire batch success and tombstoned the parent draft even if unconfirmed cards remained unpublished, destroying unfinished work.
+    2. Published + Listing #null: Batch draft completion called `onPropertyPublished` without a single listing ID, tombstoning with `published_property_id = null` and wiping recovery state.
+    3. Batch Media Not Durable: Files were retained only in browser memory and never staged to Backblaze B2. Autosave stripped File objects, causing media loss upon refresh/resume.
+    4. Resume Asks for Media Again: Restored cards had `localPhotos = []` with empty B2 state.
+    5. Blank Screen Render Crash: Restored staged media without native `File` threw `TypeError: Cannot read properties of undefined (reading 'type')`.
+    6. No Batch PUBLISHING State: Batch drafts never entered `PUBLISHING` status, preventing recovery tracking.
+    7. No Batch Listing Idempotency: Batch create requests did not bind cards to listings, creating duplicates on retry or refresh.
+    8. Ambiguous CTA Count: "Publish confirmed properties (1)" for a 2-property batch was ambiguous and lacked singular/plural precision.
+
+- **Root Cause & Architectural Context**:
+  - Batch creation previously lacked a composite durable identity. By adopting `${draftId}:${cardId}` for `listings.origin_draft_id` (which is `varchar(64)` with unique constraint), each card is guaranteed idempotent listing creation without requiring schema migrations.
+  - B2 staging infrastructure (`property_draft_media.card_id`) was already supported in the database and draft media service but was not called from `BatchPropertyIngestionStudio.tsx`.
+  - Batch publish completion now strictly validates that every card in the draft is published before allowing the draft to transition to `PUBLISHED`. Partial publishes transition the draft to `PUBLISHING`, record created listing IDs, and retain unconfirmed cards and their staged media.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/dto/ParsedPropertyDTO.java`:
+    - Added `cardId` field with getters and setters.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+    - In `convertMapToParsedDTO`: extracted `cardId`.
+    - In `createBatchProperties`: extracted `draftId` and `cardId`; computed composite `originDraftId` (`${draftId}:${cardId}` or MD5 fallback if >64 chars); performed idempotent lookup via `listingRepository.findByOriginDraftId`; replayed existing listing if present; caught concurrent `DataIntegrityViolationException` to replay winner; transitioned parent draft to `PUBLISHING`.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - In `onPropertyPublished`: added batch guard inspecting `payload.stagedCards` to prevent premature tombstoning if any card remains unpublished; fixed log formatting to omit `linked to listing #null`.
+  - `frontend-web/src/services/draftService.ts`:
+    - Exported `getAuthHeaders` for authenticated media stream access during publish.
+  - `frontend-web/src/services/propertyService.ts`:
+    - `createStableUploadRequestId`: made `file` parameter optional to support durable ID generation from `draftMediaId` when native File is absent.
+    - `createBatchProperties`: added `draftId` parameter and included it in request payload.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Replaced direct `item.file.*` accesses with safe accessors (`isMediaVideo`, `getMediaFilename`, `getMediaFileSize`) preventing render crashes.
+    - In `attachMediaToCard`: stages media directly to B2 via `draftService.stageMedia(draftId, file, { cardId, ... })` and attaches durable `draftMediaId`.
+    - In `handleRemoveStagedMedia`: deletes staged media from B2 via `draftService.deleteMedia`.
+    - In `handleRestoreBatchDraft`: restores staged media items immediately from B2 metadata and launches background `restoreMediaFiles` without blank screens.
+    - In `uploadMediaFilesForCard`: restores B2 media streams on-demand if `file` is missing at publish time.
+    - In `handlePublishAll`: passes `draftId` and `cardId`; prevents premature tombstone by checking `allCardsPublished`; updates parent draft state on partial completion; calls `onPublishSuccess` strictly when all cards are published.
+    - In CTA copywriting: implemented `Publish 1 of 2 confirmed properties` (with `1 property still needs confirmation`), `Publish all 2 properties`, `Publish 1 property`, and mobile `1/2 confirmed`.
+  - `frontend-web/src/tests/batchPropertyPublishRecovery.test.mjs`:
+    - Added comprehensive test suite with 34 test assertions covering all phases (A1-A9, B10-B17, C18-C23, D24-D28, E29-E35, F36-F38, G39-G44, H45-H49).
+  - `antigravity_changes`:
+    - Appended this log entry.
+
+- **Verification Results**:
+  - Focused batch tests: 34/34 PASS in `batchPropertyPublishRecovery.test.mjs`.
+  - All frontend tests: 116/116 PASS across 8 test suites.
+  - Frontend production build: `npm run build` succeeded cleanly with 0 errors (1.99s).
+  - Backend tests: 233/233 PASS (`mvn test`) with 0 failures, 0 errors, 0 skipped.
+  - Backend compile: `mvn clean compile` BUILD SUCCESS.
+  - `git diff --check`: 100% clean.
+  - Existing uncommitted Example Prompt work: 100% preserved.
+  - Historical diagnostic records (#40, #42, #43, #44, #45, #46, #47): 100% untouched.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-20 — 03:28 IST
+
+### P0 Follow-Up Fix: Batch Draft Authority + Partial Publish Resume + Media Restore UX
+
+- **Why Work Was Requested**:
+  - Real manual-test runtime evidence revealed three specific defects:
+    1. **Rogue SINGLE Draft**: `MasterAdminDashboard`'s singleDraft autosave was scheduling and saving SINGLE drafts for multi-property prompts.
+    2. **Rogue SINGLE -> New BATCH Draft**: Selecting a legacy/rogue SINGLE draft caused `handleRestoreSingleDraft` to detect multi-property syntax and switch `uploadMode('multiple')` with `initialDraftId = null`, creating an unwanted brand-new batch draft (Draft #29).
+    3. **Premature Parent `onSuccess` on Partial Publish**: `BatchPropertyIngestionStudio` called full `onSuccess()` after partial success, causing `MasterAdminDashboard` to clear `selectedBatchDraftId`, `batchDetails`, and reset editor state.
+  - The objective is to ensure batch draft authority, robust active-only partial publish resume, lightweight durable `completedListings` metadata, and verified media restoration without requiring re-upload or creating new drafts.
+
+- **Exact Files & Areas Changed**:
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Added `cancelAutosave()` callback clearing `debounceTimerRef.current`, `pendingPayloadRef.current`, and setting status to `'idle'`.
+    - Updated `onBatchPublished` signature to accept optional `completedListings: Array<{ cardId: string; listingId: number; title: string }>`.
+  - `frontend-web/src/services/draftService.ts`:
+    - Updated `reconcileBatch(draftId, publishedCardIds, completedListings)` to send `completedListings` in request body.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - In `handleRestoreSingleDraft`: removed automatic switch to `uploadMode('multiple')` when restoring a single draft.
+    - Added immediate cancellation `useEffect` when `uploadMode === 'multiple'`.
+    - Guarded autosave `useEffect`: cancels pending timer and returns if `uploadMode === 'multiple'` or if prompt matches `MULTIPLE_PROPERTY_ENTRY_PATTERN`.
+    - Implemented separate `onBatchPartialSuccess`: notifies user of progress without clearing `selectedBatchDraftId` or parent draft state.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Added `onPartialSuccess` prop to `BatchPropertyIngestionStudioProps`.
+    - Added `completedListings` state to store lightweight completed property summaries.
+    - In `handleRestoreBatchDraft`: restores `completedListings` from draft payload.
+    - In `handleClearBatchDraftState`: resets `completedListings`.
+    - In autosave `useEffect`: includes `completedListings` in payload and dynamically updates `title_summary` (e.g. `Batch — 1 property remaining`).
+    - In `handlePublishAll`: computes remaining cards; on full success calls `onPublishSuccess()` and parent `onSuccess()`; on partial success, updates `completedListings`, retains only remaining unpublished cards in `stagedCards` (Active-Only Workspace), calls `batchDraft.onBatchPublished(publishedCardIds, newlyCompleted)`, and calls `onPartialSuccess()`.
+    - Added compact read-only completion banner above active cards grid displaying `✓ X of Y properties published • Z remaining` with completed listing references.
+    - Updated CTA copywriting for remaining work: `Publish remaining property`, `Publish remaining X properties`, and progress messaging (`1 of 2 published • 1 property still needs confirmation`).
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - In `reconcileBatchDraft`: retains `completedListings` in payload without duplicate card/listing entries, updates `item_count` to remaining cards, updates `title_summary` to `Batch — X property/properties remaining`.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java`:
+    - In `reconcileBatch`: parses optional `completedListings` from request body and forwards to `draftService.reconcileBatchDraft`.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Added unit test `reconcileBatchDraft_withCompletedListings_storesCompletedListingsAndUpdatesTitle()`.
+  - `frontend-web/src/tests/batchPublishResumeFollowup.test.mjs`:
+    - Added focused unit tests covering points 1–30.
+  - Local Backend Process:
+    - Safely stopped old Spring Boot process (PID 30729 / 30757).
+    - Restarted backend via `run-app.sh` with current build (new PID 37412). Verified healthy on port 8080.
+
+- **Verification Results**:
+  - New focused follow-up frontend tests: 12/12 PASS (covering points 1–30).
+  - Previous batch tests: 34/34 PASS in `batchPropertyPublishRecovery.test.mjs`.
+  - All frontend tests: 128/128 PASS across 9 test suites.
+  - Frontend production build: `npm run build` succeeded cleanly with 0 errors (2.02s).
+  - Backend tests: 234/234 PASS (`mvn test`) with 0 failures, 0 errors, 0 skipped.
+  - Backend compile & package: `mvn clean package -DskipTests` BUILD SUCCESS.
+  - `git diff --check`: 100% clean (zero whitespace errors).
+  - Preserved uncommitted work: Example Prompt Append + Next Property Visibility UX, P0 Batch Publishing + Media Recovery implementation.
+  - Diagnostic database records: Drafts #27, #28, #29, Listing #49, and historical #40–#48 verified 100% untouched.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+## 2026-09-20 12:40 IST - Draft Identity + Single → Batch Transition Fix
+
+- **Why**:
+  - The user requested an end-to-end fix for two critical draft lifecycle bugs:
+    1. **Bug 1 (Duplicate SINGLE drafts)**: An asynchronous initialization race in `usePropertyDraft.ts` where `init()` awaited `refreshDraftsList()` and then blindly wiped `currentDraftIdRef.current = null`. When an admin started typing Property A during that fetch, a draft ID was allocated and autosaved, only for the stale `init()` completion to reset the ID to `null`, causing the next autosave to allocate a second draft row for the same logical session (observed in clean-room testing as draft rows 32 and 33, 5.58s apart).
+    2. **Bug 2 & 3 (Single → Batch Transition & Media Preservation)**: When an admin entered Property A, attached media, and subsequently added "Next property" + Property B and entered Batch mode, `MasterAdminDashboard` passed `null` as `initialDraftId`. `BatchPropertyIngestionStudio` allocated a brand-new BATCH draft, leaving the original SINGLE draft orphaned, and re-uploaded Property A's media to B2.
+  - Invariant Enforced: **ONE LOGICAL PROPERTY-UPLOAD SESSION = ONE AUTHORITATIVE DRAFT ID**. The editor mode may evolve from SINGLE to BATCH, but the draft identity must remain unchanged throughout autosave, refresh, resume, and publish.
+
+- **Root Cause & Architectural Context**:
+  - In `usePropertyDraft.ts`, `init()` contained destructive reset statements (`currentDraftIdRef.current = null; setCurrentDraftId(null);`) placed AFTER `await refreshDraftsList()`. If the user typed during the fetch, the allocated ID was wiped post-await.
+  - In `MasterAdminDashboard.tsx`, entering multiple mode via `handleAddCustomBhk` or `handleOpenMediaUpload` failed to preserve `singleDraft.currentDraftId`, passing `null` to `BatchPropertyIngestionStudio`.
+  - In `BatchPropertyIngestionStudio.tsx`, `initialMediaFiles` effect unconditionally called `attachMediaToCard`, re-uploading existing single media files to B2 instead of reassociating them in-place with the first batch card ID.
+  - In `PropertyDraftMediaRepository.java`, there was no query to reassign unassigned media (`card_id IS NULL OR card_id = ''`) in-place to the actual durable first card ID (`staged-0-...`).
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyDraftMediaRepository.java`:
+    - Added `@Modifying @Query` `reassignUnassignedMediaToCard(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("cardId") String cardId)` to update unassigned media in-place to the target card ID.
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - Added `@Transactional int reassignUnassignedMediaToCard(String adminId, String draftId, String targetCardId)` with validation and `touchUpdatedAt`.
+  - `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java`:
+    - Added endpoint `POST /api/v1/admin/drafts/{draftId}/reassign-media` receiving `{ targetCardId }`.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Added unit tests: `reassignUnassignedMediaToCard_updatesMatchingRecordsAndTouchesDraft()` and `reassignUnassignedMediaToCard_rejectsBlankCardId()`.
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Synchronously initialized `currentDraftId` and `currentDraftIdRef` with `initialDraftId || null`.
+    - Added `isMountedRef` to prevent unmounted/stale async state mutations.
+    - Removed destructive resets from `init()` post-await; async refresh completion never wipes an allocated draft ID.
+    - Added rescheduling in `scheduleAutosave` if a previous save is in-flight, preventing dropped keystrokes.
+    - Protected `pendingPayloadRef` so newer edits during save are not wiped.
+    - Updated `loadDraft(targetDraftId, shouldClearState)` to avoid wiping editor state on mount when initial details are passed.
+  - `frontend-web/src/services/draftService.ts`:
+    - Added `reassignCardMedia(draftId: string, targetCardId: string): Promise<number>` calling `POST /reassign-media`.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - In `handleAddCustomBhk` and `handleOpenMediaUpload`: immediately cancelled single autosave, preserved `singleDraft.currentDraftId`, and set `setSelectedBatchDraftId(currentDraftId)`.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - In `handleRestoreBatchDraft`: handles single-to-batch transition payloads, sets unassigned server media fallback mapping `(!m.cardId && idx === 0)`.
+    - In `parseBatchDetails`: reassigns unassigned media to `mapped[0].id` dynamically via `draftService.reassignCardMedia`.
+    - In `initialMediaFiles` effect: if `initialDraftId` exists, directly populates `stagedCards[0]` with `stagingStatus: 'staged'` and calls `draftService.reassignCardMedia(initialDraftId, firstCardId)` with ZERO B2 re-upload or copy.
+  - `frontend-web/src/tests/draftIdentityAndSingleBatchTransition.test.mjs`:
+    - Created comprehensive unit and integration test suite covering all 32 requirements and the full realistic lifecycle (Single A -> Autosave -> Media -> Next B -> Batch Review -> Publish A -> Resume B -> Publish B).
+  - Local Backend Process:
+    - Rebuilt backend and restarted local launcher daemon via `run-app.sh`. Verified backend healthy on port 8080 and frontend live on port 5173.
+
+- **Verification Results**:
+  - New focused transition tests: 9/9 PASS in `draftIdentityAndSingleBatchTransition.test.mjs` (covering all 32 requirements and the realistic lifecycle integration test).
+  - Full frontend test suite: 137/137 PASS across 10 test suites (0 failures, 0 regressions).
+  - Frontend production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (1.97s).
+  - Full backend test suite: 236/236 PASS (`mvn test`) with 0 failures, 0 errors.
+  - `git diff --check`: 100% clean (zero whitespace errors).
+  - Preserved uncommitted work: all Example Prompt Append, P0 Batch Publishing, Partial Publish Resume, and Recovery work intact.
+  - Diagnostic database records: verified untouched.
+  - Commit status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-20 13:25 IST — Authoritative Batch Publish + Network Interruption Recovery
+
+- **Why**:
+  - The read-only forensic investigation of the real incident (Property 1 published completely, Property 2 Listing #51 and all 6 media assets persisted, network lost during publishing) confirmed several critical architectural defects:
+    1. **Premature / False Success Notification**: In `BatchPropertyIngestionStudio.tsx`, `handlePublishAll` called `onSuccess` or `onPartialSuccess` simply because `create-batch` returned `successCount > 0`, ignoring whether subsequent media uploads or draft reconciliation completed.
+    2. **Non-Authoritative Remaining Count**: The UI calculated "X properties remain in draft" from the transient in-memory `stagedCards` sub-run array instead of server-authoritative reconciled draft state.
+    3. **Premature Staged Media Deletion in Backend**: In `PropertyDraftService.reconcileBatchDraft`, `property_draft_media` metadata was deleted before the draft payload was updated and saved. When network failed or subsequent finalization failed, the draft remained unfinalized while its staging metadata was already destroyed.
+    4. **Final-Card Tombstone Rejection**: `reconcileBatchDraft` checked the stale draft payload before the reconciled payload was saved, causing `onPropertyPublished` to see an un-reconciled card and refuse tombstoning.
+    5. **Resume Failed to Reconcile Backend Truth**: When resuming an interrupted `PUBLISHING` batch draft, `getDraft` assumed all staged cards were unpublished, ignoring existing listings (created deterministically with `draftId:cardId`) and permanent `property_media_assets`.
+    6. **Metadata-Only Media Rendering Weakness**: Restored drafts rendered "Property media (0)" because `totalMedia` was computed strictly from `card.localPhotos.length + card.mediaUrls.length`, requiring an in-memory browser `File` object rather than durable `stagedMedia` metadata.
+
+- **Exact Files & Areas Changed**:
+  - `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+    - Added autowired `PropertyMediaAssetRepository mediaAssetRepository` and setter for test injection.
+    - Updated `getDraft(adminId, draftId)`:
+      - Marked `@Transactional`.
+      - Added `reconcileInterruptedBatchDraftState(draft, cleanAdminId)`: Discovers existing listings by composite origin ID (`draftId + ":" + cardId`) and checks permanent `property_media_assets`. If all expected media assets are already persisted in permanent storage, automatically reconciles the card into `completedListings`, removes it from `stagedCards`, and safely transitions the draft to `PUBLISHED` (tombstone) if 0 cards remain.
+      - Added `reconstructMediaFromPermanentAssets(draft, mediaList)`: If staged media rows were previously purged but the card's listing exists with permanent assets, synthesizes `DraftMediaDTO` records using Cloudinary URLs as `previewUrl`, ensuring the card's media is fully visible and editable upon Resume.
+    - Updated `reconcileBatchDraft`:
+      - Reconciles JSON payload (`remainingCards` and `completedListings`) FIRST.
+      - If `remainingCards.isEmpty()`, purges staged media and transitions draft directly to `PUBLISHED` tombstone, eliminating the premature-tombstone warning caused by checking stale payload.
+      - If `remainingCards` is not empty, persists the updated draft payload to the database FIRST, and only then deletes staged media metadata for published cards.
+  - `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+    - Injected mock `ListingRepository` and `PropertyMediaAssetRepository`.
+    - Added 4 new regression tests:
+      1. `reconcileBatchDraft_whenAllCardsPublished_tombstonesSuccessfullyWithoutPrematureWarning`
+      2. `reconcileBatchDraft_doesNotDeleteStagedMediaBeforePayloadSaved`
+      3. `getDraft_autoReconcilesInterruptedCardsWithExistingListingsAndPermanentAssets`
+      4. `getDraft_reconstructsMediaFromPermanentAssets_whenStagedMediaRowsDeleted`
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Updated `onBatchPublished` signature and implementation to return `Promise<DraftDetail | null>`, providing the server-reconciled draft state back to the caller.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Refactored `handlePublishAll`:
+      - Identifies `successfulCardIds` based on listing creation AND zero media upload errors.
+      - Awaits `batchDraft.onBatchPublished(successfulCardIds, newlyCompleted)`.
+      - Suppresses false success on network disconnection or reconciliation failure, presenting an informative recovery prompt: *"Publishing interrupted: The network connection was interrupted before publication could be verified. Use Resume to reconcile your draft."*
+      - Uses server-authoritative `serverRemainingCount = remainingDraft.itemCount` for all user-facing notifications.
+      - Calls `onSuccess` only when server tombstone confirms batch completion (`isServerBatchComplete`).
+    - Fixed `totalMedia` calculation: `(card.stagedMedia && card.stagedMedia.length > 0) ? card.stagedMedia.length : (card.localPhotos.length + card.mediaUrls.length)`. Durable restored media renders correctly without requiring in-memory `File` objects.
+  - `frontend-web/src/tests/authoritativeBatchPublishRecovery.test.mjs`:
+    - Added a complete 32-scenario deterministic test suite covering normal partial publish, network interruption at every stage, permanent media discovery, final-card tombstone ordering, metadata-only media rendering, idempotency replay, and the exact real incident reproduction scenario.
+
+- **Verification Results**:
+  - Full backend test suite: 240/240 PASS (`mvn test`) with 0 failures, 0 errors.
+  - Full frontend test suite: 169/169 PASS across 11 test suites (`src/tests/*.test.mjs`).
+  - Frontend production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.48s).
+  - Backend compile: `mvn test-compile` succeeded cleanly (0.78s).
+  - `git diff --check`: 100% clean (zero whitespace errors).
+  - Database integrity check: Historical Listing #50, Listing #51, and Draft row #34 verified completely untouched and preserved.
+  - Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 07:55 IST — Multi-Select & Bulk Discard for Property Upload Drafts
+
+- **Why**:
+  - In the Admin Property Upload workspace, admins with multiple saved drafts previously had to discard drafts individually one by one. The admin requested a convenient, safe multi-select / bulk discard feature that allows selecting individual drafts, selecting multiple drafts, or selecting all eligible drafts, receiving a single confirmation dialog, and discarding them with authoritative server cleanup.
+  - Invariant Enforced:
+    1. **Safety Isolation for PUBLISHING / Interrupted Drafts**: Any draft currently in `PUBLISHING` status (or involved in active/recoverable publishing) is excluded from bulk selection (`checkbox disabled` with tooltip: *"Resume or discard this publishing draft individually."*) so that recovery-sensitive drafts cannot be accidentally wiped in bulk.
+    2. **Authoritative Server Cleanup**: Reuses authoritative backend draft deletion (`DELETE /api/v1/admin/drafts/{draftId}`) ensuring complete database draft deletion, `property_draft_media` metadata deletion, and Backblaze B2 staged media purging with zero orphaned storage.
+    3. **Published Listing Safety**: Published listings and permanent `property_media_assets` are strictly untouched.
+    4. **Accurate Partial Failure Reporting**: If any deletion fails, the UI communicates the exact succeeded and failed counts; failed drafts remain visible in the refreshed list.
+
+- **Exact Files & Areas Changed**:
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Added `discardMultipleDrafts(draftIds: string[]): Promise<{ succeeded: string[]; failed: string[] }>`:
+      - Runs deletions with bounded concurrency (3 concurrent requests matching Pathome standard).
+      - Deletes backend draft and cleans local IndexedDB storage (`localDraftStorage.remove`).
+      - If the currently active draft was included in the discarded batch, cleanly resets the active draft state, version, and editor via `onClearDraftState()`.
+      - Refreshes authoritative server draft list via `refreshDraftsList()`.
+    - Exported `discardMultipleDrafts` in the hook return object.
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Added optional `onDiscardDrafts?: (draftIds: string[]) => Promise<{ succeeded: string[]; failed: string[] }>` prop to `DraftManagementBarProps`.
+    - Implemented temporary in-memory selection state (`selectedDraftIds`) with zero persistence in `localStorage`, DB, or draft payload.
+    - Implemented `isDraftEligible` excluding `draft.status === 'PUBLISHING'`.
+    - Added tri-state / indeterminate HTML5 checkbox support for "Select all".
+    - Added automatic stale ID cleanup when `drafts` changes and complete selection reset when the dropdown/sheet closes.
+    - Added comfortable checkboxes to each draft row in desktop popover and mobile bottom sheet (touch target >= 44px, with `e.stopPropagation()` so checkbox click never triggers draft selection or navigation).
+    - Added bulk action bar to desktop popover and mobile bottom sheet showing selection count and "Discard Selected" CTA.
+    - Added accessible confirmation dialog with background scroll lock, Escape key support, accurate copywriting, and double-click protection during execution.
+  - `frontend-web/src/components/MasterAdminDashboard.tsx`:
+    - Passed `onDiscardDrafts={(ids) => singleDraft.discardMultipleDrafts(ids)}` to `DraftManagementBar`.
+  - `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+    - Passed `onDiscardDrafts={(ids) => batchDraft.discardMultipleDrafts(ids)}` to `DraftManagementBar`.
+  - `frontend-web/src/tests/draftBulkDiscard.test.mjs`:
+    - Created comprehensive 26-scenario deterministic test suite covering eligible draft rendering, single selection, multi-selection, Select All, PUBLISHING draft exclusion, propagation prevention, cancel/confirm dialog, authoritative refresh, badge update, partial failure, double-click protection, stale ID cleanup, published listing safety, staged media cleanup, mobile support, and active draft reset.
+
+- **Verification Results**:
+  - New focused bulk discard tests: 26/26 PASS (`src/tests/draftBulkDiscard.test.mjs`).
+  - Full frontend test suite: 195/195 PASS across 12 test suites (`src/tests/*.test.mjs`).
+  - Frontend production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.14s).
+  - `git diff --check`: 100% clean (zero whitespace errors).
+  - Database integrity check: Historical Listing #50, Listing #51, and Draft row #34 verified completely untouched and preserved.
+  - Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 10:52 IST — P0 Authentication / 401 Investigation & Session-Safe Bulk Discard
+
+- **Why**:
+  - In the real browser, Bulk Draft Discard and other admin requests (`DELETE /api/v1/admin/drafts/{id}`, `GET /api/v1/admin/drafts`, `GET /api/v1/admin/failed-uploads/count`) returned HTTP 401 Unauthorized with the message: *"Your session has ended. Please sign in again to continue."*
+  - Forensic investigation was conducted to determine whether the user was authenticated, whether the session was genuinely expired, where the 401 originated, why the UI appeared logged in while protected APIs returned 401, and why Bulk Discard issued repeated DELETE requests after the first 401.
+
+- **Forensic Investigation & Findings**:
+  1. **Authentication Architecture**:
+     - Mechanism: Stateless JWT stored in `localStorage` under key `'pathome_auth_token'`, attached as `Authorization: Bearer <token>`. No cookies or server sessions are used.
+     - Protected routes: `/api/v1/admin/drafts/**` and `/api/v1/admin/failed-uploads/**` require `ROLE_ADMIN` or `ROLE_SUB_ADMIN` (`SecurityConfig.java`).
+     - Vite Proxy: Consistently proxies `/api` to `http://localhost:8080` for GET, POST, PUT, DELETE.
+     - Spring Security Filter Chain: `JwtAuthenticationFilter` validates the JWT signature via `JwtUtils.validateToken(jwt)` against `${app.jwt.secret}`. Unauthenticated or invalid token requests are intercepted by `HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)`, returning HTTP 401 before reaching controllers.
+  2. **Was Session Actually Expired?**:
+     - YES. The user's token in `localStorage` was either missing or invalidated (e.g. 24h default JWT expiration elapsed, or backend restarted with a newly generated random secret).
+  3. **Root Cause of Pseudo-Logged-In UI**:
+     - `Home.tsx`'s `getInitialSession()` and route guard `useEffect()` only verified `pathome_role` and `pathome_user` in `localStorage`; they were blind to `pathome_auth_token`.
+     - Consequently, after token expiration or removal, the frontend still rendered `MasterAdminDashboard` and `BatchPropertyIngestionStudio` in admin mode.
+     - When `usePropertyDraft: refreshDraftsList()` failed with 401 on `draftService.listDrafts()`, it silently caught the error and populated the UI from offline IndexedDB storage (`localDraftStorage`), making drafts visible and selectable even though the session was expired.
+  4. **Root Cause of Bulk Discard Repeated 401 Hammering**:
+     - `usePropertyDraft.ts: discardMultipleDrafts` invoked `draftService.discardDraft(draftId)` concurrently in chunks of 3.
+     - On receiving 401 (`ApiRequestError` status 401 / session ended), it treated it like a per-draft resource error and pushed the draft to `failed`, continuing through all subsequent chunks and firing repeated DELETE requests against every selected draft.
+     - Proven: Bulk discard and individual discard invoke the exact same authoritative `draftService.discardDraft` function. The 401 was not a bulk-specific backend defect, but an unhandled session-wide auth failure during bulk fan-out.
+
+- **Targeted Source Changes**:
+  - `frontend-web/src/hooks/usePropertyDraft.ts`:
+    - Moved `BulkDiscardResult` interface to module level (`succeeded: string[]; failed: string[]; isAuthError?: boolean`).
+    - In `discardMultipleDrafts`, detected 401 / session expiration (`err?.status === 401` or session-ended message).
+    - If an auth error occurs on any draft, set `authErrorEncountered = true`, immediately broke the chunk loop to prevent issuing any further DELETE requests, and skipped `refreshDraftsList()`.
+    - Preserved ordinary partial-failure behavior for non-auth errors (e.g. 500 or 409 continue subsequent chunks).
+  - `frontend-web/src/components/DraftManagementBar.tsx`:
+    - Updated `onDiscardDrafts` signature to support `isAuthError`.
+    - Handled `result.isAuthError`: halts bulk discard dialog, displays a single clean session-ended feedback notice, and dispatches the global `'pathome_session_expired'` event.
+  - `frontend-web/src/services/apiError.ts`:
+    - Added exported helper `notifySessionExpired()`.
+    - In `createApiRequestError`, automatically dispatches `'pathome_session_expired'` when `response.status === 401`.
+  - `frontend-web/src/services/draftService.ts`, `frontend-web/src/services/propertyService.ts`, `frontend-web/src/services/failedUploadService.ts`:
+    - In `getAuthHeaders()` and `parseXhrError`, automatically dispatches `'pathome_session_expired'` and throws 401 `ApiRequestError` if token is missing.
+  - `frontend-web/src/components/Home.tsx`:
+    - Updated `getInitialSession()` to require `pathome_auth_token` alongside `pathome_role` and `pathome_user`.
+    - Updated route guard `useEffect()` to verify token presence on protected routes (`/admin`, `/tenant`, `/crm`), immediately clearing stale session and redirecting to landing page with login modal if token is absent.
+    - Added event listener for `'pathome_session_expired'` that resets user state to `GUEST`, removes stale storage keys, redirects to `/`, and opens `AuthModal` for re-authentication.
+  - `backend/src/test/java/com/indore/pathome/spaces/security/PropertyDraftSecurityTest.java`:
+    - Added WebMvc security test suite covering `/api/v1/admin/drafts` and `/api/v1/admin/drafts/{id}`:
+      - Unauthenticated GET / DELETE -> 401 Unauthorized
+      - ROLE_TENANT GET / DELETE -> 401/403 Forbidden
+      - ROLE_ADMIN GET / DELETE -> 200 OK / 204 No Content
+      - ROLE_SUB_ADMIN GET / DELETE -> 200 OK / 204 No Content
+  - `frontend-web/src/tests/draftBulkDiscard.test.mjs`:
+    - Added tests 27–32 covering token header requirements, 401 session-ended detection, authoritative path equivalence between individual and bulk discard, immediate halt of subsequent DELETE requests upon first 401, non-auth partial failure preservation, and DraftManagementBar session-ended feedback.
+
+- **Verification Results**:
+  - Live backend curl verification:
+    - `GET /api/v1/admin/drafts` unauthenticated -> HTTP 401.
+    - `DELETE /api/v1/admin/drafts/{id}` unauthenticated -> HTTP 401.
+    - `GET /api/v1/admin/drafts` with valid admin JWT -> HTTP 200.
+    - `GET /api/v1/admin/failed-uploads/count` with valid admin JWT -> HTTP 200.
+    - `PUT /api/v1/admin/drafts/{disposableId}` -> HTTP 200.
+    - `DELETE /api/v1/admin/drafts/{disposableId}` -> HTTP 204 No Content.
+  - Spring Security tests: 8/8 PASS (`PropertyDraftSecurityTest.java`).
+  - Full backend test suite: 248/248 PASS (`mvn test`).
+  - Frontend Bulk Discard regression suite: 32/32 PASS (`src/tests/draftBulkDiscard.test.mjs`).
+  - Full frontend test suite: 201/201 PASS across 12 test suites (`src/tests/*.test.mjs`).
+  - Frontend production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.09s).
+  - `git diff --check`: 100% clean (zero whitespace errors).
+  - Diagnostic records check: Listing #50, Listing #51, and Draft row #34 verified completely untouched and preserved.
+  - Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 11:10 IST — Protected Publishing Draft UX & Safe Individual Discard Clarification
+
+### Why this work was requested
+In "Saved Property Drafts", drafts in `PUBLISHING` state (interrupted publishing operations) intentionally cannot be multi-selected for bulk discard because they contain recovery-sensitive state. However, the disabled checkbox only displayed the browser's native not-allowed cursor (`🚫`), while the individual trash button remained enabled, causing visual confusion. Furthermore, clicking the individual trash button on an interrupted draft used the standard draft deletion dialog, without warning the admin that publishing was interrupted, that Resume was recommended for media/property reconciliation, and that already-published listings would not be deleted.
+
+### Files modified
+
+**Frontend — Modified files**
+- `frontend-web/src/components/DraftManagementBar.tsx`:
+  - Added `ShieldAlert` icon from `lucide-react`.
+  - Added `tappedTooltipId` state with auto-dismiss timer (3.5s) and cleanup on dropdown close for touch/mobile devices where hover does not exist.
+  - Added `renderDraftCheckbox(draft, isMobileLayout)` helper:
+    - Genuine non-selectable state: `<input type="checkbox" disabled>` with `pointer-events-none`.
+    - Wrapper element (`group/checkbox`) captures desktop hover and mobile tap without making the input fake-enabled.
+    - Accessible attributes: `title="Protected from bulk discard. Resume or discard this draft individually."`, `aria-label`, and `aria-description`.
+    - Desktop: Smooth dark tooltip badge positioned above the checkbox on hover (`opacity-0 group-hover/checkbox:opacity-100 transition-opacity pointer-events-none`).
+    - Mobile: Tap/click toggles the explanatory tooltip badge inline above the checkbox without triggering row selection or any destructive action.
+  - Updated `renderDiscardModal`:
+    - Differentiates normal drafts vs `isInterrupted = draftToDiscard?.status === 'PUBLISHING'`.
+    - Normal draft: Preserves existing approved title (`"Discard this draft?"`), explanation, and actions (`"Keep draft"`, `"Confirm discard"`).
+    - Interrupted draft: Strong recovery-aware confirmation dialog:
+      - Title: `"Discard interrupted draft?"`
+      - Body: `"This draft has an interrupted publishing operation. Resume is recommended so Pathome can reconcile any property or media that may already have been published."` and `"Discarding will remove the recoverable draft state. Already-published listings will not be deleted."`
+      - Primary safe action: `"Keep & Resume"` — closes modal and invokes existing `onSelectDraft(draftId)` to enter the authoritative Resume flow.
+      - Safe secondary dismiss: `"Cancel"` — closes modal with no deletion.
+      - Destructive action: `"Discard Draft"` — calls existing `handleConfirmDiscard()`, reusing authoritative `onDiscardDraft(draftId)`.
+      - Responsive actions layout: Mobile flex-col-reverse, desktop flex-row sm:justify-end with touch targets >= 44px.
+
+**Frontend — Test suite**
+- `frontend-web/src/tests/draftBulkDiscard.test.mjs`:
+  - Updated `MockDraftManagementBarState` to include `draftToDiscard`, `openDiscardDialog`, `closeDiscardDialog`, `getDiscardDialogData`, `confirmIndividualDiscard`, `keepAndResume`, and `getProtectionTooltip`.
+  - Added tests 33–40:
+    - 33. Protected publishing draft checkbox exposes exact tooltip explanation.
+    - 34. Normal draft individual discard maintains classic title and actions.
+    - 35. Interrupted publishing draft trash click opens recovery-aware confirmation.
+    - 36. Interrupted confirmation "Keep & Resume" safe action invokes onSelectDraft.
+    - 37. Interrupted confirmation "Cancel" performs no deletion.
+    - 38. Interrupted confirmation "Discard Draft" invokes authoritative individual discard.
+    - 39. Interrupted draft individual discard does not target published listings.
+    - 40. Disabled checkbox tap/click never toggles selection or executes discard.
+
+### Outcome
+- Visual ambiguity resolved: PUBLISHING drafts clearly explain why they cannot be bulk-selected across desktop (hover tooltip) and mobile (tap-toggle tooltip).
+- Underneath behavior strictly preserved: Genuine disabled input, excluded from Select All, excluded from Bulk Discard.
+- Recovery safety: Clicking trash on an interrupted draft now presents a clear advisory detailing reconciliation benefits, highlights "Keep & Resume" as the primary safe action, and safely allows explicit discard without touching already-published listings or altering backend semantics.
+
+### Verification
+- Frontend Bulk Discard regression suite: 40/40 PASS (`src/tests/draftBulkDiscard.test.mjs`).
+- Full frontend test suite: 209/209 PASS across 12 test suites (`src/tests/*.test.mjs`).
+- Production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors (2.16s).
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Diagnostic records check: Listing #50, Listing #51, and Draft row #34 verified completely untouched and preserved.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 12:15 IST — Case-C Resume Recovery: Clean Finalization of Backend-Completed Batches
+
+### Why this work was requested
+When a user clicked "Resume" on a `PUBLISHING` (interrupted) batch draft where all properties and permanent media had actually completed on the backend during the previous background session (e.g. diagnostic Draft #34 with Listings #50 and #51), backend `getDraft` correctly auto-reconciled the draft to `PUBLISHED` tombstone. However, because `MasterAdminDashboard` switched `uploadMode` to `'multiple'` prematurely and `usePropertyDraft.loadDraft` silently returned upon seeing `status === 'PUBLISHED'`, `BatchPropertyIngestionStudio` was left open in an empty initial state with 0 cards and an empty text prompt.
+
+### Files modified
+
+**Backend — Modified files**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - Updated `reconcileBatchDraft` and `finalizeDraftAfterPublish`: when transitioning a completed batch draft into a `PUBLISHED` tombstone, do not wipe `completedListings` to bare `{}`. Retain a lightweight completion summary `{"completedListings":[{"cardId":"...","listingId":...}]}` in `draft.payload` while purging all raw prompts, cards, and binary staging descriptors.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+  - Updated `getDraft_autoReconcilesInterruptedCardsWithExistingListingsAndPermanentAssets` assertion to verify that `detail.payload()` retains `completedListings` summary and does not contain `stagedCards`.
+
+**Frontend — Modified files**
+- `frontend-web/src/hooks/usePropertyDraft.ts`:
+  - Added `CompletedListingSummary` and `LoadDraftResult` interfaces.
+  - Added `onDraftAlreadyPublished?: (detail: DraftDetail, completedCount: number, completedListings: CompletedListingSummary[]) => void` to `UsePropertyDraftOptions`.
+  - In `loadDraft`: when `detail.status === 'PUBLISHED'` or payload is tombstone, parse `completedListings`, clean active draft pointer, invoke `onDraftAlreadyPublished`, and return `{ status: 'ALREADY_PUBLISHED', ... }`.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Added `onAlreadyPublished` prop.
+  - Wired `handleBatchDraftAlreadyPublished` to call `onAlreadyPublished` and close studio.
+- `frontend-web/src/components/MasterAdminDashboard.tsx`:
+  - Added `lastRecoveryToastRef` (2000ms de-duplication guard).
+  - Added `handleDraftAlreadyPublished`: parses completed listings, shows single recovery notification (`"Publishing recovered"`, `"All {N} properties were already published successfully."` or `"This draft was already fully published."`), sets `uploadMode = 'single'`, and clears `selectedBatchDraftId`.
+  - In `onSelectDraft`: for `PUBLISHING` drafts, performs authoritative `draftService.getDraft(id)` check before switching modes. If draft resolves to `PUBLISHED`, directly invokes `handleDraftAlreadyPublished` and refreshes drafts list, never mounting empty Batch studio.
+  - Passed `onAlreadyPublished` to `<BatchPropertyIngestionStudio>`.
+- `frontend-web/src/tests/authoritativeBatchPublishRecovery.test.mjs`:
+  - Added tests 33–40 covering Case C load contract, legacy `{}` tombstone handling, dashboard workspace prevention, notification semantics, idempotency, and regression scenarios.
+
+### Outcome
+- Clicking "Resume" on a draft whose properties are already complete now immediately recognizes the `PUBLISHED` state, avoids mounting the blank batch studio, clears the active draft identity, displays a clean recovery notification ("All 2 properties were already published successfully. Listings: #50, #51"), and refreshes Saved Drafts so the tombstone is removed.
+- Legacy `{}` tombstones (like Draft #34) are gracefully recognized without opening an empty workspace.
+- Case A/B (uncompleted work remains) and normal DRAFT Continue flows remain completely preserved.
+
+### Verification
+- Full backend test suite: 248/248 PASS (`mvn test`).
+- Full frontend test suite: 217/217 PASS across 12 test suites (`for f in src/tests/*.test.mjs; do node "$f"; done`).
+- Production build: `npm run build` succeeded cleanly with 0 errors (2.01s).
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Diagnostic records: Draft #34, Listing #50, and Listing #51 verified untouched.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 17:35 IST — P0 Implementation: Fix Wrong Media Restoration + Draft Version Conflicts + Previous Property Navigation
+
+### Why this work was requested
+1. **Fresh Diagnostic Draft #39 Investigation**:
+   - Forensic analysis of fresh 3-property test (draft `draft-batch-mub57eg8-cviqx`, DB row #39) confirmed that the previous ghost media fix worked: durable payload (4/4/3 = 11), `property_draft_media` (4/4/3 = 11), and B2 storage (4/4/3 = 11) all matched perfectly.
+2. **Bug 1 — Wrong Restored Media Binary Due to Filename Fallback**:
+   - When resuming/continuing a multi-property draft, `restoreMediaFiles` returned a flat array of `File` objects, and `BatchPropertyIngestionStudio` matched media using `restored.files.find(f => (f as any).draftMediaId === item.id || f.name === item.originalFilename)`.
+   - When multiple properties legitimately share default camera/phone filenames (e.g. `images__1_.webp`, `images__2_.webp`, `images.webp`), the filename fallback matched binaries belonging to Property 1 to Property 2 and Property 3, corrupting frontend preview/hydration despite the durable backend data being completely correct.
+3. **Bug 2 — Media Staging Mutates Parent Draft Optimistic Version**:
+   - `PropertyDraftService.doPersistMediaTransaction` executed `draft.setUpdatedAt(now); draftRepository.save(draft);`. Because `PropertyUploadDraft` has `@Version Integer version`, each parallel media upload operation incremented the parent draft's version (driving version from 1 to 21 in draft #39). Frontend autosave simultaneously sent `version = 1`, resulting in HTTP 409 optimistic locking conflicts.
+4. **Bug 3 — Frontend Stale 409 Handling**:
+   - On receiving HTTP 409, `usePropertyDraft` marked `autosaveStatus = 'conflict'` but did not refresh `draftVersionRef.current` or fetch the authoritative server version, permanently stalling future autosaves.
+5. **Approved UI Requirement — Previous Property Navigation**:
+   - User requested: "Since there is a Next Property button, there should also be a Previous Property button." Active navigation model (`activeCardId`) needed bidirectional navigation while preserving all card form values, media, room tags, covers, and draft identity.
+
+### Files modified
+
+**Backend — Modified files**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - In `doPersistMediaTransaction`: replaced `draft.setUpdatedAt(now); draftRepository.save(draft);` with `draft.setUpdatedAt(now); draftRepository.touchUpdatedAt(draftId, adminId, now);`.
+  - This utilizes the existing direct JPQL `touchUpdatedAt` mechanism, updating `updated_at` without participating in JPA `@Version` incrementation, cleanly decoupling media staging from parent draft content versioning.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+  - Updated `stageDraftMedia_resetsDraftUpdatedAt` to verify `touchUpdatedAt` invocation.
+  - Added `stageDraftMedia_multipleOperationsDoNotAdvanceParentOptimisticVersion` verifying that repeated media staging operations leave parent `@Version` unchanged.
+  - Added `saveOrUpdateDraft_legitimatePayloadEditStillAdvancesVersionAndProtectsOptimisticLock` verifying that legitimate payload content edits still advance `@Version` and optimistic locking protection remains fully active.
+
+**Frontend — Modified files**
+- `frontend-web/src/services/draftService.ts`:
+  - Updated `restoreMediaFiles` to return `{ files: File[]; byMediaId: Map<string, File> }`.
+  - Populates `byMediaId.set(item.id, file)` for every successfully fetched media binary.
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - In `loadDraftMediaFiles`: removed unsafe `f.name === item.originalFilename` fallback. Restoration now looks up `restored.byMediaId.get(item.id)`. Two different media with identical filenames across cards are strictly isolated by their durable `draftMediaId`.
+  - In card footer navigation: added responsive "Previous property" button when `idx > 0` (`setActiveCardId(stagedCards[idx - 1].id)`), paired with "Next property →" when `idx < stagedCards.length - 1`, styled with touch targets >= 44px, full card state preservation, and zero layout shift.
+- `frontend-web/src/hooks/usePropertyDraft.ts`:
+  - Added `conflictRetryCountRef` (bounded to max 1 automatic retry).
+  - On HTTP 409 conflict: safely fetches authoritative server draft metadata via `draftService.getDraft(draftId!)`, resynchronizes `draftVersionRef.current = latestDraft.version`, preserves local unsaved edits in `pendingPayloadRef.current`, and schedules a single retry against the current authoritative version. Prevents permanent autosave stall while preserving optimistic locking against concurrent edits from other devices.
+- `frontend-web/src/tests/duplicateFilenameRestoration.test.mjs` (New Test File):
+  - Created realistic 3-card regression test (P1: 4 media, P2: 4 media, P3: 3 media = 11 total) with identical duplicate filenames (`images__1_.webp`, `images__2_.webp`, `images.webp`). Proves 100% binary isolation across cards, cover preservation, video preservation, and room tag integrity.
+
+### Outcome
+- Restored media files strictly resolve by durable `draftMediaId`. Duplicate filenames across different properties (e.g. phone camera defaults) never cross-bind or leak binaries across cards.
+- Media staging uploads no longer increment parent draft `@Version`. Self-generated 409 conflicts during batch media uploads are eliminated.
+- Frontend safely resynchronizes `draftVersionRef` on genuine 409 conflicts without losing local unsaved form data or creating infinite retry loops.
+- Bidirectional "Previous Property" / "Next Property" navigation is seamlessly integrated with full state preservation.
+- Diagnostic draft rows (#39, #38, #34, #50, #51) in PostgreSQL and Backblaze B2 remain completely untouched.
+
+### Verification
+- Duplicate Filename Restoration suite: 1/1 PASS (`src/tests/duplicateFilenameRestoration.test.mjs`).
+- Full frontend test suite: 225/225 PASS across 14 test suites (`node --test src/tests/*.test.mjs`).
+- Full backend test suite: 250/250 PASS (`mvn test` in `backend`, 0 failures, 0 errors).
+- Frontend production build: `npm run build` succeeded cleanly with 0 TypeScript/Vite errors.
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Diagnostic records check: Draft #39, Draft #38, Draft #34, Listing #50, Listing #51 verified untouched.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 18:57 IST — P0 Implementation: Complete Media-Staging Concurrency Fix & React State-Updater Network Side-Effect Removal
+
+### Why this work was requested
+1. **Hibernate Managed-Entity Dirty Checking in Media Staging**:
+   - Although the earlier change replaced `draftRepository.save(draft)` with `touchUpdatedAt`, `PropertyDraftService.doPersistMediaTransaction` still executed `draft.setUpdatedAt(now)`.
+   - Because `PropertyUploadDraft draft` was loaded via `draftRepository.findByDraftIdAndAdminId` inside the active transaction, it was attached to the Hibernate Session as a managed entity.
+   - Calling `draft.setUpdatedAt(now)` marked the managed entity dirty.
+   - At transaction commit, Hibernate's automatic dirty checking flushed an UPDATE on `PropertyUploadDraft`, incrementing `@Version` and causing parallel media uploads to collide with optimistic lock exceptions (`Row was updated or deleted by another transaction: PropertyUploadDraft#40`).
+   - In fresh real-browser diagnostic test #40 (`draft-batch-mub825hk-6jtw7`), parent version climbed to 47 and parallel media uploads continually raced autosave, causing repeated 409 conflict warnings.
+2. **React Functional State Updater Network Side Effect**:
+   - In `BatchPropertyIngestionStudio.tsx`, `draftService.stageMedia(...)` was called from inside `setStagedCards((prev) => prev.map(...))` functional updater.
+   - React state updaters must be pure functions without side effects. In development mode (StrictMode) or during concurrent re-renders, state updaters may run multiple times, causing duplicate network requests (e.g. video `dm-4drhlbmvmub856o5_0` staged twice in runtime logs 1.58s apart).
+
+### Files modified
+
+**Backend — Modified files**
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - In `doPersistMediaTransaction`: removed `draft.setUpdatedAt(now)`. The managed `PropertyUploadDraft` entity is never mutated in memory during media staging.
+  - Media staging relies exclusively on the direct database timestamp update via `draftRepository.touchUpdatedAt(draftId, adminId, now)`.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java`:
+  - Added `clearAutomatically = true` to `@Modifying` on `touchUpdatedAt` query. This automatically evicts managed entities from the Hibernate persistence context after the bulk JPQL update, providing defense-in-depth against accidental dirty-checking flushes.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+  - Updated `stageDraftMedia_resetsDraftUpdatedAt` and `stageDraftMedia_multipleOperationsDoNotAdvanceParentOptimisticVersion` to assert that the managed draft entity in memory remains completely clean and untouched (`assertEquals(oldUpdatedAt, draft.getUpdatedAt())`), while verifying that `touchUpdatedAt` is invoked in the repository and `save(draft)` is never called.
+
+**Frontend — Modified files**
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Refactored `attachMediaToCard`:
+    1. Pre-computes `newItems` with stable durable IDs and room tags outside the state updater using `stagedCardsRef.current`.
+    2. Uses a 100% pure `setStagedCards((prev) => ...)` functional updater to register newly attached items in synchronous UI state with `stagingStatus = 'staging'`.
+    3. Triggers `draftService.stageMedia(...)` strictly outside the React state updater, ensuring exactly one network request per attached media item regardless of React re-render or updater re-invocations.
+    4. Handles success (`stagingStatus = 'staged'`) and failure (`stagingStatus = 'failed'`) transitions cleanly.
+- `frontend-web/src/tests/mediaStagingStateUpdaterIsolation.test.mjs` (New Test File):
+  - Created 5 regression tests covering:
+    - Single image: exactly 1 `stageMedia` invocation under simulated React StrictMode double-updater execution.
+    - Single video: exactly 1 `stageMedia` invocation, cover flag never set on video.
+    - Multiple media (3 items): exactly 3 logical `stageMedia` invocations with distinct durable IDs.
+    - Failure isolation: staging failure marks exact item as `failed` without corrupting neighboring media.
+    - Identity preservation: `draftMediaId` and `cardId` remain strictly stable across renders.
+
+### Outcome
+- Parent draft `@Version` is completely decoupled from media staging. Media staging no longer dirties `PropertyUploadDraft`, preventing Hibernate flush version bumps and eliminating self-generated 409 autosave races.
+- Direct timestamp touch executes cleanly with `clearAutomatically = true`.
+- React state updater functions are completely pure; media staging network calls fire exactly once per item.
+- Existing duplicate-filename isolation, ghost-media prevention, Previous/Next property navigation, and 409 recovery remain fully functional and verified.
+- Diagnostic rows #40, #39, #38, #34, #50, #51 in PostgreSQL and Backblaze B2 remain completely untouched.
+
+### Verification
+- State updater isolation suite: 5/5 PASS (`src/tests/mediaStagingStateUpdaterIsolation.test.mjs`).
+- Full frontend test suite: 230/230 PASS across 9 test suites (`node --test src/tests/*.test.mjs`).
+- Full backend test suite: 250/250 PASS (`mvn test` in `backend`, BUILD SUCCESS, 0 failures, 0 errors).
+- Frontend production build: `npm run build` (`tsc && vite build`) succeeded cleanly with 0 errors.
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Diagnostic records check: Draft #40, Draft #39, Draft #38, Draft #34, Listing #50, Listing #51 verified untouched.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-21 19:26 IST — P0 Implementation: Fix Cover Photo & Room Tag Restoration Precedence
+
+### Why this work was requested
+- In multi-property batch ingestion, users reported that after hard refresh → Saved Property Drafts → Continue, cover photo selection and room tags appeared not to restore correctly.
+- Forensic investigation on fresh diagnostic draft #41 (`draft-batch-mubaeka5-z1m4o`, DB row #41) confirmed:
+  1. Durable media binary restoration via `byMediaId` is 100% correct (all 11 media correctly restored across 3 cards).
+  2. When users edit cover photo or change room tag in the studio UI, the updated metadata is serialized into `property_upload_drafts.payload.stagedCards[].stagedMedia[]`.
+  3. The backend `property_draft_media` DB table only stores initial upload-time metadata and is not updated when the user later changes cover or room tag in the studio UI.
+  4. `handleRestoreBatchDraft` in `BatchPropertyIngestionStudio.tsx` incorrectly gave `serverMedia` (from `property_draft_media`) precedence over the saved `payload`:
+     ```typescript
+     roomTag: m.roomTag || prev?.roomTag || 'LIVING_ROOM'
+     isCover: typeof m.isCover === 'boolean' ? m.isCover : Boolean(prev?.isCover)
+     ```
+  5. Because `m.isCover` is always a boolean and `m.roomTag` is always a non-empty string in `property_draft_media`, this unconditionally wiped out user-edited cover selections and room tags upon restore, resetting them to initial upload defaults.
+
+### Files modified
+
+**Frontend — Modified files**
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - Updated `handleRestoreBatchDraft`:
+    - Changed metadata merge precedence so the saved draft payload (`prev`) is authoritative:
+      ```typescript
+      roomTag: prev?.roomTag || m.roomTag || 'LIVING_ROOM',
+      isCover: !isVideo && candidateCover,
+      ```
+      where `candidateCover = typeof prev?.isCover === 'boolean' ? prev.isCover : (typeof m.isCover === 'boolean' ? m.isCover : false)`.
+    - Added video cover protection invariant (`!isVideo && ...`) to prevent videos from ever becoming cover.
+    - Maintained safe fallback to `m.roomTag` and `m.isCover` for legacy or incomplete draft payloads.
+    - Preserved durable `draftMediaId -> File` binary attachment via `byMediaId.get(item.id)`.
+- `frontend-web/src/tests/coverAndRoomTagRestorationPrecedence.test.mjs` (New Test File):
+  - Created 6 focused regression tests covering:
+    1. Core restoration precedence: user-edited payload cover and tags survive restore over initial server staging defaults.
+    2. Multi-property card isolation with duplicate filenames: P1 and P2 maintain independent cover/tag selections and duplicate filenames do not leak across cards.
+    3. Fallback & backward compatibility: server media provides authoritative fallback when payload lacks roomTag/isCover.
+    4. Video cover protection invariant: video can never become cover.
+    5. Order preservation: saved draft payload media order is strictly preserved.
+    6. Unregistered server media appended gracefully.
+
+### Outcome
+- Cover photo and room tag selections persist reliably across hard refresh → Saved Property Drafts → Continue.
+- Payload metadata takes authoritative precedence; server staging metadata acts as safe backward-compatible fallback.
+- Video cover protection and card-level cover uniqueness are strictly maintained.
+- Diagnostic rows #41, #40, #39, #38, #34, #50, #51 in PostgreSQL and Backblaze B2 remain completely untouched.
+
+### Verification
+- Cover photo & room tag restoration precedence suite: 6/6 PASS (`src/tests/coverAndRoomTagRestorationPrecedence.test.mjs`).
+- Full frontend test suite: 236/236 PASS across 10 test suites (`node --test src/tests/*.test.mjs`).
+- Full backend test suite: 250/250 PASS (`mvn test` in `backend`, BUILD SUCCESS, 0 failures, 0 errors).
+- Frontend production build: `npm run build` (`tsc && vite build`) completed cleanly in 2.06s with 0 errors.
+- Code formatting & git diff: `git diff --check` clean (zero whitespace errors).
+- Diagnostic records check: Draft #41, Draft #40, Draft #39, Draft #38, Draft #34, Listing #50, Listing #51 verified untouched.
+- Commit / push status: NOT committed, NOT pushed per instructions.
+
+---
+
+## 2026-09-22 01:25 IST — Follow-Up Hardening Task: Robust Extraction for Floor + Total Floors + Preferred Tenants
+
+### Why this work was requested
+- Targeted parser hardening and regression testing for natural-language extraction of `floor`, `totalFloors`, and `preferredTenants` in `PropertyParserService.java`.
+- Extending the previous approved feature implementation (V10, draft persistence, review UI, publish/read paths) to handle natural variations, edge cases, combined phrasings, Indian building height notation, top-floor semantics, and tenant preference variations without regressions.
+
+### New Phrase Coverage & Rules Implemented
+1. **Floor Semantics & Synonyms**:
+   - Canonical numeric representation: Ground floor = 0, 1st = 1, 2nd = 2, 3rd = 3, etc.
+   - Variations: `Ground floor`, `ground floor`, `GF`, `G/F`, `1st floor`, `first floor`, `1 floor flat`, `2nd floor`, `second floor`, `2 floor flat`, `3rd floor`, `third floor`, `3 floor flat`, numeric ordinals up to `20th floor`, word ordinals up to `twentieth floor`.
+   - Phrasings: `Located on the 3rd floor`, `Located at 3rd floor`, `Flat is on 3rd floor`, `Flat on 3rd floor`, `On the third floor`, `At third floor`, `3rd floor flat`, `3rd-floor flat`, `Property is on floor 3`, `Property at floor 3`, `Floor 3`, `Floor no 3`, `Floor number 3`, `Floor: 3`, `Third floor`.
+2. **Floor + Total Floors Combined**:
+   - Supported combined formats: `3rd floor of a 7-floor building`, `3rd floor of 7 floors`, `3rd floor out of 7`, `3rd floor out of 7 floors`, `3rd floor in a 7 floor building`, `3rd floor in a 7-storey building`, `3rd floor in a 7-story building`, `Located on 3rd floor, building has 7 floors`, `Located on 3rd floor. Total floors 7`, `Floor 3 of 7`, `Floor 3/7`, `3rd floor / 7 floors`, `Floor: 3, Total Floors: 7`, `Floor number 3, total floor 7` -> `floor = 3`, `totalFloors = 7`.
+3. **Total Floors / Building Height**:
+   - Formats: `Total floors 7`, `Total floor 7`, `Total floors: 7`, `7 total floors`, `Building has 7 floors`, `Building is 7 floors`, `7 floor building`, `7-floor building`, `7 storey building`, `7-storey building`, `7 story building`, `7-story building`, `Seven floor building`, `Seven floors`, `Seven storey building`.
+   - Populates `totalFloors = 7` without accidentally populating `floor = 7`.
+4. **Indian G+N Structure Notation**:
+   - Canonical interpretation: G+1 -> totalFloors = 2, G+2 -> totalFloors = 3, G+3 -> totalFloors = 4, Ground plus 2 -> totalFloors = 3, ground and 2 floors -> totalFloors = 3.
+   - For independent houses/villas, G+N strictly describes structure height (`totalFloors = 3`, `floor = null`), and never accidentally sets `floor = 2`.
+   - When a unit floor is separately stated (`First-floor portion available in G+2 house`), correctly extracts `floor = 1`, `totalFloors = 3`.
+5. **Top Floor Semantics**:
+   - `top floor of a 5-floor building` -> `floor = 5`, `totalFloors = 5`.
+   - `5th and top floor` -> `floor = 5`.
+   - Ambiguous `top floor` with no known building height leaves `floor = null` without inventing numbers.
+6. **Basement / Lower Ground / Upper Ground Protection**:
+   - `basement`, `lower ground`, `LG`, `upper ground`, `UG` do not invent numbers; `floor` remains `null`.
+7. **Floor False-Positive Protection**:
+   - Protected against non-floor numbers: `Scheme 140`, `Tower 7`, `Block 3`, `Flat 302`, `House No 7`, `Sector 3`, `1200 sqft`, `2 bedrooms`, `3 bathrooms`, `2 balconies`, `parking for 2 cars`, `7 days notice`, `available from 7 October`, `₹25,000 rent`, `₹50,000 deposit` -> zero false positive floor or totalFloors extraction.
+8. **Preferred Tenants**:
+   - Canonical values: `FAMILY`, `WORKING_PROFESSIONALS`, `BACHELORS`, `STUDENTS`, `ANY`.
+   - Multi-tenant support with connectors (`and`, `or`, `/`, `&`, comma) preserving deterministic mention order.
+   - Enforced `ANY` exclusivity (if specific categories are present, `ANY` is excluded; if `ANY` is the sole preference, `["ANY"]`).
+   - Negation handling: `No bachelors`, `Bachelors not allowed`, `No students`, `Students not allowed` strictly excludes those categories from preferred tenants (`Family only, no bachelors` -> `["FAMILY"]`).
+   - Context protection: `near students hostel`, `working professionals area`, `family restaurant nearby`, `flat near family park` do not produce false positive preferences.
+   - `bachelorAllowed` strictly untouched.
+9. **Sub-Millisecond Performance (O(1) Pre-Filters)**:
+   - Added O(1) keyword check pre-filters to `extractFloorInfo` and `extractPreferredTenants` preventing unnecessary regex executions on non-floor/non-tenant prompts.
+   - Parser Benchmark (3,000 prompts stress test) achieved **0.55 ms** avg per prompt (well below the 1.0 ms threshold) with 100% accuracy.
+
+### Files Modified
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyParserService.java`:
+  - Added pre-compiled static final regex patterns: `LABELLED_FLOOR_PATTERN`, `LABELLED_TOTAL_FLOORS_PATTERN`, `TOP_FLOOR_OF_BUILDING_PATTERN`, `TOP_FLOOR_WITH_ORDINAL_PATTERN`, `FLOOR_X_OF_Y_PATTERN`, `FLOOR_SLASH_FLOORS_PATTERN`, `FLOOR_AND_TOTAL_PATTERN`, `G_PLUS_N_PATTERN`, `UNIT_FLOOR_PHRASED_PATTERN`, `STANDALONE_UNIT_FLOOR_PATTERN`, `DIGIT_FLOOR_UNIT_PATTERN`, `THIRD_FLOOR_ALONE_PATTERN`, `STANDALONE_GF_PATTERN`, `BASEMENT_OR_LG_PATTERN`, `BUILDING_HEIGHT_PATTERN`, `LEADING_DIGITS_PATTERN`, `TENANT_NOISE_LOCATION_PATTERN`, `TENANT_NEGATION_PATTERN`, `PREFERRED_TENANT_PHRASE_PATTERN`, `SPECIFIC_TENANT_ALLOWED_PATTERN`, `SPECIFIC_TENANT_PREFIX_PATTERN`, `TENANT_ORDERED_TOKEN_PATTERN`, `TENANT_CHAIN_PATTERN`, `NO_PREFERENCE_PATTERN`.
+  - Implemented `extractFloorInfo(String input)` with deterministic precedence: labelled values -> top floor of building -> top floor with ordinal -> combined floor/total -> G+N notation -> unit floor expressions -> building height.
+  - Implemented `parseWordOrNumber(String raw)`, `parseFloorValue(String raw)`, `parseTotalFloorsValue(String raw)`.
+  - Implemented `extractPreferredTenants(String input, String normalized)` with negation removal, ANY exclusivity, and deterministic ordering.
+  - Added fast sub-microsecond pre-filter checks ensuring $O(1)$ efficiency.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyParserServicePureTest.java`:
+  - Added table-driven/parameterized test suites covering all variations: `testUnitFloorPhrasingVariations`, `testCombinedFloorAndTotalFloors`, `testBuildingHeightOnlyDoesNotPopulateFloor`, `testIndianGPlusNNotation`, `testHouseAndVillaStructureSemanticsWithUnitFloor`, `testTopFloorExtraction`, `testLowerGroundAndBasementReturnsNull`, `testFloorFalsePositiveProtection`, `testPreferredTenantPhrasesAndCategories`, `testMultipleTenantTypesWithConnectors`, `testTenantNegationDoesNotProducePositiveCategory`, `testTenantContextFalsePositiveProtection`.
+- `antigravity_changes`: Appended this changelog entry.
+
+### Verification Results
+- `PropertyParserServicePureTest`: 94/94 PASS (0 failures, 0 errors).
+- `PropertyParserServiceBenchmarkTest`: 3,000 prompts processed in 1,667 ms (0.55 ms avg per prompt, 100% accuracy, PASS).
+- Full backend test suite: 345/345 PASS (`mvn test`, BUILD SUCCESS).
+- Full frontend test suite: 263/263 PASS across 11 suites (`node --test src/tests/*.test.mjs`).
+- Frontend production build: `npm run build` (`tsc && vite build`) PASS (built in 2.08s, 0 errors).
+- Whitespace / lint check: `git diff --check` PASS (clean).
+- Diagnostic DB / Cloudinary / B2: NOT modified.
+- Commit / push: NOT PERFORMED.
+
+---
+
+## 2026-09-22 11:45 IST — Playwright Tooling Diagnosis & Post-Timeout Machine State Verification
+
+### Why this work was requested
+- User requested continuing Playwright tooling diagnosis following a download timer expiration in the previous session.
+- Objectives: Inspect current machine state without downloading/reinstalling, determine status of Playwright/Chromium installations, check running processes, inspect cache directories (`~/Library/Caches/ms-playwright` and `~/Library/Caches/ms-playwright-go`), and test if Antigravity's internal `playwright-manager` can launch and navigate to `http://localhost:5173/admin` as a smoke test.
+- Strict constraints: Zero modifications to Pathome source code, `package.json`, `package-lock.json`, database, Backblaze B2, Cloudinary, drafts, or listings. No commits or pushes.
+
+### Files / areas inspected
+- System process list (`ps aux`)
+- Global npm binaries (`/opt/homebrew/bin/playwright`, `/opt/homebrew/lib/node_modules/playwright`)
+- Playwright cache directories (`~/Library/Caches/ms-playwright`, `~/Library/Caches/ms-playwright-go`)
+- Background task log (`task-9221.log`) and conversation transcripts
+- Antigravity IDE language server binary and browser subagent runtime
+
+### Investigation Findings
+1. **Global Playwright Installation**: Completed. Version `1.57.0` is installed at `/opt/homebrew/lib/node_modules/playwright` and accessible via `/opt/homebrew/bin/playwright`.
+2. **ms-playwright Cache State**:
+   - `~/Library/Caches/ms-playwright` exists.
+   - Contains stale `__dirlock` directory and incomplete `chromium-1200` folder (~428 KB).
+   - Incomplete download/unzip: Task log `task-9221.log` shows the 159.6 MiB zip download finished (100%), but in step 9248 the previous agent prematurely killed `task-9221` mid-extraction thinking it was stuck. As a result, the `Google Chrome for Testing Framework` was never extracted, and running the binary fails with `dlopen(.../Google Chrome for Testing Framework): no such file`.
+3. **ms-playwright-go Driver State**:
+   - `~/Library/Caches/ms-playwright-go/1.57.0` exists but is completely empty.
+   - Antigravity's internal `playwright-manager` uses `playwright-go` v1.57.0, which attempts to download `https://playwright.azureedge.net/builds/driver/playwright-1.57.0-mac-arm64.zip` (and mirrors).
+   - Microsoft removed pre-1.61 driver builds from Azure CDN in mid-2026; therefore, all 3 CDN mirrors return `HTTP 404 Not Found`.
+4. **Active Processes**: No background download or Playwright/npm install processes are currently running.
+5. **Antigravity Playwright-Manager Launch**: Fails with `could not install driver: error: got non 200 status code: 404 (404 Not Found) from https://playwright.azureedge.net/builds/driver/playwright-1.57.0-mac-arm64.zip`.
+6. **Localhost Admin Smoke Test**: FAILED (browser context could not be created).
+
+### Outcome & Safety
+- Full diagnostic report provided to user.
+- Pathome source code: NOT MODIFIED.
+- `package.json` / `package-lock.json`: NOT MODIFIED.
+- Application data / database / B2 / Cloudinary: NOT MODIFIED.
+- Drafts / listings: NOT MODIFIED.
+- Commits / pushes: NOT PERFORMED.
+
+---
+
+## 2026-09-22 12:05 IST — Playwright Tooling Diagnostic: Installer Stall Root Cause & ZIP Preservation
+
+### Why this work was requested
+- User requested diagnosing the stalled global Playwright Chromium installation processes (PIDs 4653/4655), preserving the downloaded zip, testing zip integrity, determining the exact extraction layout, and identifying the stall root cause without performing manual extraction or touching Pathome files or `ms-playwright-go`.
+
+### Files / areas inspected
+- PIDs 4653 and 4655 process inspection and graceful termination
+- Downloaded zip: `/private/var/folders/sq/5t0q68_126xf9ryjvk7zl2rw0000gn/T/playwright-download-ipSmTm/playwright-download-chromium-mac15-arm64-1200.zip`
+- Preserved zip: `/tmp/playwright-chromium-mac15-arm64-1200.zip` (167,325,135 bytes)
+- Playwright registry & extraction source code: `index.js`, `browserFetcher.js`, `oopDownloadBrowserMain.js`, `zipBundleImpl.js`
+- Node version: `v26.8.2`
+
+### Diagnostic Findings
+1. **PIDs 4653/4655**: Confirmed stalled (0% CPU, 0 active TCP connections, zip file static). Terminated gracefully via SIGTERM.
+2. **ZIP Preservation & Integrity**: Preserved at `/tmp/playwright-chromium-mac15-arm64-1200.zip` (167,325,135 bytes). Fully verified via `unzip -t` with 0 CRC32 errors. Contains full `Google Chrome for Testing.app` with `Google Chrome for Testing Framework.framework`.
+3. **Extraction Layout**: Target base is `~/Library/Caches/ms-playwright/chromium-1200`. Executable path is `chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`. Completion marker is `INSTALLATION_COMPLETE`.
+4. **Stall Root Cause**: Playwright bundles `extract-zip` (`yauzl` + `stream.pipeline`). Under Node `v26.8.2`, stream backpressure stalls indefinitely when extracting large macOS app bundles containing nested symlinks (`Versions/Current/Google Chrome for Testing Framework`), causing the process to hang after extracting 428 KB of loose files.
+5. **Safety**: Zero Pathome source files, package files, database rows, or `ms-playwright-go` files modified. Manual extraction NOT performed. No new download needed.
+
+---
+
+## 2026-09-22 12:10 IST — Stage 1 Complete: Chromium Manual Extraction Recovery & Antigravity Retest
+
+### Why this work was requested
+- User approved Stage 1 procedure to safely complete Chromium extraction into `~/Library/Caches/ms-playwright/chromium-1200` using the preserved valid ZIP (`/tmp/playwright-chromium-mac15-arm64-1200.zip`), verify executable/framework health, perform a standalone Node smoke test with global Playwright 1.57.0, and retest Antigravity browser automation once.
+
+### Procedure Executed
+1. Reconfirmed no installer processes running.
+2. Removed incomplete ~428 KB `chromium-1200` directory.
+3. Extracted `/tmp/playwright-chromium-mac15-arm64-1200.zip` using macOS native `ditto -x -k`.
+4. Verified executable and `Google Chrome for Testing Framework.framework` (total size: 324M / 548M uncompressed blocks).
+5. Created `INSTALLATION_COMPLETE` marker.
+6. Verified direct binary: `Google Chrome for Testing 143.0.7499.4` (or CFT 133/143 channel build).
+7. Verified global Playwright 1.57.0 launch via Node script: PASS (`PAGE_TITLE=PW_OK`).
+8. Retested Antigravity browser automation once: FAILED specifically because internal `playwright-go 1.57.0` driver is missing and attempts the known 404 download from Microsoft CDN.
+9. Stopped immediately per instructions. No changes to `ms-playwright-go`, Antigravity binaries, or Pathome repository.
+
+---
+
+## 2026-09-22 12:20 IST — Stage 2 Diagnosis: Antigravity Playwright-Go Driver Verification
+
+### Why this work was requested
+- User requested diagnosing Antigravity's internal `playwright-go` driver requirements, cache structure, validation mechanics, and determining whether the existing global Playwright 1.57.0 installation can supply the necessary driver without downloading from the deprecated/404 Azure CDN. Strictly diagnostic (no mutations to `ms-playwright-go`, Antigravity, or Pathome).
+
+### Diagnostic Findings
+1. **Implementation & Version**: Antigravity IDE bundles `google3/.../playwright_community/playwright_go` at commit baseline `fcd06e1fa6` (Playwright v1.57.0).
+2. **Cache Path & Layout**: Expects `~/Library/Caches/ms-playwright-go/1.57.0/` containing `node` (executable binary) and `package/` (`playwright-core` directory with `cli.js`).
+3. **Validation Mechanism**: `isUpToDateDriver()` runs `<node> <package/cli.js> --version` and tests `bytes.Contains(output, "1.57.0")`. If true, returns success without making any network requests.
+4. **Execution Mechanism**: `Run()` launches `<node> <package/cli.js> run-driver` connecting via stdin/stdout pipe transport.
+5. **Local Compatibility**: Global Playwright at `/opt/homebrew/lib/node_modules/playwright/node_modules/playwright-core` is v1.57.0, contains `cli.js` with hidden `run-driver` command, and outputs `Version 1.57.0`.
+6. **Safety**: Zero changes made to `ms-playwright-go`, Chromium installation, Antigravity binaries, or Pathome repository.
+
+---
+
+## 2026-09-22 12:28 IST — Stage 2 Complete: Antigravity Playwright-Go Driver Cache Repaired & Verified
+
+### Why this work was requested
+- User approved Stage 2 execution to make Antigravity's internal `playwright-go 1.57.0` driver functional using verified local Playwright 1.57.0 and Node installations without downloading from the deprecated/404 Azure CDN and without altering Antigravity binaries or Pathome source code.
+
+### Procedure Executed
+1. Pre-flight checks: Verified destination `~/Library/Caches/ms-playwright-go/1.57.0` was empty; verified source `/opt/homebrew/bin/node` (v26.8.2 arm64) and `/opt/homebrew/lib/node_modules/playwright/node_modules/playwright-core` (v1.57.0) existed and executed cleanly (`Version 1.57.0`).
+2. Created minimal reversible symlinks in `~/Library/Caches/ms-playwright-go/1.57.0`:
+   - `node -> /opt/homebrew/bin/node`
+   - `package -> /opt/homebrew/lib/node_modules/playwright/node_modules/playwright-core`
+3. Verified symlinks directly through cache: `<cache>/node <cache>/package/cli.js --version` returned `Version 1.57.0`.
+4. Verified `run-driver` entry point exists in `package/lib/cli/program.js`.
+5. Executed Antigravity browser automation smoke test: Successfully opened `http://localhost:5173/admin` read-only.
+   - Zero CDN downloads attempted.
+   - Browser context created successfully.
+   - Chromium launched successfully.
+   - Page loaded with title `"Pathome | Your Dreams, Our Efforts"` and heading `"Pathome Admin Portal"`.
+   - Browser closed cleanly.
+
+### Safety & Invariants
+- `~/Library/Caches/ms-playwright/chromium-1200`: NOT MODIFIED (intact).
+- Antigravity binaries/app: NOT MODIFIED.
+- Pathome source code / package configs: NOT MODIFIED.
+- Database / B2 / Cloudinary / listings: NOT MODIFIED.
+- Git commit / push: NOT PERFORMED.
+
+
+
+
+

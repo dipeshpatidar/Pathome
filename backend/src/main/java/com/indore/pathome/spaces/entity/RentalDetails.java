@@ -36,6 +36,9 @@ public class RentalDetails extends Listing {
     @Column(name = "bachelor_allowed")
     private Boolean bachelorAllowed = true;
 
+    @Column(name = "preferred_tenant")
+    private String preferredTenant;
+
     @Column(name = "available_from")
     private LocalDateTime availableFrom;
 
@@ -63,6 +66,9 @@ public class RentalDetails extends Listing {
 
     public Boolean getBachelorAllowed() { return bachelorAllowed; }
     public void setBachelorAllowed(Boolean bachelorAllowed) { this.bachelorAllowed = bachelorAllowed; }
+
+    public String getPreferredTenant() { return preferredTenant; }
+    public void setPreferredTenant(String preferredTenant) { this.preferredTenant = preferredTenant; }
 
     public LocalDateTime getAvailableFrom() { return availableFrom; }
     public void setAvailableFrom(LocalDateTime availableFrom) { this.availableFrom = availableFrom; }
