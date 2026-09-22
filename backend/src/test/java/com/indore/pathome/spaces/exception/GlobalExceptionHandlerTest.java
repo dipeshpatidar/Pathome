@@ -61,4 +61,48 @@ public class GlobalExceptionHandlerTest {
                 response.getBody().getMessage());
         assertFalse(response.getBody().getMessage().contains("Database"));
     }
+
+    @Test
+    public void testHandleMediaStaging_Transient_Returns503AndSafeReason() {
+        MediaStagingException ex = new MediaStagingException(
+                "Media staging was temporarily interrupted. Please try uploading the file again.",
+                "Failed to stage object [drafts/admin/d-1/m.jpg] in S3: SocketException: Unexpected end of file from server",
+                "drafts/admin/d-1/m.jpg",
+                true,
+                new java.net.SocketException("Unexpected end of file from server")
+        );
+
+        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleMediaStaging(ex, request);
+
+        assertNotNull(response);
+        assertEquals(503, response.getStatusCode().value());
+        assertEquals("Service Unavailable", response.getBody().getError());
+        assertEquals("Media staging was temporarily interrupted. Please try uploading the file again.", response.getBody().getMessage());
+        assertEquals("/api/v1/test", response.getBody().getPath());
+        assertFalse(response.getBody().getMessage().contains("SocketException"));
+        assertFalse(response.getBody().getMessage().contains("Unexpected end of file"));
+        assertFalse(response.getBody().getMessage().contains("drafts/admin/d-1"));
+    }
+
+    @Test
+    public void testHandleMediaStaging_NonTransient_Returns500AndSafeReason() {
+        MediaStagingException ex = new MediaStagingException(
+                "Draft media storage is currently unavailable. Please try again later.",
+                "Failed to stage object [drafts/admin/d-1/m.jpg] in S3: 403 Forbidden (Service: S3, Status Code: 403, Request ID: secret-id)",
+                "drafts/admin/d-1/m.jpg",
+                false,
+                software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(403).message("Access Denied").build()
+        );
+
+        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleMediaStaging(ex, request);
+
+        assertNotNull(response);
+        assertEquals(500, response.getStatusCode().value());
+        assertEquals("Internal Server Error", response.getBody().getError());
+        assertEquals("Draft media storage is currently unavailable. Please try again later.", response.getBody().getMessage());
+        assertEquals("/api/v1/test", response.getBody().getPath());
+        assertFalse(response.getBody().getMessage().contains("403"));
+        assertFalse(response.getBody().getMessage().contains("Access Denied"));
+        assertFalse(response.getBody().getMessage().contains("secret-id"));
+    }
 }

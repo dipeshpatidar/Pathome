@@ -97,6 +97,31 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(error);
     }
 
+    @ExceptionHandler(MediaStagingException.class)
+    public ResponseEntity<ErrorResponseDTO> handleMediaStaging(MediaStagingException ex, HttpServletRequest request) {
+        if (ex.isTransient()) {
+            log.warn("Media Staging Transient Failure: {} | Staging Key: {} | Path: {}",
+                    ex.getMessage(), ex.getStagingKey(), request.getRequestURI());
+            ErrorResponseDTO error = new ErrorResponseDTO(
+                    HttpStatus.SERVICE_UNAVAILABLE.value(),
+                    "Service Unavailable",
+                    ex.getSafeReason(),
+                    request.getRequestURI()
+            );
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(error);
+        } else {
+            log.error("Media Staging Non-Transient Failure: {} | Staging Key: {} | Path: {}",
+                    ex.getMessage(), ex.getStagingKey(), request.getRequestURI(), ex);
+            ErrorResponseDTO error = new ErrorResponseDTO(
+                    HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    "Internal Server Error",
+                    ex.getSafeReason(),
+                    request.getRequestURI()
+            );
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+        }
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex, HttpServletRequest request) {
         log.error("Unhandled Global Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI(), ex);

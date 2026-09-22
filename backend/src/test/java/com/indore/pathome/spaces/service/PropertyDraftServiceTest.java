@@ -11,6 +11,7 @@ import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.exception.MediaStagingException;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
@@ -1147,5 +1148,32 @@ class PropertyDraftServiceTest {
         assertThrows(IllegalArgumentException.class, () ->
                 service.reassignUnassignedMediaToCard(ADMIN_ID, DRAFT_ID, "   ")
         );
+    }
+
+    @Test
+    void stageDraftMedia_propagatesMediaStagingExceptionWithoutWrappingInIllegalStateException() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+
+        MediaStagingException stagingEx = new MediaStagingException(
+                "Media staging was temporarily interrupted. Please try uploading the file again.",
+                "Failed to stage object: java.net.SocketException: Connection reset",
+                "drafts/admin/d-1/sample.jpg",
+                true,
+                new java.net.SocketException("Connection reset")
+        );
+        doThrow(stagingEx).when(mediaStagingService).stage(anyString(), any(), anyLong(), anyString());
+
+        MockMultipartFile file = new MockMultipartFile("file", "sample.jpg", "image/jpeg", new byte[100]);
+
+        MediaStagingException thrown = assertThrows(MediaStagingException.class, () ->
+                service.stageDraftMedia(ADMIN_ID, DRAFT_ID, file, "card-1", "ROOM", false)
+        );
+
+        assertSame(stagingEx, thrown);
+        assertTrue(thrown.isTransient());
+        assertEquals("Media staging was temporarily interrupted. Please try uploading the file again.", thrown.getSafeReason());
     }
 }

@@ -4,6 +4,54 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-22 14:30 IST — Approved Implementation: B2 Draft Media Transient Error Hardening
+
+### Why this work was requested
+- User requested implementation of the approved exception hardening for draft media staging against Backblaze B2.
+- During physical network interruption testing, transient `SocketException: Unexpected end of file from server` occurred and was classified as generic HTTP 500.
+- Approved Phase 1 design implemented with explicit requirement: transient storage/network interruptions return **HTTP 503 SERVICE_UNAVAILABLE** (NOT HTTP 502 Bad Gateway) with safe customer-facing error messages, while non-transient storage or credential misconfigurations map to HTTP 500 INTERNAL_SERVER_ERROR.
+- Strict scope constraints: No frontend changes, no additional retry layer (AWS SDK retries preserved), no modification to publishing, batch reconciliation, Cloudinary pipeline, FailedUploadService, schema, Flyway migrations, database data, or B2/Cloudinary data.
+
+### Root Cause
+- Draft media staging exceptions were previously caught generically in `PropertyDraftService` and wrapped into `IllegalStateException("Failed to store temporary draft media. Please try again.")`, reaching the fallback `Exception.class` handler in `GlobalExceptionHandler` which returned HTTP 500 Internal Server Error without distinguishing temporary transport/network interruptions from permanent configuration errors.
+
+### Files Created
+- `backend/src/main/java/com/indore/pathome/spaces/exception/MediaStagingException.java` [NEW]:
+  - Dedicated exception carrying `boolean transientFailure`, `String safeReason`, `String stagingKey`, and internal `diagnostic` message with cause.
+
+### Files Modified
+- `backend/src/main/java/com/indore/pathome/spaces/service/S3MediaStagingService.java`:
+  - Added `isTransientFailure(Throwable t)`: Classifies `SocketException`, `SocketTimeoutException`, `ConnectException`, `UnknownHostException`, `ApiCallTimeoutException`, `ApiCallAttemptTimeoutException`, `S3Exception` status codes 429, 500, 502, 503, 504, and network I/O errors (broken pipe, connection reset, EOF) as transient. Classifies permission/authorization (e.g. S3 403 Forbidden) and invalid request errors as non-transient.
+  - Updated `stage()` to catch storage errors, classify via `isTransientFailure()`, log transient failures at `WARN` and non-transient failures at `ERROR` with diagnostic context, and throw `MediaStagingException`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - Updated `stageDraftMedia()` to explicitly catch and rethrow `MediaStagingException` without wrapping in `IllegalStateException`, preserving transaction and persistence behavior.
+- `backend/src/main/java/com/indore/pathome/spaces/exception/GlobalExceptionHandler.java`:
+  - Added dedicated `@ExceptionHandler(MediaStagingException.class)`.
+  - Transient failures return `HttpStatus.SERVICE_UNAVAILABLE` (503) with safe message `"Media staging was temporarily interrupted. Please try uploading the file again."` and `WARN` logging.
+  - Non-transient failures return `HttpStatus.INTERNAL_SERVER_ERROR` (500) with safe message `"Draft media storage is currently unavailable. Please try again later."` and `ERROR` logging.
+  - Enforced zero information leakage: internal diagnostic details, stack traces, AWS request IDs, and credentials are kept server-side only.
+- `backend/src/test/java/com/indore/pathome/spaces/exception/GlobalExceptionHandlerTest.java`:
+  - Added tests verifying HTTP 503 for transient failures, HTTP 500 for non-transient failures, safe error messages, and zero leak of internal diagnostics.
+- `backend/src/test/java/com/indore/pathome/spaces/service/MediaStagingServiceTest.java`:
+  - Added tests for `SocketException` (transient -> true), `S3Exception` 503 (transient -> true), `S3Exception` 403 (transient -> false), and `ApiCallTimeoutException` (transient -> true).
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java`:
+  - Added test verifying `stageDraftMedia()` propagates `MediaStagingException` cleanly without wrapping in `IllegalStateException`.
+
+### Summary of Outcome
+- Transient B2/network staging failures are cleanly classified as HTTP 503 SERVICE_UNAVAILABLE with WARN logging.
+- Non-transient staging failures are classified as HTTP 500 INTERNAL_SERVER_ERROR with ERROR logging.
+- Zero API information leakage verified: raw AWS messages, bucket secrets, and endpoint details are excluded from responses.
+- No frontend changes made (existing client architecture safely handles non-2xx responses by marking media as failed and isolating it from autosave).
+- No additional application retry layer added (preserves standard AWS SDK retry semantics).
+- B2 object key strategy (`drafts/{adminId}/{draftId}/{mediaId}_{safeFilename}`), UNIQUE(media_id), and idempotency behavior remain completely preserved.
+
+### Verification
+- Focused backend tests: 57/57 PASS (`GlobalExceptionHandlerTest`: 5, `MediaStagingServiceTest`: 8, `PropertyDraftServiceTest`: 44).
+- Full backend test suite: 352/352 PASS (`mvn test`, BUILD SUCCESS, 0 failures, 0 errors).
+- Backend compilation: `mvn clean compile` PASS (BUILD SUCCESS).
+- Full frontend test suite: 263/263 PASS across 11 suites (`node --test frontend-web/src/tests/*.test.mjs`, 0 failures).
+- Git safety: Not committed, not pushed. Final status: READY_FOR_REVIEW.
+
 ---
 
 ## 2026-09-22 13:52 IST — Final Pathome Acceptance Test: Physical Network Interruption During Batch Publish

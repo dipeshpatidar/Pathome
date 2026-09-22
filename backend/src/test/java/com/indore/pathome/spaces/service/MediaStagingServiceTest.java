@@ -99,5 +99,93 @@ class MediaStagingServiceTest {
         org.mockito.Mockito.verify(mockS3).deleteObject(delCaptor.capture());
         assertEquals("staging/req-123/sample.webp", delCaptor.getValue().key());
     }
+
+    @Test
+    void s3StagingService_socketException_classifiedAsTransient() {
+        software.amazon.awssdk.services.s3.S3Client mockS3 = Mockito.mock(software.amazon.awssdk.services.s3.S3Client.class);
+        S3MediaStagingService s3Service = new S3MediaStagingService(mockS3, "test-bucket");
+
+        Mockito.doThrow(software.amazon.awssdk.core.exception.SdkClientException.create(
+                "Failed to send request",
+                new java.net.SocketException("Unexpected end of file from server")
+        )).when(mockS3).putObject(Mockito.any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+                Mockito.any(software.amazon.awssdk.core.sync.RequestBody.class));
+
+        byte[] payload = "bytes".getBytes(StandardCharsets.UTF_8);
+        com.indore.pathome.spaces.exception.MediaStagingException ex = assertThrows(
+                com.indore.pathome.spaces.exception.MediaStagingException.class,
+                () -> s3Service.stage("drafts/admin/d-1/test.jpg", new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+        );
+
+        assertTrue(ex.isTransient());
+        assertEquals("Media staging was temporarily interrupted. Please try uploading the file again.", ex.getSafeReason());
+        assertNotNull(ex.getMessage());
+        assertTrue(ex.getMessage().contains("Unexpected end of file from server"));
+        assertEquals("drafts/admin/d-1/test.jpg", ex.getStagingKey());
+    }
+
+    @Test
+    void s3StagingService_s3503_classifiedAsTransient() {
+        software.amazon.awssdk.services.s3.S3Client mockS3 = Mockito.mock(software.amazon.awssdk.services.s3.S3Client.class);
+        S3MediaStagingService s3Service = new S3MediaStagingService(mockS3, "test-bucket");
+
+        Mockito.doThrow(software.amazon.awssdk.services.s3.model.S3Exception.builder()
+                .statusCode(503)
+                .message("Slow Down / Service Unavailable")
+                .build()
+        ).when(mockS3).putObject(Mockito.any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+                Mockito.any(software.amazon.awssdk.core.sync.RequestBody.class));
+
+        byte[] payload = "bytes".getBytes(StandardCharsets.UTF_8);
+        com.indore.pathome.spaces.exception.MediaStagingException ex = assertThrows(
+                com.indore.pathome.spaces.exception.MediaStagingException.class,
+                () -> s3Service.stage("drafts/admin/d-1/test.jpg", new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+        );
+
+        assertTrue(ex.isTransient());
+        assertEquals("Media staging was temporarily interrupted. Please try uploading the file again.", ex.getSafeReason());
+    }
+
+    @Test
+    void s3StagingService_s3403_classifiedAsNonTransient() {
+        software.amazon.awssdk.services.s3.S3Client mockS3 = Mockito.mock(software.amazon.awssdk.services.s3.S3Client.class);
+        S3MediaStagingService s3Service = new S3MediaStagingService(mockS3, "test-bucket");
+
+        Mockito.doThrow(software.amazon.awssdk.services.s3.model.S3Exception.builder()
+                .statusCode(403)
+                .message("Access Denied")
+                .build()
+        ).when(mockS3).putObject(Mockito.any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+                Mockito.any(software.amazon.awssdk.core.sync.RequestBody.class));
+
+        byte[] payload = "bytes".getBytes(StandardCharsets.UTF_8);
+        com.indore.pathome.spaces.exception.MediaStagingException ex = assertThrows(
+                com.indore.pathome.spaces.exception.MediaStagingException.class,
+                () -> s3Service.stage("drafts/admin/d-1/test.jpg", new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+        );
+
+        assertFalse(ex.isTransient());
+        assertEquals("Draft media storage is currently unavailable. Please try again later.", ex.getSafeReason());
+        assertTrue(ex.getMessage().contains("Access Denied"));
+    }
+
+    @Test
+    void s3StagingService_apiCallTimeout_classifiedAsTransient() {
+        software.amazon.awssdk.services.s3.S3Client mockS3 = Mockito.mock(software.amazon.awssdk.services.s3.S3Client.class);
+        S3MediaStagingService s3Service = new S3MediaStagingService(mockS3, "test-bucket");
+
+        Mockito.doThrow(software.amazon.awssdk.core.exception.ApiCallTimeoutException.create(5000L)
+        ).when(mockS3).putObject(Mockito.any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+                Mockito.any(software.amazon.awssdk.core.sync.RequestBody.class));
+
+        byte[] payload = "bytes".getBytes(StandardCharsets.UTF_8);
+        com.indore.pathome.spaces.exception.MediaStagingException ex = assertThrows(
+                com.indore.pathome.spaces.exception.MediaStagingException.class,
+                () -> s3Service.stage("drafts/admin/d-1/test.jpg", new ByteArrayInputStream(payload), payload.length, "image/jpeg")
+        );
+
+        assertTrue(ex.isTransient());
+        assertEquals("Media staging was temporarily interrupted. Please try uploading the file again.", ex.getSafeReason());
+    }
 }
 

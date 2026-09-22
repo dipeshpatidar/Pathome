@@ -15,6 +15,7 @@ import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.exception.MediaStagingException;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
@@ -417,6 +418,8 @@ public class PropertyDraftService {
         if (mediaStagingService != null) {
             try (InputStream in = file.getInputStream()) {
                 mediaStagingService.stage(stagingKey, in, size, contentType);
+            } catch (MediaStagingException mse) {
+                throw mse;
             } catch (Exception e) {
                 String errorMsg = e.getMessage() != null ? e.getMessage() : "";
                 if (errorMsg.contains("403") || errorMsg.contains("Access Denied") || errorMsg.contains("Forbidden")) {
