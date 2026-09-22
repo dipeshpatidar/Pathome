@@ -4,6 +4,77 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-23 01:25 IST — Approved Feature: Persistent Property-Published Notifications
+
+### Why this work was requested
+- Following successful batch publishing and final tombstone creation in property upload (including network interruptions, media retries, and resume flows), administrators need persistent notification center alerts indicating that the property/batch was published successfully.
+- Product requirements:
+  1. Exactly ONE persistent notification per completed publish operation/draft.
+  2. For a batch: ONE notification for the entire completed batch (NOT per-property).
+  3. For a single-property draft: ONE notification for that completed draft.
+  4. Created ONLY by backend at the authoritative terminal `PUBLISHED` / tombstone transition.
+  5. Idempotent: Survives browser refresh, logout/login, reconnect, repeated finalization, or media retries without creating duplicates.
+  6. Preserves existing floating toasts and notification center drawer UI/UX. Zero frontend production modifications required (frontend already polls `GET /api/v1/notifications?role=ADMIN` every ~15s).
+
+### Architecture & Authoritative Boundary
+- **Authoritative Boundary**: `PropertyDraftService` at the point of converting the draft into the `PUBLISHED` tombstone:
+  - Batch flow: `reconcileBatchDraft()` Phase C post-commit dispatch, strictly after `reconcileBatchDraftInTx()` completes and the `PUBLISHED` tombstone transaction commits.
+  - Single/Final flow: `onPropertyPublished()` registers an `afterCommit()` callback via `TransactionSynchronizationManager.registerSynchronization()` so the notification is dispatched only after the publication transaction commits.
+- **Database-Backed Idempotency & Transaction Isolation**:
+  - Flyway migration `V11__add_notification_event_key.sql` adds `event_key VARCHAR(120)` with a unique index `uk_notif_event_key` on `system_notifications`.
+  - Format: `PROPERTY_PUBLISHED:<draftId>`.
+  - In `NotificationService.createNotificationWithEventKey(...)`:
+    - Fast-path check via `SystemNotificationRepository.findByEventKey(eventKey)`.
+    - Isolated sub-transaction: When `PlatformTransactionManager` is available, notification insert runs in a programmatic `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW`.
+    - Concurrency race handling: If a concurrent thread inserts the same `event_key`, `DataIntegrityViolationException` is caught after the isolated sub-transaction rolls back cleanly. The post-conflict lookup `findByEventKey(eventKey)` executes outside the failed sub-transaction on a clean connection, preventing PostgreSQL aborted transaction errors and preventing `UnexpectedRollbackException`.
+    - Preserves NotificationService L1 cache consistency (`refreshCache()`).
+- **Transactional & Post-Commit Safety**:
+  - Publication is the primary business operation. Notifications are dispatched strictly post-commit (Phase C in batch publish, `afterCommit` in single publish).
+  - If a publication transaction rolls back, zero notifications are ever dispatched.
+  - If notification persistence fails for any reason post-commit, publication has already committed successfully and cannot be corrupted or rolled back.
+  - Wrapped in a non-fatal `try/catch` inside `PropertyDraftService.dispatchPublishedNotification()`.
+- **Copywriting & Customer-Safe Details**:
+  - Single:
+    - Title: `Property published successfully`
+    - Message: `1 property was published successfully.`
+  - Batch:
+    - Title: `{count} properties published successfully`
+    - Message: `{count} properties were published successfully.`
+  - Category: `PROPERTY`, TargetRole: `ADMIN`, Type: `success`.
+  - Details: `Draft ID: {draftId} • Listing #{id} (or Listings: #id1, #id2, ...) • {count} properties published`. No secrets or raw exceptions exposed.
+
+### Files Modified & Added
+- `backend/src/main/resources/db/migration/V11__add_notification_event_key.sql` [NEW]:
+  - `ALTER TABLE system_notifications ADD COLUMN IF NOT EXISTS event_key VARCHAR(120);`
+  - `CREATE UNIQUE INDEX IF NOT EXISTS uk_notif_event_key ON system_notifications (event_key);`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/SystemNotification.java`:
+  - Added `eventKey` field with `@Column(name = "event_key", length = 120, unique = true)` and `@Index(name = "idx_notif_event_key", columnList = "event_key", unique = true)` on `@Table`.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/SystemNotificationRepository.java`:
+  - Added `findByEventKey(String eventKey)` and `existsByEventKey(String eventKey)`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/NotificationService.java`:
+  - Added `createNotificationWithEventKey(...)` with `TransactionTemplate` `PROPAGATION_REQUIRES_NEW` isolation, fast lookup, and safe post-conflict winner resolution.
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`:
+  - Added `dispatchPublishedNotification()` helper invoked post-commit: in `reconcileBatchDraft` Phase C after transaction commit, and in `onPropertyPublished` via `afterCommit()` transaction synchronization.
+- `backend/src/test/java/com/indore/pathome/spaces/service/NotificationServiceTest.java`:
+  - Added unit tests for idempotency, concurrent race handling, and `PlatformTransactionManager` `REQUIRES_NEW` commit verification.
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyPublishNotificationTest.java` [NEW]:
+  - 12 deterministic tests covering single publication, batch publication, interrupted resume, retry failed media, repeated finalization, concurrency race handling, incomplete publication, metadata validation, `afterCommit` synchronization, single rollback safety, batch rollback safety, and notification persistence failure isolation.
+
+### Verification Results
+- Focused tests: 60/60 PASS
+  - `PropertyPublishNotificationTest`: 12/12 PASS
+  - `NotificationServiceTest`: 5/5 PASS
+  - `PropertyDraftServiceTest`: 43/43 PASS
+- Clean compile: `mvn clean test-compile` succeeded in 4.28s.
+- `git diff --check`: PASS (0 warnings).
+- Runtime safety:
+  - Zero database runtime modifications (no backfill for historical #80, #81, #82).
+  - Zero B2/Cloudinary modifications.
+  - Zero frontend production changes.
+  - No commit, no push.
+
+---
+
 ## 2026-09-23 00:20 IST — Approved Fix: Tighten Authoritative Media Completion Check (Exact uploadRequestId Matching)
 
 ### Why this work was requested

@@ -22,4 +22,8 @@ public interface SystemNotificationRepository extends JpaRepository<SystemNotifi
     List<SystemNotification> findByTargetRoleInOrderByCreatedAtDesc(Collection<TargetRole> targetRoles);
 
     long countByTargetRoleInAndIsReadFalse(Collection<TargetRole> targetRoles);
+
+    java.util.Optional<SystemNotification> findByEventKey(String eventKey);
+
+    boolean existsByEventKey(String eventKey);
 }

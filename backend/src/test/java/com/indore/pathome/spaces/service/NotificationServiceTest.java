@@ -68,4 +68,72 @@ public class NotificationServiceTest {
         assertTrue(readSuccess);
         assertTrue(notif.isRead());
     }
+
+    @Test
+    public void testCreateNotificationWithEventKey_Idempotency() {
+        String eventKey = "PROPERTY_PUBLISHED:draft-123";
+        SystemNotification existingNotif = new SystemNotification(TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-123", "PROPERTY", "success");
+        existingNotif.setId(20L);
+        existingNotif.setEventKey(eventKey);
+
+        when(repository.findByEventKey(eventKey)).thenReturn(Optional.of(existingNotif));
+
+        Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-123", "PROPERTY", "success", eventKey
+        );
+
+        assertTrue(result.isPresent());
+        assertEquals(20L, result.get().getId());
+        assertEquals(eventKey, result.get().getEventKey());
+        verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    public void testCreateNotificationWithEventKey_ConcurrentRaceHandled() {
+        String eventKey = "PROPERTY_PUBLISHED:draft-race";
+        SystemNotification winner = new SystemNotification(TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-race", "PROPERTY", "success");
+        winner.setId(30L);
+        winner.setEventKey(eventKey);
+
+        when(repository.findByEventKey(eventKey))
+                .thenReturn(Optional.empty()) // Initial check: empty
+                .thenReturn(Optional.of(winner)); // Post-exception check: winner found
+
+        when(repository.saveAndFlush(any(SystemNotification.class)))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("duplicate key value violates unique constraint"));
+
+        Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-race", "PROPERTY", "success", eventKey
+        );
+
+        assertTrue(result.isPresent());
+        assertEquals(30L, result.get().getId());
+        assertEquals(eventKey, result.get().getEventKey());
+    }
+
+    @Test
+    public void testCreateNotificationWithEventKey_WithRequiresNewTransactionManager() {
+        org.springframework.transaction.PlatformTransactionManager txManager = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        org.springframework.transaction.TransactionStatus txStatus = mock(org.springframework.transaction.TransactionStatus.class);
+        when(txManager.getTransaction(any())).thenReturn(txStatus);
+
+        notificationService.setTransactionManager(txManager);
+
+        String eventKey = "PROPERTY_PUBLISHED:draft-tx-requires-new";
+        SystemNotification created = new SystemNotification(TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-tx-requires-new", "PROPERTY", "success");
+        created.setId(45L);
+        created.setEventKey(eventKey);
+
+        when(repository.findByEventKey(eventKey)).thenReturn(Optional.empty());
+        when(repository.saveAndFlush(any(SystemNotification.class))).thenReturn(created);
+
+        Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-tx-requires-new", "PROPERTY", "success", eventKey
+        );
+
+        assertTrue(result.isPresent());
+        assertEquals(45L, result.get().getId());
+        assertEquals(eventKey, result.get().getEventKey());
+        verify(txManager, times(1)).commit(txStatus);
+    }
 }

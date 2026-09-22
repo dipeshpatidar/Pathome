@@ -6,13 +6,17 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "system_notifications", indexes = {
     @Index(name = "idx_notif_target_role", columnList = "target_role, created_at"),
-    @Index(name = "idx_notif_recipient", columnList = "recipient_user_id, created_at")
+    @Index(name = "idx_notif_recipient", columnList = "recipient_user_id, created_at"),
+    @Index(name = "idx_notif_event_key", columnList = "event_key", unique = true)
 })
 public class SystemNotification {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Column(name = "event_key", length = 120, unique = true)
+    private String eventKey;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "target_role", nullable = false)
@@ -58,6 +62,9 @@ public class SystemNotification {
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+
+    public String getEventKey() { return eventKey; }
+    public void setEventKey(String eventKey) { this.eventKey = eventKey; }
 
     public TargetRole getTargetRole() { return targetRole; }
     public void setTargetRole(TargetRole targetRole) { this.targetRole = targetRole; }

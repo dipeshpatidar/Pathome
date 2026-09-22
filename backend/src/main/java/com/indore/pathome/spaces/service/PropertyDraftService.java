@@ -34,6 +34,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -81,6 +83,13 @@ public class PropertyDraftService {
 
     public void setMediaAssetRepository(PropertyMediaAssetRepository mediaAssetRepository) {
         this.mediaAssetRepository = mediaAssetRepository;
+    }
+
+    @Autowired(required = false)
+    private NotificationService notificationService;
+
+    public void setNotificationService(NotificationService notificationService) {
+        this.notificationService = notificationService;
     }
 
     // L1 in-memory cache: (adminId + ":" + draftId) -> draftId for fast O(1) checks
@@ -675,7 +684,7 @@ public class PropertyDraftService {
             result = transactionTemplate.execute(status ->
                     reconcileBatchDraftInTx(safeAdminId, draftId, safePublishedIds, safeCompleted));
             if (result == null) {
-                result = new ReconcileResult(Collections.emptyList(), false);
+                result = new ReconcileResult(Collections.emptyList(), false, 0, Collections.emptyList());
             }
         } else {
             result = reconcileBatchDraftInTx(cleanAdminId, draftId, publishedCardIds, newCompletedListings);
@@ -686,11 +695,20 @@ public class PropertyDraftService {
             cleanupStagedMedia(key);
         }
 
+        // Phase C: Post-commit notification dispatch — only after terminal PUBLISHED tombstone has committed
+        if (result.tombstoned()) {
+            dispatchPublishedNotification(draftId, result.completedCount(), result.completedListingIds());
+        }
+
         return result.tombstoned() ? null : getDraft(adminId, draftId);
     }
 
     /** Result carrier for the inner transactional phase of reconcileBatchDraft. */
-    private record ReconcileResult(List<String> b2KeysToDelete, boolean tombstoned) {}
+    private record ReconcileResult(
+            List<String> b2KeysToDelete,
+            boolean tombstoned,
+            int completedCount,
+            List<Long> completedListingIds) {}
 
     /**
      * Inner transactional body of {@link #reconcileBatchDraft}.
@@ -715,7 +733,7 @@ public class PropertyDraftService {
         try {
             JsonNode root = objectMapper.readTree(draft.getPayload());
             if (!root.has("stagedCards") || !root.get("stagedCards").isArray()) {
-                return new ReconcileResult(Collections.emptyList(), false);
+                return new ReconcileResult(Collections.emptyList(), false, 0, Collections.emptyList());
             }
 
             ArrayNode cardsArray = (ArrayNode) root.get("stagedCards");
@@ -783,10 +801,19 @@ public class PropertyDraftService {
                 draftRepository.save(draft);
 
                 activeDraftCache.remove(cleanAdminId + ":" + draftId);
+
+                int count = Math.max(1, completedMap.size());
+                List<Long> listingIds = new ArrayList<>();
+                for (ObjectNode n : completedMap.values()) {
+                    if (n.has("listingId") && n.get("listingId").isNumber()) {
+                        listingIds.add(n.get("listingId").asLong());
+                    }
+                }
+
                 log.info("Converted completed BATCH draft [{}] into PUBLISHED tombstone (all properties published) and queued {} staged media items for B2 cleanup for admin [{}]",
                         draftId, keysToDelete.size(), cleanAdminId);
 
-                return new ReconcileResult(keysToDelete, true);
+                return new ReconcileResult(keysToDelete, true, count, listingIds);
             }
 
             // Partial — update payload for remaining cards
@@ -818,11 +845,11 @@ public class PropertyDraftService {
                     draftMediaRepository.delete(media);
                 }
             }
-            return new ReconcileResult(keysToDelete, false);
+            return new ReconcileResult(keysToDelete, false, 0, Collections.emptyList());
 
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse batch draft payload JSON during reconciliation for draft [{}]: {}", draftId, e.getMessage());
-            return new ReconcileResult(Collections.emptyList(), false);
+            return new ReconcileResult(Collections.emptyList(), false, 0, Collections.emptyList());
         }
     }
 
@@ -1054,6 +1081,42 @@ public class PropertyDraftService {
             draftRepository.save(draft);
 
             activeDraftCache.remove(cleanAdminId + ":" + draftId);
+
+            // Dispatch persistent published notification post-commit
+            int count = 1;
+            List<Long> listingIds = new ArrayList<>();
+            if ("BATCH".equalsIgnoreCase(draft.getDraftType())) {
+                if (tombstonePayload.has("completedListings") && tombstonePayload.get("completedListings").isArray()) {
+                    ArrayNode arr = (ArrayNode) tombstonePayload.get("completedListings");
+                    count = Math.max(1, arr.size());
+                    for (JsonNode n : arr) {
+                        if (n.has("listingId") && n.get("listingId").isNumber()) {
+                            listingIds.add(n.get("listingId").asLong());
+                        }
+                    }
+                }
+            } else {
+                if (draft.getPublishedPropertyId() != null) {
+                    listingIds.add(draft.getPublishedPropertyId());
+                } else if (listingId != null) {
+                    listingIds.add(listingId);
+                }
+            }
+
+            final int finalCount = count;
+            final List<Long> finalListings = listingIds;
+            final String finalDraftId = draftId;
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        dispatchPublishedNotification(finalDraftId, finalCount, finalListings);
+                    }
+                });
+            } else {
+                dispatchPublishedNotification(finalDraftId, finalCount, finalListings);
+            }
+
             if ("BATCH".equalsIgnoreCase(draft.getDraftType())) {
                 log.info("Converted completed BATCH draft [{}] into PUBLISHED tombstone (all properties published) and cleaned {} staged media items for admin [{}]",
                         draftId, mediaList.size(), cleanAdminId);
@@ -1067,6 +1130,53 @@ public class PropertyDraftService {
             throw e;
         } catch (Exception e) {
             log.warn("Non-fatal error cleaning draft [{}] media after publication: {}", draftId, e.getMessage());
+        }
+    }
+
+    private void dispatchPublishedNotification(String draftId, int count, List<Long> listingIds) {
+        if (notificationService == null || draftId == null || draftId.isBlank()) {
+            return;
+        }
+
+        String eventKey = "PROPERTY_PUBLISHED:" + draftId.trim();
+        String title;
+        String message;
+
+        int effectiveCount = Math.max(1, count);
+        if (effectiveCount == 1) {
+            title = "Property published successfully";
+            message = "1 property was published successfully.";
+        } else {
+            title = effectiveCount + " properties published successfully";
+            message = effectiveCount + " properties were published successfully.";
+        }
+
+        StringBuilder detailsBuilder = new StringBuilder();
+        detailsBuilder.append("Draft ID: ").append(draftId);
+        if (listingIds != null && !listingIds.isEmpty()) {
+            if (listingIds.size() == 1) {
+                detailsBuilder.append(" • Listing #").append(listingIds.get(0));
+            } else {
+                detailsBuilder.append(" • Listings: #").append(
+                        listingIds.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(", #"))
+                );
+            }
+        }
+        detailsBuilder.append(" • ").append(effectiveCount).append(effectiveCount == 1 ? " property published" : " properties published");
+
+        try {
+            notificationService.createNotificationWithEventKey(
+                    com.indore.pathome.spaces.entity.TargetRole.ADMIN,
+                    null,
+                    title,
+                    message,
+                    detailsBuilder.toString(),
+                    "PROPERTY",
+                    "success",
+                    eventKey
+            );
+        } catch (Exception e) {
+            log.warn("Non-fatal: failed to dispatch published notification for draft [{}]: {}", draftId, e.getMessage());
         }
     }
 

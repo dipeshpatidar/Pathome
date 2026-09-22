@@ -6,7 +6,11 @@ import com.indore.pathome.spaces.repository.SystemNotificationRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +20,13 @@ public class NotificationService {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
     private final SystemNotificationRepository repository;
+
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
+
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
 
     // L1 Concurrent In-Memory Cache for sub-millisecond HTTP handlers
     private final Map<TargetRole, List<SystemNotification>> roleL1Cache = new ConcurrentHashMap<>();
@@ -55,6 +66,49 @@ public class NotificationService {
         refreshCache();
         log.info("Dispatched role-scoped notification id={} targetRole={}", saved.getId(), targetRole);
         return saved;
+    }
+
+    public Optional<SystemNotification> createNotificationWithEventKey(
+            TargetRole targetRole, String recipientUserId, String title, String message,
+            String details, String category, String type, String eventKey) {
+        if (eventKey != null && !eventKey.isBlank()) {
+            Optional<SystemNotification> existing = repository.findByEventKey(eventKey);
+            if (existing.isPresent()) {
+                log.info("Notification with eventKey [{}] already exists (id={}). Idempotent skip.",
+                        eventKey, existing.get().getId());
+                return existing;
+            }
+        }
+
+        SystemNotification notification = new SystemNotification(targetRole, recipientUserId, title, message, details, category, type);
+        notification.setEventKey(eventKey);
+
+        TransactionTemplate requiresNew = null;
+        if (transactionManager != null) {
+            requiresNew = new TransactionTemplate(transactionManager);
+            requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        }
+
+        try {
+            SystemNotification saved;
+            if (requiresNew != null) {
+                saved = requiresNew.execute(status -> repository.saveAndFlush(notification));
+            } else {
+                saved = repository.saveAndFlush(notification);
+            }
+            refreshCache();
+            if (saved != null) {
+                log.info("Dispatched role-scoped notification id={} targetRole={} eventKey={}", saved.getId(), targetRole, eventKey);
+                return Optional.of(saved);
+            }
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            log.info("Concurrent notification race on eventKey [{}]. Idempotent replay.", eventKey);
+            refreshCache();
+            if (eventKey != null && !eventKey.isBlank()) {
+                return repository.findByEventKey(eventKey);
+            }
+        }
+        return Optional.empty();
     }
 
     public List<SystemNotification> getNotificationsForRole(TargetRole role, String recipientUserId) {
