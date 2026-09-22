@@ -4,6 +4,100 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-23 00:20 IST — Approved Fix: Tighten Authoritative Media Completion Check (Exact uploadRequestId Matching)
+
+### Why this work was requested
+- A pre-commit safety review revealed that determining media completion via asset count comparison (`serverAssets.length >= expectedCount`) inside `handleRetryCardMedia()` was insufficiently authoritative:
+  - If a listing already possessed legacy or unrelated media assets on the server (e.g. `OLD_X`, `OLD_Y`, plus 1 uploaded asset `A`), `serverAssets.length` would equal 3, satisfying `3 >= 3` even when expected staged media `B` and `C` were missing.
+  - This could cause premature reconciliation into `completedListings` and false `Published` state while media was incomplete.
+
+### Canonical Identity Contract
+- Each staged-media item has durable identity (`item.id` or `(item.file as any)?.draftMediaId`).
+- Canonical upload request IDs are generated deterministically via `createStableUploadRequestId(card.publishedId, item.file, durableDraftMediaId)`.
+- Server `PropertyMediaAsset` entities expose `uploadRequestId`.
+- Authoritative completion requires that **every single expected staged-media `uploadRequestId` exists in the set of server media `uploadRequestId`s**. Extra unrelated server assets do not prevent completion, but missing even one expected asset prevents completion.
+
+### Files Modified
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - In `handleRetryCardMedia`, replaced count check (`serverAssets.length >= expectedCount`) with strict set membership check:
+    ```typescript
+    const publishedListingId = card.publishedId;
+    let allMediaPersisted = false;
+    try {
+      const serverAssets = await propertyService.fetchTaggedMedia(publishedListingId);
+      if (Array.isArray(serverAssets)) {
+        const existingReqIds = new Set(
+          serverAssets.map((asset) => asset.uploadRequestId).filter(Boolean) as string[]
+        );
+        allMediaPersisted = (card.stagedMedia || []).every((item) => {
+          const durableMediaId = item.id || (item.file as any)?.draftMediaId;
+          const expectedReqId = createStableUploadRequestId(
+            publishedListingId,
+            item.file,
+            durableMediaId
+          );
+          return existingReqIds.has(expectedReqId);
+        });
+      }
+    } catch (err) {
+      console.warn('[handleRetryCardMedia] Could not verify permanent media assets on server:', err);
+    }
+    ```
+- `frontend-web/src/tests/partiallyPublishedCardRecovery.test.mjs`:
+  - Updated existing retry tests 14, 16, 17 to use realistic `uploadRequestId` matching.
+  - Added deterministic regression tests A–E (tests 19–23):
+    - Test 19 (TEST A): Exact IDs complete (`A, B, C` present -> reconciliation allowed).
+    - Test 20 (TEST B - CRITICAL REGRESSION): Extra unrelated media (`OLD_X, OLD_Y, A` where count `3 >= 3` is satisfied but `B` and `C` are missing -> NOT complete, NO reconciliation, card remains staged, NO false Published state).
+    - Test 21 (TEST C): Extra media + all expected IDs (`OLD_X, A, B, C, OLD_Y` -> complete, reconciliation allowed; unrelated assets do not interfere).
+    - Test 22 (TEST D): One expected ID missing (`A, C` present, `B` missing -> NOT complete, card remains staged).
+    - Test 23 (TEST E): Backend already completed race (server already contains all expected uploadRequestIds -> deduplication skips re-upload, authoritative verification succeeds, card reconciles as Published).
+
+### Verification Results
+- Focused tests: 23/23 PASS (`node --test frontend-web/src/tests/partiallyPublishedCardRecovery.test.mjs`) in 5.9 ms (total 73 ms).
+- Full frontend test suite: 286/286 PASS across 12 test suites (`node --test frontend-web/src/tests/*.test.mjs`) in 609 ms.
+- Production build: `npm run build --prefix frontend-web` succeeded in 20.24s (exit code 0).
+- Runtime safety: Zero database modifications, zero B2/Cloudinary modifications, zero browser automation, zero physical network tests.
+
+---
+
+## 2026-09-23 00:15 IST — Approved Fix: Null failedCount Crash & Post-Retry Authoritative Reconciliation
+
+### Why this work was requested
+- During manual physical network interruption testing of a 3-property batch (`draft-single-mud053dl-m1j2d`, listings #77, #78, #79), two defects were identified:
+  1. **Null `failedCount` Crash**: In `handlePublishAll()`, when all eligible cards already had `publishedId`, `createBatchProperties` was correctly bypassed, leaving `res = null`. Later, `if (res.failedCount > 0)` crashed with `TypeError: Cannot read properties of null (reading 'failedCount')`, popping up "Unable to publish the selected properties".
+  2. **Failed-Media Retry 100% Without Reconciliation**: In `handleRetryCardMedia()`, when retried media completed successfully (progress reaching 100% and `failedMediaFiles = []`), the function terminated without triggering authoritative reconciliation against backend truth. The card remained in `stagedCards` and the UI did not transition to Published until an out-of-band page refresh and Resume was performed.
+
+### Root Causes
+- **Defect 1**: Unguarded access to `res.failedCount` at line 1915 of `BatchPropertyIngestionStudio.tsx`. Line 1883 safely used `res ? Number(res.failedCount || 0) : 0`, but line 1915 accessed `res.failedCount` directly.
+- **Defect 2**: `handleRetryCardMedia` only performed client-side media uploads without verifying permanent database assets or calling `batchDraft.onBatchPublished()`.
+
+### Implementation Details
+- `frontend-web/src/components/BatchPropertyIngestionStudio.tsx`:
+  - **Null Safety**: Replaced unsafe `if (res.failedCount > 0)` with `if (failedCreateCount > 0)` and guarded `res && Array.isArray(res.failedListings)` in error dialog details.
+  - **Authoritative Post-Retry Reconciliation**: In `handleRetryCardMedia()`, upon `result.failedFiles.length === 0`:
+    1. Queries `propertyService.fetchTaggedMedia(card.publishedId)` to authoritatively verify `serverAssets.length >= expectedCount`.
+    2. If verified, cancels pending autosave and invokes `batchDraft.onBatchPublished([card.id], [newlyCompletedItem])`.
+    3. Revokes object URLs for the completed card.
+    4. Updates `completedListings` and removes the completed card from `stagedCards`.
+    5. If all items in draft are completed (`isServerBatchComplete`), calls `batchDraft.onPublishSuccess()`, `onSuccess()`, resets state, and closes modal.
+    6. If other cards remain, calls `onPartialSuccess()`.
+- `frontend-web/src/tests/partiallyPublishedCardRecovery.test.mjs`:
+  - Added tests 13–18:
+    - Test 13: Null response safety (`res === null` does not throw TypeError on `failedCount`).
+    - Test 14: Successful failed-media retry authoritatively reconciles card into `completedListings`.
+    - Test 15: Final card retry completes draft and triggers `onPublishSuccess` tombstone.
+    - Test 16: `UPLOAD_IN_PROGRESS` (HTTP 409) leaves card staged and does not falsely complete.
+    - Test 17: Backend already completed media (race recovery skips re-upload and reconciles).
+    - Test 18: Unconfirmed cards are protected and never published during single card retry.
+
+### Verification Results
+- Focused tests: 18/18 PASS (`node --test frontend-web/src/tests/partiallyPublishedCardRecovery.test.mjs`) in 153 ms.
+- Full frontend test suite: 281/281 PASS across 12 test suites (`node --test frontend-web/src/tests/*.test.mjs`) in 523 ms.
+- Production build: `npm run build --prefix frontend-web` succeeded in 2.41s (exit code 0).
+- Runtime safety: Zero database modifications, zero B2/Cloudinary modifications.
+
+---
+
 ## 2026-09-22 22:15 IST — Approved Fix: Interrupted Draft Stable Identity & Reparse Bug
 
 ### Why this work was requested

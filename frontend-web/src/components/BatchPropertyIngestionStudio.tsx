@@ -1646,6 +1646,95 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           message: 'The property remains published. Keep this screen open and retry when the connection is stable.',
           details: result.errors.join(' • ')
         });
+        return;
+      }
+
+      // Check authoritative server truth: verify that every expected staged-media item has its uploadRequestId in permanent storage
+      const publishedListingId = card.publishedId;
+      let allMediaPersisted = false;
+      try {
+        const serverAssets = await propertyService.fetchTaggedMedia(publishedListingId);
+        if (Array.isArray(serverAssets)) {
+          const existingReqIds = new Set(
+            serverAssets
+              .map((asset) => asset.uploadRequestId)
+              .filter(Boolean) as string[]
+          );
+          allMediaPersisted = (card.stagedMedia || []).every((item) => {
+            const durableMediaId = item.id || (item.file as any)?.draftMediaId;
+            const expectedReqId = createStableUploadRequestId(
+              publishedListingId,
+              item.file,
+              durableMediaId
+            );
+            return existingReqIds.has(expectedReqId);
+          });
+        }
+      } catch (err) {
+        console.warn('[handleRetryCardMedia] Could not verify permanent media assets on server:', err);
+      }
+
+      if (!allMediaPersisted) {
+        // Assets are still processing or incomplete on server; leave staged for further retry
+        return;
+      }
+
+      // Authoritatively reconcile this card with the server
+      batchDraft.cancelAutosave();
+      const newlyCompletedItem = {
+        cardId: card.id,
+        listingId: card.publishedId,
+        title: card.title || `Property #${card.publishedId}`
+      };
+
+      let remainingDraft: any = null;
+      try {
+        remainingDraft = await batchDraft.onBatchPublished([card.id], [newlyCompletedItem]);
+      } catch (err) {
+        console.error('[handleRetryCardMedia] Failed to reconcile retried card:', err);
+        return;
+      }
+
+      // Revoke object URLs for this completed card
+      (card.stagedMedia || []).forEach((item) => {
+        try { URL.revokeObjectURL(item.previewUrl); } catch (_) {}
+      });
+
+      // Update completed listings in React state
+      const updatedCompleted = [...completedListings];
+      if (!updatedCompleted.some((e) => e.cardId === card.id || e.listingId === card.publishedId)) {
+        updatedCompleted.push(newlyCompletedItem);
+      }
+      setCompletedListings(updatedCompleted);
+
+      // Remove the completed card from stagedCards
+      const remainingCardsAfterPublish = stagedCards.filter((c) => c.id !== card.id);
+      setStagedCards(remainingCardsAfterPublish);
+      if (remainingCardsAfterPublish.length > 0) {
+        setActiveCardId(remainingCardsAfterPublish[0].id);
+      }
+
+      window.dispatchEvent(new Event('pathome_property_published'));
+
+      const isServerBatchComplete = remainingDraft === null || (remainingDraft && remainingDraft.itemCount === 0);
+      if (isServerBatchComplete) {
+        await batchDraft.onPublishSuccess();
+        const totalPublishedCount = updatedCompleted.length;
+        onSuccess(totalPublishedCount);
+
+        setStagedCards([]);
+        setCompletedListings([]);
+        updateRawPrompts('');
+        setDetectedCount(0);
+        rawPromptsRef.current = '';
+        parsedPromptsRef.current = '';
+        setMobileWorkspaceView('descriptions');
+        onClose();
+      } else {
+        const serverRemainingCount = remainingDraft != null ? remainingDraft.itemCount : remainingCardsAfterPublish.length;
+        if (onPartialSuccess) {
+          onPartialSuccess(1, serverRemainingCount);
+        }
       }
     } finally {
       setIsPublishing(false);
@@ -1912,11 +2001,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         });
       }
 
-      if (res.failedCount > 0) {
+      if (failedCreateCount > 0) {
         showErrorDialog({
           title: 'Some properties still need attention',
           message: `${publishedThisRun} ${publishedThisRun === 1 ? 'property was' : 'properties were'} published. Review the remaining entries and try again.`,
-          details: Array.isArray(res.failedListings)
+          details: res && Array.isArray(res.failedListings)
             ? res.failedListings.map((item: any) => item.error).filter(Boolean).join(' • ')
             : undefined
         });

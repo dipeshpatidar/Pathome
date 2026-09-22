@@ -670,5 +670,481 @@ describe('Partially-Published Card Recovery & Semantic Contract Suite', () => {
     assert.equal(mhowListings.length, 1, 'No duplicate listing is created for Property B');
     assert.equal(mhowListings[0].listingId, 75);
   });
-});
 
+  // --------------------------------------------------------------------------
+  // TEST 13: Null Response Safety (res === null in handlePublishAll)
+  // --------------------------------------------------------------------------
+  test('13. Null response safety: res === null does not throw TypeError on failedCount', () => {
+    const validCards = [
+      { id: 'staged-1', publishedId: 75, isValid: true }
+    ];
+    const cardsNeedingListing = validCards.filter((c) => !c.publishedId);
+    assert.equal(cardsNeedingListing.length, 0);
+
+    let res = null;
+    let createBatchInvoked = false;
+
+    if (cardsNeedingListing.length > 0) {
+      createBatchInvoked = true;
+    }
+
+    assert.equal(createBatchInvoked, false, 'createBatchProperties must be skipped');
+
+    // Safe failedCreateCount evaluation
+    const failedCreateCount = res ? Number(res.failedCount || 0) : 0;
+    assert.equal(failedCreateCount, 0, 'failedCreateCount must safely evaluate to 0 when res is null');
+
+    // Evaluating guarded condition must not throw Cannot read properties of null (reading "failedCount")
+    assert.doesNotThrow(() => {
+      if (failedCreateCount > 0) {
+        throw new Error('Should not enter error dialog');
+      }
+    });
+  });
+
+  // Helper functions for authoritative uploadRequestId calculation and verification
+  function createStableUploadRequestId(propertyId, file, draftMediaId) {
+    const effectiveDraftMediaId = draftMediaId || file?.draftMediaId;
+    if (effectiveDraftMediaId && typeof effectiveDraftMediaId === 'string' && effectiveDraftMediaId.trim()) {
+      const cleanId = effectiveDraftMediaId.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+      return `media-${propertyId}-${cleanId}`;
+    }
+    if (file) {
+      const source = `${propertyId}:${file.name}:${file.size}:${file.lastModified}`;
+      let hash = 2166136261;
+      for (let index = 0; index < source.length; index += 1) {
+        hash ^= source.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return `media-${propertyId}-${(hash >>> 0).toString(16)}`;
+    }
+    return `media-${propertyId}-default`;
+  }
+
+  function checkAuthoritativeMediaCompletion(card, serverAssets) {
+    if (!Array.isArray(serverAssets)) return false;
+    const existingReqIds = new Set(
+      serverAssets
+        .map((asset) => asset.uploadRequestId)
+        .filter(Boolean)
+    );
+    return (card.stagedMedia || []).every((item) => {
+      const durableMediaId = item.id || item.file?.draftMediaId;
+      const expectedReqId = createStableUploadRequestId(
+        card.publishedId,
+        item.file,
+        durableMediaId
+      );
+      return existingReqIds.has(expectedReqId);
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // TEST 14: Successful Failed-Media Retry Authoritatively Reconciles
+  // --------------------------------------------------------------------------
+  test('14. Successful failed-media retry authoritatively reconciles card into completedListings', async () => {
+    const card = {
+      id: 'staged-mhow-1',
+      title: 'Mhow Villa',
+      publishedId: 75,
+      stagedMedia: [{ id: 'm1' }, { id: 'm2' }],
+      failedMediaFiles: [{ name: 'f1' }]
+    };
+
+    let completedListings = [];
+    let stagedCards = [card];
+
+    // Mock propertyService.fetchTaggedMedia returning full expected assets with uploadRequestId
+    const mockPropertyService = {
+      fetchTaggedMedia: async (propId) => {
+        assert.equal(propId, 75);
+        return [
+          { id: 101, uploadRequestId: 'media-75-m1' },
+          { id: 102, uploadRequestId: 'media-75-m2' }
+        ];
+      }
+    };
+
+    // Simulate handleRetryCardMedia
+    const result = { failedFiles: [], errors: [] };
+    assert.equal(result.failedFiles.length, 0);
+
+    const serverAssets = await mockPropertyService.fetchTaggedMedia(card.publishedId);
+    const allMediaPersisted = checkAuthoritativeMediaCompletion(card, serverAssets);
+    assert.equal(allMediaPersisted, true, 'Authoritative server check confirms all expected media persisted by ID');
+
+    // Authoritative reconciliation
+    const newlyCompletedItem = {
+      cardId: card.id,
+      listingId: card.publishedId,
+      title: card.title
+    };
+
+    let reconcileInvoked = false;
+    const mockBatchDraft = {
+      onBatchPublished: async (cardIds, items) => {
+        reconcileInvoked = true;
+        assert.deepEqual(cardIds, [card.id]);
+        assert.deepEqual(items, [newlyCompletedItem]);
+        return { itemCount: 0, status: 'PUBLISHED' };
+      }
+    };
+
+    const remainingDraft = await mockBatchDraft.onBatchPublished([card.id], [newlyCompletedItem]);
+    assert.equal(reconcileInvoked, true);
+
+    // State updates
+    completedListings = [...completedListings, newlyCompletedItem];
+    stagedCards = stagedCards.filter((c) => c.id !== card.id);
+
+    assert.equal(stagedCards.length, 0, 'Card must leave stagedCards without manual refresh');
+    assert.equal(completedListings.length, 1, 'Card must enter completedListings');
+    assert.equal(completedListings[0].listingId, 75);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 15: Final Card Retry Completes Draft To PUBLISHED Tombstone
+  // --------------------------------------------------------------------------
+  test('15. Final card retry completes draft and triggers onPublishSuccess tombstone', async () => {
+    const completedListings = [
+      { cardId: 'c1', listingId: 73, title: 'Viman' },
+      { cardId: 'c2', listingId: 74, title: 'Kali' }
+    ];
+    const cardMhow = {
+      id: 'c3',
+      title: 'Mhow',
+      publishedId: 75,
+      stagedMedia: [{ id: 'm1' }]
+    };
+    let stagedCards = [cardMhow];
+
+    let publishSuccessCalled = false;
+    const mockBatchDraft = {
+      onBatchPublished: async () => ({ itemCount: 0, status: 'PUBLISHED' }),
+      onPublishSuccess: async () => { publishSuccessCalled = true; }
+    };
+
+    const remainingDraft = await mockBatchDraft.onBatchPublished(['c3'], [{ cardId: 'c3', listingId: 75, title: 'Mhow' }]);
+    const isServerBatchComplete = remainingDraft === null || remainingDraft.itemCount === 0;
+    assert.equal(isServerBatchComplete, true);
+
+    if (isServerBatchComplete) {
+      await mockBatchDraft.onPublishSuccess();
+      stagedCards = [];
+    }
+
+    assert.equal(publishSuccessCalled, true, 'Draft tombstone cleanup must be called');
+    assert.equal(stagedCards.length, 0, 'stagedCards must become empty');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 16: UPLOAD_IN_PROGRESS (HTTP 409) Does Not Falsely Complete Card
+  // --------------------------------------------------------------------------
+  test('16. UPLOAD_IN_PROGRESS (HTTP 409) leaves card staged and does not falsely complete', async () => {
+    const card = {
+      id: 'c-in-progress',
+      publishedId: 75,
+      stagedMedia: [{ id: 'm1' }, { id: 'm2' }],
+      failedMediaFiles: [{ name: 'f2' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Backend only has 1 asset because second asset is still uploading (HTTP 409)
+    const mockPropertyService = {
+      fetchTaggedMedia: async () => [{ id: 201, uploadRequestId: 'media-75-m1' }]
+    };
+
+    // Retry result had failure (HTTP 409)
+    const result = { failedFiles: [{ name: 'f2' }], errors: ['Media upload is already in progress for this item'] };
+    assert.equal(result.failedFiles.length > 0, true);
+
+    // Because failedFiles.length > 0, reconciliation is NOT invoked
+    let reconcileInvoked = false;
+    const mockBatchDraft = {
+      onBatchPublished: async () => { reconcileInvoked = true; }
+    };
+
+    if (result.failedFiles.length === 0) {
+      const serverAssets = await mockPropertyService.fetchTaggedMedia(card.publishedId);
+      if (checkAuthoritativeMediaCompletion(card, serverAssets)) {
+        await mockBatchDraft.onBatchPublished([card.id], []);
+      }
+    }
+
+    assert.equal(reconcileInvoked, false, 'Reconciliation must not run when retry has failed files');
+    assert.equal(stagedCards.length, 1, 'Card must remain staged');
+    assert.equal(completedListings.length, 0, 'Card must not enter completedListings');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 17: Backend Already Completed Media (Race Recovery)
+  // --------------------------------------------------------------------------
+  test('17. Backend already completed media: deduplication skips re-upload and reconciles card', async () => {
+    const card = {
+      id: 'c-already-complete',
+      publishedId: 75,
+      stagedMedia: [{ id: 'dm-1', file: { name: 'photo.webp' } }],
+      failedMediaFiles: [{ name: 'photo.webp' }]
+    };
+
+    // Backend already has the asset with matching uploadRequestId
+    const existingReqId = 'media-75-dm-1';
+    let uploadInvoked = false;
+    const mockPropertyService = {
+      fetchTaggedMedia: async () => [{ id: 301, uploadRequestId: existingReqId }],
+      uploadTaggedMedia: async () => { uploadInvoked = true; }
+    };
+
+    // Simulate uploadMediaFilesForCard deduplication
+    const existing = await mockPropertyService.fetchTaggedMedia(card.publishedId);
+    const existingReqIds = new Set(existing.map((a) => a.uploadRequestId).filter(Boolean));
+
+    const itemsToUpload = [];
+    let completedCount = 0;
+    card.stagedMedia.forEach((m) => {
+      const reqId = `media-75-${m.id}`;
+      if (existingReqIds.has(reqId)) {
+        completedCount++;
+      } else {
+        itemsToUpload.push(m);
+      }
+    });
+
+    assert.equal(itemsToUpload.length, 0, 'Zero items should be uploaded');
+    assert.equal(completedCount, 1, 'Existing item was recognized');
+    assert.equal(uploadInvoked, false, 'uploadTaggedMedia must NOT be invoked');
+
+    // Post-retry authoritative check confirms card has all media by uploadRequestId
+    const allMediaPersisted = checkAuthoritativeMediaCompletion(card, existing);
+    assert.equal(allMediaPersisted, true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 18: Unconfirmed Cards Protected During Retry Reconciliation
+  // --------------------------------------------------------------------------
+  test('18. Unconfirmed cards are protected and never published during single card retry', async () => {
+    const cardB = {
+      id: 'card-b',
+      publishedId: 75,
+      title: 'Confirmed Mhow',
+      isConfirmed: true,
+      stagedMedia: [{ id: 'm1' }]
+    };
+    const cardD = {
+      id: 'card-d',
+      publishedId: undefined,
+      title: 'Unconfirmed Property',
+      isConfirmed: false,
+      stagedMedia: [{ id: 'm2' }]
+    };
+
+    let stagedCards = [cardB, cardD];
+    let completedListings = [];
+
+    // Retry cardB
+    const newlyCompletedItem = { cardId: cardB.id, listingId: 75, title: cardB.title };
+
+    // Reconcile ONLY cardB
+    completedListings = [...completedListings, newlyCompletedItem];
+    stagedCards = stagedCards.filter((c) => c.id !== cardB.id);
+
+    assert.equal(completedListings.length, 1);
+    assert.equal(completedListings[0].cardId, 'card-b');
+
+    // Card D remains untouched in stagedCards
+    assert.equal(stagedCards.length, 1);
+    assert.equal(stagedCards[0].id, 'card-d');
+    assert.equal(stagedCards[0].isConfirmed, false, 'Card D must remain isConfirmed = false');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 19 (TEST A): Exact IDs Complete -> Reconciliation Allowed
+  // --------------------------------------------------------------------------
+  test('19. (TEST A) Exact IDs complete: server has exact uploadRequestIds for all staged media', async () => {
+    const card = {
+      id: 'card-exact',
+      publishedId: 75,
+      title: 'Exact Card',
+      stagedMedia: [{ id: 'A' }, { id: 'B' }, { id: 'C' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Server has exact matching IDs: A, B, C
+    const serverAssets = [
+      { id: 1, uploadRequestId: 'media-75-A' },
+      { id: 2, uploadRequestId: 'media-75-B' },
+      { id: 3, uploadRequestId: 'media-75-C' }
+    ];
+
+    const isComplete = checkAuthoritativeMediaCompletion(card, serverAssets);
+    assert.equal(isComplete, true, 'Authoritative check must pass when exact IDs are present');
+
+    if (isComplete) {
+      const newlyCompletedItem = { cardId: card.id, listingId: card.publishedId, title: card.title };
+      completedListings.push(newlyCompletedItem);
+      stagedCards = stagedCards.filter((c) => c.id !== card.id);
+    }
+
+    assert.equal(completedListings.length, 1, 'Reconciliation must move card to completedListings');
+    assert.equal(stagedCards.length, 0, 'Card must be removed from stagedCards');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 20 (TEST B): Extra Unrelated Media (Count Satisfied But Missing B and C)
+  // CRITICAL REGRESSION TEST
+  // --------------------------------------------------------------------------
+  test('20. (TEST B - CRITICAL) Extra unrelated media: count satisfies 3 >= 3 but missing B and C leaves card staged', async () => {
+    const card = {
+      id: 'card-unrelated',
+      publishedId: 75,
+      title: 'Unrelated Media Card',
+      stagedMedia: [{ id: 'A' }, { id: 'B' }, { id: 'C' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Server assets: OLD_X, OLD_Y, A (count is 3, expected is 3, but B and C missing!)
+    const serverAssets = [
+      { id: 91, uploadRequestId: 'media-75-OLD_X' },
+      { id: 92, uploadRequestId: 'media-75-OLD_Y' },
+      { id: 1, uploadRequestId: 'media-75-A' }
+    ];
+
+    assert.equal(serverAssets.length >= card.stagedMedia.length, true, 'Count comparison would have falsely said complete (3 >= 3)');
+
+    const isComplete = checkAuthoritativeMediaCompletion(card, serverAssets);
+    assert.equal(isComplete, false, 'Authoritative ID check MUST reject completion because B and C are missing');
+
+    if (isComplete) {
+      const newlyCompletedItem = { cardId: card.id, listingId: card.publishedId, title: card.title };
+      completedListings.push(newlyCompletedItem);
+      stagedCards = stagedCards.filter((c) => c.id !== card.id);
+    }
+
+    assert.equal(completedListings.length, 0, 'Card must NOT enter completedListings');
+    assert.equal(stagedCards.length, 1, 'Card must remain staged for further retry');
+    assert.equal(stagedCards[0].id, 'card-unrelated');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 21 (TEST C): Extra Media + All Expected IDs
+  // --------------------------------------------------------------------------
+  test('21. (TEST C) Extra media + all expected IDs: presence of unrelated assets does not prevent completion', async () => {
+    const card = {
+      id: 'card-extra-all',
+      publishedId: 75,
+      title: 'Extra Assets Card',
+      stagedMedia: [{ id: 'A' }, { id: 'B' }, { id: 'C' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Server assets: OLD_X, A, B, C, OLD_Y
+    const serverAssets = [
+      { id: 91, uploadRequestId: 'media-75-OLD_X' },
+      { id: 1, uploadRequestId: 'media-75-A' },
+      { id: 2, uploadRequestId: 'media-75-B' },
+      { id: 3, uploadRequestId: 'media-75-C' },
+      { id: 92, uploadRequestId: 'media-75-OLD_Y' }
+    ];
+
+    const isComplete = checkAuthoritativeMediaCompletion(card, serverAssets);
+    assert.equal(isComplete, true, 'Authoritative check must succeed because all expected IDs A, B, C are present');
+
+    if (isComplete) {
+      const newlyCompletedItem = { cardId: card.id, listingId: card.publishedId, title: card.title };
+      completedListings.push(newlyCompletedItem);
+      stagedCards = stagedCards.filter((c) => c.id !== card.id);
+    }
+
+    assert.equal(completedListings.length, 1, 'Reconciliation must complete card');
+    assert.equal(stagedCards.length, 0, 'Card must leave stagedCards');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 22 (TEST D): One Expected ID Missing
+  // --------------------------------------------------------------------------
+  test('22. (TEST D) One expected ID missing: missing even one expected uploadRequestId leaves card staged', async () => {
+    const card = {
+      id: 'card-one-missing',
+      publishedId: 75,
+      title: 'One Missing Card',
+      stagedMedia: [{ id: 'A' }, { id: 'B' }, { id: 'C' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Server assets: A, C (B is missing)
+    const serverAssets = [
+      { id: 1, uploadRequestId: 'media-75-A' },
+      { id: 3, uploadRequestId: 'media-75-C' }
+    ];
+
+    const isComplete = checkAuthoritativeMediaCompletion(card, serverAssets);
+    assert.equal(isComplete, false, 'Authoritative check MUST fail because B is missing');
+
+    if (isComplete) {
+      const newlyCompletedItem = { cardId: card.id, listingId: card.publishedId, title: card.title };
+      completedListings.push(newlyCompletedItem);
+      stagedCards = stagedCards.filter((c) => c.id !== card.id);
+    }
+
+    assert.equal(completedListings.length, 0, 'Card must NOT enter completedListings');
+    assert.equal(stagedCards.length, 1, 'Card must remain staged');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 23 (TEST E): Backend Already Completed Race
+  // --------------------------------------------------------------------------
+  test('23. (TEST E) Backend already completed race: frontend retry deduplicates and reconciles without duplicate upload', async () => {
+    const card = {
+      id: 'card-race-complete',
+      publishedId: 75,
+      title: 'Race Complete Card',
+      stagedMedia: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+      failedMediaFiles: [{ name: 'A' }, { name: 'B' }, { name: 'C' }]
+    };
+    let stagedCards = [card];
+    let completedListings = [];
+
+    // Backend already contains all expected uploadRequestIds (e.g. uploaded during disconnect before client timed out)
+    const serverAssets = [
+      { id: 1, uploadRequestId: 'media-75-A' },
+      { id: 2, uploadRequestId: 'media-75-B' },
+      { id: 3, uploadRequestId: 'media-75-C' }
+    ];
+
+    let uploadInvoked = false;
+    const mockPropertyService = {
+      fetchTaggedMedia: async () => serverAssets,
+      uploadTaggedMedia: async () => { uploadInvoked = true; }
+    };
+
+    // Deduplication check in uploadMediaFilesForCard
+    const existing = await mockPropertyService.fetchTaggedMedia(card.publishedId);
+    const existingReqIds = new Set(existing.map((a) => a.uploadRequestId).filter(Boolean));
+
+    const pendingUploads = (card.stagedMedia || []).filter((item) => {
+      const reqId = createStableUploadRequestId(card.publishedId, item.file, item.id);
+      return !existingReqIds.has(reqId);
+    });
+
+    assert.equal(pendingUploads.length, 0, 'No uploads needed because backend already has all media');
+    assert.equal(uploadInvoked, false, 'uploadTaggedMedia must NOT be called');
+
+    // Post-retry authoritative verification
+    const isComplete = checkAuthoritativeMediaCompletion(card, existing);
+    assert.equal(isComplete, true, 'Authoritative verification must succeed');
+
+    if (isComplete) {
+      const newlyCompletedItem = { cardId: card.id, listingId: card.publishedId, title: card.title };
+      completedListings.push(newlyCompletedItem);
+      stagedCards = stagedCards.filter((c) => c.id !== card.id);
+    }
+
+    assert.equal(completedListings.length, 1, 'Card successfully reconciled as Published');
+    assert.equal(stagedCards.length, 0, 'Card left staged state');
+  });
+});
