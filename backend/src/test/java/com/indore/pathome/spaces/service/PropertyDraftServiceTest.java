@@ -359,13 +359,13 @@ class PropertyDraftServiceTest {
         PropertyMediaAsset asset1 = new PropertyMediaAsset();
         asset1.setId(1L);
         asset1.setListingId(99L);
-        asset1.setUploadRequestId("m-1");
+        asset1.setUploadRequestId("media-99-m-1");
         asset1.setMediaUrl("https://cloudinary.com/m-1.webp");
 
         PropertyMediaAsset asset2 = new PropertyMediaAsset();
         asset2.setId(2L);
         asset2.setListingId(99L);
-        asset2.setUploadRequestId("m-2");
+        asset2.setUploadRequestId("media-99-m-2");
         asset2.setMediaUrl("https://cloudinary.com/m-2.webp");
 
         when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(99L)).thenReturn(List.of(asset1, asset2));
@@ -379,6 +379,112 @@ class PropertyDraftServiceTest {
         assertTrue(detail.payload().contains("\"listingId\":99"));
         assertFalse(detail.payload().contains("\"stagedCards\""));
         assertEquals(0, detail.itemCount());
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryCompletesWhenEveryExpectedUploadRequestIdExists() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"id\":\"A\"},{\"id\":\"B\"},{\"id\":\"C\"}]",
+                "media-99-A", "media-99-B", "media-99-C");
+
+        assertCompleted(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryRejectsUnrelatedAssetThatOnlySatisfiesCount() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"id\":\"A\"},{\"id\":\"B\"},{\"id\":\"C\"}]",
+                "media-99-A", "media-99-B", "media-99-X");
+
+        assertIncompleteAndResumable(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryToleratesExtraAssetsWhenExpectedIdsExist() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"id\":\"A\"},{\"id\":\"B\"},{\"id\":\"C\"}]",
+                "media-99-A", "media-99-B", "media-99-C", "media-99-X", "media-99-Y");
+
+        assertCompleted(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryLeavesCardResumableWhenExpectedIdIsMissing() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"id\":\"A\"},{\"id\":\"B\"},{\"id\":\"C\"}]",
+                "media-99-A", "media-99-B");
+
+        assertIncompleteAndResumable(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryLeavesCardResumableWhenDurableIdentityIsUnavailable() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"originalFilename\":\"legacy.jpg\"}]",
+                "media-99-A");
+
+        assertIncompleteAndResumable(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryDoesNotTreatNullPermanentRequestIdAsExpectedMedia() {
+        DraftDetailDTO detail = recoverInterruptedDraft(
+                "[{\"id\":\"A\"}]",
+                new String[]{null});
+
+        assertIncompleteAndResumable(detail);
+    }
+
+    @Test
+    void getDraft_interruptedRecoveryCompletesLegitimateZeroMediaCard() {
+        DraftDetailDTO detail = recoverInterruptedDraft("[]");
+
+        assertCompleted(detail);
+    }
+
+    private DraftDetailDTO recoverInterruptedDraft(String stagedMediaJson, String... permanentUploadRequestIds) {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("BATCH");
+        draft.setStatus("PUBLISHING");
+        draft.setItemCount(1);
+        draft.setVersion(5);
+        draft.setPayload("{\"stagedCards\":[{\"id\":\"card-int\",\"title\":\"Interrupted Property\",\"stagedMedia\":"
+                + stagedMediaJson + "}]}");
+
+        Listing existingListing = mock(Listing.class);
+        when(existingListing.getId()).thenReturn(99L);
+        when(existingListing.getTitle()).thenReturn("Interrupted Property");
+        when(draftRepository.findByDraftIdAndAdminId(DRAFT_ID, ADMIN_ID)).thenReturn(Optional.of(draft));
+        when(draftRepository.save(any(PropertyUploadDraft.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(listingRepository.findByOriginDraftId(DRAFT_ID + ":card-int")).thenReturn(Optional.of(existingListing));
+
+        List<PropertyMediaAsset> assets = new ArrayList<>();
+        for (int index = 0; index < permanentUploadRequestIds.length; index++) {
+            PropertyMediaAsset asset = new PropertyMediaAsset();
+            asset.setId((long) index + 1);
+            asset.setListingId(99L);
+            asset.setUploadRequestId(permanentUploadRequestIds[index]);
+            asset.setMediaUrl("https://cloudinary.com/media-" + index + ".webp");
+            assets.add(asset);
+        }
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(99L)).thenReturn(assets);
+        return service.getDraft(ADMIN_ID, DRAFT_ID);
+    }
+
+    private void assertCompleted(DraftDetailDTO detail) {
+        assertEquals("PUBLISHED", detail.status());
+        assertTrue(detail.payload().contains("\"completedListings\""));
+        assertFalse(detail.payload().contains("\"stagedCards\""));
+        assertEquals(0, detail.itemCount());
+    }
+
+    private void assertIncompleteAndResumable(DraftDetailDTO detail) {
+        assertEquals("PUBLISHING", detail.status());
+        assertTrue(detail.payload().contains("\"stagedCards\""));
+        assertTrue(detail.payload().contains("\"publishedId\":99"));
+        assertEquals(1, detail.itemCount());
     }
 
     @Test

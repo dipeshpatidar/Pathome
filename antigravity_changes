@@ -4,6 +4,27 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-23 01:50 IST — Approved Fix: Exact Durable Media Identity for Interrupted-Batch Recovery
+
+### Why this work was requested
+- `PropertyDraftService.reconcileInterruptedBatchDraftState(...)` classified a card as complete when permanent media count was at least the staged-media count.
+- This could falsely complete an interrupted card when unrelated or legacy permanent assets inflated the count: expected `A, B, C`; permanent `A, B, X`.
+
+### Implementation
+- Updated only the interrupted-batch completion decision in `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`.
+- Recovery now derives the existing canonical durable request identity for each staged item: `media-<listingId>-<sanitized durableMediaId>`, matching the primary durable-ID path in frontend `createStableUploadRequestId(...)`.
+- Completion requires every expected request ID to be present in the non-null permanent `PropertyMediaAsset.uploadRequestId` set; unrelated extra assets are ignored.
+- An unavailable durable expected identity or a null permanent request ID cannot satisfy completion. The card remains PUBLISHING/resumable with its listing identity retained; no count fallback is used.
+- A legitimate zero-media card remains complete because its expected durable-ID set is empty.
+
+### Tests and verification
+- Extended `backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java` with backend recovery coverage for exact IDs, false-count `A/B/X`, extra assets, missing expected media, missing durable identity, null legacy permanent request ID, and zero-media cards; 50/50 tests passed.
+- `PropertyPublishNotificationTest` and `NotificationServiceTest`: 17/17 passed. `mvn clean test-compile`: passed.
+- No runtime PostgreSQL, Backblaze B2, Cloudinary, browser, or physical-network operations were performed.
+- Commit/push status: not committed and not pushed. `git diff --check` passed.
+
+---
+
 ## 2026-09-23 01:25 IST — Approved Feature: Persistent Property-Published Notifications
 
 ### Why this work was requested
@@ -3214,7 +3235,6 @@ When a user clicked "Resume" on a `PUBLISHING` (interrupted) batch draft where a
 - Pathome source code / package configs: NOT MODIFIED.
 - Database / B2 / Cloudinary / listings: NOT MODIFIED.
 - Git commit / push: NOT PERFORMED.
-
 
 
 

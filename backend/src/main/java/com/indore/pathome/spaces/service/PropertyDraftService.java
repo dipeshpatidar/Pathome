@@ -886,16 +886,25 @@ public class PropertyDraftService {
                     Long listingId = listing.getId();
                     String title = listing.getTitle() != null ? listing.getTitle() : cardNode.path("title").asText("Property #" + listingId);
 
-                    int permanentAssetsCount = 0;
+                    Optional<Set<String>> expectedUploadRequestIds = expectedUploadRequestIds(cardNode, listingId);
+                    Set<String> permanentUploadRequestIds = new HashSet<>();
                     if (mediaAssetRepository != null) {
-                        permanentAssetsCount = mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listingId).size();
+                        for (PropertyMediaAsset asset : mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listingId)) {
+                            String uploadRequestId = asset.getUploadRequestId();
+                            if (uploadRequestId != null && !uploadRequestId.isBlank()) {
+                                permanentUploadRequestIds.add(uploadRequestId);
+                            }
+                        }
                     }
 
-                    int expectedMedia = cardNode.has("stagedMedia") && cardNode.get("stagedMedia").isArray()
-                            ? cardNode.get("stagedMedia").size() : 0;
+                    // Completion is authoritative only when every expected durable media identity is present.
+                    // An empty expected set is a legitimate zero-media card. An unidentifiable staged item is
+                    // deliberately left resumable rather than falling back to an unsafe asset-count comparison.
+                    boolean allExpectedMediaPersisted = expectedUploadRequestIds
+                            .map(expectedIds -> expectedIds.stream().allMatch(permanentUploadRequestIds::contains))
+                            .orElse(false);
 
-                    // If all expected media reached permanent storage (or if card had 0 expected media), card is fully published!
-                    if (permanentAssetsCount >= expectedMedia) {
+                    if (allExpectedMediaPersisted) {
                         newlyCompletedCardIds.add(cardId);
                         newCompletedListings.add(Map.of("cardId", cardId, "listingId", listingId, "title", title));
                         log.info("Interrupted batch draft [{}] recovery: card [{}] is fully published on backend as listing #{}. Auto-reconciling.",
@@ -930,6 +939,35 @@ public class PropertyDraftService {
         } catch (Exception e) {
             log.warn("Non-fatal error inspecting batch draft [{}] for interrupted recovery: {}", draft.getDraftId(), e.getMessage());
         }
+    }
+
+    /**
+     * Derives the canonical permanent-upload identities for one staged card using the same durable-ID
+     * contract as the frontend: {@code media-<listingId>-<sanitized durableMediaId>}.
+     *
+     * <p>Only the durable-ID path is valid during backend recovery. If a staged media item lacks that
+     * identity, the caller must retain the card for resume rather than guessing from filename, count, or time.</p>
+     */
+    private Optional<Set<String>> expectedUploadRequestIds(JsonNode cardNode, Long listingId) {
+        JsonNode stagedMedia = cardNode.get("stagedMedia");
+        if (stagedMedia == null || !stagedMedia.isArray()) {
+            return Optional.of(Collections.emptySet());
+        }
+
+        Set<String> expectedIds = new HashSet<>();
+        for (JsonNode mediaNode : stagedMedia) {
+            String durableMediaId = mediaNode.path("id").asText("").trim();
+            if (durableMediaId.isBlank()) {
+                return Optional.empty();
+            }
+            expectedIds.add(canonicalUploadRequestId(listingId, durableMediaId));
+        }
+        return Optional.of(expectedIds);
+    }
+
+    private String canonicalUploadRequestId(Long listingId, String durableMediaId) {
+        String sanitizedDurableMediaId = KEY_PART_CLEAN_PATTERN.matcher(durableMediaId.trim()).replaceAll("_");
+        return "media-" + listingId + "-" + sanitizedDurableMediaId;
     }
 
     private void reconstructMediaFromPermanentAssets(PropertyUploadDraft draft, List<DraftMediaDTO> mediaList) {
