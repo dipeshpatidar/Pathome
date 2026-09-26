@@ -100,7 +100,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               {authMode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Access zero-brokerage Indore rentals & land inventory
+              Access zero-brokerage rentals & verified homes
             </p>
           </div>
 
@@ -160,7 +160,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                         type="text"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Indore Resident"
+                        placeholder="Full name"
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
                         required
                       />

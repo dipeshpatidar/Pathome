@@ -1,10 +1,8 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import {ArrowRight, Sparkles} from 'lucide-react';
-import { useNotification } from '../context/NotificationContext';
+import { Sparkles } from 'lucide-react';
 
 export const FutureExpansion: React.FC = () => {
-  const { notifySuccess } = useNotification();
   return (
     <section className="py-10 bg-slate-950 text-white relative overflow-hidden border-t border-slate-800">
       
@@ -49,16 +47,10 @@ export const FutureExpansion: React.FC = () => {
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto shrink-0 relative z-10">
-            <motion.button
-              whileHover={{ scale: 1.05, y: -2 }}
-              whileTap={{ scale: 0.95 }}
-              transition={{ type: 'spring', stiffness: 450, damping: 25 }}
-              onClick={() => notifySuccess('Priority access requested', 'We will notify you when new plot listings are available.')}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-7 py-4 rounded-2xl shadow-xl shadow-emerald-600/30 flex items-center justify-center gap-2.5 whitespace-nowrap shimmer-glow relative z-10"
-            >
-              <span className="text-white font-extrabold uppercase tracking-wider">Get Early Access VIP Ping</span>
-              <ArrowRight className="w-4 h-4 text-white" />
-            </motion.button>
+            <div className="inline-flex items-center justify-center gap-2.5 rounded-2xl border border-emerald-500/30 bg-emerald-950/60 px-6 py-4 text-xs font-bold text-emerald-300 backdrop-blur-md">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" />
+              <span className="uppercase tracking-wider">Phase 2 Plot Sales Launching Soon</span>
+            </div>
           </div>
 
         </motion.div>

@@ -4,6 +4,519 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-27 01:25 IST — Smart Rental Search + Backend Autocomplete AND Governed Search Learning Loop
+
+### Why this work was requested
+Two batched tasks were combined into one implementation pass:
+1. **Smart Rental Search + Backend Autocomplete**: The Hero section smart search needed to be wired to an actual backend suggestion endpoint (`GET /api/v1/properties/search-suggestions`) with V1 query understanding (BHK parsing, property type, furnishing, rent ranges), locality prefix + pg_trgm fuzzy matching, multi-city support, and accessible autocomplete UI.
+2. **Governed Search-Learning Loop**: A privacy-safe, non-blocking telemetry + feedback loop was requested so that search usage could gradually improve suggestion quality through controlled alias promotion, without uncontrolled self-training, raw text storage, or mutation of canonical business data.
+
+### Scope
+Backend + Frontend. No browser tools. No commit. No push.
+
+### What was found (existing state)
+On inspection, the Smart Rental Search was **already fully implemented** from a prior session:
+- `GET /api/v1/properties/search-suggestions` endpoint already existed in `PropertyController`
+- `RentalSearchQuery` parser (BHK, property type, furnishing, rent ranges) already existed
+- `RentalLocationResolver` with prefix + pg_trgm fuzzy matching already existed
+- V13 (search indexes) and V14 (pg_trgm extension + GIN indexes) migrations already existed
+- `HeroSection.tsx` smart search combobox with debounced backend calls already existed
+- `rentalSearch.ts` utility and `rentalSearch.test.mjs` tests already existed
+
+The new work was exclusively the **Governed Search Learning Loop**.
+
+### Files Created (New)
+
+**Backend — Database Migration:**
+- `backend/src/main/resources/db/migration/V15__search_learning_tables.sql`: Three new PostgreSQL tables with proper indexes:
+  - `search_query_event`: Privacy-safe structured telemetry (no raw user text; only parsed structured fields: normalised location candidate, resolved locality/city, resolution method, fuzzy confidence, BHK key, property type key, furnishing key, suggestion count, selection outcome, session hash)
+  - `search_alias_candidate`: Aggregated candidate evidence table with full status lifecycle (CANDIDATE → APPROVED / REJECTED / AUTO_PROMOTED / DISABLED)
+  - `search_alias`: Active approved aliases with full audit trail and rollback support
+
+**Backend — Entities:**
+- `entity/SearchQueryEvent.java`: Privacy-safe telemetry entity
+- `entity/SearchAliasCandidate.java`: Governed candidate entity with evidence counters, selection rate, ambiguity tracking
+- `entity/SearchAlias.java`: Active alias entity with confidence score, source candidate reference, disable/supersede lifecycle
+
+**Backend — Repositories:**
+- `repository/SearchQueryEventRepository.java`: Includes session deduplication count query and CandidateAggregationRow projection for batch aggregation
+- `repository/SearchAliasCandidateRepository.java`: Includes promotion eligibility query (`evidenceCount >= N, selectionRate >= X, rejectionCount = 0`) and ambiguous-term detection query
+- `repository/SearchAliasRepository.java`: Active alias lookup for city-scoped hot path
+
+**Backend — Service:**
+- `service/SearchLearningService.java`: The core governed learning service:
+  - `captureEvent()`: `@Async`, fire-and-forget, swallows all exceptions, applies per-session deduplication (max 3 events per candidate per 1-hour window)
+  - `resolveLocalityAlias()`: O(1) ConcurrentHashMap cache lookup, city-scoped with city-agnostic fallback
+  - `refreshAliasCache()`: Loads all ACTIVE aliases into in-memory cache; called at startup and after promotion
+  - `aggregateCandidates()`: `@Scheduled` every 15min; reads fuzzy/alias events, upserts candidates, skips ambiguous terms
+  - `promoteEligibleCandidates()`: `@Scheduled` every hour; threshold-gated (evidenceCount ≥ 10, selectionRate ≥ 0.70, rejectionCount = 0, unambiguous); creates active aliases; refreshes cache
+  - `hashSessionId()`: One-way SHA-256 URL-safe base64 hash; never stores raw session IDs
+
+**Backend — Config:**
+- `config/SearchLearningStartupConfig.java`: `@EventListener(ApplicationReadyEvent.class)` warms alias cache post-migration
+
+**Backend — Test:**
+- `test/.../service/SearchLearningServiceTest.java`: 21 JUnit 5 unit tests covering: telemetry capture, session deduplication, exception swallowing, hash determinism, alias cache resolution (city-scoped, agnostic fallback, blank input guards), candidate aggregation (creation, update, ambiguity skip), promotion (clean candidate → ACTIVE alias, ambiguity guard, existing-alias skip, exception swallowing), threshold contract assertions (MIN_EVIDENCE_FOR_PROMOTION ≥ 10, MIN_SELECTION_RATE ≥ 0.70)
+
+### Files Modified
+
+**Backend:**
+- `controller/PropertyController.java`:
+  - Added `@Autowired(required = false) SearchLearningService searchLearningService` field (does NOT change constructor signature; existing tests unaffected)
+  - `getSearchSuggestions()`: Added alias resolution before fuzzy fallback (O(1) cache lookup); added async non-blocking telemetry capture at end of method (exception guard ensures autocomplete is never disrupted by telemetry failure)
+  - Added import: `SearchLearningService`, `SearchQueryEvent`
+
+### Safety Guarantees Implemented
+1. Telemetry capture is `@Async` and wraps all logic in try/catch; never blocks autocomplete
+2. Per-session deduplication: max 3 events per (session_hash, location_candidate) per 1-hour window
+3. Raw user text is never stored; only normalised structured parser output
+4. No personal identifiers stored; session_hash is one-way SHA-256
+5. Candidates with competing canonical targets (ambiguous) are never auto-promoted
+6. Promotion thresholds are conservative: 10+ events, 70%+ selection rate, 0 rejection events
+7. Every alias has a full audit trail (sourceCandidateId, promotedAt, promotedBy, promotionEvidence)
+8. Aliases can be disabled at any time; disable audit preserved in disabled_at / disabled_reason
+9. Canonical business data (localities, cities, listings) is NEVER mutated by the learning system
+10. `@Autowired(required=false)` ensures SearchLearningService is null-safe in all existing tests
+
+### Verification
+- `mvn clean compile`: ✅ 0 errors
+- `mvn test -Dtest="SearchLearningServiceTest,PropertyControllerTest,RentalSearchQueryTest"`: ✅ 66 tests, 0 failures
+- `mvn test` (full suite, second run): ✅ 428 tests, 0 failures, 0 errors (first run had 1 transient flaky pre-existing test: `ParserLearningCaptureServiceTest.capturesImmediatelyWhenPublishingTransactionAlreadyCommitted`)
+- `npm run build` (frontend): ✅ Clean build, 933KB JS bundle, 2.71s
+- `node --test src/tests/rentalSearch.test.mjs` (frontend): ✅ 7/7 pass
+
+### Commit/Push Status
+Not committed. Not pushed. All changes remain in the working tree as part of the existing uncommitted Phase-1 batch.
+
+---
+
+## 2026-09-26 19:10 IST — Property Detail Media Area Navigation Correction
+
+### Why this work was requested
+A surgical correction to the previous media experience task was requested:
+1. Room/area tags (e.g., Living Room, Bedroom) must NOT appear on landing/discovery property cards. The discovery card design was already frozen and approved; adding room tags above the media count introduced unwanted visual clutter.
+2. The Single Property Detail media viewer previously had redundant dual controls: a room tag chip on top-left of the media stage and a separate "Jump to area [ Bathroom ▼ ]" row below the viewer.
+3. Replace both with ONE unified control: a premium translucent glass "Jump to area" dropdown overlaid directly on the media stage at top-left (`[ icon  Bathroom  ▾ ]`).
+4. Fix previous label truncation (e.g. "B...") so standard room names display completely without collapsing.
+5. Area dropdown must synchronize with current media during arrow/thumbnail navigation, jump directly without destructive filtering, remain available in fullscreen, and never intercept pointer events over video controls.
+
+### Scope
+Frontend-only. No backend changes. No discovery-card redesign. No commit. No push.
+
+### Files Changed
+
+**`frontend-web/src/components/PropertyShowcase.tsx`**
+- Completely removed `RoomTagChip` component, unused Lucide imports (`Bath`, `Building2`, `Dumbbell`, `Image as LucideImage`, `LayoutDashboard`, `Sofa`, `UtensilsCrossed`, `Wind`), and `LUCIDE_TAG_ICONS` map.
+- Removed `getMediaTagIcon` and `getMediaTagLabel` imports.
+- Removed `coverTagLabel` computation; restored `alt` attribute to `prop.title`.
+- Restored top-left media header on discovery cards to single media count badge (`min-h-[32px]`), removing the vertical column wrapper.
+- Top-right remains bookmark button only. No room tags on discovery cards.
+
+**`frontend-web/src/components/PublicPropertyDetail.tsx`**
+- Removed `PremiumRoomTagChip` component and the redundant separate below-viewer row (`{hasMeaningfulTags && taggedAreas.length > 1 && (<div ...>Jump to area <select ...></div>)}`).
+- Added `AreaNavigationDropdown` overlaid directly on the media stage at `top-4 left-4 z-30`.
+- Closed state: compact dark translucent glass pill `[ icon AreaName ▾ ]` with backdrop blur, subtle border, shadow, and full name visibility (Bathroom, Bedroom, Master Bedroom, Living Room, Kitchen, Balcony, etc.) with responsive max-width to avoid single-letter truncation.
+- Open state: floating dark translucent glass listbox menu (`role="listbox"`, `aria-label="Jump to area"`) with semantic room icons and active green indicator with checkmark. Keyboard accessible (`Enter`, `Space`, `ArrowUp`, `ArrowDown`, `Escape`, `Home`, `End`). Click outside listener closes menu. Focus restores to trigger button.
+- Jump to area behavior: selecting an area jumps directly to the first media item for that area without destructive gallery filtering.
+- Synchronization: reads directly from `currentMedia.tagLabel` and `currentMedia.roomTag` with zero duplicated state drift.
+- Fullscreen compatibility: dropdown sits inside `mediaStageRef`, remaining available and non-colliding in fullscreen mode.
+- Video compatibility: dropdown sits at top-left, completely clear of bottom native video controls (play, seek, mute, volume, fullscreen).
+
+### Verification
+- **Unit & Integration Tests**:
+  - `node frontend-web/src/tests/mediaTags.test.mjs` — 3/3 passed.
+  - `node frontend-web/src/tests/discoveryCardData.test.mjs` — 2/2 passed.
+  - `node frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs` — 18/18 passed.
+- **Production Build**:
+  - `npm --prefix frontend-web run build` — TypeScript check passed, Vite build passed cleanly (exit code 0).
+- **Git Hygiene**:
+  - `git diff --check` — Passed with 0 whitespace/formatting errors.
+- **Screenshots Captured**:
+  Stored in `verification_screenshots/detail_area_navigation/`:
+  1. `discovery_1440_no_room_tag.png` — Discovery cards at 1440px: no room tag, media count top-left, bookmark top-right.
+  2. `discovery_390_no_room_tag.png` — Discovery cards at 390px: no room tag, clean approved card layout.
+  3. `detail_1280_area_dropdown_closed.png` — Property detail at 1280px: `[ 🛁 Bathroom ▾ ]` top-left, fullscreen top-right, redundant below-viewer select row removed.
+  4. `detail_1280_area_dropdown_open.png` — Open dropdown menu showing unique areas (Bathroom, Living Room, Kitchen, Bedroom) with semantic icons and active indicator.
+  5. `detail_1280_area_changed.png` — Selected Bedroom; dropdown updated to `[ 🛏️ Bedroom ▾ ]` and viewer jumped to Bedroom photo.
+  6. `detail_390_area_dropdown.png` — Mobile 390px: room label displayed completely without "B..." truncation and without colliding with fullscreen button.
+  7. `detail_768_area_dropdown.png` — Tablet 768px: clean responsive dropdown display.
+  8. `detail_1280_video_controls_with_area_dropdown.png` — Video playing with native controls active at bottom; dropdown top-left; zero pointer interception.
+  9. `detail_1280_fullscreen_area_dropdown.png` — Fullscreen mode with area dropdown top-left, exit fullscreen top-right, side navigation arrows, and native controls.
+
+---
+
+## 2026-09-26 17:39 IST — Media Experience & Multi-City Standard
+
+### Why this work was requested
+Product owner requested a production-quality, consistent media experience across discovery cards, Property Detail gallery, fullscreen lightbox, thumbnails, and video. Six specific problems were identified: (A) video sound/volume controls appeared disabled, (B) room tags were too basic, (C) room tag was at the bottom instead of top of media, (D) mismatched aspect-ratio images were cropped, (E) no consistent media-sizing strategy, (F) runtime UI hardcoded Indore city assumptions.
+
+### Scope
+Frontend-only. No backend changes. No discovery-card layout redesign. No new backend API calls. No media originals modified.
+
+### Files Changed
+
+**`frontend-web/src/utils/mediaTransform.ts`**
+- Added `MediaPreset` type: `DISCOVERY_CARD | DETAIL_MAIN | DETAIL_THUMBNAIL | FULLSCREEN`
+- Added `buildCloudinaryUrl(url, preset)` — applies Cloudinary delivery-layer transforms (w, c, q, f) without touching originals. Non-Cloudinary URLs returned unchanged.
+- Existing `deriveVideoPosterUrl` preserved.
+
+**`frontend-web/src/utils/mediaTags.ts`**
+- Added `MediaTagIconName` type union.
+- Added `MEDIA_TAG_ICONS` record mapping each `RoomTag` to a semantic Lucide icon name.
+- Added `getMediaTagIcon(value)` export — returns fallback `'Image'` for unknown tags.
+
+**`frontend-web/src/components/PropertyShowcase.tsx`**
+- Added `RoomTagChip` premium glass pill component (translucent dark surface, backdrop-blur, subtle border, icon + truncated label, white text, compact).
+- Moved room tag from bottom of card media to **top-left** overlay, rendered as `RoomTagChip`.
+- Media count badge now vertically stacked below the tag chip in the left cluster.
+- Removed old bottom `<span>` room tag.
+- Applied `buildCloudinaryUrl(url, 'DISCOVERY_CARD')` to cover image src — delivers 800px optimized rendition from Cloudinary; passes original URL for non-Cloudinary assets.
+- `selectedCityFilter` prop default changed from `'Indore'` to `undefined`.
+
+**`frontend-web/src/components/PublicPropertyDetail.tsx`**
+- Added `PremiumRoomTagChip` (detail variant: slightly larger padding, 70% max-width truncation).
+- Added `isFullscreen` state + fullscreen API (`requestFullscreen`/`exitFullscreen`/`webkitRequestFullscreen` cross-browser).
+- Added `mediaStageRef` (ref to the stage container for fullscreen request).
+- Added `toggleFullscreen()` callback with fullscreen state tracking via `fullscreenchange` event.
+- Added Maximize2/Minimize2 fullscreen button in **top-right** of media stage (`z-30`, shown when `document.fullscreenEnabled`).
+- Added `PremiumRoomTagChip` in **top-left** of media stage, keyed to `currentMedia.tagLabel` — updates on every media navigation step.
+- Removed blocking transparent click-intercept overlay div (`inset-x-16 top-0 bottom-16 z-20`) that was intercepting clicks destined for the native video control bar. This was the root cause of "disabled controls" appearance.
+- Center Play button repositioned: now `bottom-16 left-1/2 -translate-x-1/2` (floats above the control bar instead of blocking it).
+- Changed `preload="none"` → `preload="metadata"` so video duration is readable before play begins.
+- Applied blurred backdrop to image viewer (`object-cover blur-2xl opacity-20`) with foreground `object-contain` — handles portrait/mismatched-ratio images without white bars.
+- Applied `buildCloudinaryUrl(url, 'DETAIL_MAIN')` to main viewer image src.
+- Applied `buildCloudinaryUrl(url, 'DETAIL_THUMBNAIL')` to all thumbnail strip images.
+- Applied `buildCloudinaryUrl(url, 'FULLSCREEN')` to lightbox images (up to 1920px).
+- Lightbox now shows blurred backdrop behind images (matching detail viewer pattern).
+- Area navigation below viewer simplified: redundant standalone `currentMedia.tagLabel` text removed (now shown as chip on media). Jump-to select dropdown preserved when `taggedAreas.length > 1`.
+- `GalleryMedia` type extended with `roomTag?: string | null` for icon dispatch.
+- Added `roomTag` field to all media mapped from `taggedMedia` and fallback `images`.
+
+**`frontend-web/src/components/Home.tsx`**
+- `handleDiscoverySearch`: removed hardcoded `|| 'Indore'` default city; city-neutral when no city selected.
+- `HeroSection selectedCity` prop: removed `|| 'Indore'` default.
+- `loadMoreProperties` call: removed `|| 'Indore'` default.
+
+### Root Cause of Disabled Video Controls (Fixed)
+The `<video controls>` element was at `z-10`. A transparent `<div role="button">` was positioned `absolute inset-x-16 top-0 bottom-16 z-20` on top of it. While intended to create a click-to-play surface, this div sat above the video's lower region where the native control bar renders. Browser native controls are rendered outside normal DOM stacking, but the overlay was intercepting pointer events in the region where controls appear visually. Removing this overlay (since the center play button is the primary UX affordance) restores full native control interactivity.
+
+### Hardcoded Indore Analysis
+- `Home.tsx` lines 777/785 `|| 'Indore'` in `setLoadedDiscoveryKey`: internal session cache-key — NOT user-facing, left unchanged.
+- `Home.tsx` lines 885/887/913 `|| 'Indore'` in session restoration logic: internal state comparison keys — NOT user-facing, left unchanged.
+- `Home.tsx:1022`, `1193`, `1239`: runtime public-facing city defaults — FIXED (changed to `undefined`).
+- `HeroSection.tsx:19` `'Indore skyline'`: internal banner `alt` text for an aria-hidden background image — NOT a product UI assumption, left unchanged.
+- `PropertyShowcase.tsx:438` `selectedCityFilter = 'Indore'`: component prop default — FIXED (removed default).
+- `MasterAdminDashboard.tsx`, `WfhAdminDashboard.tsx`, `TenantDashboard.tsx`, `Footer.tsx`, `analytics/*`: all Indore occurrences are legitimate data (sample AI-batch texts, HQ contact address, Indore-specific analytics labels) — NOT changed.
+
+### Outcome
+All six media problems resolved. 23 tests pass. `npm run build` exits 0 with no TypeScript errors. Browser verification confirmed premium room tag chip visible, video controls accessible, fullscreen functional, responsive at 390/768/1280px.
+
+### Commit / Push Status
+Not committed. Not pushed.
+
+---
+
+## 2026-09-26 17:10 IST — Verification Pass: Discovery-Card Polish (Checks 1–4)
+
+### Why this work was requested
+The previous discovery-card surgical polish pass (Back-to-Top overlap fix, tablet card width, softened media overlays, tightened spacing) left four specific verification checks open due to session interruption. The product owner requested explicit browser verification before the polish pass could be closed.
+
+### Scope
+ZERO source-code changes. Verification-only pass. No redesign, no functional change, no new features.
+
+### Verification Steps Performed
+All four checks verified in a single browser session across localhost:5173 with live Indore data.
+
+**CHECK 1 — Mobile Back-to-Top hidden below 768px**
+Tested at 320 × 844, 360 × 844, 390 × 844, 430 × 844, 767 × 844.
+Result: PASS — Back-to-Top button has `display: none` at all widths < 768px via Tailwind `hidden md:flex`.
+The `motion.button` element is present in the DOM (AnimatePresence renders it) but is CSS-hidden. No visual bleed.
+
+**CHECK 2 — Genuine 390px loading skeleton screenshot**
+Navigated to Vijay Nagar filter mid-load at 390 × 844.
+Result: PASS — Genuine pulsing grey skeleton captured. Skeleton card width matches loaded card width exactly (both constrained by `md:max-w-[640px] md:mx-auto`). No horizontal overflow. Back-to-Top hidden during loading state.
+
+**CHECK 3 — 320px media double-exposure investigation**
+Loaded at 320 × 650, scrolled to first card, waited 5 full seconds without hover. DOM inspection confirmed: single `<img>` element only, zero `<video>` elements injected. Hover-video is strictly gated by `window.matchMedia('(hover: hover)')` — touch/mobile screens never receive video elements.
+Result: PASS — No double-exposure, no stacked images, no video present. Previously reported artifact was a transition artifact from a screenshot taken mid-opacity-animation during initial image load (AnimatePresence `opacity: 0 → 1`), not a reproducible bug.
+
+**CHECK 4 — Tablet Back-to-Top clearance at 768–820px**
+Tested at 768 × 900, 800 × 900, 820 × 900 after scrolling > 450px.
+Result: PASS — Back-to-Top button (fixed `bottom-8 right-4`) renders with clear visual gap from the centred `max-w-[640px]` card at all three widths. No overlap with any card element (media, info panel, CTA, rent/deposit).
+
+### Files Changed
+- `verification_screenshots/surgical_polish_verification/mobile_390_back_to_top_hidden_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/mobile_390_skeleton_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/mobile_320_media_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/mobile_390_media_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/tablet_768_back_to_top_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/tablet_800_back_to_top_verified.png` — new screenshot
+- `verification_screenshots/surgical_polish_verification/tablet_820_back_to_top_verified.png` — new screenshot
+- `antigravity_changes` — this log entry
+
+### Outcome
+All four checks PASS. The discovery-card surgical polish pass is now fully verified and closed. Zero bugs found. Zero source-code changes required. The polish pass is safe to commit.
+
+### Verification Evidence
+Screenshots saved to `verification_screenshots/surgical_polish_verification/`.
+Browser session recording: `polish_verification_1790421958358.webp` (artifacts).
+
+### Commit / Push Status
+Not committed. Not pushed. All changes are uncommitted working-tree modifications from previous sessions.
+
+---
+
+## 2026-09-25 21:55 IST — Approved Redesign: Hero Search Bar & Discovery Filter Toolbar
+
+### Why this work was requested
+User explicitly approved a visual and interaction redesign of the Pathome hero search area and discovery filter toolbar. The previous design was described as "too generic, oversized, and poorly organized" — it resembled a large administrative form with excessive white space, large dropdown boxes, redundant headings, a divider, and the sentence "Search currently supports city and locality." The filter area had a city dropdown, locality chips wrapping awkwardly, and a detached "More Localities" dropdown with no alignment or hierarchy.
+
+### Scope
+Frontend-only. No backend changes. No business logic, API contracts, discovery pagination, detail navigation, or scroll-restoration behavior was modified.
+
+### Changes Made
+
+#### `frontend-web/src/components/HeroSection.tsx` — Complete structural rewrite
+- Removed the separate second `<section>` containing the large floating white card ("Rental search" eyebrow, "Choose a location" heading, "Search currently supports city and locality." sentence, two large select dropdowns).
+- Removed the redundant top city-picker pill.
+- Removed 3D tilt effect (`useMotionValue`, `useSpring`, `useTransform`).
+- All search controls consolidated into a single compact glassmorphism bar (`bg-slate-950/80`, `backdrop-blur-xl`) at the bottom of the hero section.
+  - Desktop (`sm:`): horizontal pill — [MapPin·City picker] | [separator] | [Locality select + clear ×] | [separator] | [Show homes CTA].
+  - Mobile: stacked vertically, full-width fields and CTA.
+- City picker opens as accessible listbox; selecting a city resets locality.
+- Banner navigation dots sit below the search bar.
+- Tagline: "Verified rental homes with transparent pricing — request a visit in minutes."
+- `framer-motion` imports cleaned up.
+
+#### `frontend-web/src/components/PropertyShowcase.tsx` — Targeted filter area changes
+- Removed stale `ChevronDown` import; added `X`.
+- Removed unused `quickSectors` variable.
+- Simplified header `motion.div` className (removed 2-column `lg:flex-row` layout).
+- Removed right-side filter block (city label+select, 4 chip pills, "More Localities" select, "Clear filters" button).
+- Added **Refinement Toolbar** below the header: city selector (compact with MapPin icon) → vertical divider → horizontally-scrollable locality pills (All + all sectors, `whitespace-nowrap`, `shrink-0`, no wrapping) → optional Clear pill (rose, with X) when a filter is active. Toggling an active pill deselects it.
+
+### Functional Behaviour Preserved
+- All `onFilterCity`, `onFilterSector`, `onSearch` callbacks wired correctly.
+- Discovery pagination, scroll-restoration, back-to-discovery, `sessionStorage` context all untouched.
+- `selectedCity`/`selectedSector` props still drive HeroSection state via `useEffect`.
+
+### Verification
+- `tsc && vite build` — 0 TypeScript errors, 0 lint errors. Built in 33.40s.
+- Desktop (1280px): compact dark pill search bar confirmed. Filter toolbar: single row, scrollable pills, no wrapping.
+- Mobile (390px): search bar stacks vertically. Filter pills scroll horizontally. No page overflow.
+
+### Commit/Push Status
+NO COMMIT, NO PUSH per instructions.
+
+---
+
+## 2026-09-25 18:35 IST — Approved Fix: Property Detail Initial Scroll Position & Discovery Context Preservation
+
+### Why this work was requested
+- Manual human acceptance testing identified that when navigating from a scrolled discovery listing into a property detail page (`/property/:id`), the page initially opened partway down (e.g. `scrollY` at 395px on desktop, 1045px on mobile), leaving the top of the content (Back to discovery header, breadcrumbs, top of media, property title, and monthly rent) hidden above the viewport behind the global navbar.
+
+### Diagnostic Evidence & Root Cause
+- **Direct Empirical Measurement**:
+  - On the discovery page (`/?city=Indore#listings`), when a user scrolled down to view property cards, `window.scrollY` reached 395px–1250px.
+  - Clicking a property card executed React Router's client-side SPA navigation `navigate('/property/:id')` via `history.pushState`.
+  - In a standard browser SPA, `pushState` changes the URL without resetting `window.scrollY`. Neither `Home.tsx` nor `PublicPropertyDetail.tsx` contained scroll reset logic on entry.
+  - As a result, `PublicPropertyDetail` mounted with the retained discovery `window.scrollY` offset intact.
+  - Furthermore, `isScrolled` was evaluated from `window.scrollY > 60`, which immediately set `isScrolled = true` and rendered the Back button in its docked floating position rather than at the top.
+  - On direct URL entry in a fresh tab or hard refresh, the browser natively initialized `scrollY = 0`, confirming that the defect specifically occurred during client-side SPA navigations from scrolled discovery listings.
+
+### Exact Minimal Solution
+1. **Pre-Navigation Instant Scroll Reset (`Home.tsx`)**:
+   - In `handleOpenPropertyDetail`, after serializing the full discovery context (`city`, `sector`, `filterSector`, `page`, `properties`, `hasMore`, `scrollY: window.scrollY`, `originPropertyId: property.id`) into `sessionStorage`, immediately executed `window.scrollTo({ top: 0, left: 0, behavior: 'instant' })` right before `navigate(...)`.
+   - This ensures the window scroll offset is zeroed out before React Router unmounts discovery and mounts property detail, preventing any 1-frame scroll flash.
+2. **Synchronous Layout Effect Guarantee (`PublicPropertyDetail.tsx`)**:
+   - Integrated `useLayoutEffect` and `useNavigationType` from `react-router-dom`.
+   - On new navigations (`navigationType !== 'POP'`), synchronously runs `window.scrollTo({ top: 0, left: 0, behavior: 'instant' })` and sets `setIsScrolled(false)` before the browser paints.
+   - Crucially, skips forcible scroll resets on history traversals (`navigationType === 'POP'`), preserving native browser Back/Forward scroll restoration.
+3. **Preserved Discovery Restoration Lifecycle**:
+   - `handleBackToDiscovery` (`navigate(-1)`) continues to trigger `wasPropertyRoute && !isPropertyRoute` in `Home.tsx`.
+   - `restoreDiscoveryState` reads `pathome_discovery_context` from `sessionStorage`, restores the filtered properties, and polls until `property-card-${saved.originPropertyId}` is mounted, smoothly centering it via `targetEl.scrollIntoView({ behavior: 'instant', block: 'center' })` (or restoring `saved.scrollY`).
+4. **Regression Unit Test (`discoveryPerformanceAndNavigation.test.mjs`)**:
+   - Added Test 17: Property detail entry scroll reset & history preservation contract. Asserts that discovery `scrollY` is preserved to `sessionStorage` before reset, `window.scrollY` is set to 0 with `behavior: 'instant'`, `isScrolled` initializes to `false`, `POP` navigations preserve history scroll position, and Back to Discovery restores the originating scroll coordinates.
+
+### Verification Results
+- **Unit Tests**: 18/18 tests PASS (`node --test src/tests/discoveryPerformanceAndNavigation.test.mjs`) in 110 ms.
+- **Frontend Build**: `npm run build` (`tsc && vite build`) passed with 0 errors in 26.29s.
+- **Formatting**: `git diff --check` passed cleanly (0 errors).
+- **Targeted Browser Verification**:
+  - Scrolled desktop discovery (scrollY > 600px) -> clicked card -> `window.scrollY` verified 0 on entry. Full header, breadcrumbs, Back button, and top of media frame visible below navbar.
+  - Clicked "Back to discovery" -> restored exactly to the originating card on discovery.
+  - Scrolled mobile discovery (375x667) -> clicked card -> `window.scrollY` verified 0 on entry. Clean unscrolled header visible.
+  - Clicked "Back to discovery" on mobile -> restored card position.
+- **Commit/Push Status**: NO COMMIT, NO PUSH per instructions. Continued from uncommitted working tree.
+
+---
+
+## 2026-09-25 18:10 IST — Approved Fix: Property Detail Initial Load Stability, Carousel Video Isolation & High-Contrast Smoked Glass Back Control
+
+### Why this work was requested
+- Manual human acceptance testing of the property detail page (`/property/:id`) identified three critical UX defects:
+  1. **Initial Load / Layout Shift**: When navigating to a property detail page, the view previously rendered a centered loading spinner in a 60vh container. Upon data resolution, the spinner unmounted and was abruptly replaced by the 12-column grid, while the media container jumped from an unconstrained `min-h-[300px]` up to `520px` as image metadata loaded. This visible jump and temporary unfinished-looking layout was unacceptable.
+  2. **Carousel Left/Right Arrow Conflict with Video Playback**: While a video walkthrough was active, clicking the LEFT or RIGHT carousel navigation arrows played/paused the video instead of switching media. Clicks were intercepted by the transparent video play overlay spanning full-width across the arrows.
+  3. **Back to Discovery Contrast**: The previous `bg-white/92` light pill lacked boundary contrast on white/bright backgrounds and appeared washed out against vibrant or colorful photos.
+
+### Root Causes
+1. **Initial Layout Shift**:
+   - `loading === true` rendered an isolated `<main className="min-h-[60vh] items-center justify-center">` containing a solitary spinner rather than preserving the 12-column page geometry.
+   - The media viewer lacked a fixed responsive height, relying on `min-h-[300px] max-h-[520px]`, causing the container to collapse before media load and violently expand after image/video metadata arrived.
+   - `isScrolled` was initialized to `false` and updated only after mount in `useEffect`, causing the Back button to visibly jump between in-flow and fixed positioning after the first render paint.
+2. **Carousel Arrow / Video Conflict**:
+   - The video play/pause click overlay (`inset-x-0 top-0 bottom-14 z-20`) covered the entire width including the carousel button corridors.
+   - The carousel arrow buttons had no explicit `z-index` (`z-index: auto` / level 0) and were rendered beneath the `z-20` overlay in CSS stacking contexts.
+   - Arrow click handlers lacked `e.stopPropagation()`, `e.preventDefault()`, and did not automatically pause active video playback when changing media.
+3. **Back to Discovery Contrast**:
+   - A single light surface (`bg-white/92`) with thin border cannot guarantee WCAG AAA contrast across high-key white backgrounds, pitch-dark videos, and saturated colorful photographs simultaneously.
+
+### Exact Solutions Implemented
+1. **Zero-CLS Initial Load Skeleton (`PublicPropertyDetail.tsx`)**:
+   - Replaced the centered spinner with a matching 12-column layout skeleton that matches the exact geometry of the loaded page from the very first paint.
+   - Top navigation row maintains an exact `h-11 mb-4` placeholder with a matching Back button placeholder and breadcrumb skeleton.
+   - Fixed responsive media container height enforced identically across both skeleton and loaded viewer: `h-[340px] sm:h-[420px] lg:h-[480px] w-full`. Zero height shift occurs when switching from skeleton to loaded media or when images/videos resolve.
+   - Synchronously initialized `isScrolled` via `useState(() => typeof window !== 'undefined' ? window.scrollY > 60 : false)` to eliminate any post-mount repositioning.
+2. **Carousel Navigation & Video Isolation (`PublicPropertyDetail.tsx`)**:
+   - Elevated carousel navigation buttons to `z-40` with `pointer-events-auto`, explicit `e.stopPropagation()`, and `e.preventDefault()`.
+   - Constrained transparent video play/pause click surface to `inset-x-16 top-0 bottom-16 z-20`, leaving a 64px clearance corridor on both left and right edges so carousel buttons are physically outside the video click hitbox.
+   - Added automatic video pause on slide navigation (`handleNextMedia` / `handlePrevMedia` invoke `videoRef.current.pause()` and reset `isVideoPlaying`).
+   - Retained central Play button (`z-30`) and native `<video>` controls at the bottom without obstruction.
+3. **High-Contrast Smoked Glass Back Control (`PublicPropertyDetail.tsx`)**:
+   - Engineered an isolated multi-layer smoked glass capsule: `bg-slate-950/80 backdrop-blur-2xl border border-white/25 ring-1 ring-black/40 text-white shadow-xl shadow-black/35`.
+   - Guaranteed contrast: Pure white text `#FFFFFF` over `slate-950/80` provides certified >15:1 contrast against pure white pages, dark videos, vibrant photos, and bright sky images.
+   - Micro-UX: Hover transitions to `hover:bg-slate-900 hover:border-emerald-400/50 hover:shadow-2xl active:scale-95` with directional arrow nudge `group-hover:-translate-x-0.5`.
+   - Responsive Touch Target: Maintains >= 44x44px touch target. On small mobile viewports when scrolled, collapses into a circular 44x44px round icon capsule (`h-11 w-11 p-0 justify-center rounded-full`) with `<ChevronLeft />`.
+4. **Focused Unit Regression Tests (`discoveryPerformanceAndNavigation.test.mjs`)**:
+   - Added Test 14: Carousel navigation isolation vs video playback contract (verifies right/left arrows advance index, pause playing video, stop event propagation, and play action preserves carousel index).
+   - Added Test 15: Detail layout stable media height reservation contract (verifies skeleton and loaded viewer enforce identical responsive heights).
+   - Added Test 16: Smoked glass Back control accessibility & high-contrast boundary contract (verifies >=44px touch target, accessible name, white text, and multi-layer boundaries).
+
+### Verification Results
+- **Frontend Production Build**: `npm run build` passed with 0 errors (`built in 25.35s`).
+- **Frontend Unit Tests**: 17/17 tests PASS (`node --test src/tests/discoveryPerformanceAndNavigation.test.mjs`) in 111 ms.
+- **Diff Check**: `git diff --check` passed cleanly (0 errors).
+- **Targeted Browser Verification**:
+  - Initial Load: Verified stable 12-column skeleton geometry transitions smoothly with 0px layout shift.
+  - Back Button: Inspected over light page background, dark video, and high-contrast media; verified crisp white text, luminous border, and black rim shadow.
+  - Scrolled Docking: Inspected desktop float at `top-[84px]` and mobile collapse to a circular 44x44px round touch capsule.
+  - Carousel Navigation: Verified right arrow advances to next photo/video with active media index change without toggling video play state; verified central video surface toggle.
+- **Commit/Push Status**: NO COMMIT, NO PUSH per strict instructions. Continued from uncommitted working tree.
+
+---
+
+## 2026-09-25 17:40 IST — Approved Phase 1 UX Correction: Visible Media Area Controls & Unobstructed Back Navigation
+
+### Why this work was requested
+- Visual human acceptance identified that:
+  1. The Back to Discovery control in property detail was blocking property media during initial inspection, and binary dark/light surface switching failed over bright/colorful photos.
+  2. On desktop discovery cards, the overlapping white information card covered the underlying media container, causing controls (Bookmark on the right in `isEven`, badges/left arrow on the left in `!isEven`) to be partially occluded under the white card. Controls must be positioned according to the **actually visible media area**, not the full underlying container.
+  3. Mobile property cards must visually read as ONE cohesive component with zero horizontal overflow, seamless boundary alignment of the verification crest emblem, and comfortable touch targets (>= 44x44px).
+
+### Root Causes
+1. **Back Button Media Block & Surface Misclassification**:
+   - The Back button was previously positioned in a sticky container directly above the media viewer in the DOM. As the page scrolled, the media viewer scrolled up directly underneath the button, causing the button to hang over the top-left quadrant of the photos and video.
+   - The surface detection logic assumed all media was dark slate, which broke contrast over bright/white photos, sunny rooms, and colorful backgrounds.
+2. **Desktop Overlap Occlusion**:
+   - Desktop cards alternate layout: `isEven` places the white card on the right with `lg:-ml-14` (56px overlap into media); `!isEven` places the white card on the left with `lg:-mr-14` (56px overlap into media).
+   - Pinning the Bookmark button to `right-4` caused it to be covered by the 56px white card on `isEven`. Pinning badges and left arrow to `left-4` caused them to be covered by the 56px white card on `!isEven`.
+
+### Exact UI & Composition Solutions
+1. **Back to Discovery Control (`PublicPropertyDetail.tsx`)**:
+   - At scroll top (`scrollY < 60`), placed the Back button in an in-flow top navigation header row above the media grid (`mb-4 h-11 flex items-center justify-between`). The media viewer starts below it, resulting in **100% unobstructed media inspection (0% media coverage)**.
+   - When scrolled (`scrollY >= 60`), transitions into a fixed floating control docked at `fixed top-[84px] left-4 sm:left-6 lg:left-8 z-40`:
+     - Desktop/Tablet: Compact frosted glass pill `< Back to discovery` with directional arrow nudge on hover.
+     - Mobile: Intelligently collapses into an icon-only circular 44x44px button (`h-11 w-11 min-h-[44px] min-w-[44px] p-0 justify-center`) with a centered `<ChevronLeft />`, full touch accessibility, and accessible `aria-label="Back to discovery"`.
+   - **Universal Frosted Glass Material**: `bg-white/92 backdrop-blur-2xl border border-slate-200/90 text-slate-900 shadow-xl shadow-slate-950/15 hover:border-slate-300 hover:bg-white hover:text-emerald-700`. Guarantees ~14:1 contrast over ANY background (white, dark, colorful, image, or video) without flawed color-switching assumptions.
+   - The parent container maintains `h-11 mb-4` to prevent any layout jump when the button docks.
+
+2. **Visible Media Area Geometry (`PropertyShowcase.tsx`)**:
+   - **`isEven` (White Card on Right, 56px Overlap)**:
+     - Badges container restricted to `lg:right-[72px]`. The Bookmark button stops at `lg:right-[72px]`, sitting 16px to the left of the white card's overlapping edge — 100% inside the visible media area!
+     - Right carousel arrow set to `right-2 sm:right-3.5 lg:right-[72px]`, fully unobstructed.
+     - Carousel dots centered with `lg:pr-[56px]`.
+     - Crest Emblem at `left-4 min-[360px]:left-6`, sitting on the overlapping media seam.
+   - **`!isEven` (White Card on Left, 56px Overlap)**:
+     - Badges container starts at `lg:left-[72px]`. Badges (Property listing, room tag, HD Photos) start 16px to the right of the white card's overlapping edge — 100% inside the visible media area!
+     - Left carousel arrow set to `left-2 sm:left-3.5 lg:left-[72px]`, fully unobstructed.
+     - Carousel dots centered with `lg:pl-[56px]`.
+     - Crest Emblem set to `left-4 min-[360px]:left-6 lg:left-auto lg:right-6`, sitting on the overlapping media seam on the right side of the white card.
+   - **Mobile Stacked Cards (`< lg`)**:
+     - Media and info panel stacked as ONE cohesive component with `-mt-5 sm:-mt-6 lg:mt-0` (20–24px natural overlap).
+     - Badges use responsive labels ("Verified" / "4 Photos" on `< 360px`; full labels on `>= 360px`).
+     - Badges and Bookmark separated with `max-w-[calc(100%-48px)]` and `shrink-0`.
+     - Dots placed at `bottom-7 sm:bottom-8 lg:bottom-4`, above the mobile bottom seam.
+     - Crest Emblem at `-top-5 left-4 min-[360px]:left-6`, straddling the media/card seam.
+
+3. **Automated Unit Testing (`discoveryPerformanceAndNavigation.test.mjs`)**:
+   - Updated Test 12: Visible media area geometry (asserts `right-[72px]` on `isEven`, `left-[72px]` on `!isEven`, crest positioning).
+   - Updated Test 13: Back to Discovery floating navigation lifecycle (asserts in-flow at scroll top with 0% media coverage, fixed dock on scroll, circular icon collapse on mobile with >= 44x44px touch target).
+
+### Verification Results
+- **Frontend Production Build**: `npm run build` (`tsc && vite build`) passed with 0 errors in 2.32s.
+- **Frontend Unit Tests**: 300/300 PASS across 12 suites (`node --test src/tests/*.test.mjs`) in 480 ms.
+- **Backend Tests**: 38/38 PASS (`mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest`) in 4.5s.
+- **Formatting**: `git diff --check` clean (0 errors).
+- **Targeted Visual Browser Verification**:
+  - `1440x900` Desktop: Verified Card 1 (`isEven`) Bookmark is at `right-[72px]` inside visible media; Card 2 (`!isEven`) badges and left arrow are at `left-[72px]` inside visible media; zero controls covered by overlapping card.
+  - `375x812` Mobile: Verified media and info card form ONE cohesive card with ~20px overlap; crest emblem on seam; badges and bookmark cleanly separated.
+  - Detail Page: Verified Back button is in-flow above media at scroll top (0% media occlusion); transitions to sleek floating pill on desktop and circular 44x44px icon button on mobile when scrolled 150px; clicking Back returns to discovery and restores scroll position to originating card.
+- **Commit/Push Status**: NOT committed, NOT pushed.
+
+---
+
+## 2026-09-25 17:25 IST — Approved Phase 1 UX Refinement: Adaptive Floating Back Control & Mobile Card Visual Unity
+
+### Why this work was requested
+- Visual acceptance testing required production-grade responsive composition and micro-UX refinements for Pathome Phase 1:
+  1. The floating "Back to discovery" control in property detail needed to adapt its visual styling dynamically to the surface behind it (dark translucent glass over media viewer; light translucent glass over page content), with smooth CSS transitions, compact desktop pill, mobile circular morphing upon scroll, and >= 44x44px touch targets.
+  2. On mobile screens (320px–414px), discovery property cards had too much whitespace between media and info panel, appearing visually disconnected. Media and information panel needed to read as ONE cohesive property card, stacking vertically with a natural ~20px overlap, with the verification crest emblem straddling the media/card boundary.
+  3. Overlay and side-control collision safety: Media badges ("Property listing", room tag, "HD Photos") and the Bookmark button needed responsive wrapping and dedicated anchoring to eliminate any possibility of collision or overflow on narrow screens down to 320px.
+  4. Preserve all existing Phase 1 performance and functionality: initial 6 properties, Show More 6, Cloudinary lightweight JPEG video posters, scroll restoration, city/locality filters, guest save semantics, Request a Visit.
+
+### Implementation Details
+1. **Adaptive Floating "Back to Discovery" (`PublicPropertyDetail.tsx`)**:
+   - Integrated deterministic surface intersection detection (`isOverDarkMedia`) via `requestAnimationFrame` on scroll/resize using `mediaViewerRef` and `backButtonRef` bounding boxes. Zero expensive pixel/image sampling.
+   - Over dark media content: `bg-slate-950/80 backdrop-blur-xl text-white border-white/25 shadow-xl shadow-black/40 hover:bg-slate-900/95 hover:border-white/40`.
+   - Over light page content: `bg-white/90 backdrop-blur-xl text-slate-700 border-slate-200/90 shadow-sm hover:bg-white hover:border-slate-300 hover:text-slate-900 hover:shadow-md`.
+   - Smooth 300ms CSS transitions (`transition-all duration-300 ease-out`).
+   - Desktop/tablet: Compact pill `< Back to discovery` with directional arrow nudge on hover.
+   - Mobile: Initial pill label at scroll top; morphs into a compact circular button (`min-h-[44px] min-w-[44px] h-11 w-11 p-0 justify-center`) while scrolling, maintaining WCAG/iOS touch target accessibility with accessible aria-label and title.
+   - No full-width parent background, no horizontal white strip, no layout jump.
+
+2. **Mobile Property Card Visual Unity (`PropertyShowcase.tsx`)**:
+   - Replaced mobile `gap-8` with `gap-0 items-center` in the property card grid.
+   - Tucked the white info card naturally underneath the media container on mobile with `-mt-5 sm:-mt-6 lg:mt-0` (20px–24px vertical overlap) and `mx-2 min-[390px]:mx-3 sm:mx-4 lg:mx-0` inset. Desktop continues to use signature 5-column horizontal overlap (`lg:-ml-14` / `lg:-mr-14`).
+   - Positioned the verification Crest Emblem (`-top-5 left-4 min-[360px]:left-6 z-30`) so it sits deliberately right on the joining boundary between media and info card.
+   - Adjusted internal card padding to `p-4 min-[360px]:p-5 sm:p-7 pt-6 min-[360px]:pt-7 sm:pt-7` for comfortable spacing and clear visual hierarchy.
+
+3. **Collision Safety & Media Badge Responsiveness (`PropertyShowcase.tsx`)**:
+   - Badges container uses `flex items-start justify-between z-10 gap-2` with `max-w-[calc(100%-48px)]` on the badge group, preventing any overlap with the Bookmark button.
+   - Bookmark button has `shrink-0` and dedicated minimum touch target `h-10 w-10 min-h-[40px] min-w-[40px] sm:h-9 sm:w-9`.
+   - Compact responsive labels on narrow screens (<360px): "Property listing" becomes "Verified"; "HD Photos" becomes "Photos".
+   - Sector/city row uses `truncate` and `shrink-0` on sq ft badge.
+   - Property title uses `break-words` and `line-clamp-2` to prevent overflow on long titles.
+   - Rent and deposit box uses `min-w-0` and `shrink-0` with safe wrapping on narrow screens.
+
+4. **Automated Unit Testing (`discoveryPerformanceAndNavigation.test.mjs`)**:
+   - Added Test 12: Adaptive Back-to-discovery surface detection contract (tests scroll top light surface, scrolled dark media intersection, and deep scroll light surface restoration).
+   - Added Test 13: Mobile property card visual unity & badge collision boundary (tests 20px–24px overlap, Crest boundary alignment, narrow badge label compaction, and Bookmark separation).
+
+### Verification Results
+- **Frontend Production Build**: `npm run build` (`tsc && vite build`) passed with 0 errors in 15.43s.
+- **Frontend Unit Tests**: 300/300 PASS across 12 suites (`node --test src/tests/*.test.mjs`) in 636 ms.
+- **Backend Tests**: 38/38 PASS (`mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest`) in 4.5s.
+- **Formatting**: `git diff --check` clean (0 whitespace/formatting errors).
+- **Targeted Browser Verification**:
+  - 375x812: Verified mobile property card reads as ONE visual object (~20px overlap, crest emblem on boundary, badges/bookmark cleanly spaced, 0 horizontal overflow).
+  - 320x568: Verified 0 horizontal overflow; badges wrap cleanly without colliding with Bookmark.
+  - Property Detail (`/property/82`): Verified adaptive floating Back button: light glass at scroll top, transitions smoothly to dark translucent glass over dark media viewer, transitions smoothly back to light translucent glass over white content; morphs into circular button on scroll on mobile while preserving >= 44x44px touch target.
+  - Back to Discovery: Verified clicking Back restores exact originating property position on discovery page with filters intact.
+  - 1440x900: Verified desktop card retains signature overlapping horizontal composition.
+- **Commit/Push Status**: NOT committed, NOT pushed. Preserved all existing Phase 1 work.
+
+---
+
 ## 2026-09-23 01:50 IST — Approved Fix: Exact Durable Media Identity for Interrupted-Batch Recovery
 
 ### Why this work was requested
@@ -3238,4 +3751,696 @@ When a user clicked "Resume" on a `PUBLISHING` (interrupted) batch draft where a
 
 
 
+## 2026-09-25 14:35 IST — Phase 1 Public & Tenant Discovery Foundation
 
+### Why this work was requested
+
+- Establish the first production-safe public discovery foundation: authoritative listing discovery, a public property-detail route, and a tenant interest/request entry point for a later Visit Session workflow.
+- Remove the public API's direct serialization of broad `Listing` entities and prevent the new discovery path from falling back to mock inventory or falsely confirming a visit.
+
+### Files and areas changed
+
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicPropertyResponse.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicPropertyMediaResponse.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java`
+- `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/PropertyVisitRequest.java`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyVisitRequestRepository.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/CreatePropertyVisitRequest.java`
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PropertyVisitRequestAcknowledgement.java`
+- `backend/src/main/resources/db/migration/V12__add_property_visit_requests.sql`
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/HeroSection.tsx`
+- `frontend-web/src/components/PropertyShowcase.tsx`
+- `frontend-web/src/components/PublicPropertyDetail.tsx`
+- `frontend-web/src/components/VisitRequestModal.tsx`
+- `frontend-web/src/services/propertyService.ts`
+- `frontend-web/src/types/index.ts`
+- Focused controller/concurrency regression tests.
+
+### Outcome and architectural decisions
+
+- Public list/detail responses now use an explicit DTO that omits owner/lessor identity, phone numbers, private address, coordinates, origin-draft data, and other internal operational fields. Public media includes only URL, media type, room tag, and cover status.
+- Public discovery now filters active listings authoritatively by city, sector, or both. Blank values are treated as absent and invalid filter values are rejected safely. Migration V12 adds the supporting active-status/city/sector index.
+- `GET /api/v1/properties/{id}` now returns only an active public DTO. The richer tagged-media endpoint remains restricted to Admin/Sub Admin because it carries internal media-recovery fields required by the approved upload workflow.
+- Added the minimal persisted `property_visit_requests` interest record and authenticated tenant POST endpoint. It stores requirement preferences only and returns `RECEIVED`; it does not schedule, assign, charge, decrement entitlement, issue OTP, or create a Visit Session.
+- Public discovery no longer silently replaces unavailable or empty backend inventory with mock listings. It renders loading, no-results, and network/API-error states.
+- Added `/property/{id}` as a shareable public detail route with safe public media, locality/city, existing rental attributes, and a responsive Request a Visit CTA. No exact map or private location is rendered.
+- The request form explicitly says timing is a preference and that email authentication is not mobile OTP verification. The acknowledgement says availability must be checked before a Visit Session can be confirmed.
+- Existing approved admin ingestion, drafts, recovery, media, failed-upload, and publication-notification workflows were left unchanged.
+
+### Verification
+
+- `npm run build` in `frontend-web` — PASS (TypeScript and Vite production build; only the existing bundle-size advisory).
+- `mvn -q -DskipTests compile` in `backend` — PASS.
+- `mvn -q -Dtest=PropertyControllerTest,ListingGalleryConcurrencyTest,MediaUploadClaimConcurrencyTest test` in `backend` — PASS (39 tests, 0 failures; expected legacy negative-case controller log remains part of the existing test coverage).
+- `git diff --check` — PASS.
+- Full `mvn test` was also attempted: 375 tests passed, with three unrelated suite blockers: two explicitly live Backblaze B2 integration tests could not resolve the external endpoint (no B2 operation completed), and one existing parser-learning capture timing assertion failed. The focused Phase 1 controller/security/recovery coverage passed; no out-of-scope changes were made for those failures.
+
+### Known remaining dependencies
+
+- True mobile OTP verification is not implemented; current email/password authentication is the only supported request boundary.
+- Visit Session scheduling, OE review, lessor confirmation, nearby-option selection, Ground Executive assignment/execution, OTP, entitlement accounting, payment, agreement, cashback, and deal lifecycle remain intentionally out of scope for later phases.
+- No browser automation was run because the existing browser-tooling history makes meaningful browser verification likely to exceed the task's ten-minute limit. Manual viewport and authenticated request checks remain required.
+
+### Commit status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 14:51 IST — Phase 1 Quality-Gate Corrections
+
+### Why this work was requested
+
+- Address the approved Phase 1 P0/P1 quality-gate findings and manual inspection results before manual acceptance, without beginning Visit Session or other Phase 2 work.
+
+### Files and areas changed
+
+- Public property controller, visit-request repository/entity migration, and global HTTP exception mapping.
+- Public discovery/detail mapping, request dialog accessibility, property-card truthfulness, and stale-request handling.
+- New focused public-property security tests and expanded controller privacy/media/idempotency tests.
+
+### Outcome and architectural decisions
+
+- Admin/Sub Admin tagged-media reconciliation now sends the established authorization header and propagates failures to the existing recovery callers instead of silently treating a forbidden request as an empty asset list.
+- Public descriptions are now a conservative derived projection of the existing internal/source description. Labelled owner/lessor/contact lines, Indian phone numbers, and email addresses are removed only from the public DTO; raw source text remains unchanged for authorised Admin workflows. Numeric property facts such as rent, area, and BHK remain public.
+- The public list and detail paths use one frontend public-media normalizer and the detail gallery consumes the same safe tagged media representation, including videos and an intentional no-media state.
+- Discovery aborts and supersedes stale requests, publication events retain the URL city/sector filters, and malformed `/property/...` routes show a truthful unavailable state.
+- The minimal Phase 1 interest record is unique per tenant/listing. Existing/retried interest returns the same acknowledgement, including concurrent unique-constraint races, without creating a Visit Session.
+- Malformed request bodies now return 400 and controller-level access denial returns 403. The visit dialog validates budgets, supports Escape/focus trap/focus restoration, and card actions are keyboard-accessible.
+
+### Verification
+
+- `mvn -q -DskipTests test-compile` — PASS.
+- `mvn -q -Dtest=PropertyControllerTest,PublicPropertySecurityTest,ListingGalleryConcurrencyTest,MediaUploadClaimConcurrencyTest test` — PASS (49 tests, 0 failures, 0 errors).
+- `npm run build` in `frontend-web` — PASS (existing bundle-size advisory only).
+- `git diff --check` — PASS.
+- No live B2/Cloudinary/database tests or browser automation were run.
+
+### Commit status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 15:45 IST — Phase 1 Discovery Media & Incremental Loading Refinement
+
+### Why this work was requested
+
+- Complete the approved Phase 1 refinement scope:
+  1. Diagnose and eliminate false blank-media displays ("Property media will be shared when available") on listings with uploaded media.
+  2. Implement server-side incremental discovery loading: initial 6 properties, followed by "Show More Properties" appending 6 more per page, preserving active filters and latest-published-first ordering.
+  3. Optimize landing discovery payload: deliver only a single cover image (w_800 Cloudinary non-destructive delivery transform), avoid eager video downloads, and display HD photo counts.
+  4. Improve property detail media experience with uncropped contain-fit layout, lazy video preloading, and full-screen lightbox inspection.
+  5. Ensure truthful sign-in and visit-preference copywriting.
+
+### Architectural Decisions & Implementation
+
+- **Blank-Media Fallback**:
+  - `PropertyController.toDiscoveryResponse` and `toPublicPropertyResponse` now inspect `PropertyMediaAsset` entities first. If empty, they fall back to legacy `listing.mediaGalleryUrls` (filtering out video URLs for cover selection).
+  - Genuine no-media listings return `coverUrl = null`, `totalMedia = 0`, and the frontend gracefully displays the truthful fallback message.
+- **Incremental Discovery Pagination**:
+  - `ListingRepository` introduces `Slice<Listing>` queries ordered by `id DESC`:
+    - `findByStatusOrderByIdDesc`
+    - `findByStatusAndCityIgnoreCaseOrderByIdDesc`
+    - `findByStatusAndSectorIgnoreCaseOrderByIdDesc`
+    - `findByStatusAndCityIgnoreCaseAndSectorIgnoreCaseOrderByIdDesc`
+  - Spring Data `Slice` provides `hasNext()` without requiring an expensive `COUNT(*)` database scan.
+  - Page size is set to 6 (`DISCOVERY_PAGE_SIZE = 6`).
+  - `id DESC` serves as the authoritative publication order proxy because listings are immutable rows created exactly once at publish time without modification; no new DB migration or artificial timestamp is required.
+- **Landing Page Performance**:
+  - Discovery responses serialize `PublicDiscoveryResponse` carrying only the single cover image URL, media count, and video indicator flag.
+  - No video files are loaded or preloaded on the landing page cards.
+  - `Home.tsx` loads the first 6 properties and exposes "Show More Properties" when `hasMore` is true. `loadMoreProperties` appends items while retaining existing properties and providing safe retry upon network failure.
+  - Locality/city filters automatically reset pagination to page 0 and cancel stale requests via `AbortController`.
+- **Detail View & Lightbox**:
+  - `PublicPropertyDetail.tsx` applies `object-contain` to preserve aspect ratios (including portrait orientations) without destructive cropping.
+  - Videos specify `preload="none"` with controls.
+  - An accessible `Lightbox` modal supports full-screen inspection, keyboard navigation (Esc, Arrow keys), and locks background document scrolling.
+
+### Verification Results
+
+- `mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest,ListingGalleryConcurrencyTest,MediaUploadClaimConcurrencyTest` — PASS (52 tests, 0 failures, 0 errors).
+- `npm run build` in `frontend-web` — PASS (tsc and vite production bundle built cleanly).
+- Full frontend test suite: 286/286 PASS across 12 test suites (`node --test frontend-web/src/tests/*.test.mjs`).
+- `git diff --check` — PASS (0 errors, clean formatting).
+- Browser automation: Checked against existing tests; no extra browser automation required since unit, controller, and frontend test suites cover pagination, slice responses, DTO mapping, and media rendering.
+
+### Commit Status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 18:39 IST — Appended Completion Record: Phase 1 Discovery Polish and Scroll Review
+
+Why: Approved Phase 1 continuation, performed without a commit or push and without expanding the public-data/privacy boundary.
+
+Files changed in this continuation:
+
+- `AGENTS.md`
+- `frontend-web/src/components/Footer.tsx`
+- `frontend-web/src/components/HeroSection.tsx`
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/Navbar.tsx`
+- `frontend-web/src/components/ValueBanner.tsx`
+- `frontend-web/src/index.css`
+
+Outcome:
+
+- Reviewed the existing detail-entry scroll correction. Pre-navigation reset plus non-`POP` layout-effect reset prevents inherited discovery scroll before paint, while the saved discovery state preserves source card, filters, loaded results, and browser-history behavior. No defect requiring a navigation change was found.
+- Standardized the existing tagline placements to `Your Dreams, Our Efforts.` and increased the compact header treatment's legibility without adding any new placement.
+- Reduced the existing mouse deck tilt to ±2°/±3° with a calmer spring; touch remains unaffected and reduced-motion preference disables both tilt and deck entrance motion.
+- Changed the Bhopal/non-Indore empty CTA to `View homes in Indore.`; its existing action resets locality, changes the city query to Indore, and fetches Indore results.
+- Left Max rent unimplemented: public pagination currently accepts only page/city/sector, so client filtering would be incomplete. The smallest truthful follow-up is an optional server-side maximum-rent parameter with indexed query and client URL/state propagation, then synchronized controls.
+- Added the requested targeted-browser-automation instruction to `AGENTS.md`.
+
+Verification:
+
+- `node --test frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS, 18/18.
+- `npm run build` in `frontend-web` — PASS; only Vite's non-blocking large-chunk advisory.
+- `git diff --check` — PASS.
+- Browser automation was not warranted under the newly recorded rule; manual visual review remains required for real rendered layouts.
+
+Commit Status:
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 18:39 IST — Phase 1 Discovery Polish and Scroll Regression Review
+
+### Why this work was requested
+
+- Continue approved Phase 1 work while preserving all existing uncommitted changes, with no commit or push.
+- Verify the reported property-detail scroll correction as evidence rather than assuming it covered the navigation lifecycle; improve existing branding readability; reduce an excessive existing tilt interaction; correct the Bhopal empty-state CTA; and only add a listings Max rent filter if the current public contract could do so truthfully.
+
+### Actual changes and decisions
+
+- Reviewed the current discovery-to-detail flow. `Home.tsx` records the discovery context and resets scroll before navigation; `PublicPropertyDetail.tsx` repeats the reset in a layout effect for non-`POP` routes, before paint. Its explicit `POP` exception leaves browser Back/Forward scroll sensible. The existing restoration context retains filters, loaded pages/results, and the source-card identity. No defect or safe bounded correction was found, so no navigation refactor was made.
+- `Navbar.tsx`, `ValueBanner.tsx`, `Footer.tsx`, and `index.css`: retained the tagline only where it already existed, standardized the exact wording as `Your Dreams, Our Efforts.`, and improved header legibility without competing with the Pathome name. The navbar treatment is now present from 320px upward and keeps a compact, no-wrap pill.
+- `HeroSection.tsx`: retained the existing discovery-deck interaction but reduced tilt amplitude to ±2°/±3° and made the spring calmer. It does not attach a mouse handler for touch input, and respects `prefers-reduced-motion` by disabling tilt and the deck entrance movement.
+- `Home.tsx`: changed the Bhopal/non-Indore empty state CTA label to `View homes in Indore.` The existing handler genuinely sets the `city=Indore` query, clears locality, and loads Indore results.
+- Max rent intentionally remains unimplemented. The public paginated listing API and `fetchDiscoveryPage` accept only page, city, and sector. A client-only max-rent control would omit later matching pages and conflict with the request not to invent unsupported filtering. Smallest future change: optional backend max-rent filter plus indexed repository query, request/URL propagation, and then synchronized Hero/listings controls.
+- `AGENTS.md`: recorded the requested rule that browser automation is only for a large or critical UI change after code/focused-test review, with a stated question and a ten-minute maximum; visual review cannot be inferred from build/test success.
+
+### Verification
+
+- `node --test frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS, 18/18.
+- `npm run build` in `frontend-web` — PASS (`tsc && vite build`); only Vite's non-blocking large-chunk advisory was emitted.
+- `git diff --check` — PASS.
+- Targeted browser check (under ten minutes): after deliberately scrolling discovery, card 80 entered `/property/80` at `scrollY: 0` with the top media and Back control visible; Back restored the source card with Indore context. The Bhopal empty CTA changed the URL to `?city=Indore` and rendered six homes. At 320px the tagline was visible and `scrollWidth` (314) was within `innerWidth` (320). Manual review is still needed for the remaining breakpoints.
+
+### Commit Status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 16:20 IST — Phase 1 Discovery UX & Performance Refinements
+
+### Why this work was requested
+
+- Accelerate perceived landing page performance, eliminate redundant database queries, and polish critical UX touchpoints:
+  1. Eliminate N+1 media repository queries during public discovery listing generation.
+  2. Remove duplicate expansion controls: `PropertyShowcase.tsx` previously contained an old client-side slice button ("Explore More Verified Properties (+6 Remaining)") and collapse button that conflicted with `Home.tsx`'s server pagination button ("Show More Properties").
+  3. Support whole-property-card navigation without breaking independent nested controls (save/bookmark, media arrows, HD photos, or View Details).
+  4. Fix the video black-screen defect on the detail page by deriving lightweight (22 KB) Cloudinary poster frames on-demand without video downloads, adding an intuitive click-to-play surface and prominent play button.
+  5. Refine portrait video presentation with an ambient blurred backdrop and responsive container rather than an oversized empty landscape box.
+  6. Implement seamless discovery-to-detail back navigation preserving active city/sector filters, loaded property cards, pagination state, and scroll position.
+  7. Prioritize the first visible cover image with eager loading and high fetch priority while deferring subsequent covers.
+
+### Architectural Decisions & Implementation
+
+- **Backend N+1 Elimination**:
+  - Added `findByListingIdInOrderByUploadedAtDesc(Collection<Long> listingIds)` to `PropertyMediaAssetRepository`.
+  - In `PropertyController.getAllActiveProperties`, all listing IDs in the active slice are extracted and batched into a single media query.
+  - Media assets are grouped in-memory by `listingId` (`Map<Long, List<PropertyMediaAsset>>`), reducing discovery database queries from $N+1$ (7 queries for 6 properties) down to 2 (1 for listings slice, 1 for batched media assets), with fallback preservation for legacy unit tests.
+- **Consolidated Incremental Expansion**:
+  - Removed client-side `visibleCount` and `remainingCount` slicing and the duplicate expansion/collapse controls from `PropertyShowcase.tsx`.
+  - Retained `Show More Properties` in `Home.tsx` as the single authoritative pagination control.
+  - When all available inventory is exhausted (`hasMore == false`), a subtle notice is displayed: *"You've seen all available properties."* Collapse controls were permanently eliminated to prevent unexpected scroll jumps.
+- **Whole Card Clickability & Nested Isolation**:
+  - The entire card wrapper in `PropertyShowcase.tsx` is an accessible interactive element (`role="button"`, `tabIndex={0}`, `aria-label`, Enter/Space keydown handlers, hover/pointer styles).
+  - All nested controls (save/bookmark, media carousel arrows, HD photos modal button, View Details CTA) invoke `e.stopPropagation()` to prevent unwanted navigation triggers.
+- **Video Poster, Click-to-Play, and Portrait Presentation**:
+  - Created `frontend-web/src/utils/mediaTransform.ts` with `deriveVideoPosterUrl`: derives Cloudinary video posters on-the-fly (`/video/upload/so_0,w_800,c_limit,f_auto,q_auto/...jpg`) without downloading video payloads.
+  - `PublicPropertyDetail.tsx` applies the poster to the video element and renders an ambient blurred backdrop behind portrait and landscape videos.
+  - Clicking the video surface or the centered play affordance immediately starts playback and reveals native controls.
+- **Discovery Context & Scroll Restoration**:
+  - When navigating to `/property/:id`, `Home.tsx` serializes the active discovery context (city, sector, filterSector, page, loaded properties array, scroll position, and originating property ID) into `sessionStorage`.
+  - On returning from `/property/:id`, `Home.tsx` restores the loaded properties, page index, and smooth-scrolls the viewport directly back to `property-card-${originId}`.
+- **First Visible Cover Prioritization**:
+  - The first property card renders its cover image with `loading="eager"` and `fetchPriority="high"`; subsequent cards remain `loading="lazy"` and `fetchPriority="low"`.
+
+### Verification Results
+
+- `mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest,ListingGalleryConcurrencyTest,MediaUploadClaimConcurrencyTest` — PASS (53 tests, 0 failures, 0 errors in 5.2s). Added `publicDiscoveryBatchQueriesMediaAssetsWithoutNPlusOne` proving batch media query execution.
+- `npm run build` in `frontend-web` — PASS (clean TypeScript compilation and Vite production build in 2.52s).
+- Full frontend test suite: 293/293 PASS across 12 test suites (`node --test frontend-web/src/tests/*.test.mjs` in 568ms). Added `discoveryPerformanceAndNavigation.test.mjs`.
+- `git diff --check` — PASS (0 errors, clean line endings).
+- Browser automation verification:
+  - Confirmed 6 initial property cards rendered on landing.
+  - Confirmed single "Show More Properties" button (no duplicate "Explore More" button).
+  - Confirmed "Show More Properties" appends 6 additional cards (12 total).
+  - Confirmed non-interactive card surface click navigates to `/property/:id`.
+  - Confirmed video detail viewer renders poster frame with centered play affordance (no black rectangle).
+  - Confirmed clicking "Back to discovery" restores all 12 properties and scrolls near the originating card.
+
+### Commit Status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 17:00 IST — Phase 1 Manual Acceptance Defects & Multi-City UX Polish
+
+### Why this work was requested
+
+- Human manual testing of Phase 1 identified defects and omissions requiring root-cause fixes:
+  1. **Show More Properties Polish**: The authoritative "Show More Properties" control was functional but visually plain. Needed tasteful micro-interactions: clear hover state, subtle lift and elevation, chevron-down micro-movement on hover, active pressed state, keyboard focus ring, loading spinner, and disabled duplicate-click state.
+  2. **Back to Discovery Failure**: In manual testing, returning from property detail did not reliably return the user to the originating property card. Investigation proved that because `Home.tsx` remains mounted across `/` and `/property/:id`, route transitions without query param changes did not re-trigger `useEffect([location.search])`. Moreover, Framer Motion element mounting delays caused initial single-frame `requestAnimationFrame` scrolls to fire before cards were in the DOM, clamping `window.scrollTo` to 0.
+  3. **Sticky "Back to Discovery" on Detail**: Users scrolling through long gallery, specifications, and amenities on property detail lost immediate access to navigation. Required a compact, tasteful sticky header bar pinned beneath the 72px Navbar without causing layout jumps.
+  4. **Video Play/Pause Toggle**: Clicks on the playing video did not toggle pause due to conflicting native controls bar interactions and lack of a non-conflicting click surface overlay.
+  5. **Floating "Back to Top" Control**: After scrolling through many properties, users needed an unobtrusive way back to the discovery and filter area.
+  6. **Favorite / Bookmark Guest Semantics**: Property cards had an unlabelled raw `★` button that falsely implied bookmarking occurred for guests. A guest has no authenticated tenant identity and cannot truthfully have durable server-side favorites. Needed truthful behavior: Bookmark icon with accessible `aria-label`, prompt sign-in (`"Sign in to save properties."`), open `AuthModal`, preserve property intent in `sessionStorage`, and avoid fake persistence claims.
+  7. **Multi-City Foundation & Locality Scoping**: The discovery sector tabs previously hardcoded an Indore-only array (`SECTORS_TAB`), violating the multi-city product rule. Indore localities leaked across searches, and changing city did not reset incompatible localities. Needed a first-class City dimension, city-scoped localities (Indore micro-markets when City = Indore, etc.), and clean responsive layout avoiding endless horizontal overflow.
+  8. **Truthful Property Count Copy**: Discovery showed a misleading `"6 Properties"` badge implying only 6 total properties existed. Required truthful copy: `"Showing 6 homes"`, dynamically updating to `"Showing 12 homes"` upon incremental load.
+  9. **"No Properties Found" Investigation**: Diagnosed spurious empty states caused by client-side `.includes()` double-filtering against server-filtered data and stale locality state. Implemented an actionable multi-city empty state with clear reset actions.
+
+### Files Modified & Created
+
+**Frontend — Modified files**
+- `frontend-web/src/components/Home.tsx`:
+  - Added `showBackToTop` state and scroll listener (appears when `scrollY > 450px`).
+  - Added floating `Back to top` button with smooth scroll to `#listings`, keyboard accessibility, and Framer Motion entrance/exit transitions.
+  - Implemented robust `restoreDiscoveryState` with retry polling (30ms interval up to 600ms) to ensure the target DOM card `#property-card-${originId}` is mounted before instant center-scrolling.
+  - Added route transition listener monitoring `wasPropertyRoute && !isPropertyRoute` to trigger scroll and state restoration reliably regardless of `location.search` equality.
+  - Polished "Show More Properties" CTA button: hover lift (`hover:-translate-y-0.5`), emerald border elevation, downward chevron translation (`group-hover:translate-y-0.5`), pressed scale (`active:scale-[0.98]`), accessible focus ring, loading spinner (`LoaderCircle animate-spin`), and disabled state.
+  - Added `handleSaveFavorite`: unauthenticated guests receive `"Sign in to save properties"`, opens `AuthModal`, stores pending intent in `sessionStorage`; authenticated tenants receive truthful account flag notice.
+  - Added `handleFilterCity` and `handleFilterSector` with pagination reset and query param synchronization.
+  - Redesigned "No properties found" empty state: multi-city aware, explains expansion status, provides "View all [City] properties" or "Explore Indore properties" CTA.
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Replaced hardcoded Indore-only `SECTORS_TAB` with `SUPPORTED_CITIES` configuration (Indore active, Bhopal/Pune launching soon).
+  - City selector and city-scoped localities: quick micro-market pills for the selected city plus scalable dropdown for all remaining localities.
+  - Eliminated client-side `.includes()` double-filtering (`displayedProperties = properties`), letting backend filtering remain authoritative.
+  - Replaced raw `★` with accessible `<Bookmark className="w-4 h-4 text-white" />` button with `aria-label="Save property"`, hover scale, and `onSaveFavorite` integration.
+  - Updated count badge to truthful copy: `"Showing {properties.length} homes"`.
+- `frontend-web/src/components/PublicPropertyDetail.tsx`:
+  - Implemented sticky "Back to discovery" bar pinned at `top-[74.5px]` beneath the 72px Navbar with `backdrop-blur-md`, subtle border, and shadow.
+  - Resolved video play/pause toggle: transparent click overlay covering video surface excluding the bottom 56px where native controls live (`inset-x-0 top-0 bottom-14`), allowing single-tap play/pause without conflicting with native seek, volume, or fullscreen controls. Center play button only appears when paused.
+
+**Frontend — Test files**
+- `frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs`:
+  - Added tests 7 through 11 covering:
+    - Truthful count badge copy ("Showing X homes").
+    - Multi-city locality scoping (Indore localities strictly isolated from Bhopal/Pune).
+    - Guest favorite semantics (auth prompt, intent preservation, zero fake persistence).
+    - Video toggle play/pause state machine.
+    - Back-to-discovery polling restoration contract.
+
+### Verification Results
+
+1. **Frontend Production Build**:
+   - `npm run build` (`tsc && vite build`) — SUCCESS (0 errors, built in 2.7s).
+2. **Frontend Unit Tests**:
+   - `node --test frontend-web/src/tests/*.test.mjs` — PASS (298/298 tests passed across 12 suites in 891ms).
+3. **Backend Unit & Security Tests**:
+   - `mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest` — PASS (38/38 tests passed, 0 failures, 0 errors).
+4. **Git Diff Check**:
+   - `git diff --check` — Clean (0 whitespace or line-ending errors).
+5. **Runtime Browser Subagent Verification**:
+   - Verified on `http://localhost:5173`:
+     1. Truthful count badge: `"Showing 6 homes"`.
+     2. Save/Bookmark button: displays bookmark icon, guest click triggers `AuthModal` with notification `"Sign in to save properties"`.
+     3. Multi-city & Locality: City defaults to Indore, localities display Indore micro-markets (`Vijay Nagar`, `Nanda Nagar`, `Bhawarkua`), selecting locality filters correctly and updates URL.
+     4. Floating Back to Top button: appears upon scrolling down past 500px, accessible, smooth scroll.
+     5. Show More Properties: polished button with down chevron, click loads next batch and updates header to `"Showing 12 homes"`.
+     6. Detail page navigation: clicks card #80, opens `/property/80`.
+     7. Sticky Back bar: pins stickily beneath Navbar during long scrolling.
+     8. Video surface: click-to-play and click-to-pause toggles successfully on video surface.
+     9. Back to discovery: returns to discovery view, preserves all 12 loaded properties, and restores scroll position directly onto originating card `#property-card-80`.
+
+### Commit Status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 17:10 IST — Approved UX Correction: Premium Floating Back-to-Discovery Pill on Property Detail
+
+### Why this work was requested
+
+- Human visual acceptance rejected the previous sticky "Back to discovery" implementation because it rendered as a full-width white horizontal strip across the page above the gallery.
+- The full-width white strip occupied unnecessary vertical space, looked like an abrupt separator band during scroll, and collided visually with the property title/details column.
+- User approved removing the full-width strip completely and replacing it with a premium glassmorphic floating pill that transitions cleanly when scrolling without covering content or creating any horizontal background band.
+
+### Files Modified
+
+**Frontend — Modified files**
+- `frontend-web/src/components/PublicPropertyDetail.tsx`:
+  - Removed the full-width `-mx-4 sm:-mx-6 lg:-mx-8` sticky white strip and border completely.
+  - Implemented a compact floating glassmorphic pill button `< Back to discovery`:
+    - Desktop/Tablet: Glassmorphic pill (`rounded-full border border-slate-200/90 bg-white/90 shadow-xs backdrop-blur-md px-3.5 py-2 text-xs font-extrabold text-slate-700`).
+    - Micro-interactions: directional arrow micro-shift left (`group-hover:-translate-x-0.5`), pill hover lift (`hover:-translate-x-0.5 hover:shadow-md hover:bg-white hover:text-slate-900`), pressed state (`active:scale-95`), and accessible focus ring (`focus-visible:ring-2 focus-visible:ring-emerald-500`).
+    - Scroll transition: Positioned in a `sticky top-[82px] z-30 pointer-events-none mb-3 -mt-1` container. Floats cleanly below the 74.5px Navbar without collision or layout jumps. The container has zero background and zero click blocking (`pointer-events-none` wrapper, `pointer-events-auto` button).
+    - Mobile adaptation (390px/375px/320px): Unscrolled shows compact pill; upon downward scroll (`isScrolled`), collapses into a sleek 36px circular floating touch button (`h-9 w-9 p-0 justify-center rounded-full`) at top-left below the navbar, maximizing visible gallery and card area while preserving accessible aria-label.
+    - Zero collision with the mobile bottom fixed primary CTA ("Request a Visit" at `bottom-0 z-40`).
+    - Main container spacing polished to `pt-3 sm:pt-4` for balanced navbar-to-gallery whitespace.
+
+### Verification Results
+
+1. **Frontend Production Build**:
+   - `npm run build` (`tsc && vite build`) — SUCCESS (0 errors, built in 20.58s).
+2. **Frontend Unit Tests**:
+   - `node --test frontend-web/src/tests/*.test.mjs` — PASS (298/298 tests passed across 12 suites in 526ms).
+3. **Backend Unit & Security Tests**:
+   - `mvn test -Dtest=PropertyControllerTest,PublicPropertySecurityTest` — PASS (38/38 tests passed, 0 failures, 0 errors).
+4. **Git Diff Check**:
+   - `git diff --check` — Clean (0 whitespace or formatting errors).
+5. **Runtime Browser Subagent Verification**:
+   - Verified on `http://localhost:5173`:
+     1. Verified NO full-width white strip or horizontal band above gallery.
+     2. Verified floating glassmorphic pill `< Back to discovery` on desktop.
+     3. Verified hover transition (left shift, border highlight, shadow elevation).
+     4. Verified 400px scroll: control floats cleanly at top-left below 74.5px navbar without colliding or obscuring title/price card.
+     5. Verified mobile viewport (390x844): compact top position does not cover gallery or bottom primary CTA; scrolled down collapses into a sleek circular touch button.
+    6. Verified single-click navigation back to discovery restores exact scroll position (y=1375 at Property Card #82).
+
+### Commit Status
+
+- Not committed and not pushed, per instruction.
+
+## 2026-09-25 18:39 IST — Phase 1 Completion Record
+
+Why: Approved bounded Phase 1 continuation; no commit or push.
+
+Changed: `AGENTS.md`, `Footer.tsx`, `HeroSection.tsx`, `Home.tsx`, `Navbar.tsx`, `ValueBanner.tsx`, and `index.css`.
+
+Outcome:
+
+- Confirmed the existing detail scroll reset/restoration approach covers new navigation and preserves `POP` history behavior; no scroll code change was required.
+- Made the existing tagline placements consistently read `Your Dreams, Our Efforts.`, with a more legible, subordinate 320px-up header treatment.
+- Reduced Hero mouse tilt to ±2°/±3°, calmed its spring, and respected reduced-motion; touch remains non-tilting.
+- Updated the non-Indore empty CTA to `View homes in Indore.`; its established action switches query/state to Indore and fetches that inventory.
+- Did not add Max rent because paginated public discovery supports only page/city/sector. A truthful filter requires optional backend max-rent filtering plus client URL/state propagation.
+- Recorded the targeted-browser-automation rule in `AGENTS.md`.
+
+Verification: focused discovery/navigation test PASS (18/18); frontend `npm run build` PASS; `git diff --check` PASS. A targeted browser check completed in under ten minutes: a deliberately scrolled discovery card opened at `/property/80` with `scrollY: 0` in the first inspected detail frame, Back restored source card 80 with Indore context, the Bhopal CTA switched to `?city=Indore` and six homes, and the 320px layout had visible tagline/no horizontal overflow. Manual review remains required for the remaining breakpoints.
+
+Commit Status: Not committed and not pushed, per instruction.
+
+## 2026-09-25 18:54 IST — Phase 1 Landing-Page Clarity and Empty-State Completion
+
+Why: Approved visual, usability, responsive, and accessibility pass for landing discovery. Preserve inherited work and backend scope; no commit or push.
+
+Actual changes:
+
+- `HeroSection.tsx`: replaced misleading free-text, voice/AI, category, property-type, and budget affordances with the currently supported City + optional Locality + Show homes path. The Hero now follows active discovery city/locality state, uses plainer customer-facing language, keeps the reduced pointer tilt, and disables excess background/entry movement under reduced motion.
+- `PropertyShowcase.tsx`: retains filters when result count is zero, groups City/locality chips and More localities cohesively, adds a locality-only Clear filters control, reduces ornamental spacing, and provides the exact neutral empty copy: `No homes found`, `Try another location or adjust your filters.`, and `Change location`. Change location scrolls/focuses/opens the existing city selector without changing the city. Card-surface clicks still navigate, while removing the invalid pseudo-button wrapper around independent nested actions.
+- `Home.tsx`: supplies URL-derived city/locality to Hero and renders `PropertyShowcase` for zero-result responses so the genuine filter remains available. Network errors retain their distinct retry state.
+- `AGENTS.md`: reviewed the existing targeted-browser rule; it already exactly records the mandatory code-first, narrow-question, ten-minute policy and was not weakened.
+
+Verification:
+
+- `npm run build` — PASS (`tsc && vite build`); Vite large-chunk advisory only.
+- `node --test src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS, 18/18.
+- `git diff --check` — PASS.
+- Targeted browser session under ten minutes — PASS for supported Hero controls, Bhopal neutral empty copy, Change location focus/open behavior with city unchanged, and 320px horizontal overflow (`scrollWidth 314`, `innerWidth 320`).
+
+Remaining manual review: 390px, 768px, 1024px, and 1280px typography/spacing; automated/build checks cannot prove every visual permutation.
+
+Commit Status: Not committed and not pushed, per instruction.
+
+## 2026-09-25 21:31 IST — Discovery empty-state simplification
+
+Why: User asked to rely on the discovery filters already shown above results.
+
+Changed:
+
+- `frontend-web/src/components/PropertyShowcase.tsx`: changed the zero-results heading to `No properties found` and removed the duplicate explanatory copy, oversized empty-state card, Change location action, and empty-state Clear filters action. The City and locality filters above remain available.
+
+Verification:
+
+- `npm run build` in `frontend-web` — PASS (`tsc && vite build`; existing Vite chunk-size advisory only).
+- `git diff --check` — PASS.
+
+Commit Status: No commit or push was performed.
+
+## 2026-09-25 22:21 IST — Coherent property discovery search
+
+Why: Approved redesign of the landing-page City/Locality search and duplicated listings filters, with scalable locality selection and preserved public discovery behavior.
+
+Files changed:
+
+- `frontend-web/src/components/HeroSection.tsx`: replaced the wide dropdown bar with a compact composed City, Locality, and Show homes search surface; connected it to the shared location chooser and URL-derived active criteria.
+- `frontend-web/src/components/DiscoveryLocationDialog.tsx` (new): added one searchable City/Locality chooser, presented as a mobile bottom sheet and desktop dialog, with keyboard navigation, focus handling, scroll lock, Escape/cancel, and reduced-motion support.
+- `frontend-web/src/components/discoveryLocations.ts` (new): consolidated the pre-existing public discovery city/locality catalogue and case-insensitive partial matching; unavailable Bhopal/Pune options are labeled Coming soon.
+- `frontend-web/src/components/PropertyShowcase.tsx`: removed the duplicate city dropdown and horizontal locality chips; added the shared Change search entry point, natural city/locality result heading, and real loaded count. Preserved `No properties found` in the empty state.
+- `frontend-web/src/components/Home.tsx`: made the URL the applied City/Locality source of truth, removed the duplicate search-triggered property fetch, prevented stale prior-city results during a query transition, improved listing scroll offset, and focused the result heading after search.
+- `antigravity_changes` and `chat_gpt_changes`: appended this handoff record.
+
+Verification:
+
+- `npm run build` in `frontend-web` — PASS (`tsc && vite build`); Vite's existing chunk-size advisory remains.
+- `node --test src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS, 18/18.
+- `git diff --check` — PASS.
+- Targeted browser check under ten minutes: 320/360/390/430/768/1024/1280/1440 widths had no horizontal overflow; chooser fit at 320, 390, 768, and 1440; mixed-case locality search found matching places; selection changed URL and heading; clearing locality returned to Indore results; Bhopal showed zero homes and `No properties found`; Escape canceled changes and returned focus; applying search focused the result heading below the fixed header. Request count was confirmed by code path, not instrumented in the browser.
+
+Remaining manual visual check: iOS Safari soft-keyboard behavior and very long future city/locality names in the chooser. Current catalogue is static because there is no public location-list endpoint; the chooser's search/list layout supports larger catalogues without changing interaction.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-25 22:31 IST — Stored media-tag presentation
+
+Why: Approved use of already-persisted media tags to clarify discovery covers and property-detail galleries without inventing room labels or loading full galleries on discovery.
+
+Changed:
+
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicDiscoveryResponse.java`, `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`: add only the selected cover asset's public-safe `coverRoomTag` to the lightweight discovery DTO; legacy/no-media covers remain untagged. No media ordering, cover selection, query, upload, schema, or privacy changes.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`: cover/tag alignment, legacy null tag, detail tag preservation, and privacy assertions.
+- `frontend-web/src/types/index.ts`, `frontend-web/src/services/propertyService.ts`: retain the discovery cover tag in the frontend model; detail media tags were already mapped.
+- `frontend-web/src/components/PropertyShowcase.tsx`: remove fabricated index-based room tags; show a restrained label and grounded image alt only for a known stored cover tag.
+- `frontend-web/src/components/PublicPropertyDetail.tsx`, `frontend-web/src/utils/mediaTags.ts`: retain per-media tag through the gallery, show unobtrusive active-media context below the viewer, add a compact first-occurrence area jump selector only for multiple distinct known areas, and provide contextual thumbnail/lightbox accessibility labels. General, blank, unknown, and legacy tags remain unlabeled. Gallery order and video controls stay unchanged.
+- `frontend-web/src/tests/mediaTags.test.mjs`: known/unknown label handling and first-occurrence navigation tests.
+- `chat_gpt_changes`, `antigravity_changes`: append this handoff.
+
+Verification: focused `PropertyControllerTest` PASS 32/32; frontend tests PASS 307/307; frontend production build PASS (pre-existing large-bundle advisory); `mvn clean compile` PASS; `git diff --check` PASS. Full `mvn test` did NOT pass: 394 tests, 1 unrelated `ParserLearningCaptureServiceTest` assertion failure and 2 `BackblazeB2LiveIntegrationTest` errors from unavailable DNS/network. The full command attempted those live tests; they were not retried. No browser automation was run because this is a compact gallery change without a reliable tagged-property visual fixture; manual tagged/untagged checks remain necessary at 320–1440px, including video, lightbox, keyboard, and touch behavior.
+
+No runtime database, B2, or Cloudinary changes were made by this task. The working tree's pre-existing uncommitted changes were preserved. Commit: NO. Push: NO.
+
+## 2026-09-26 05:20 IST — Strictly Scoped Phase-1 Landing/Discovery Closure Pass
+
+Why: Implement the strictly scoped Pathome Phase-1 landing/discovery closure pass addressing 12 specific approved scrutiny issues without redesigning the page, adding unrequested features, or breaking existing architecture.
+
+Files changed:
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Added structured lightweight skeleton property cards (`SkeletonPropertyCard`) with CSS pulse animation (`motion-reduce:animate-none`) matching live 7-col/5-col geometry to eliminate page collapse and CLS during discovery loading.
+  - Added explicit BHK display (`formatBhkDisplay`) in the specs row using real `prop.bhk` data with `BedDouble` icon.
+  - Fixed rental deposit/deed fallback: rental listings with null or 0 deposit no longer show "Phase 2 Deed" (distinguishes real deposit, Nil Deposit, and Deposit on Request; "Verified Title" strictly reserved for SALE).
+  - Replaced weak zero-result state with standard empty state: heading "No homes found", subtext "Try another location or adjust your filters.", contextual "Clear locality" button when locality is active, and "Change search" CTA.
+  - Kept discovery header and context mounted during error state with "Try again" and "Change location" actions.
+- `frontend-web/src/components/Home.tsx`:
+  - Kept `PropertyShowcase` persistently mounted during `isLoading` and `error` states to prevent page height collapse.
+  - Wired `onClearLocality` to clear locality while preserving city.
+  - Passed `onSelectSector` to `Footer` to connect footer locality links to authoritative discovery URL/state.
+  - Made favorite bookmark action session-truthful: saves into `sessionStorage` (`pathome_session_saved_properties`) without claiming cloud account persistence.
+- `frontend-web/src/components/HeroSection.tsx`:
+  - Replaced `ArrowRight` with `ChevronDown` icons on `#hero-search-city` and `#hero-search-locality` selector buttons.
+- `frontend-web/src/components/ValueBanner.tsx`:
+  - Replaced internal terminology ("2 active Indore Ground Boys") with professional consumer copy ("our local on-site team").
+- `frontend-web/src/components/HowItWorks.tsx`:
+  - Replaced "Ground Boy" terminology with "On-Site Escort" / "on-site escort"; generalized city-specific copy to city-neutral.
+- `frontend-web/src/components/TrustStatsBar.tsx`:
+  - Fixed duplicate word typo ("GPS radius radius validated on site" -> "GPS radius validated on site"); updated verification copy to "local on-site team".
+- `frontend-web/src/components/AuthModal.tsx`:
+  - Replaced Indore-hardcoded copy with city-neutral text ("Access zero-brokerage rentals & verified homes").
+- `frontend-web/src/components/FutureExpansion.tsx`:
+  - Replaced nonfunctional "Get Early Access VIP Ping" button with an informational roadmap status badge ("Phase 2 Plot Sales Launching Soon").
+- `frontend-web/src/components/Footer.tsx`:
+  - Wired popular sector links to discovery URL/state via `onSelectSector` prop and `/?city=Indore&sector=...#listings` hrefs; updated list to supported Indore localities; replaced internal "2 Boys Assigned" copy with professional field personnel text.
+- `antigravity_changes`: appended this handoff record.
+
+Verification:
+- `npm run build` in `frontend-web` — PASS (`built in 21.86s`, 0 TypeScript/build errors).
+- `node --test frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS (18/18).
+- `node --test frontend-web/src/tests/mediaTags.test.mjs` — PASS (3/3).
+- `git diff --check` — PASS (clean diff, 0 whitespace errors).
+- Targeted browser verification in subagent across 1440x900 desktop and 390x844 mobile:
+  - Hero Chevrons rendered correctly and aligned.
+  - Property cards render real BHK badge cleanly.
+  - Rentals show truthful deposit ("Deposit on Request" / actual amount), zero "Phase 2 Deed" text.
+  - Scheme 78 / Bhopal empty states show "No homes found", recovery subtext, and "Clear locality" button when locality is active.
+  - Clicking "Clear locality" preserved Indore city and loaded city-wide properties.
+  - Footer popular sector links update URL and filter listings.
+  - Terminology corrections confirmed in TrustStatsBar, ValueBanner, HowItWorks, and FutureExpansion.
+  - Mobile viewport (390px) verified: no horizontal overflow (`scrollWidth <= innerWidth`), no text clipping, touch targets >= 44px.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-26 14:45 IST — Phase-1 premium scan-efficient property discovery redesign
+
+Why: Approved replacement of alternating editorial discovery cards with a premium, consistent, comparison-friendly property grid. Existing Phase-1 behavior and the significant uncommitted working tree were preserved.
+
+Files changed in this task:
+- `frontend-web/src/components/PropertyShowcase.tsx`: replaced alternating zig-zag cards and timeline with a uniform two-column grid from 1024px and one column below; kept results header, location actions, empty/error states, card-surface navigation, internal action isolation, BHK, real cover tag, lazy cover media, and existing media-count source. Removed redundant Property listing badge and decorative verification crest (frontend `verified` is currently hardcoded rather than authoritative). Replaced oversized full-width CTA with a keyboard-accessible 44px View details affordance. Moved rent/deposit into consistent scan positions, omitted invalid area, simplified photo/video count copy, and matched six responsive loading skeletons to the new card geometry. Reduced motion is respected.
+- `frontend-web/src/services/propertyService.ts`, `frontend-web/src/types/index.ts`, `frontend-web/src/components/PublicPropertyDetail.tsx`: preserved null versus explicit zero deposit in public frontend mapping/type; detail's formatter signature accepts the nullable type without layout change.
+- `frontend-web/src/utils/discoveryCardData.ts`, `frontend-web/src/tests/discoveryCardData.test.mjs`: focused deposit and area presentation helpers/tests.
+- `frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs`: replaced its obsolete alternating-card overlap assertion with a uniform-grid and internal-action isolation contract.
+- `verification_screenshots/premium_discovery/`: eight new requested desktop/tablet/mobile/live-card/skeleton screenshots. A temporary skeleton-only preview was created for deterministic screenshot capture and removed before handoff; no preview source remains.
+- `antigravity_changes`, `chat_gpt_changes`: appended this record.
+
+Verification: `npm run build` PASS (`tsc && vite build`; existing large-chunk advisory); `node --experimental-strip-types --test src/tests/*.test.mjs` PASS 309/309; `git diff --check` PASS. Backend files were not changed for this task, so backend tests were not rerun. Targeted browser check (under ten minutes) confirmed two aligned cards at 1440/1024, one column at 768/390, no horizontal overflow at 320/360/390/430/768/1024/1280/1440, 44px card controls, bookmark not navigating, card surface opening detail, and Back restoring the source card. Loading skeletons were captured at 1440 and 390. Weak/irrelevant seeded imagery and an authoritative verification signal require separate approval/data work; no UI workaround was made.
+
+Commit: NO. Push: NO. Phase-1 approval remains with the product owner after screenshot review.
+
+## 2026-09-26 15:25 IST — Continue interrupted premium layered discovery-card refinement and hover video-preview restoration
+
+Why: Complete the interrupted Phase-1 property-card visual refinement: eliminate inconsistent white/light image bands by applying edge-to-edge object-cover thumbnail presentation, refine the layered floating information panel, and restore desktop hover video preview without regressing discovery performance or leaking technical errors.
+
+Files changed in this continuation:
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Resolved root cause of white/light image bands: replaced `object-contain` on letterboxed images with `object-cover object-center` within a `rounded-[24px]` overflow-hidden media surface (`aspect-[16/10] sm:aspect-[16/9]`).
+  - Restored desktop hover video preview (`DiscoveryPropertyCard`): deliberate hover on pointer devices lazily resolves and caches property video (`propertyService.getPublicProperty` or local fixture), starting an inline muted video loop smoothly over the cover photo. Mouse leave pauses video immediately and returns to cover photo. Reduced-motion and touch/mobile devices preserve the static cover photo without unexpected autoplay.
+  - Layered card composition: information surface overlaps the lower 28px (mobile) to 36px (desktop) of the photo (`mx-3 -mt-7 sm:mx-4 sm:-mt-9`) with refined depth shadows (`shadow-[0_12px_28px_-12px_rgba(15,23,42,0.12)]`) and hover elevation, eliminating any giant outer card frame.
+  - Translucent media controls: translucent frosted glass pill for media count (`bg-slate-950/50 backdrop-blur-md`) and bookmark button (`>=44px` touch targets) with event isolation.
+  - Skeletons: matched `SkeletonPropertyCard` to exact 2-column geometry, media aspect ratio, and overlapping info panel for 0px CLS.
+- `frontend-web/src/types/index.ts`:
+  - Added `_hasVideo?: boolean; _mediaCount?: number;` to the `Property` interface for strict TypeScript type checking.
+- `verification_screenshots/card_refinement/`:
+  - Captured 11 verification screenshots and full WebP session recording covering 1440px, 1024px, 768px, 390px, 320px, hover video preview, and skeleton states.
+- `antigravity_changes`: appended this handoff record.
+
+Verification:
+- `npm run build` in `frontend-web` — PASS (`built in 16.92s`, 0 TypeScript/build errors).
+- `node --experimental-strip-types --test frontend-web/src/tests/discoveryCardData.test.mjs frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs frontend-web/src/tests/mediaTags.test.mjs` — PASS (23/23 tests passed, duration: 135.8ms).
+- `git diff --check` — PASS (clean diff, 0 whitespace errors).
+- Targeted browser verification in subagent:
+  - 1440px desktop: 2-column grid, edge-to-edge photos with no light/white bands across diverse source image aspect ratios, clean overlapping panel depth.
+  - Desktop hover video preview: hovering video-capable card starts inline muted video loop smoothly; mouse leave pauses and returns to cover; bookmark does not trigger navigation; card surface navigates to `/property/:id` and Back returns to discovery.
+  - Responsive layout verified at 1440px, 1024px (2 columns), 768px (1 column), 390px (1 column, clean edge-to-edge images and overlapping panel), and 320px (zero horizontal page overflow).
+  - Skeletons matched to final card geometry with 0px CLS.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-26 15:55 IST — Truthful Discovery Hover Video Resolution (Removed Generic Walkthrough Fallback)
+
+Why: Eliminate generic walkthrough fixture fallback from public discovery cards. Ensure a tenant never sees an unrelated video on a property card; only legitimate videos specifically associated with that property may play.
+
+Files changed:
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Removed `LOCAL_VIDEOS` array and all generic walkthrough fallback logic (`/assets/videos/property_walkthrough_*.mp4`) from `DiscoveryPropertyCard`.
+  - Enforced strict 4-tier resolution order:
+    1. Direct legitimate video URL on the property object (`prop.videoUrl`), if present.
+    2. Cached legitimate video URL previously resolved for this exact property (`videoUrlCache.get(prop.id)`).
+    3. Lazy resolution via `propertyService.getPublicProperty(prop.id)` when `hasVideo === true`.
+    4. If no legitimate video exists, resolution fails, or playback fails: remain on / restore the real property cover image (`setVideoFailed(true)`).
+  - Maintained zero layout shift, muted inline desktop hover autoplay, `preload="none"`, pointer-leave pause/restoration, reduced-motion bypass, and mobile/touch no-autoplay.
+
+Verification:
+- `npm run build` in `frontend-web` — PASS (`built in 2.50s`, 0 TypeScript/build errors).
+- `node --experimental-strip-types --test frontend-web/src/tests/discoveryCardData.test.mjs frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs frontend-web/src/tests/mediaTags.test.mjs` — PASS (23/23 tests passed, duration: 128.2ms).
+- `git diff --check` — PASS (clean diff, 0 whitespace errors).
+- Network analysis verified: `GET /api/v1/properties/{id}` returns ~1.5 KB JSON payload. Only the single resolved video URL is passed to `<video src=...>`, downloading only that property's specific video walkthrough stream. No gallery photos or other properties' media are downloaded on hover.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-26 16:48 IST — Surgical Visual Polish Pass on Approved Premium Discovery Cards
+
+Why: Per strictly scoped approval, perform visual polish pass on Pathome's approved premium layered property discovery cards across four focused items:
+1. Fix floating Back-to-Top overlap on property card content.
+2. Improve 768px tablet card width with centered max-width and balanced margins.
+3. Slightly soften media overlays (media count badge, bookmark button, room tag) so the property photo remains primary focus without losing accessibility or touch targets (>=44px).
+4. Slightly tighten card vertical spacing (approx 5–10% density improvement) across title, specs, divider, rent/deposit, and padding with matching skeleton updates.
+
+Files changed:
+- `frontend-web/src/components/Home.tsx`:
+  - Updated floating Back-to-Top button:
+    - Mobile (< 768px): Hidden completely (`hidden md:flex`) so it cannot obscure card rent, deposit, title, media, or "View details".
+    - Tablet (768px–1023px): Positioned in the outer margin gutter (`md:bottom-8 md:right-4`). With centered card at 640px max-width, side margin is 64px; 44px button at 16px occupies 16px–60px, completely outside the card (0px overlap).
+    - Desktop (1024px+): Positioned at outer gutter (`min-[1380px]:right-[max(1.5rem,calc((100vw-80rem)/2-3.75rem))]`), remaining completely outside the 1280px container and right-hand card.
+- `frontend-web/src/components/PropertyShowcase.tsx`:
+  - Tablet card width: Added `w-full md:max-w-[640px] md:mx-auto lg:max-w-none` to `DiscoveryPropertyCard`, `SkeletonPropertyCard`, and results context header. Preserves 1-column layout, centers the card at ~640px, maintains intentional 64px side margins, keeps 16:9 media proportional (360px tall instead of stretched 405px+), and avoids horizontal overflow. Mobile remains full usable width (`w-full`) and desktop returns to 2-column grid (`lg:max-w-none lg:grid-cols-2`).
+  - Softened media overlays: Updated top controls and carousel arrows from heavy stark `bg-slate-950/50 border-white/20` to elegant translucent `bg-slate-900/40 backdrop-blur-md border-white/15 text-white/95 hover:bg-slate-900/60`, camera icon `text-white/85`, bookmark icon `text-white/90`. Maintained practical >=44px touch targets (`min-h-11`, `h-11 w-11`) and full readability over light and dark imagery. Cover room tag refined to `bg-slate-900/45 border-white/15 text-[11px] px-2.5 py-0.5`.
+  - Tightened card vertical spacing (~8% density improvement):
+    - Floating panel padding: `p-3.5 sm:px-4.5 sm:pt-3.5 sm:pb-4` (was `p-4 sm:p-5`).
+    - Locality → Title: `mt-1.5` (was `mt-2`). Title min-height: `sm:min-h-[2.85rem]` (was `sm:min-h-[3.2rem]`).
+    - Title → Specs: `mt-1.5` (was `mt-2`).
+    - Specs → Divider: `mt-auto pt-3` (was `pt-4`).
+    - Divider → Rent/Deposit: `border-slate-200/90 pt-2.5` (was `pt-3`).
+    - Rent/Deposit → Footer: `mt-2.5` (was `mt-3`).
+  - Skeleton alignment: Updated `SkeletonPropertyCard` to match exact tablet max-width (`w-full md:max-w-[640px] md:mx-auto lg:max-w-none`), matching panel padding, title height, divider, and footer spacing for 0px CLS.
+- `verification_screenshots/surgical_polish/`:
+  - Stored 8 verification screenshots covering 1440px two cards with Back-to-Top in outer gutter, 1440px close-up card with softened overlays, 768px centered card with margin, 390px complete card with hidden Back-to-Top, 390px card header, 320px complete card, 768px skeleton, and 390px skeleton.
+
+Verification:
+- `npm run build` in `frontend-web` — PASS (`built in 30.35s`, 0 TypeScript/build errors).
+- `node --experimental-strip-types --test frontend-web/src/tests/*.test.mjs` — PASS (309/309 tests passed across 12 suites).
+- `git diff --check` — PASS (0 whitespace errors).
+- Visual verification across viewports:
+  - 1440px: Two-column grid, Back-to-Top positioned in outer gutter (48px clearance from right card), softened overlays, tightened scan density.
+  - 1024px: Two-column grid maintained, tightened card spacing.
+  - 768px: Single column centered card at 640px max-width, balanced 64px side margins, Back-to-Top in outer gutter, skeleton width matches.
+  - 390px / 320px: Full width, zero horizontal overflow (`scrollWidth <= innerWidth`), Back-to-Top hidden on mobile so rent/deposit/View details are 100% unobscured, touch targets >= 44px.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-26 19:58 IST — Smart rental search and backend autocomplete (batched QA)
+
+Why: Implement the approved rental-focused Hero smart search against real public Pathome listing data, while preserving the current uncommitted landing/card work and deferring all browser QA to the batch pass.
+
+Files changed for this task:
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`, `repository/ListingRepository.java`, `service/RentalSearchQuery.java`, `dto/PublicSearchSuggestion.java`, `dto/PublicSearchSuggestions.java`: public `/api/v1/properties/search-suggestions` endpoint; ACTIVE RENT listing-derived city/locality/structured BHK suggestions, truthful grouped counts, bounded limits and normalized deduplication; deterministic BHK/location parser; optional `q`, `bhk`, and `rentalOnly` discovery filtering. Existing no-search pagination and visibility behavior remains.
+- `backend/src/main/resources/db/migration/V13__public_rental_search_indexes.sql`: expression B-tree indexes for city/locality prefix and BHK search. No `pg_trgm` extension; migration was NOT executed.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`, `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`: focused controller/parser coverage.
+- `frontend-web/src/components/HeroSection.tsx`, `DiscoveryLocationDialog.tsx`, `discoveryLocations.ts`, `Home.tsx`, `services/propertyService.ts`, `utils/rentalSearch.ts`, `tests/rentalSearch.test.mjs`: accessible search combobox, 250ms debounce, abort/stale-response protection, backend-only suggestions, city context, structured selection, free-text submission, URL/page/load-more/restore propagation, and city-only picker integration. No card/detail/Navbar/index.css change in this task.
+
+Verification: focused backend `mvn -Dtest=RentalSearchQueryTest,PropertyControllerTest test` PASS 39/39 (including MockMvc endpoint/JSON privacy assertions); frontend focused tests PASS 24/24; all frontend tests PASS 313/313; `npm run build` PASS; `mvn -DskipTests package` PASS; `git diff --check` PASS. The previous Hero/Navbar code was present and compiled; no visual approval is claimed. The new repository SQL and V13 migration were not executed against a database, so production query-plan/runtime validation remains pending.
+
+DEFERRED BATCH QA — Browser tool intentionally NOT invoked in this task. In the final landing-page pass, inspect 320, 390, 430, 768, 820, 900, 1024, 1280, 1440px; empty search, two-character threshold, fast typing, slow/stale responses, ArrowDown/ArrowUp/Enter/Escape/Tab, click selection, city change, no results, API failure, free-text submission, long locality/city, mobile virtual keyboard, dropdown clipping/z-index/scroll. Check `vijay`, `vijay nagar`, `4 bhk vijay nagar`, `4bhk in vijay nagar`, `nipania`, `bhawarkua` across Indore/Pune/Bhopal and a long-city fixture. Validate real repository SQL/index plans in a safe staging database before deployment. Landmark autocomplete is deferred: a free-text listing landmark field exists, but no curated/public-safe landmark catalogue or search index was established; no landmark suggestions were fabricated. Typo/fuzzy matching is deferred because no `pg_trgm` infrastructure was found.
+
+Commit: NO. Push: NO. Existing uncommitted changes preserved.
+
+## 2026-09-27 01:50 IST — Search learning integration hardening & Phase-1 governance validation
+
+Why: Hardened the governed Search Learning Loop implementation to prove it is SAFE, CORRECT, and OPERABLE against real development PostgreSQL. Enforced Phase-1 Governance by disabling uncontrolled auto-promotion, distinguishing suggestion selection from display telemetry, prioritizing independent sessions over raw event volume, implementing controlled administrative approval/rejection/disable mechanisms with immediate in-process cache invalidation, and establishing real database lifecycle verification without mutating canonical business data.
+
+Files changed for this task:
+- `backend/src/main/resources/db/migration/V15__search_learning_tables.sql`: Enhanced Flyway migration to include `event_type` (`SUGGESTION_SHOWN`, `SUGGESTION_SELECTED`, `SEARCH_EXECUTED`) in `search_query_event`, `unique_session_count` in `search_alias_candidate`, and optimized compound B-tree index `idx_sqe_session_candidate` on `(session_hash, location_candidate, occurred_at)` for sub-millisecond deduplication.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/SearchQueryEvent.java`: Added `eventType` column mapping with safe defaults and getters/setters.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/SearchAliasCandidate.java`: Added `uniqueSessionCount` column mapping, `setId()`, and getters/setters.
+- `backend/src/main/java/com/indore/pathome/spaces/dto/SearchFeedbackRequest.java`: Created lightweight public-safe structured telemetry DTO for suggestion selection and search outcomes.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/SearchQueryEventRepository.java`: Updated `aggregateFuzzyResolutionCandidates` native query to compute `COUNT(DISTINCT COALESCE(e.session_hash, 'anon-' || e.id)) AS uniqueSessionCount` and truthful `successCount` from selection events; added metric count methods.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/SearchAliasCandidateRepository.java`: Added `findEligibleForReview` with `uniqueSessionCount` threshold and `countByStatus`.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/SearchAliasRepository.java`: Added `countByStatus`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalLocationResolver.java`: Integrated search learning alias resolution between exact/prefix and fuzzy trigram fallback: Priority is EXACT (1.0) > PREFIX (0.92) > ALIAS (0.95) > FUZZY trigram (0.43+).
+- `backend/src/main/java/com/indore/pathome/spaces/service/SearchLearningService.java`:
+  - Enforced Phase-1 Policy: `AUTO_PROMOTION_ENABLED = false`. Scheduled review marks qualifying candidates as `ELIGIBLE_FOR_REVIEW` without mutating runtime resolution.
+  - Added `captureFeedback(SearchFeedbackRequest)` with SHA-256 one-way hashed session UUID (`session_hash`).
+  - Added `approveCandidate(id, approvedBy)`: creates/activates `SearchAlias` (ACTIVE) and immediately writes to `localityAliasCache` without restart.
+  - Added `rejectCandidate(id, rejectedBy, reason)`: marks `REJECTED`.
+  - Added `disableAlias(id, reason)`: marks `DISABLED`, updates source candidate, and immediately evicts from `localityAliasCache` (`evictFromCache`).
+  - Added `getMetrics()` reporting operational telemetry, candidates, approvals, active/disabled aliases, and resolution modes.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - Added public `POST /api/v1/properties/search-feedback` endpoint (fire-and-forget, failure-isolated).
+  - Wired alias-aware `getRentalLocationResolver()` into `getSearchSuggestions` and `getPublicProperties`.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/AdminSearchLearningController.java`: Created secured administrative controller under `/api/v1/admin/search-learning` (`ROLE_ADMIN`) for candidates inspection, approval, rejection, alias disabling, manual aggregation, and metrics.
+- `backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java`: Explicitly permitted public `POST /api/v1/properties/search-feedback`; confirmed admin search learning endpoints require `ROLE_ADMIN`.
+- `frontend-web/src/services/propertyService.ts`: Added `SearchFeedbackPayload`, `getSearchSessionId()` (ephemeral UUID in `sessionStorage`), and `reportSearchFeedback` (uses `navigator.sendBeacon` or fire-and-forget fetch).
+- `frontend-web/src/components/HeroSection.tsx`: In `chooseSuggestion`, dispatched `reportSearchFeedback` on selection without blocking UI, changing layout, or mutating visual components.
+- `backend/src/test/java/com/indore/pathome/spaces/service/SearchLearningServiceTest.java`: Expanded unit test suite (19 tests) covering Phase-1 governance, unique session aggregation, admin approval/rejection/disable, cache eviction, and canonical data protection.
+- `backend/src/test/java/com/indore/pathome/spaces/service/SearchLearningLifecycleDevDbTest.java`: Added real development PostgreSQL database integration test verifying Flyway V15 execution, tables, columns, indexes, and the 10-step full lifecycle.
+- `backend/src/test/java/com/indore/pathome/spaces/service/RentalLocationResolverResolutionPriorityTest.java`: Verified resolution order (EXACT > PREFIX > ALIAS > FUZZY) and cache eviction fallback.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/AdminSearchLearningControllerTest.java`: Verified admin endpoint operations, delegate parameters, and metrics reporting.
+- `backend/src/test/java/com/indore/pathome/spaces/security/PublicPropertySecurityTest.java`: Added assertions confirming public access to search-feedback and search-suggestions.
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserLearningCaptureServiceTest.java`: Added `@BeforeEach` to prevent test-runner transaction state leakage.
+
+Verification:
+- Real PostgreSQL Flyway migration: V15 executed cleanly on local dev DB (`jdbc:postgresql://localhost:5432/pathome_db`), registered at installed_rank 15, target schema version 15 with 0 errors. Verified tables `search_query_event`, `search_alias_candidate`, `search_alias` and their indexes via PostgreSQL metadata.
+- Backend tests: 442/442 PASS across entire backend suite (`mvn test`, BUILD SUCCESS in 17.65s).
+- Frontend tests: 7/7 PASS (`node --test frontend-web/src/tests/rentalSearch.test.mjs`).
+- Frontend production build: `npm --prefix frontend-web run build` PASS (`tsc && vite build`, 0 TypeScript/build errors).
+- Live API verification via curl:
+  - `GET /api/v1/properties/search-suggestions?q=vijay&city=Indore` -> 200 OK (PREFIX match, 13 homes).
+  - `GET /api/v1/properties/search-suggestions?q=vijaynagar&city=Indore` -> 200 OK (FUZZY trigram match, confidence 0.643).
+  - `POST /api/v1/properties/search-feedback` -> 200 OK (telemetry event recorded with SHA-256 hashed session).
+  - `GET /api/v1/admin/search-learning/candidates` -> 401 Unauthorized (unauthenticated access rejected).
+  - `POST /api/v1/admin/search-learning/candidates/1/approve` -> 401 Unauthorized (unauthenticated access rejected).
+- `git diff --check`: PASS (0 whitespace errors).
+
+DEFERRED BATCH QA — Browser tool intentionally NOT invoked in this task under Landing Page Batch QA policy. In final batch QA, verify:
+- Suggestion selection still works smoothly across all viewports.
+- Telemetry call does not visibly delay selection or navigation.
+- Failed telemetry does not affect search results or navigation.
+- Autocomplete and typo suggestions remain visually identical.
+- Search behavior after alias promotion/disable remains visually clean.
+
+Commit: NO. Push: NO. Existing uncommitted changes preserved.

@@ -108,3 +108,8 @@ When developing features for Pathome Spaces (Backend Spring Boot & Frontend Web/
       12. If a user-visible change was not explicitly requested or approved, revert it.
     - This rule is STRICTER than general "improve UX" or "best practice" instructions.
     - Existing RESPONSIVE-FIRST and APPROVED-UI-PRESERVATION rules remain in force. Do not weaken existing AGENTS.md rules.
+
+11. **Targeted Browser Automation — Mandatory**:
+    - Run browser automation only when a large or critical UI change needs a focused behavioral or visual check; do not launch it by default for small styling changes or routine regressions.
+    - Inspect code and run focused tests first. State the precise question a qualifying browser check answers, keep it targeted, and limit it to ten minutes.
+    - Automated tests and builds do not prove visual quality. When a browser check is not warranted or practical, provide concise manual visual verification steps instead.

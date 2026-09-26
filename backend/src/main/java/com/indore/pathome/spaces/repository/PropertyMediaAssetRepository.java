@@ -11,6 +11,7 @@ import java.util.Optional;
 @Repository
 public interface PropertyMediaAssetRepository extends JpaRepository<PropertyMediaAsset, Long> {
     List<PropertyMediaAsset> findByListingIdOrderByUploadedAtDesc(Long listingId);
+    List<PropertyMediaAsset> findByListingIdInOrderByUploadedAtDesc(java.util.Collection<Long> listingIds);
     List<PropertyMediaAsset> findByListingIdAndRoomTag(Long listingId, RoomTag roomTag);
     Optional<PropertyMediaAsset> findByListingIdAndUploadRequestId(Long listingId, String uploadRequestId);
 }

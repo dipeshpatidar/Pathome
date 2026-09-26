@@ -1,11 +1,21 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.AvailabilityStatus;
+import com.indore.pathome.spaces.dto.CreatePropertyVisitRequest;
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
+import com.indore.pathome.spaces.dto.PropertyVisitRequestAcknowledgement;
+import com.indore.pathome.spaces.dto.PublicDiscoveryPage;
+import com.indore.pathome.spaces.dto.PublicDiscoveryResponse;
+import com.indore.pathome.spaces.dto.PublicPropertyMediaResponse;
+import com.indore.pathome.spaces.dto.PublicPropertyResponse;
+import com.indore.pathome.spaces.dto.PublicSearchSuggestion;
+import com.indore.pathome.spaces.dto.PublicSearchSuggestions;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
+import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
+import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
@@ -14,6 +24,10 @@ import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import com.indore.pathome.spaces.service.RentalSearchQuery;
+import com.indore.pathome.spaces.service.RentalLocationResolver;
+import com.indore.pathome.spaces.service.SearchLearningService;
+import com.indore.pathome.spaces.entity.SearchQueryEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,14 +44,18 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
+import java.text.NumberFormat;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.stream.Collectors;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.regex.Pattern;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 
 /**
  * Controller providing RESTful endpoints for property listings, media assets, and AI natural language parsing.
@@ -63,8 +81,34 @@ public class PropertyController {
     private static final Set<String> VALID_PREFERRED_TENANTS = Set.of(
             "FAMILY", "WORKING_PROFESSIONALS", "BACHELORS", "STUDENTS", "ANY"
     );
+    private static final Pattern SAFE_DISCOVERY_FILTER_PATTERN =
+            Pattern.compile("^[\\p{L}\\p{N}][\\p{L}\\p{N}\\s.'-]{0,99}$");
+    private static final Pattern OWNER_OR_LESSOR_LINE_PATTERN = Pattern.compile(
+            "(?im)\\b(?:owner|lessor|landlord)(?:\\s+(?:name|phone|mobile|contact))?\\s*[:\\-]\\s*[^\\r\\n]*");
+    private static final Pattern CONTACT_LINE_PATTERN = Pattern.compile(
+            "(?im)\\b(?:contact(?:\\s+(?:number|details|person))?|phone|mobile)\\s*[:\\-]\\s*[^\\r\\n]*");
+    private static final Pattern INDIAN_PHONE_IN_TEXT_PATTERN = Pattern.compile(
+            "(?<!\\d)(?:\\+91[\\s-]?)?[6-9]\\d{4}[\\s-]?\\d{5}(?!\\d)");
+    private static final Pattern EMAIL_IN_TEXT_PATTERN = Pattern.compile(
+            "(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
+    private static final Pattern EMPTY_PUNCTUATION_PATTERN = Pattern.compile("\\s*[,;|]\\s*(?=[,;|]|$)");
+    private static final Pattern EXCESS_WHITESPACE_PATTERN = Pattern.compile("[\\t ]{2,}");
+    private static final int MAX_PREFERRED_AREAS_LENGTH = 500;
+    private static final int MAX_MOVE_IN_TIMING_LENGTH = 160;
+    private static final int MAX_PREFERRED_VISIT_TIMING_LENGTH = 240;
+    private static final int MAX_VISIT_NOTE_LENGTH = 2000;
+    /** Default page size for public discovery. Fetch 6 properties per request. */
+    private static final int DISCOVERY_PAGE_SIZE = 6;
+    /**
+     * Matches Cloudinary image delivery URLs so a bounded width transformation can be applied
+     * for discovery card thumbnails. Only image URLs are transformed; video URLs are left intact.
+     * Pattern: https://res.cloudinary.com/{cloud}/image/upload/...
+     */
+    private static final Pattern CLOUDINARY_IMAGE_UPLOAD_PATTERN =
+            Pattern.compile("(https://res\\.cloudinary\\.com/[^/]+/image/upload/)(?:v\\d+/)?(.*)");
 
     private final ListingRepository listingRepository;
+    private final RentalLocationResolver rentalLocationResolver;
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final CloudinaryService cloudinaryService;
     private final FailedUploadService failedUploadService;
@@ -73,6 +117,8 @@ public class PropertyController {
     private final ParserLearningCaptureService parserLearningCaptureService;
     private final BatchPropertyPublishingService batchPropertyPublishingService;
     private final MediaStagingService mediaStagingService;
+    private final UserRepository userRepository;
+    private final PropertyVisitRequestRepository propertyVisitRequestRepository;
 
     @Autowired(required = false)
     private PropertyUploadDraftRepository draftRepository;
@@ -82,6 +128,10 @@ public class PropertyController {
 
     @Autowired(required = false)
     private com.indore.pathome.spaces.service.MediaUploadClaimService mediaUploadClaimService;
+
+    /** Optional: search learning telemetry and alias resolution. Null in legacy test constructors. */
+    @Autowired(required = false)
+    private SearchLearningService searchLearningService;
 
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> activePublishingDrafts = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -97,8 +147,11 @@ public class PropertyController {
             ParserLearningService parserLearningService,
             ParserLearningCaptureService parserLearningCaptureService,
             BatchPropertyPublishingService batchPropertyPublishingService,
-            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
+            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService,
+            UserRepository userRepository,
+            PropertyVisitRequestRepository propertyVisitRequestRepository) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
+        this.rentalLocationResolver = new RentalLocationResolver(listingRepository);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
         this.failedUploadService = Objects.requireNonNull(failedUploadService, "FailedUploadService must not be null");
@@ -109,6 +162,9 @@ public class PropertyController {
         this.batchPropertyPublishingService = Objects.requireNonNull(
                 batchPropertyPublishingService, "BatchPropertyPublishingService must not be null");
         this.mediaStagingService = mediaStagingService;
+        this.userRepository = Objects.requireNonNull(userRepository, "UserRepository must not be null");
+        this.propertyVisitRequestRepository = Objects.requireNonNull(
+                propertyVisitRequestRepository, "PropertyVisitRequestRepository must not be null");
     }
 
     public PropertyController(
@@ -119,10 +175,19 @@ public class PropertyController {
             PropertyParserService propertyParserService,
             ParserLearningService parserLearningService,
             ParserLearningCaptureService parserLearningCaptureService,
-            BatchPropertyPublishingService batchPropertyPublishingService) {
+            BatchPropertyPublishingService batchPropertyPublishingService,
+            UserRepository userRepository,
+            PropertyVisitRequestRepository propertyVisitRequestRepository) {
         this(listingRepository, mediaAssetRepository, cloudinaryService, failedUploadService,
                 propertyParserService, parserLearningService, parserLearningCaptureService,
-                batchPropertyPublishingService, failedUploadService.getMediaStagingService());
+                batchPropertyPublishingService, failedUploadService.getMediaStagingService(), userRepository,
+                propertyVisitRequestRepository);
+    }
+
+    private RentalLocationResolver getRentalLocationResolver() {
+        return searchLearningService != null
+                ? new RentalLocationResolver(listingRepository, searchLearningService)
+                : this.rentalLocationResolver;
     }
 
     public void setDraftRepository(PropertyUploadDraftRepository draftRepository) {
@@ -139,30 +204,333 @@ public class PropertyController {
 
 
     /**
-     * GET /api/v1/properties - Fetch active property listings.
+     * GET /api/v1/properties - Paginated public discovery of active properties.
+     *
+     * <p>Returns at most {@value #DISCOVERY_PAGE_SIZE} properties per page, ordered
+     * latest-published-first (id DESC). Each item carries only the single best public
+     * cover image URL to minimize initial page payload. Full media is available via
+     * GET /api/v1/properties/{id}.</p>
+     *
+     * <p>Ordering rationale: the listings table has no separate publishedAt column.
+     * Listings are inserted exactly once at publication time and are never recreated,
+     * so id DESC reliably surfaces the most recently published property first.
+     * A dedicated publishedAt column would require a schema migration and backfill;
+     * id DESC is equivalent given the current immutable-insert publication model.</p>
+     *
+     * @param sector optional locality filter
+     * @param city   optional city filter
+     * @param page   zero-based page index (default 0)
      */
     @GetMapping
-    public ResponseEntity<List<Listing>> getAllActiveProperties(
+    public ResponseEntity<PublicDiscoveryPage> getAllActiveProperties(
             @RequestParam(required = false) String sector,
-            @RequestParam(required = false) String city) {
+            @RequestParam(required = false) String city,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String bhk,
+            @RequestParam(required = false) String propertyType,
+            @RequestParam(required = false) String furnishing,
+            @RequestParam(required = false) BigDecimal minRent,
+            @RequestParam(required = false) BigDecimal maxRent,
+            @RequestParam(defaultValue = "false") boolean rentalOnly,
+            @RequestParam(defaultValue = "0") int page) {
+        if (page < 0) page = 0;
+        String normalizedCity = normalizeDiscoveryFilter(city, "city");
+        String normalizedSector = normalizeDiscoveryFilter(sector, "sector");
+        PageRequest pageRequest = PageRequest.of(page, DISCOVERY_PAGE_SIZE);
+        Slice<Listing> slice;
+        if (rentalOnly || (q != null && !q.isBlank()) || (bhk != null && !bhk.isBlank())
+                || (propertyType != null && !propertyType.isBlank()) || (furnishing != null && !furnishing.isBlank())
+                || minRent != null || maxRent != null) {
+            RentalSearchQuery parsed = RentalSearchQuery.parse(q);
+            String bhkKey = bhk == null || bhk.isBlank()
+                    ? Objects.toString(parsed.bhkKey(), "") : RentalSearchQuery.normalizeBhk(bhk);
+            PropertyType selectedPropertyType = propertyType == null || propertyType.isBlank()
+                    ? parsed.propertyType() : PropertyType.valueOf(propertyType.trim().toUpperCase(Locale.ROOT));
+            String furnishingKey = furnishing == null || furnishing.isBlank()
+                    ? Objects.toString(parsed.furnishingKey(), "") : RentalSearchQuery.normalizeFurnishing(furnishing);
+            BigDecimal selectedMinRent = minRent == null ? parsed.minRent() : minRent;
+            BigDecimal selectedMaxRent = maxRent == null ? parsed.maxRent() : maxRent;
+            RentalSearchQuery.validateRentRange(selectedMinRent, selectedMaxRent);
+            RentalLocationResolver.Resolution resolved = normalizedSector == null && !parsed.location().isBlank()
+                    ? getRentalLocationResolver().resolveForDiscovery(parsed, RentalSearchQuery.normalizeLocation(normalizedCity))
+                    : new RentalLocationResolver.Resolution(null, null, 1.0, "structured");
+            String searchCity = normalizedCity == null && resolved.city() != null
+                    ? resolved.city() : normalizedCity;
+            String searchSector = normalizedSector == null && resolved.locality() != null
+                    ? resolved.locality() : normalizedSector;
+            String prefix = searchSector == null ? RentalSearchQuery.normalizeLocation(parsed.location()) : "";
+            slice = listingRepository.searchPublicRentals(
+                    ListingStatus.ACTIVE, ListingType.RENT,
+                    RentalSearchQuery.normalizeLocation(searchCity),
+                    RentalSearchQuery.normalizeLocation(searchSector),
+                    prefix, bhkKey, selectedPropertyType, furnishingKey,
+                    selectedMinRent, selectedMaxRent, pageRequest);
+            log.debug("Public rental search category={} resolution={} resultCount={}",
+                    parsed.bhkKey() != null ? "structured_bhk" : "location_or_filter",
+                    resolved.method(), slice.getNumberOfElements());
+        } else if (normalizedCity != null && normalizedSector != null) {
+            slice = listingRepository.findByStatusAndCityIgnoreCaseAndSectorIgnoreCaseOrderByIdDesc(
+                    ListingStatus.ACTIVE, normalizedCity, normalizedSector, pageRequest);
+        } else if (normalizedCity != null) {
+            slice = listingRepository.findByStatusAndCityIgnoreCaseOrderByIdDesc(
+                    ListingStatus.ACTIVE, normalizedCity, pageRequest);
+        } else if (normalizedSector != null) {
+            slice = listingRepository.findByStatusAndSectorIgnoreCaseOrderByIdDesc(
+                    ListingStatus.ACTIVE, normalizedSector, pageRequest);
+        } else {
+            slice = listingRepository.findByStatusOrderByIdDesc(ListingStatus.ACTIVE, pageRequest);
+        }
 
-        List<Listing> listings = (sector != null && !sector.isBlank())
-                ? listingRepository.findBySectorIgnoreCase(sector.trim())
-                : listingRepository.findByStatus(ListingStatus.ACTIVE);
+        List<Long> listingIds = slice.getContent().stream()
+                .map(Listing::getId)
+                .filter(Objects::nonNull)
+                .toList();
 
-        return ResponseEntity.ok(listings);
+        Map<Long, List<PropertyMediaAsset>> assetsByListingId = listingIds.isEmpty()
+                ? Map.of()
+                : mediaAssetRepository.findByListingIdInOrderByUploadedAtDesc(listingIds).stream()
+                        .filter(a -> a.getListingId() != null)
+                        .collect(Collectors.groupingBy(PropertyMediaAsset::getListingId));
+
+        List<PublicDiscoveryResponse> items = slice.getContent().stream()
+                .map(listing -> {
+                    List<PropertyMediaAsset> assets = assetsByListingId.get(listing.getId());
+                    if (assets == null) {
+                        assets = listing.getId() != null
+                                ? mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId())
+                                : List.of();
+                    }
+                    return toDiscoveryResponse(listing, assets, slice.hasNext());
+                })
+                .toList();
+        return ResponseEntity.ok(new PublicDiscoveryPage(items, page, DISCOVERY_PAGE_SIZE, slice.hasNext()));
+    }
+
+    /** Kept for callers that use the existing three-argument discovery contract directly. */
+    public ResponseEntity<PublicDiscoveryPage> getAllActiveProperties(String sector, String city, int page) {
+        return getAllActiveProperties(sector, city, null, null, null, null, null, null, false, page);
+    }
+
+    /** Kept for existing direct callers of the pre-property-type search contract. */
+    public ResponseEntity<PublicDiscoveryPage> getAllActiveProperties(
+            String sector, String city, String q, String bhk, boolean rentalOnly, int page) {
+        return getAllActiveProperties(sector, city, q, bhk, null, null, null, null, rentalOnly, page);
+    }
+
+    public ResponseEntity<PublicDiscoveryPage> getAllActiveProperties(
+            String sector, String city, String q, String bhk, String propertyType, boolean rentalOnly, int page) {
+        return getAllActiveProperties(sector, city, q, bhk, propertyType, null, null, null, rentalOnly, page);
+    }
+
+    /** Suggestions derive only from ACTIVE rental listings, never draft or private inventory. */
+    @GetMapping("/search-suggestions")
+    public ResponseEntity<PublicSearchSuggestions> getSearchSuggestions(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String city,
+            @RequestParam(defaultValue = "8") int limit) {
+        if (q == null || q.isBlank()) return ResponseEntity.ok(new PublicSearchSuggestions("", List.of()));
+        RentalSearchQuery parsed = RentalSearchQuery.parse(q);
+        String cityFilter = normalizeDiscoveryFilter(city, "city");
+        String cityKey = RentalSearchQuery.normalizeLocation(cityFilter);
+        String locationPrefix = RentalSearchQuery.normalizeLocation(parsed.location());
+        boolean structured = parsed.bhkKey() != null || parsed.propertyType() != null
+                || parsed.furnishingKey() != null || parsed.minRent() != null || parsed.maxRent() != null;
+        if (locationPrefix.length() < 2 && !structured) {
+            return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), List.of()));
+        }
+        int safeLimit = Math.max(1, Math.min(limit, 10));
+        List<PublicSearchSuggestion> suggestions = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+
+        // ── Alias resolution: resolve location candidate via approved alias before fuzzy ──
+        // This improves on the fuzzy fallback by providing deterministic high-confidence matches
+        // for common abbreviations/typos that the learning system has promoted.
+        String resolvedAliasLocality = null;
+        String resolvedAliasCity = null;
+        if (searchLearningService != null && !locationPrefix.isBlank() && locationPrefix.length() >= 2) {
+            resolvedAliasLocality = searchLearningService.resolveLocalityAlias(locationPrefix, cityKey);
+        }
+
+        List<ListingRepository.CitySuggestionRow> cities = locationPrefix.length() >= 2 && !structured
+                ? listingRepository.findPublicRentalCitySuggestions(locationPrefix, PageRequest.of(0, safeLimit))
+                : List.of();
+        if (cities.isEmpty() && locationPrefix.length() >= 4 && !structured) {
+            cities = listingRepository.findPublicRentalFuzzyCities(locationPrefix, 0.43, PageRequest.of(0, safeLimit));
+        }
+        for (ListingRepository.CitySuggestionRow row : cities) {
+            if (RentalSearchQuery.normalizeLocation(row.getCity()).equals(locationPrefix)) {
+                String key = "city|" + RentalSearchQuery.normalizeLocation(row.getCity());
+                if (seen.add(key)) suggestions.add(new PublicSearchSuggestion("CITY", row.getCity(), row.getCity(),
+                        null, null, null, null, null, null, row.getResultCount()));
+            }
+        }
+        List<RentalLocationResolver.Match> localities = getRentalLocationResolver().suggestions(parsed, cityKey, safeLimit);
+        String finalResolutionMethod = "unresolved";
+        for (RentalLocationResolver.Match row : localities) {
+            if (suggestions.size() >= safeLimit) break;
+            String key = "locality|" + RentalSearchQuery.normalizeLocation(row.city()) + "|"
+                    + RentalSearchQuery.normalizeLocation(row.locality());
+            if (!seen.add(key)) continue;
+            String label = rentalSuggestionLabel(parsed, row.locality(), row.city());
+            suggestions.add(new PublicSearchSuggestion(
+                    structured ? "SEARCH_QUERY" : "LOCALITY",
+                    label, row.city(), row.locality(), parsed.bhkKey(),
+                    parsed.propertyType(), parsed.furnishingKey(), parsed.minRent(), parsed.maxRent(), row.count()));
+            if (finalResolutionMethod.equals("unresolved")) finalResolutionMethod = row.method();
+        }
+        for (ListingRepository.CitySuggestionRow row : cities) {
+            if (suggestions.size() >= safeLimit) break;
+            if (!RentalSearchQuery.normalizeLocation(row.getCity()).equals(locationPrefix)) {
+                String key = "city|" + RentalSearchQuery.normalizeLocation(row.getCity());
+                if (seen.add(key)) suggestions.add(new PublicSearchSuggestion("CITY", row.getCity(), row.getCity(),
+                        null, null, null, null, null, null, row.getResultCount()));
+            }
+        }
+        log.debug("Public rental suggestions category={} resolution={} resultCount={}",
+                structured ? "structured" : "location",
+                localities.isEmpty() ? finalResolutionMethod : localities.get(0).method(), suggestions.size());
+
+        // ── Async telemetry capture: non-blocking, never throws ──────────────────────────
+        if (searchLearningService != null && !locationPrefix.isBlank()) {
+            try {
+                RentalLocationResolver.Match topMatch = localities.isEmpty() ? null : localities.get(0);
+                SearchQueryEvent event = new SearchQueryEvent();
+                event.setEventType("SUGGESTION_SHOWN");
+                event.setCityInput(cityFilter == null ? null : cityFilter.isBlank() ? null : cityFilter);
+                event.setLocationCandidate(locationPrefix.isBlank() ? null : locationPrefix);
+                event.setResolvedLocality(topMatch != null ? topMatch.locality() : resolvedAliasLocality);
+                event.setResolvedCity(topMatch != null ? topMatch.city() : resolvedAliasCity);
+                String method;
+                if (topMatch != null) {
+                    method = "trigram".equalsIgnoreCase(topMatch.method()) ? "FUZZY" : topMatch.method().toUpperCase(Locale.ROOT);
+                } else if (resolvedAliasLocality != null) {
+                    method = "ALIAS";
+                } else {
+                    method = locationPrefix.isBlank() ? "STRUCTURED" : "UNRESOLVED";
+                }
+                event.setResolutionMethod(method);
+                if (topMatch != null && "trigram".equalsIgnoreCase(topMatch.method())) {
+                    event.setFuzzyConfidence(BigDecimal.valueOf(topMatch.confidence()).setScale(3, java.math.RoundingMode.HALF_UP));
+                }
+                event.setBhkKey(parsed.bhkKey());
+                event.setPropertyTypeKey(parsed.propertyType() != null ? parsed.propertyType().name() : null);
+                event.setFurnishingKey(parsed.furnishingKey());
+                event.setSuggestionCount((short) Math.min(suggestions.size(), Short.MAX_VALUE));
+                searchLearningService.captureEvent(event);
+            } catch (Exception telemetryEx) {
+                // Telemetry must never break autocomplete
+                log.debug("Search telemetry build failed (ignored): {}", telemetryEx.getMessage());
+            }
+        }
+
+        return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), suggestions));
+    }
+
+    /**
+     * POST /api/v1/properties/search-feedback
+     * Lightweight, privacy-safe telemetry for suggestion selection and search outcomes.
+     */
+    @PostMapping("/search-feedback")
+    public ResponseEntity<Void> recordSearchFeedback(@RequestBody(required = false) com.indore.pathome.spaces.dto.SearchFeedbackRequest request) {
+        if (request != null && searchLearningService != null) {
+            try {
+                searchLearningService.captureFeedback(request);
+            } catch (Exception ex) {
+                log.debug("Search feedback capture failed (ignored): {}", ex.getMessage());
+            }
+        }
+        return ResponseEntity.ok().build();
+    }
+
+    private static String rentalSuggestionLabel(RentalSearchQuery query, String locality, String city) {
+        StringBuilder label = new StringBuilder();
+        if (query.bhkLabel() != null) label.append(query.bhkLabel());
+        if (query.propertyTypeLabel() != null) {
+            if (!label.isEmpty()) label.append(' ');
+            label.append(query.propertyTypeLabel());
+        }
+        if (query.furnishingKey() != null) {
+            if (!label.isEmpty()) label.append(", ");
+            label.append(switch (query.furnishingKey()) {
+                case "SEMI_FURNISHED" -> "Semi-furnished";
+                case "FULLY_FURNISHED" -> "Fully furnished";
+                case "UNFURNISHED" -> "Unfurnished";
+                default -> "Furnished";
+            });
+        }
+        if (!label.isEmpty()) label.append(" in ");
+        label.append(locality).append(", ").append(city);
+        if (query.maxRent() != null) {
+            NumberFormat money = NumberFormat.getIntegerInstance(Locale.forLanguageTag("en-IN"));
+            label.append(query.minRent() == null ? " · up to ₹" : " · ₹")
+                    .append(money.format(query.minRent() == null ? query.maxRent() : query.minRent()));
+            if (query.minRent() != null) label.append("–₹").append(money.format(query.maxRent()));
+        }
+        return label.toString();
     }
 
     /**
      * GET /api/v1/properties/{id} - Fetch single property details.
      */
     @GetMapping("/{id}")
-    public ResponseEntity<?> getPropertyById(@PathVariable Long id) {
+    public ResponseEntity<PublicPropertyResponse> getPropertyById(@PathVariable Long id) {
         Listing listing = listingRepository.findById(id).orElse(null);
-        if (listing == null) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Property listing not found");
+        if (listing == null || listing.getStatus() != ListingStatus.ACTIVE) {
+            return ResponseEntity.notFound().build();
         }
-        return ResponseEntity.ok(listing);
+        return ResponseEntity.ok(toPublicPropertyResponse(listing));
+    }
+
+    /**
+     * Captures tenant interest only. It neither schedules nor confirms a Visit Session.
+     */
+    @PostMapping("/{id}/visit-requests")
+    public ResponseEntity<PropertyVisitRequestAcknowledgement> requestVisit(
+            @PathVariable Long id,
+            @RequestBody CreatePropertyVisitRequest request,
+            Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        Listing listing = listingRepository.findById(id).orElse(null);
+        if (listing == null || listing.getStatus() != ListingStatus.ACTIVE) {
+            return ResponseEntity.notFound().build();
+        }
+        User tenant = userRepository.findByEmail(authentication.getName())
+                .orElseThrow(() -> new AccessDeniedException("Tenant account is unavailable"));
+        if (tenant.getRole() != Role.ROLE_TENANT) {
+            throw new AccessDeniedException("Only tenant accounts can request a visit");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("Visit request details are required");
+        }
+        validateVisitRequest(request);
+
+        Optional<PropertyVisitRequest> existing = propertyVisitRequestRepository
+                .findByTenantIdAndListingId(tenant.getId(), listing.getId());
+        if (existing.isPresent()) {
+            return ResponseEntity.ok(toVisitRequestAcknowledgement(existing.get()));
+        }
+
+        PropertyVisitRequest visitRequest = new PropertyVisitRequest();
+        visitRequest.setTenant(tenant);
+        visitRequest.setListing(listing);
+        visitRequest.setBudgetMin(request.budgetMin());
+        visitRequest.setBudgetMax(request.budgetMax());
+        visitRequest.setPreferredAreas(normalizeOptionalText(request.preferredAreas(), MAX_PREFERRED_AREAS_LENGTH, "Preferred areas"));
+        visitRequest.setMoveInTiming(normalizeOptionalText(request.moveInTiming(), MAX_MOVE_IN_TIMING_LENGTH, "Move-in timing"));
+        visitRequest.setPreferredVisitTiming(normalizeRequiredText(
+                request.preferredVisitTiming(), MAX_PREFERRED_VISIT_TIMING_LENGTH, "Preferred visit timing"));
+        visitRequest.setTenantNote(normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note"));
+        try {
+            PropertyVisitRequest saved = propertyVisitRequestRepository.saveAndFlush(visitRequest);
+            return ResponseEntity.status(HttpStatus.CREATED).body(toVisitRequestAcknowledgement(saved));
+        } catch (DataIntegrityViolationException duplicate) {
+            PropertyVisitRequest saved = propertyVisitRequestRepository
+                    .findByTenantIdAndListingId(tenant.getId(), listing.getId())
+                    .orElseThrow(() -> duplicate);
+            return ResponseEntity.ok(toVisitRequestAcknowledgement(saved));
+        }
     }
 
     /**
@@ -1311,5 +1679,215 @@ public class PropertyController {
             return null;
         }
         return "₹" + rental.getMonthlyRent().toPlainString() + " / month";
+    }
+
+    private PublicPropertyResponse toPublicPropertyResponse(Listing listing) {
+        RentalDetails rental = listing instanceof RentalDetails rentalDetails ? rentalDetails : null;
+        return new PublicPropertyResponse(
+                listing.getId(),
+                listing.getTitle(),
+                toPublicSafeDescription(listing.getDescription()),
+                listing.getListingType(),
+                listing.getPropertyType(),
+                listing.getCity(),
+                listing.getSector(),
+                listing.getBhkCount(),
+                listing.getFurnishingStatus(),
+                listing.getVastuFacing(),
+                listing.getAmenities(),
+                listing.getTotalAreaSqFt(),
+                listing.getBathroomCount(),
+                listing.getFloorNumber(),
+                listing.getTotalFloors(),
+                rental != null ? rental.getMonthlyRent() : null,
+                rental != null ? rental.getSecurityDeposit() : null,
+                rental != null ? rental.getMaintenanceCharge() : null,
+                rental != null ? rental.getBachelorAllowed() : null,
+                rental != null ? rental.getPreferredTenant() : null,
+                rental != null ? rental.getAvailableFrom() : null,
+                toPublicMedia(listing));
+    }
+
+    private List<PublicPropertyMediaResponse> toPublicMedia(Listing listing) {
+        List<PropertyMediaAsset> assets = mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId());
+        if (assets != null && !assets.isEmpty()) {
+            return assets.stream()
+                    .filter(asset -> asset.getMediaUrl() != null && !asset.getMediaUrl().isBlank())
+                    .map(asset -> new PublicPropertyMediaResponse(
+                            asset.getMediaUrl(), asset.getMediaType(), asset.getRoomTag(),
+                            Boolean.TRUE.equals(asset.getIsPrimaryCover())))
+                    .toList();
+        }
+        if (listing.getMediaGalleryUrls() == null || listing.getMediaGalleryUrls().isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(listing.getMediaGalleryUrls().split(","))
+                .map(String::trim)
+                .filter(url -> !url.isBlank())
+                .map(url -> new PublicPropertyMediaResponse(
+                        url,
+                        url.toLowerCase(Locale.ROOT).contains(".mp4") ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE,
+                        RoomTag.GENERAL,
+                        false))
+                .toList();
+    }
+
+    /**
+     * Builds the lightweight discovery card projection for one listing.
+     * Only the single best cover image is included; the full gallery is omitted.
+     */
+    PublicDiscoveryResponse toDiscoveryResponse(Listing listing, boolean hasMore) {
+        List<PropertyMediaAsset> assets = listing.getId() != null
+                ? mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId())
+                : List.of();
+        return toDiscoveryResponse(listing, assets, hasMore);
+    }
+
+    private PublicDiscoveryResponse toDiscoveryResponse(Listing listing, List<PropertyMediaAsset> assets, boolean hasMore) {
+        RentalDetails rental = listing instanceof RentalDetails rentalDetails ? rentalDetails : null;
+        if (assets == null) {
+            assets = List.of();
+        }
+
+        // Resolve candidate image assets (permanent Cloudinary assets preferred; fall back to gallery).
+        List<PropertyMediaAsset> imageAssets = assets == null ? List.of() :
+                assets.stream()
+                        .filter(a -> a.getMediaUrl() != null && !a.getMediaUrl().isBlank()
+                                && a.getMediaType() != MediaType.VIDEO_WALKTHROUGH)
+                        .toList();
+
+        int totalMedia = assets == null ? 0 : (int) assets.stream()
+                .filter(a -> a.getMediaUrl() != null && !a.getMediaUrl().isBlank()).count();
+        boolean hasVideo = assets != null && assets.stream()
+                .anyMatch(a -> a.getMediaType() == MediaType.VIDEO_WALKTHROUGH
+                        && a.getMediaUrl() != null && !a.getMediaUrl().isBlank());
+
+        // If no tagged asset exists, check the legacy mediaGalleryUrls column.
+        String coverUrl = null;
+        RoomTag coverRoomTag = null;
+        if (!imageAssets.isEmpty()) {
+            // Prefer the explicitly marked primary cover; fall back to first image asset.
+            PropertyMediaAsset cover = imageAssets.stream()
+                    .filter(a -> Boolean.TRUE.equals(a.getIsPrimaryCover()))
+                    .findFirst()
+                    .orElse(imageAssets.get(0));
+            coverUrl = toDiscoveryCoverUrl(cover.getMediaUrl());
+            coverRoomTag = cover.getRoomTag();
+        } else if (assets != null && assets.isEmpty()
+                && listing.getMediaGalleryUrls() != null && !listing.getMediaGalleryUrls().isBlank()) {
+            // Legacy gallery fallback: pick first non-video URL.
+            coverUrl = Arrays.stream(listing.getMediaGalleryUrls().split(","))
+                    .map(String::trim)
+                    .filter(url -> !url.isBlank() && !url.toLowerCase(Locale.ROOT).contains(".mp4"))
+                    .findFirst()
+                    .map(this::toDiscoveryCoverUrl)
+                    .orElse(null);
+            if (totalMedia == 0 && listing.getMediaGalleryUrls() != null) {
+                totalMedia = (int) Arrays.stream(listing.getMediaGalleryUrls().split(","))
+                        .filter(u -> !u.isBlank()).count();
+            }
+        }
+
+        return new PublicDiscoveryResponse(
+                listing.getId(),
+                listing.getTitle(),
+                listing.getListingType(),
+                listing.getPropertyType(),
+                listing.getCity(),
+                listing.getSector(),
+                listing.getBhkCount(),
+                listing.getFurnishingStatus(),
+                listing.getVastuFacing(),
+                listing.getTotalAreaSqFt(),
+                rental != null ? rental.getMonthlyRent() : null,
+                rental != null ? rental.getSecurityDeposit() : null,
+                rental != null ? rental.getMaintenanceCharge() : null,
+                rental != null ? rental.getBachelorAllowed() : null,
+                rental != null ? rental.getPreferredTenant() : null,
+                rental != null ? rental.getAvailableFrom() : null,
+                coverUrl,
+                coverRoomTag,
+                totalMedia,
+                hasVideo,
+                hasMore);
+    }
+
+    /**
+     * Applies a non-destructive Cloudinary delivery width transformation to an image URL
+     * for discovery card display. The authoritative persisted URL is never modified.
+     *
+     * <p>Only {@code /image/upload/} URLs are transformed. Video and non-Cloudinary URLs
+     * are returned unchanged. The transformation inserts {@code w_800,c_limit,f_auto,q_auto}
+     * which requests a max-width-800 delivery variant without cropping or stretching.</p>
+     */
+    private String toDiscoveryCoverUrl(String originalUrl) {
+        if (originalUrl == null || originalUrl.isBlank()) return originalUrl;
+        java.util.regex.Matcher m = CLOUDINARY_IMAGE_UPLOAD_PATTERN.matcher(originalUrl);
+        if (!m.matches()) return originalUrl;
+        // Insert transformation: width-capped, auto format + quality, no crop distortion.
+        return m.group(1) + "w_800,c_limit,f_auto,q_auto/" + m.group(2);
+    }
+
+    private String normalizeDiscoveryFilter(String value, String label) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim();
+        if (!SAFE_DISCOVERY_FILTER_PATTERN.matcher(normalized).matches()) {
+            throw new IllegalArgumentException("The " + label + " filter is invalid");
+        }
+        return normalized;
+    }
+
+    /**
+     * Listing.description remains the internal/source field. Public responses receive a conservative
+     * derived projection so legacy records cannot disclose labelled owner/lessor contact details.
+     */
+    private String toPublicSafeDescription(String description) {
+        if (description == null || description.isBlank()) return null;
+        String sanitized = OWNER_OR_LESSOR_LINE_PATTERN.matcher(description).replaceAll("");
+        sanitized = CONTACT_LINE_PATTERN.matcher(sanitized).replaceAll("");
+        sanitized = INDIAN_PHONE_IN_TEXT_PATTERN.matcher(sanitized).replaceAll("");
+        sanitized = EMAIL_IN_TEXT_PATTERN.matcher(sanitized).replaceAll("");
+        sanitized = EMPTY_PUNCTUATION_PATTERN.matcher(sanitized).replaceAll("");
+        sanitized = EXCESS_WHITESPACE_PATTERN.matcher(sanitized).replaceAll(" ").trim();
+        return sanitized.isBlank() ? null : sanitized;
+    }
+
+    private PropertyVisitRequestAcknowledgement toVisitRequestAcknowledgement(PropertyVisitRequest request) {
+        return new PropertyVisitRequestAcknowledgement(
+                request.getId(), request.getListing().getId(), request.getStatus(),
+                "Visit request received. We'll check property availability and suitable nearby options before confirming your Visit Session.",
+                request.getCreatedAt());
+    }
+
+    private void validateVisitRequest(CreatePropertyVisitRequest request) {
+        if (request.budgetMin() != null && request.budgetMin().signum() < 0
+                || request.budgetMax() != null && request.budgetMax().signum() < 0) {
+            throw new IllegalArgumentException("Budget values cannot be negative");
+        }
+        if (request.budgetMin() != null && request.budgetMax() != null
+                && request.budgetMin().compareTo(request.budgetMax()) > 0) {
+            throw new IllegalArgumentException("Minimum budget cannot exceed maximum budget");
+        }
+        normalizeRequiredText(request.preferredVisitTiming(), MAX_PREFERRED_VISIT_TIMING_LENGTH, "Preferred visit timing");
+        normalizeOptionalText(request.preferredAreas(), MAX_PREFERRED_AREAS_LENGTH, "Preferred areas");
+        normalizeOptionalText(request.moveInTiming(), MAX_MOVE_IN_TIMING_LENGTH, "Move-in timing");
+        normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note");
+    }
+
+    private String normalizeRequiredText(String value, int maximumLength, String label) {
+        String normalized = normalizeOptionalText(value, maximumLength, label);
+        if (normalized == null) {
+            throw new IllegalArgumentException(label + " is required");
+        }
+        return normalized;
+    }
+
+    private String normalizeOptionalText(String value, int maximumLength, String label) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim();
+        if (normalized.length() > maximumLength) {
+            throw new IllegalArgumentException(label + " is too long");
+        }
+        return normalized;
     }
 }

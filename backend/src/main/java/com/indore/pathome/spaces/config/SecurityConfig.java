@@ -52,7 +52,10 @@ public class SecurityConfig {
                     "/v3/api-docs/**",
                     "/swagger-ui/**"
                 ).permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/v1/properties/*/tagged-media").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers(HttpMethod.GET, "/api/v1/properties/**").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/v1/properties/*/visit-requests").hasRole("TENANT")
+                .requestMatchers(HttpMethod.POST, "/api/v1/properties/search-feedback").permitAll()
                 .requestMatchers("/api/v1/properties/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/failed-uploads/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/drafts/**").hasAnyRole("ADMIN", "SUB_ADMIN")

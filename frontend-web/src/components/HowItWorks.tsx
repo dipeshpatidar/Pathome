@@ -6,7 +6,7 @@ const steps = [
   {
     number: '01',
     title: 'Search & Pick Verified Homes',
-    description: 'Filter 100% verified flats, independent houses, or land plots across Vijay Nagar, Bhawarkua, Nipania & Super Corridor with zero broker involvement.',
+    description: 'Filter 100% verified flats, independent houses, or land plots with transparent pricing and zero broker involvement.',
     icon: Search,
     color: 'emerald',
     badge: '100% Direct Owner',
@@ -14,8 +14,8 @@ const steps = [
   },
   {
     number: '02',
-    title: 'Free Escorted Tour with Ground Boy',
-    description: 'Request a visit pass (first 5 visits are completely free). Our local Indore Ground Boy escorts you on-site and verifies property access via secure Double-OTP.',
+    title: 'Free Escorted Tour with On-Site Escort',
+    description: 'Request a visit pass (first 5 visits are completely free). Our local on-site escort accompanies you on the visit and verifies property access via secure Double-OTP.',
     icon: UserCheck,
     color: 'blue',
     badge: 'Physical Escort Pass',
@@ -127,8 +127,8 @@ export const HowItWorks: React.FC = () => {
               <ShieldCheck className="w-6 h-6" />
             </div>
             <div>
-              <h4 className="text-lg font-bold font-['Outfit',sans-serif]">Ready to explore verified rental spaces in Indore?</h4>
-              <p className="text-xs text-slate-300 mt-0.5">Start your 5 free visit passes with physical Ground Boy escort today.</p>
+              <h4 className="text-lg font-bold font-['Outfit',sans-serif]">Ready to explore verified rental spaces?</h4>
+              <p className="text-xs text-slate-300 mt-0.5">Start your 5 free visit passes with physical on-site escort today.</p>
             </div>
           </div>
 
@@ -136,7 +136,7 @@ export const HowItWorks: React.FC = () => {
             href="#listings"
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-3.5 rounded-xl transition-all shadow-md shadow-emerald-600/30 flex items-center gap-2 whitespace-nowrap shrink-0"
           >
-            <span>Browse Indore Listings</span>
+            <span>Browse Verified Listings</span>
             <ArrowRight className="w-4 h-4" />
           </a>
         </motion.div>

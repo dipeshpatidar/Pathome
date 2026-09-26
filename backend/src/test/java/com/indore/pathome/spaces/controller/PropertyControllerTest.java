@@ -2,13 +2,25 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.dto.AvailabilityStatus;
+import com.indore.pathome.spaces.dto.CreatePropertyVisitRequest;
+import com.indore.pathome.spaces.dto.PublicDiscoveryPage;
+import com.indore.pathome.spaces.dto.PublicDiscoveryResponse;
+import com.indore.pathome.spaces.dto.PublicPropertyResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.ParserInputSource;
 import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
+import com.indore.pathome.spaces.entity.PropertyVisitRequest;
+import com.indore.pathome.spaces.entity.MediaType;
+import com.indore.pathome.spaces.entity.Role;
+import com.indore.pathome.spaces.entity.RoomTag;
+import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
+import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
@@ -20,11 +32,16 @@ import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import java.util.*;
 import java.time.LocalDate;
+import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -60,6 +77,12 @@ public class PropertyControllerTest {
     @Mock
     private com.indore.pathome.spaces.repository.PropertyUploadDraftRepository draftRepository;
 
+    @Mock
+    private UserRepository userRepository;
+
+    @Mock
+    private PropertyVisitRequestRepository propertyVisitRequestRepository;
+
     @InjectMocks
     private PropertyController propertyController;
 
@@ -87,16 +110,338 @@ public class PropertyControllerTest {
     }
 
     @Test
-    public void testGetAllActiveProperties_ReturnsListings() {
+    public void publicDiscoveryReturnsSafeProperties() throws Exception {
         com.indore.pathome.spaces.entity.RentalDetails rental = new com.indore.pathome.spaces.entity.RentalDetails();
+        rental.setId(7L);
         rental.setTitle("Test Property");
-        when(listingRepository.findByStatus(ListingStatus.ACTIVE)).thenReturn(List.of(rental));
+        rental.setDescription("2 BHK, 525 sqft, ₹30,000. Owner: Ramesh Sharma (+91 98765 43210)\nLessor: Asha Verma 99887 76655");
+        rental.setCity("Indore");
+        rental.setSector("Vijay Nagar");
+        rental.setAddress("Private address must not be returned");
+        rental.setOwnerName("Private owner");
+        rental.setOwnerPhoneNumber("+91 98260 12345");
+        rental.setLatitude(22.7);
+        rental.setLongitude(75.8);
+        rental.setBhkCount("2 BHK");
+        rental.setMonthlyRent(BigDecimal.valueOf(25000));
+        rental.setStatus(ListingStatus.ACTIVE);
+        // Paginated discovery: page 0, size 6, no next page
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(rental), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(7L)).thenReturn(List.of());
 
-        ResponseEntity<List<Listing>> response = propertyController.getAllActiveProperties(null, null);
+        ResponseEntity<PublicDiscoveryPage> response = propertyController.getAllActiveProperties(null, null, 0);
 
         assertNotNull(response);
         assertEquals(200, response.getStatusCode().value());
-        assertFalse(response.getBody().isEmpty());
+        assertFalse(response.getBody().properties().isEmpty());
+        PublicDiscoveryResponse property = response.getBody().properties().get(0);
+        assertEquals("Indore", property.city());
+        assertEquals("Vijay Nagar", property.sector());
+        assertEquals(25000, property.monthlyRent().intValueExact());
+        // Discovery card must not expose ownerPhone, address, coordinates
+        assertFalse(java.util.Arrays.stream(PublicDiscoveryResponse.class.getRecordComponents())
+                .map(component -> component.getName().toLowerCase(Locale.ROOT))
+                .anyMatch(name -> name.contains("owner") || name.contains("address")
+                        || name.contains("latitude") || name.contains("longitude")));
+        String serialized = new ObjectMapper().writeValueAsString(property);
+        assertFalse(serialized.contains("ownerPhoneNumber"));
+        assertFalse(serialized.contains("Private address"));
+        assertFalse(serialized.contains("Ramesh Sharma"));
+        // hasMore false — no Show More
+        assertFalse(response.getBody().hasMore());
+    }
+
+    @Test
+    public void publicDiscoveryFirstPageContainsAtMostSixProperties() {
+        List<RentalDetails> listings = new ArrayList<>();
+        for (int i = 1; i <= 6; i++) {
+            RentalDetails r = new RentalDetails();
+            r.setId((long) i);
+            r.setTitle("Property " + i);
+            r.setStatus(ListingStatus.ACTIVE);
+            r.setBhkCount("2 BHK");
+            r.setCity("Indore");
+            r.setSector("Vijay Nagar");
+            listings.add(r);
+        }
+        // Slice has next page = true (7th property would exist)
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>((List<Listing>)(List<?>) listings, PageRequest.of(0, 6), true));
+        listings.forEach(l -> when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(l.getId())).thenReturn(List.of()));
+
+        ResponseEntity<PublicDiscoveryPage> response = propertyController.getAllActiveProperties(null, null, 0);
+        PublicDiscoveryPage page = response.getBody();
+
+        assertEquals(6, page.properties().size());
+        assertEquals(6, page.pageSize());
+        assertEquals(0, page.page());
+        assertTrue(page.hasMore()); // 7th exists
+    }
+
+    @Test
+    public void publicDiscoverySecondPageAppendsNextResults() {
+        RentalDetails r7 = new RentalDetails();
+        r7.setId(7L);
+        r7.setTitle("Property 7");
+        r7.setStatus(ListingStatus.ACTIVE);
+        r7.setBhkCount("2 BHK");
+        r7.setCity("Indore");
+        r7.setSector("Vijay Nagar");
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), eq(PageRequest.of(1, 6))))
+                .thenReturn(new SliceImpl<Listing>(List.of(r7), PageRequest.of(1, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(7L)).thenReturn(List.of());
+
+        ResponseEntity<PublicDiscoveryPage> response = propertyController.getAllActiveProperties(null, null, 1);
+        PublicDiscoveryPage page = response.getBody();
+
+        assertEquals(1, page.properties().size());
+        assertEquals(7L, page.properties().get(0).id());
+        assertEquals(1, page.page());
+        assertFalse(page.hasMore()); // last page
+    }
+
+    @Test
+    public void publicDiscoveryBatchQueriesMediaAssetsWithoutNPlusOne() {
+        RentalDetails r1 = new RentalDetails();
+        r1.setId(101L);
+        r1.setTitle("Prop 101");
+        r1.setStatus(ListingStatus.ACTIVE);
+        r1.setBhkCount("2 BHK");
+        r1.setCity("Indore");
+        r1.setSector("Vijay Nagar");
+
+        RentalDetails r2 = new RentalDetails();
+        r2.setId(102L);
+        r2.setTitle("Prop 102");
+        r2.setStatus(ListingStatus.ACTIVE);
+        r2.setBhkCount("3 BHK");
+        r2.setCity("Indore");
+        r2.setSector("Palasia");
+
+        PropertyMediaAsset a1 = new PropertyMediaAsset();
+        a1.setListingId(101L);
+        a1.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v1/prop101.webp");
+        a1.setMediaType(MediaType.IMAGE);
+        a1.setIsPrimaryCover(true);
+
+        PropertyMediaAsset a2 = new PropertyMediaAsset();
+        a2.setListingId(102L);
+        a2.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v1/prop102.webp");
+        a2.setMediaType(MediaType.IMAGE);
+        a2.setIsPrimaryCover(true);
+
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(r1, r2), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdInOrderByUploadedAtDesc(eq(List.of(101L, 102L))))
+                .thenReturn(List.of(a1, a2));
+
+        ResponseEntity<PublicDiscoveryPage> response = propertyController.getAllActiveProperties(null, null, 0);
+
+        assertEquals(2, response.getBody().properties().size());
+        assertNotNull(response.getBody().properties().get(0).coverImageUrl());
+        assertNotNull(response.getBody().properties().get(1).coverImageUrl());
+        verify(mediaAssetRepository).findByListingIdInOrderByUploadedAtDesc(eq(List.of(101L, 102L)));
+        verify(mediaAssetRepository, never()).findByListingIdOrderByUploadedAtDesc(101L);
+        verify(mediaAssetRepository, never()).findByListingIdOrderByUploadedAtDesc(102L);
+    }
+
+    @Test
+    public void publicDiscoveryGenuineNoMediaListingReturnsNullCover() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(17L);
+        listing.setTitle("No-media property");
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setBhkCount("2 BHK");
+        listing.setCity("Indore");
+        listing.setSector("Nanda Nagar");
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(17L)).thenReturn(List.of());
+
+        PublicDiscoveryResponse item = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
+        assertNull(item.coverImageUrl()); // correctly null — no fabrication
+        assertNull(item.coverRoomTag());
+        assertEquals(0, item.mediaCount());
+    }
+
+    @Test
+    public void publicDiscoveryUsesOnlyTheSelectedCoversStoredTag() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(18L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setCity("Indore");
+        PropertyMediaAsset first = new PropertyMediaAsset();
+        first.setMediaUrl("https://cdn.example/first.webp");
+        first.setMediaType(MediaType.IMAGE);
+        first.setRoomTag(RoomTag.KITCHEN);
+        PropertyMediaAsset primary = new PropertyMediaAsset();
+        primary.setMediaUrl("https://cdn.example/cover.webp");
+        primary.setMediaType(MediaType.IMAGE);
+        primary.setRoomTag(RoomTag.LIVING_ROOM);
+        primary.setIsPrimaryCover(true);
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(18L)).thenReturn(List.of(first, primary));
+
+        PublicDiscoveryResponse item = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
+
+        assertEquals("https://cdn.example/cover.webp", item.coverImageUrl());
+        assertEquals(RoomTag.LIVING_ROOM, item.coverRoomTag());
+        assertEquals(2, item.mediaCount());
+        verify(mediaAssetRepository, times(1)).findByListingIdOrderByUploadedAtDesc(18L);
+    }
+
+    @Test
+    public void publicDiscoveryLegacyGalleryDoesNotInventCoverTag() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(19L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setMediaGalleryUrls("https://cdn.example/legacy.webp");
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(19L)).thenReturn(List.of());
+
+        PublicDiscoveryResponse item = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
+
+        assertEquals("https://cdn.example/legacy.webp", item.coverImageUrl());
+        assertNull(item.coverRoomTag());
+    }
+
+    @Test
+    public void publicDiscoveryFiltersByCityAndSector() {
+        when(listingRepository.findByStatusAndCityIgnoreCaseAndSectorIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Indore"), eq("Vijay Nagar"), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(), PageRequest.of(0, 6), false));
+
+        ResponseEntity<PublicDiscoveryPage> response = propertyController
+                .getAllActiveProperties("Vijay Nagar", "Indore", 0);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertTrue(response.getBody().properties().isEmpty());
+        verify(listingRepository).findByStatusAndCityIgnoreCaseAndSectorIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Indore"), eq("Vijay Nagar"), any());
+    }
+
+    @Test
+    public void publicDiscoveryFiltersByCityOnlyAndSectorOnly() {
+        when(listingRepository.findByStatusAndCityIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Indore"), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(), PageRequest.of(0, 6), false));
+        when(listingRepository.findByStatusAndSectorIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Nipania"), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(), PageRequest.of(0, 6), false));
+
+        propertyController.getAllActiveProperties(null, "Indore", 0);
+        propertyController.getAllActiveProperties("Nipania", null, 0);
+
+        verify(listingRepository).findByStatusAndCityIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Indore"), any());
+        verify(listingRepository).findByStatusAndSectorIgnoreCaseOrderByIdDesc(
+                eq(ListingStatus.ACTIVE), eq("Nipania"), any());
+    }
+
+    @Test
+    public void publicPropertyDetailHidesInactiveAndMissingListings() {
+        when(listingRepository.findById(99L)).thenReturn(Optional.empty());
+        assertEquals(404, propertyController.getPropertyById(99L).getStatusCode().value());
+
+        RentalDetails closed = new RentalDetails();
+        closed.setStatus(ListingStatus.CLOSED);
+        when(listingRepository.findById(100L)).thenReturn(Optional.of(closed));
+        assertEquals(404, propertyController.getPropertyById(100L).getStatusCode().value());
+    }
+
+    @Test
+    public void authenticatedTenantCanCreateAnUnscheduledVisitRequest() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(77L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        User tenant = new User();
+        tenant.setId(8L);
+        tenant.setEmail("tenant@example.com");
+        tenant.setRole(Role.ROLE_TENANT);
+        when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
+        when(userRepository.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
+        when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.empty());
+        when(propertyVisitRequestRepository.saveAndFlush(any())).thenAnswer(invocation -> {
+            var saved = invocation.getArgument(0, com.indore.pathome.spaces.entity.PropertyVisitRequest.class);
+            saved.setId(15L);
+            return saved;
+        });
+
+        var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
+                BigDecimal.valueOf(20000), BigDecimal.valueOf(28000), "Vijay Nagar", "Within a month",
+                "Saturday afternoon", "Parking preferred"),
+                new UsernamePasswordAuthenticationToken("tenant@example.com", null,
+                        List.of(new SimpleGrantedAuthority("ROLE_TENANT"))));
+
+        assertEquals(201, response.getStatusCode().value());
+        assertEquals("RECEIVED", response.getBody().status());
+        assertTrue(response.getBody().message().contains("before confirming"));
+        verify(propertyVisitRequestRepository).saveAndFlush(any());
+    }
+
+    @Test
+    public void duplicateTenantVisitRequestReturnsExistingInterestRecord() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(77L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        User tenant = new User();
+        tenant.setId(8L);
+        tenant.setRole(Role.ROLE_TENANT);
+        PropertyVisitRequest existing = new PropertyVisitRequest();
+        existing.setId(15L);
+        existing.setListing(listing);
+        existing.setTenant(tenant);
+        when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
+        when(userRepository.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
+        when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.of(existing));
+
+        var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
+                null, null, null, null, "Saturday afternoon", null),
+                new UsernamePasswordAuthenticationToken("tenant@example.com", null,
+                        List.of(new SimpleGrantedAuthority("ROLE_TENANT"))));
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(15L, response.getBody().requestId());
+        verify(propertyVisitRequestRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    public void publicListAndDetailExposeTheSameSafeMedia() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(31L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setBhkCount("2 BHK");
+        listing.setCity("Indore");
+        listing.setSector("Vijay Nagar");
+        PropertyMediaAsset image = new PropertyMediaAsset();
+        image.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v12345/prop.webp");
+        image.setMediaType(MediaType.IMAGE);
+        image.setIsPrimaryCover(true);
+        image.setRoomTag(RoomTag.BALCONY);
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
+        when(listingRepository.findById(31L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(31L)).thenReturn(List.of(image));
+
+        PublicDiscoveryResponse listItem = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
+        PublicPropertyResponse detailResponse = propertyController.getPropertyById(31L).getBody();
+
+        // Discovery returns cover URL (possibly width-transformed); detail returns full media collection
+        assertNotNull(listItem.coverImageUrl());
+        assertTrue(listItem.coverImageUrl().contains("cloudinary.com"));
+        assertEquals(RoomTag.BALCONY, listItem.coverRoomTag());
+        // Detail still returns the full safe media list
+        assertEquals("https://res.cloudinary.com/demo/image/upload/v12345/prop.webp", detailResponse.media().get(0).mediaUrl());
+        assertEquals(RoomTag.BALCONY, detailResponse.media().get(0).roomTag());
+        assertFalse(java.util.Arrays.stream(detailResponse.media().get(0).getClass().getRecordComponents())
+                .map(component -> component.getName().toLowerCase(Locale.ROOT))
+                .anyMatch(name -> name.contains("upload") || name.contains("publicid") || name.contains("staging")));
+        String serializedDetail = new ObjectMapper().writeValueAsString(detailResponse);
+        assertFalse(serializedDetail.contains("uploadRequestId"));
+        assertFalse(serializedDetail.contains("cloudinaryPublicId"));
     }
 
     @Test
@@ -708,5 +1053,152 @@ public class PropertyControllerTest {
         assertNull(saved.getFloorNumber());
         assertNull(saved.getTotalFloors());
         assertNull(saved.getPreferredTenant());
+    }
+
+    @Test
+    public void rentalSuggestionsUseActiveCityScopedBhkRowsAndDeduplicateVariants() {
+        ListingRepository.LocalitySuggestionRow first = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(first.getCity()).thenReturn("Indore");
+        when(first.getLocality()).thenReturn("Vijay Nagar");
+        when(first.getResultCount()).thenReturn(3L);
+        ListingRepository.LocalitySuggestionRow duplicate = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(duplicate.getCity()).thenReturn("INDORE");
+        when(duplicate.getLocality()).thenReturn("vijay nagar");
+        when(listingRepository.findPublicRentalLocalitySuggestions(eq("indore"), eq("4BHK"), eq(""), eq(""),
+                isNull(), isNull(), eq("vijay"), any()))
+                .thenReturn(List.of(first, duplicate));
+
+        var response = propertyController.getSearchSuggestions("4bhk in vijay", "Indore", 8);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(1, response.getBody().suggestions().size());
+        assertEquals("SEARCH_QUERY", response.getBody().suggestions().get(0).type());
+        assertEquals("4 BHK in Vijay Nagar, Indore", response.getBody().suggestions().get(0).label());
+        assertEquals(3L, response.getBody().suggestions().get(0).resultCount());
+        assertEquals("Vijay Nagar", response.getBody().suggestions().get(0).locality());
+        verify(listingRepository, never()).findPublicRentalCitySuggestions(anyString(), any());
+    }
+
+    @Test
+    public void rentalSuggestionsHandleEmptyQueryCitySelectionAndBoundedLimit() throws Exception {
+        assertTrue(propertyController.getSearchSuggestions(" ", "Indore", 8).getBody().suggestions().isEmpty());
+        verifyNoInteractions(listingRepository);
+
+        ListingRepository.CitySuggestionRow pune = mock(ListingRepository.CitySuggestionRow.class);
+        when(pune.getCity()).thenReturn("Pune");
+        when(pune.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalCitySuggestions(eq("pune"), any())).thenReturn(List.of(pune));
+        when(listingRepository.findPublicRentalLocalitySuggestions(eq("indore"), eq(""), eq(""), eq(""),
+                isNull(), isNull(), eq("pune"), any()))
+                .thenReturn(List.of());
+        var result = propertyController.getSearchSuggestions("Pune", "Indore", 999).getBody();
+        assertEquals(1, result.suggestions().size());
+        assertEquals("CITY", result.suggestions().get(0).type());
+        assertEquals("Pune", result.suggestions().get(0).city());
+        assertEquals(2L, result.suggestions().get(0).resultCount());
+        verify(listingRepository).findPublicRentalCitySuggestions(eq("pune"), eq(PageRequest.of(0, 10)));
+
+        String json = new ObjectMapper().writeValueAsString(result);
+        assertFalse(json.contains("ownerPhone"));
+        assertFalse(json.contains("address"));
+        assertFalse(json.contains("internal"));
+    }
+
+    @Test
+    public void freeTextAndStructuredRentalSearchUseRealPublicFilters() {
+        when(listingRepository.searchPublicRentals(any(), any(), anyString(), anyString(), anyString(), anyString(),
+                any(), anyString(), any(), any(), any()))
+                .thenReturn(new SliceImpl<>(List.of(), PageRequest.of(0, 6), false));
+
+        propertyController.getAllActiveProperties(null, "Indore", "4bhk in Vijay Nagar", null, true, 0);
+        verify(listingRepository).searchPublicRentals(
+                eq(ListingStatus.ACTIVE), eq(com.indore.pathome.spaces.entity.ListingType.RENT),
+                eq("indore"), eq(""), eq("vijay nagar"), eq("4BHK"), isNull(), eq(""),
+                isNull(), isNull(), eq(PageRequest.of(0, 6)));
+
+        propertyController.getAllActiveProperties("Vijay Nagar", "Indore", null, "4BHK", true, 0);
+        verify(listingRepository).searchPublicRentals(
+                eq(ListingStatus.ACTIVE), eq(com.indore.pathome.spaces.entity.ListingType.RENT),
+                eq("indore"), eq("vijay nagar"), eq(""), eq("4BHK"), isNull(), eq(""),
+                isNull(), isNull(), eq(PageRequest.of(0, 6)));
+    }
+
+    @Test
+    public void publicSuggestionHttpEndpointReturnsOnlySafeFields() throws Exception {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Vijay Nagar");
+        when(row.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalCitySuggestions(eq("vijay"), any())).thenReturn(List.of());
+        when(listingRepository.findPublicRentalLocalitySuggestions(eq("indore"), eq(""), eq(""), eq(""),
+                isNull(), isNull(), eq("vijay"), any()))
+                .thenReturn(List.of(row));
+
+        org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(propertyController).build()
+                .perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/v1/properties/search-suggestions").param("q", "vijay").param("city", "Indore"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.suggestions[0].label")
+                        .value("Vijay Nagar, Indore"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.suggestions[0].resultCount")
+                        .value(2))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.suggestions[0].ownerPhone")
+                        .doesNotExist())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.suggestions[0].address")
+                        .doesNotExist());
+    }
+
+    @Test
+    public void propertyTypeSuggestionsRequireMatchingActiveRentalInventory() throws Exception {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Vijay Nagar");
+        when(row.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(),
+                eq("vijay nagar"), any())).thenReturn(List.of(row));
+
+        var matched = propertyController.getSearchSuggestions("2bhk flat in vijay nagar", "Indore", 8).getBody();
+        assertEquals(1, matched.suggestions().size());
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore", matched.suggestions().get(0).label());
+        assertEquals(com.indore.pathome.spaces.entity.PropertyType.FLAT, matched.suggestions().get(0).propertyType());
+        assertEquals(2L, matched.suggestions().get(0).resultCount());
+        String publicJson = new ObjectMapper().writeValueAsString(matched);
+        assertTrue(publicJson.contains("\"propertyType\":\"FLAT\""));
+        assertFalse(publicJson.contains("ownerPhone"));
+
+        var absent = propertyController.getSearchSuggestions("2bhk flat in unknown", "Indore", 8).getBody();
+        assertTrue(absent.suggestions().isEmpty());
+        verify(listingRepository).findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq("unknown"), any());
+    }
+
+    @Test
+    public void partialFlatQueryAndPropertyTypeDiscoveryUseStructuredFilters() throws Exception {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Vijay Nagar");
+        when(row.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of(row));
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore",
+                propertyController.getSearchSuggestions("2bhk fla", "Indore", 8).getBody().suggestions().get(0).label());
+
+        when(listingRepository.searchPublicRentals(any(), any(), anyString(), anyString(), anyString(), anyString(),
+                any(), anyString(), any(), any(), any()))
+                .thenReturn(new SliceImpl<>(List.of(), PageRequest.of(0, 6), false));
+        propertyController.getAllActiveProperties(null, "Indore", "2bhk flat vijay", null, null, true, 0);
+        verify(listingRepository).searchPublicRentals(
+                eq(ListingStatus.ACTIVE), eq(com.indore.pathome.spaces.entity.ListingType.RENT),
+                eq("indore"), eq(""), eq("vijay"), eq("2BHK"),
+                eq(com.indore.pathome.spaces.entity.PropertyType.FLAT), eq(""),
+                isNull(), isNull(), eq(PageRequest.of(0, 6)));
+
+        propertyController.getAllActiveProperties("Vijay Nagar", "Indore", null, "2BHK", "FLAT", true, 0);
+        verify(listingRepository).searchPublicRentals(
+                eq(ListingStatus.ACTIVE), eq(com.indore.pathome.spaces.entity.ListingType.RENT),
+                eq("indore"), eq("vijay nagar"), eq(""), eq("2BHK"),
+                eq(com.indore.pathome.spaces.entity.PropertyType.FLAT), eq(""),
+                isNull(), isNull(), eq(PageRequest.of(0, 6)));
     }
 }

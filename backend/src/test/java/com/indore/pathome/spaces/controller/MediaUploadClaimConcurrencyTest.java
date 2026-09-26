@@ -57,7 +57,9 @@ public class MediaUploadClaimConcurrencyTest {
                 learningService,
                 captureService,
                 batchService,
-                stagingService
+                stagingService,
+                mock(com.indore.pathome.spaces.repository.UserRepository.class),
+                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class)
         );
         controller.setMediaUploadClaimService(claimService);
 

@@ -35,8 +35,8 @@ export const ValueBanner: React.FC = () => {
           <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-3.5 py-1 rounded-full border border-emerald-200">
             Why Pathome?
           </span>
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-['Outfit',sans-serif] mt-2.5">
-            Your Dreams, Our Efforts
+          <h2 className="pathome-tagline text-2xl sm:text-3xl font-extrabold text-slate-900 font-['Outfit',sans-serif] mt-2.5">
+            Your Dreams, Our Efforts.
           </h2>
           <p className="text-slate-500 text-xs sm:text-sm mt-1.5 leading-relaxed">
             Built to eliminate fake broker spam and unverified listings.
@@ -88,7 +88,7 @@ export const ValueBanner: React.FC = () => {
                 100% On-Site Vetted
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                Every listing is personally inspected and geo-tagged by our 2 active Indore Ground Boys. Zero fake broker spam or ghost addresses.
+                Every listing is personally inspected and geo-tagged by our local on-site team. Zero fake broker spam or ghost addresses.
               </p>
             </div>
             <div>
@@ -127,4 +127,3 @@ export const ValueBanner: React.FC = () => {
     </section>
   );
 };
-

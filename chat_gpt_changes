@@ -556,6 +556,35 @@ Commit status:
 
 - No commit or push was performed for this task.
 
+## 2026-09-25 — 18:54 IST
+
+### Phase 1 landing-page clarity and city-neutral empty state
+
+Why: The approved landing-page pass required the actual UI to stop implying unsupported Hero search capabilities, keep discovery filters present in empty results, and make empty guidance city-neutral without altering backend search scope.
+
+Changes completed:
+
+- Rebuilt `HeroSection.tsx` around the supported city/locality search path. Removed unsupported free-text, voice/AI, category, property-type, and budget controls; simplified background motion; preserved the restrained pointer tilt and reduced-motion handling; and synchronized its displayed city/locality with discovery URL state.
+- Updated `PropertyShowcase.tsx` so the city and locality controls remain visible for zero results. The empty state now reads exactly `No homes found`, `Try another location or adjust your filters.`, and `Change location`; it focuses and opens the existing city selector while retaining the selected city. `Clear filters` appears only when a locality filter is active and keeps the city unchanged.
+- Tightened filter grouping, selected/reset affordances, count hierarchy, and property-card spacing. Removed the invalid keyboard pseudo-button wrapper around cards while preserving surface-click detail navigation and independent real controls.
+- Updated `Home.tsx` to pass supported URL filters to the Hero and to render the shared filter/empty component for zero results. Error/retry handling remains separate.
+- Confirmed the existing `AGENTS.md` targeted-browser rule already exactly requires code-first checks, a stated narrow question, and a ten-minute maximum; it was not weakened or duplicated.
+
+Verification:
+
+- `npm run build` in `frontend-web` — passed; only the existing non-blocking Vite large-chunk advisory.
+- `node --test src/tests/discoveryPerformanceAndNavigation.test.mjs` — passed, 18/18.
+- `git diff --check` — passed.
+- Targeted browser session (under ten minutes): Hero exposed only City, Locality, and Show homes controls; Bhopal produced the city-neutral empty state; Change location focused and opened `#discovery-city-select` while URL city remained Bhopal; and 320px had no horizontal overflow (`314 <= 320`).
+
+Remaining manual review:
+
+- Check typography and spacing at 390px, 768px, 1024px, and 1280px; no browser run was spent on those non-critical breakpoint permutations.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
 ## 2026-09-18 — 00:55 IST
 
 ### Started and verified a temporary public Cloudflare Tunnel
@@ -1261,3 +1290,182 @@ Verification:
 Commit status:
 
 - No commit or push was performed for this task.
+
+## 2026-09-25 — 18:35 IST
+
+### Property detail initial scroll position and discovery context preservation
+
+Why: When navigating from a scrolled discovery listing into a property detail page (`/property/:id`), the page opened partway down (retaining the discovery `scrollY` offset, e.g. 395px on desktop, 1045px on mobile), leaving the top of the detail content and Back button obscured behind the global navbar.
+
+Where:
+
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/PublicPropertyDetail.tsx`
+- `frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs`
+
+What changed:
+
+- In `Home.tsx` (`handleOpenPropertyDetail`), recorded discovery context into `sessionStorage` before navigating, then instantly reset `window.scrollTo({ top: 0, left: 0, behavior: 'instant' })` prior to `navigate(...)`.
+- In `PublicPropertyDetail.tsx`, added `useLayoutEffect` and `useNavigationType` from `react-router-dom` to enforce `window.scrollTo(0, 0)` on new navigations (`navigationType !== 'POP'`) before browser paint, while preserving native browser Back/Forward (`POP`) history scroll restoration.
+- Preserved Back-to-discovery restoration lifecycle so returning to discovery continues to restore filters, loaded listings, and the originating property card.
+- Added regression test 17 to `discoveryPerformanceAndNavigation.test.mjs`.
+
+Verification:
+
+- `npm run build` — passed (`tsc && vite build` in 26.29s).
+- `node --test src/tests/discoveryPerformanceAndNavigation.test.mjs` — passed, 18/18 tests.
+- `git diff --check` — passed with 0 errors.
+- Visual browser testing at desktop (1280x800) and mobile (375x667) confirmed `scrollY = 0` on entry from scrolled discovery, clean display of header and media frame, and proper card restoration on Back.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-25 — 18:39 IST
+
+### Phase 1 discovery polish and regression review
+
+Why: Continue the approved Phase 1 work without expanding its public-data or privacy boundary: review the uncommitted property-detail scroll correction, make the existing Pathome tagline legible, restrain the existing discovery-deck tilt, correct the Bhopal empty-state CTA, and assess whether a truthful listings Max rent filter could be added.
+
+What changed:
+
+- Reviewed the current discovery-to-detail scroll path. The existing `Home.tsx` pre-navigation instant reset and `PublicPropertyDetail.tsx` layout-effect reset are complementary; the latter deliberately excludes `POP` so browser history scroll is not overwritten. The existing session context still retains city, locality, loaded results, page, and originating card for Back restoration. No navigation or restoration refactor was needed.
+- Updated the three pre-existing tagline placements only (`Navbar.tsx`, `ValueBanner.tsx`, and `Footer.tsx`) to use the exact wording `Your Dreams, Our Efforts.` and a shared subtle typography treatment. The navbar tag is now visible and readable from 320px upward while remaining secondary to the Pathome wordmark.
+- Reduced only the Hero discovery deck's mouse tilt from ±6°/±8° to ±2°/±3°, with a less reactive spring. Touch has no mouse handler, and `prefers-reduced-motion` now disables that tilt and its entrance motion.
+- Changed the non-Indore empty-state CTA in `Home.tsx` to `View homes in Indore.` Its existing action already replaces the URL city query with `Indore`, clears the locality filter, and fetches the active Indore discovery page.
+- Did not add a Max rent control. The current paginated public endpoint and client request accept only `page`, `city`, and `sector`; client-side filtering would be incomplete and therefore untruthful. The smallest approved follow-up is an optional server-side maximum-rent request parameter with indexed repository filtering, propagated through the page response/client URL state, then a synchronized Hero/listings control.
+- Added the user-requested targeted-browser-automation rule to `AGENTS.md`: code and focused tests first; a browser run only for large or critical UI changes, targeted to a stated question and limited to ten minutes.
+
+Files changed for this continuation:
+
+- `AGENTS.md`
+- `frontend-web/src/components/Footer.tsx`
+- `frontend-web/src/components/HeroSection.tsx`
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/Navbar.tsx`
+- `frontend-web/src/components/ValueBanner.tsx`
+- `frontend-web/src/index.css`
+
+Verification:
+
+- `node --test frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs` — passed, 18/18.
+- `npm run build` in `frontend-web` — passed (`tsc && vite build`). Vite reported its existing main-bundle-size advisory only.
+- `git diff --check` — passed.
+- Targeted browser check (under ten minutes): after deliberately scrolling discovery, opening card 80 produced `/property/80` at `scrollY: 0` in the first inspected frame with the Back control and media top visible; Back restored the source card to the viewport with the Indore context intact. The Bhopal empty state rendered the revised CTA, and clicking it changed the URL to `?city=Indore` and rendered six Indore homes. At 320px, the tagline remained visible and `scrollWidth` (314) did not exceed `innerWidth` (320). This focused check does not replace manual review of the remaining breakpoints.
+
+Commit status:
+
+- No commit or push was performed for this task.
+
+## 2026-09-25 — 18:54 IST
+
+### Appended completion record — landing-page clarity and neutral empty state
+
+- Simplified Hero to supported City + optional Locality + Show homes controls; preserved reduced-motion and softened tilt behavior.
+- Kept the actual city selector visible in zero results. Empty copy is `No homes found`, `Try another location or adjust your filters.`, and `Change location`; the action focuses/opens the selector without changing the current city. Clear filters appears only for an active locality.
+- Kept network error/retry distinct, tightened discovery filter/card accessibility, and removed the invalid card pseudo-button wrapper.
+- Verified: frontend build PASS; focused discovery/navigation tests PASS (18/18); `git diff --check` PASS; targeted browser check confirmed Bhopal empty context, selector focus, supported Hero controls, and no 320px horizontal overflow.
+- Remaining manual review: spacing/typography at 390px, 768px, 1024px, and 1280px.
+
+Commit status: No commit or push was performed.
+
+## 2026-09-25 21:31 IST — Discovery empty-state simplification
+
+Why: User asked to rely on the discovery filters already shown above results.
+
+Changed:
+
+- `frontend-web/src/components/PropertyShowcase.tsx`: changed the zero-results heading to `No properties found` and removed the duplicate explanatory copy, oversized empty-state card, Change location action, and empty-state Clear filters action. The City and locality filters above remain available.
+
+Verification:
+
+- `npm run build` in `frontend-web` — PASS (`tsc && vite build`; existing Vite chunk-size advisory only).
+- `git diff --check` — PASS.
+
+Commit Status: No commit or push was performed.
+
+## 2026-09-25 22:21 IST — Coherent property discovery search
+
+Why: Approved redesign of the landing-page City/Locality search and duplicated listings filters, with scalable locality selection and preserved public discovery behavior.
+
+Files changed:
+
+- `frontend-web/src/components/HeroSection.tsx`: replaced the wide dropdown bar with a compact composed City, Locality, and Show homes search surface; connected it to the shared location chooser and URL-derived active criteria.
+- `frontend-web/src/components/DiscoveryLocationDialog.tsx` (new): added one searchable City/Locality chooser, presented as a mobile bottom sheet and desktop dialog, with keyboard navigation, focus handling, scroll lock, Escape/cancel, and reduced-motion support.
+- `frontend-web/src/components/discoveryLocations.ts` (new): consolidated the pre-existing public discovery city/locality catalogue and case-insensitive partial matching; unavailable Bhopal/Pune options are labeled Coming soon.
+- `frontend-web/src/components/PropertyShowcase.tsx`: removed the duplicate city dropdown and horizontal locality chips; added the shared Change search entry point, natural city/locality result heading, and real loaded count. Preserved `No properties found` in the empty state.
+- `frontend-web/src/components/Home.tsx`: made the URL the applied City/Locality source of truth, removed the duplicate search-triggered property fetch, prevented stale prior-city results during a query transition, improved listing scroll offset, and focused the result heading after search.
+- `antigravity_changes` and `chat_gpt_changes`: appended this handoff record.
+
+Verification:
+
+- `npm run build` in `frontend-web` — PASS (`tsc && vite build`); Vite's existing chunk-size advisory remains.
+- `node --test src/tests/discoveryPerformanceAndNavigation.test.mjs` — PASS, 18/18.
+- `git diff --check` — PASS.
+- Targeted browser check under ten minutes: 320/360/390/430/768/1024/1280/1440 widths had no horizontal overflow; chooser fit at 320, 390, 768, and 1440; mixed-case locality search found matching places; selection changed URL and heading; clearing locality returned to Indore results; Bhopal showed zero homes and `No properties found`; Escape canceled changes and returned focus; applying search focused the result heading below the fixed header. Request count was confirmed by code path, not instrumented in the browser.
+
+Remaining manual visual check: iOS Safari soft-keyboard behavior and very long future city/locality names in the chooser. Current catalogue is static because there is no public location-list endpoint; the chooser's search/list layout supports larger catalogues without changing interaction.
+
+Commit status: Not committed. Push status: Not pushed.
+
+## 2026-09-25 22:31 IST — Stored media-tag presentation
+
+Why: Approved use of already-persisted media tags to clarify discovery covers and property-detail galleries without inventing room labels or loading full galleries on discovery.
+
+Changed:
+
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicDiscoveryResponse.java`, `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`: add only the selected cover asset's public-safe `coverRoomTag` to the lightweight discovery DTO; legacy/no-media covers remain untagged. No media ordering, cover selection, query, upload, schema, or privacy changes.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`: cover/tag alignment, legacy null tag, detail tag preservation, and privacy assertions.
+- `frontend-web/src/types/index.ts`, `frontend-web/src/services/propertyService.ts`: retain the discovery cover tag in the frontend model; detail media tags were already mapped.
+- `frontend-web/src/components/PropertyShowcase.tsx`: remove fabricated index-based room tags; show a restrained label and grounded image alt only for a known stored cover tag.
+- `frontend-web/src/components/PublicPropertyDetail.tsx`, `frontend-web/src/utils/mediaTags.ts`: retain per-media tag through the gallery, show unobtrusive active-media context below the viewer, add a compact first-occurrence area jump selector only for multiple distinct known areas, and provide contextual thumbnail/lightbox accessibility labels. General, blank, unknown, and legacy tags remain unlabeled. Gallery order and video controls stay unchanged.
+- `frontend-web/src/tests/mediaTags.test.mjs`: known/unknown label handling and first-occurrence navigation tests.
+- `chat_gpt_changes`, `antigravity_changes`: append this handoff.
+
+Verification: focused `PropertyControllerTest` PASS 32/32; frontend tests PASS 307/307; frontend production build PASS (pre-existing large-bundle advisory); `mvn clean compile` PASS; `git diff --check` PASS. Full `mvn test` did NOT pass: 394 tests, 1 unrelated `ParserLearningCaptureServiceTest` assertion failure and 2 `BackblazeB2LiveIntegrationTest` errors from unavailable DNS/network. The full command attempted those live tests; they were not retried. No browser automation was run because this is a compact gallery change without a reliable tagged-property visual fixture; manual tagged/untagged checks remain necessary at 320–1440px, including video, lightbox, keyboard, and touch behavior.
+
+No runtime database, B2, or Cloudinary changes were made by this task. The working tree's pre-existing uncommitted changes were preserved. Commit: NO. Push: NO.
+
+## 2026-09-26 14:45 IST — Phase-1 premium scan-efficient property discovery redesign
+
+Why: Approved replacement of alternating editorial discovery cards with a premium, consistent, comparison-friendly property grid. Existing Phase-1 behavior and the significant uncommitted working tree were preserved.
+
+Files changed in this task:
+- `frontend-web/src/components/PropertyShowcase.tsx`: replaced alternating zig-zag cards and timeline with a uniform two-column grid from 1024px and one column below; kept results header, location actions, empty/error states, card-surface navigation, internal action isolation, BHK, real cover tag, lazy cover media, and existing media-count source. Removed redundant Property listing badge and decorative verification crest (frontend `verified` is currently hardcoded rather than authoritative). Replaced oversized full-width CTA with a keyboard-accessible 44px View details affordance. Moved rent/deposit into consistent scan positions, omitted invalid area, simplified photo/video count copy, and matched six responsive loading skeletons to the new card geometry. Reduced motion is respected.
+- `frontend-web/src/services/propertyService.ts`, `frontend-web/src/types/index.ts`, `frontend-web/src/components/PublicPropertyDetail.tsx`: preserved null versus explicit zero deposit in public frontend mapping/type; detail's formatter signature accepts the nullable type without layout change.
+- `frontend-web/src/utils/discoveryCardData.ts`, `frontend-web/src/tests/discoveryCardData.test.mjs`: focused deposit and area presentation helpers/tests.
+- `frontend-web/src/tests/discoveryPerformanceAndNavigation.test.mjs`: replaced its obsolete alternating-card overlap assertion with a uniform-grid and internal-action isolation contract.
+- `verification_screenshots/premium_discovery/`: eight new requested desktop/tablet/mobile/live-card/skeleton screenshots. A temporary skeleton-only preview was created for deterministic screenshot capture and removed before handoff; no preview source remains.
+- `antigravity_changes`, `chat_gpt_changes`: appended this record.
+
+Verification: `npm run build` PASS (`tsc && vite build`; existing large-chunk advisory); `node --experimental-strip-types --test src/tests/*.test.mjs` PASS 309/309; `git diff --check` PASS. Backend files were not changed for this task, so backend tests were not rerun. Targeted browser check (under ten minutes) confirmed two aligned cards at 1440/1024, one column at 768/390, no horizontal overflow at 320/360/390/430/768/1024/1280/1440, 44px card controls, bookmark not navigating, card surface opening detail, and Back restoring the source card. Loading skeletons were captured at 1440 and 390. Weak/irrelevant seeded imagery and an authoritative verification signal require separate approval/data work; no UI workaround was made.
+
+Commit: NO. Push: NO. Phase-1 approval remains with the product owner after screenshot review.
+
+## 2026-09-26 19:58 IST — Smart rental search and backend autocomplete (batched QA)
+
+Why: Add the approved backend-powered rental search to the existing Phase-1 Hero without modifying the discovery cards or the previous Hero/Navbar visual work. Existing uncommitted changes were preserved.
+
+Changed: `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`, `repository/ListingRepository.java`, `service/RentalSearchQuery.java`, `dto/PublicSearchSuggestion.java`, `dto/PublicSearchSuggestions.java`, `backend/src/main/resources/db/migration/V13__public_rental_search_indexes.sql`, `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`, `service/RentalSearchQueryTest.java`, `frontend-web/src/components/HeroSection.tsx`, `DiscoveryLocationDialog.tsx`, `discoveryLocations.ts`, `Home.tsx`, `frontend-web/src/services/propertyService.ts`, `frontend-web/src/utils/rentalSearch.ts`, `frontend-web/src/tests/rentalSearch.test.mjs`, and both repository change logs. Search suggestions come from ACTIVE rental listing city/locality/BHK fields and carry structured values plus real grouped counts. Free text uses deterministic backend parsing and indexed locality-prefix filtering; no full-table contains/fuzzy scan, unreviewed landmark suggestions, or invented results. URL, pagination, retries, and discovery restoration carry search filters.
+
+Verification: backend focused tests 39/39 PASS (including MockMvc endpoint/JSON privacy assertions); frontend focused tests 24/24 PASS; all frontend tests 313/313 PASS; frontend build PASS; backend package with tests skipped PASS; `git diff --check` PASS. Browser tool was not invoked in this task by explicit batch-QA instruction. Repository SQL/index behavior was not run against a database; V13 migration was not executed. No runtime DB, B2, or Cloudinary changes. Commit: NO. Push: NO.
+
+DEFERRED BATCH QA: final browser pass at 320, 390, 430, 768, 820, 900, 1024, 1280, 1440px; test empty/two-character/fast/slow queries, stale cancellation, ArrowDown/ArrowUp/Enter/Escape/Tab and click selection, city switching, no-results/error/free-text fallback, long names, mobile keyboard, dropdown clipping/z-index/scroll. Queries: `vijay`, `vijay nagar`, `4 bhk vijay nagar`, `4bhk in vijay nagar`, `nipania`, `bhawarkua`; cities: Indore, Pune, Bhopal and long-city data. Stage-test repository SQL and query plans before deploying the unexecuted migration. Landmark autocomplete and typo tolerance need separate data/index decisions.
+
+## 2026-09-27 00:37 IST — Smart Search runtime error investigation
+
+Why: The Hero showed its suggestion API-error message; diagnose the local request/endpoint and database without browser tools or speculative changes.
+
+Changed: `chat_gpt_changes` only (this investigation record). No application source, UI, schema, or data was changed.
+
+Findings: The frontend issues GET `/api/v1/properties/search-suggestions?q=<text>&city=Indore&limit=8` through Vite's `/api` proxy to local Spring Boot on port 8080. The backend mapping and JSON contract match. Both local services were running during investigation. Direct backend and Vite-proxied calls for `vijay`, `2bhk fla`, `vijay nagar`, and a no-match query all returned HTTP 200; matching queries returned a real Vijay Nagar locality suggestion (13 active rentals), and no-match queries returned an empty suggestions array. Development PostgreSQL reported Flyway V13 successful; a read-only grouped query returned the same 13 rows, and the `2BHK` + `fla%` combination had zero matches. The previously observed error was not reproducible; its historical cause cannot be determined from the UI message alone because the catch block discards the underlying error. No root-cause code fix was made.
+
+Verification: focused backend tests PASS 39/39; frontend build PASS; `git diff --check` PASS. Browser/Playwright/screenshots NOT RUN as forbidden. No production, runtime data, B2, or Cloudinary changes. Commit: NO. Push: NO.
+
+## 2026-09-27 00:45 IST — Smart Search final hardening (batched QA)
+
+Why: Make suggestion request failures diagnosable without changing friendly UI copy, and recognize supported property-type terms/partial flat input while keeping suggestions and discovery results grounded in ACTIVE rental inventory.
+
+Changed: `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java` (known type aliases and flat prefixes after BHK), `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java` (property-type predicates), `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java` (optional propertyType discovery filter and inventory-backed suggestion labels), `backend/src/main/java/com/indore/pathome/spaces/dto/PublicSearchSuggestion.java` (typed propertyType), `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`, `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`, `frontend-web/src/utils/rentalSearch.ts` (typed structured selection, URL key, safe diagnostic metadata and abort/stale gate), `frontend-web/src/services/propertyService.ts` (propertyType discovery parameter and categorized suggestion request failures), `frontend-web/src/components/HeroSection.tsx` (development-only diagnostic; unchanged friendly fallback), `frontend-web/src/components/Home.tsx` (propertyType URL/first page/load-more/retry/restore propagation), `frontend-web/src/tests/rentalSearch.test.mjs`, and this `chat_gpt_changes` entry. No card/detail design or landmark matching changes.
+
+Verification: focused backend parser/controller tests PASS 43/43; `mvn clean compile` PASS; `mvn -DskipTests package` PASS; frontend focused tests PASS 6/6, full suite PASS 315/315, build PASS; `git diff --check` PASS. A temporary local backend on port 8081 used the existing development PostgreSQL inventory and was stopped after read-only HTTP checks. `2bhk fla` returned real FLAT 2BHK locality suggestions, `2bhk flat vijay nagar` returned one locality with two listings, `4bhk vijay nagar` returned no suggestions, and structured discovery returned the two real FLAT listings. The existing product-level Indore fallback in Home and restoration remains outside this focused task. Browser/Playwright/screenshots were not used by explicit batched-QA instruction. No commit or push.

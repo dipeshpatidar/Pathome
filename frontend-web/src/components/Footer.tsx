@@ -1,6 +1,10 @@
 import React from 'react';
 import { Building2, MapPin, Phone, Mail, ShieldCheck, Heart } from 'lucide-react';
 
+interface FooterProps {
+  onSelectSector?: (city: string, sector: string) => void;
+}
+
 const popularSectors = [
   'Vijay Nagar',
   'Bhawarkua',
@@ -9,10 +13,10 @@ const popularSectors = [
   'Super Corridor',
   'LIG Circle',
   'Old Palasia',
-  'South Tukoganj'
+  'Mahalaxmi Nagar'
 ];
 
-export const Footer: React.FC = () => {
+export const Footer: React.FC<FooterProps> = ({ onSelectSector }) => {
   return (
     <footer id="footer" className="bg-slate-950 text-slate-400 font-['Inter',sans-serif] border-t border-slate-800">
       
@@ -30,7 +34,7 @@ export const Footer: React.FC = () => {
             </div>
 
             <p className="text-xs leading-relaxed text-slate-400 max-w-sm">
-              Pathome — <span className="text-white font-semibold">Your Dreams, Our Efforts</span>. Premier zero-brokerage rental & plot marketplace backed by PostGIS spatial geofencing and physical verification.
+              Pathome — <span className="pathome-tagline text-white font-semibold">Your Dreams, Our Efforts.</span> Premier zero-brokerage rental & plot marketplace backed by PostGIS spatial geofencing and physical verification.
             </p>
 
             <div className="pt-2 flex flex-wrap items-center gap-2">
@@ -76,7 +80,16 @@ export const Footer: React.FC = () => {
             <ul className="space-y-2 text-xs">
               {popularSectors.map((sector) => (
                 <li key={sector}>
-                  <a href="#listings" className="hover:text-emerald-400 transition-colors flex items-center gap-1.5">
+                  <a
+                    href={`/?city=Indore&sector=${encodeURIComponent(sector)}#listings`}
+                    onClick={(e) => {
+                      if (onSelectSector) {
+                        e.preventDefault();
+                        onSelectSector('Indore', sector);
+                      }
+                    }}
+                    className="hover:text-emerald-400 transition-colors flex items-center gap-1.5 focus:outline-none focus:text-emerald-400"
+                  >
                     <MapPin className="w-3 h-3 text-slate-500 shrink-0" />
                     <span>{sector}</span>
                   </a>
@@ -107,7 +120,7 @@ export const Footer: React.FC = () => {
 
             <div className="pt-3">
               <span className="text-[10px] font-semibold text-slate-400 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 inline-block">
-                Ground Verification Team Active: 2 Boys Assigned
+                On-Site Verification Team: Field Personnel Active
               </span>
             </div>
           </div>

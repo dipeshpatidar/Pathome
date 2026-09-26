@@ -20,6 +20,7 @@ class ParserLearningCaptureServiceTest {
     @Mock
     private ParserLearningService parserLearningService;
 
+    @org.junit.jupiter.api.BeforeEach
     @AfterEach
     void clearTransactionState() {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {

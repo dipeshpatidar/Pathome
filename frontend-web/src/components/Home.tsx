@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Property, UserProfile, UserRole } from '../types';
@@ -13,14 +13,16 @@ import { Footer } from './Footer';
 import { AuthModal } from './AuthModal';
 import { LeaseUploadModal } from './LeaseUploadModal';
 import { TenantDashboard } from './TenantDashboard';
-import { VideoPlayerModal } from './VideoPlayerModal';
-import { CreditCard } from 'lucide-react';
+import { CreditCard, ArrowUp, ChevronDown, LoaderCircle, MapPin } from 'lucide-react';
+import { PublicPropertyDetail } from './PublicPropertyDetail';
+import { VisitRequestModal } from './VisitRequestModal';
 
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { propertyService } from '../services/propertyService';
 import { useNotification } from '../context/NotificationContext';
+import { discoverySearchKey, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
 
 const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   try {
@@ -713,7 +715,14 @@ export const Home: React.FC = () => {
   const initialSession = getInitialSession();
   const [role, setRole] = useState<UserRole>(initialSession.role);
   const [user, setUser] = useState<UserProfile | null>(initialSession.user);
-  const [properties, setProperties] = useState<Property[]>(mockPropertyList);
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [discoveryState, setDiscoveryState] = useState<'LOADING' | 'READY' | 'ERROR'>('LOADING');
+  const [loadedDiscoveryKey, setLoadedDiscoveryKey] = useState<string | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [hasMoreProperties, setHasMoreProperties] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const currentDiscoveryPage = useRef(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showLeaseModal, setShowLeaseModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
@@ -726,35 +735,208 @@ export const Home: React.FC = () => {
       } catch (_) {}
     }
   }, [activeAdminTab]);
-  const [filterSector, setFilterSector] = useState<string>('');
-  const [guestModalConfig, setGuestModalConfig] = useState<{ property: Property; initialMode?: 'VIDEO' | 'PHOTOS' } | null>(null);
+  const filterSector = new URLSearchParams(location.search).get('sector') || '';
+  const currentSearchParams = new URLSearchParams(location.search);
+  const activeDiscoveryCity = currentSearchParams.get('city')
+    || (currentSearchParams.has('q') || currentSearchParams.get('rentalOnly') === 'true' ? '' : 'Indore');
+  const activeSearchFilters: RentalSearchFilters = {
+    city: activeDiscoveryCity,
+    sector: filterSector || undefined,
+    q: currentSearchParams.get('q') || undefined,
+    bhk: currentSearchParams.get('bhk') || undefined,
+    propertyType: parseRentalPropertyType(currentSearchParams.get('propertyType')),
+    furnishing: parseRentalFurnishing(currentSearchParams.get('furnishing')),
+    minRent: parseRentFilter(currentSearchParams.get('minRent')),
+    maxRent: parseRentFilter(currentSearchParams.get('maxRent')),
+    rentalOnly: currentSearchParams.get('rentalOnly') === 'true'
+  };
+  const activeDiscoveryKey = discoverySearchKey(activeSearchFilters);
+  const [refineSearchRequest, setRefineSearchRequest] = useState(0);
+  const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
+  const discoveryRequestRef = useRef(0);
+  const focusResultsAfterSearch = useRef(false);
+  const discoveryAbortRef = useRef<AbortController | null>(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const isPropertyRoute = location.pathname.startsWith('/property/');
+  const isPublicPropertyRoute = /^\/property\/\d+$/.test(location.pathname);
+  const publicPropertyId = isPublicPropertyRoute ? Number(location.pathname.split('/').pop()) : null;
 
-  // Fetch live properties strictly from PostgreSQL backend DB on mount & realtime publish events
-  const loadLiveProperties = async () => {
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const prevIsPropertyRoute = useRef(isPropertyRoute);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowBackToTop(window.scrollY > 450);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Fetch live properties — resets to page 0 and discards previous results on every call
+  const loadLiveProperties = async (filters: RentalSearchFilters) => {
+    discoveryAbortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
+    const requestId = ++discoveryRequestRef.current;
+    const abortController = new AbortController();
+    discoveryAbortRef.current = abortController;
+    currentDiscoveryPage.current = 0;
+    setDiscoveryState('LOADING');
+    setDiscoveryError(null);
+    setHasMoreProperties(false);
+    setLoadMoreError(null);
     try {
-      const liveData = await propertyService.fetchProperties();
-      if (liveData && liveData.length > 0) {
-        setProperties(liveData);
-      } else {
-        setProperties(mockPropertyList);
-      }
-    } catch (err) {
-      console.warn('Backend server offline or unreachable. Displaying fallback properties:', err);
-      setProperties(mockPropertyList);
+      const result = await propertyService.fetchDiscoveryPage(0, filters.sector, filters.city, abortController.signal, filters);
+      if (requestId !== discoveryRequestRef.current) return; // stale — discard
+      setProperties(result.properties);
+      setLoadedDiscoveryKey(discoverySearchKey(filters));
+      setHasMoreProperties(result.hasMore);
+      currentDiscoveryPage.current = 0;
+      setDiscoveryState('READY');
+    } catch (err: any) {
+      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return;
+      console.warn('Public property discovery unavailable:', err);
+      setProperties([]);
+      setLoadedDiscoveryKey(discoverySearchKey(filters));
+      setHasMoreProperties(false);
+      setDiscoveryState('ERROR');
+      setDiscoveryError(err?.message || 'Unable to load properties. Please try again.');
     }
   };
 
+  // Load next page and append — preserves existing properties on failure
+  const loadMoreProperties = async (filters: RentalSearchFilters) => {
+    if (loadingMore) return; // prevent duplicate concurrent requests
+    loadMoreAbortRef.current?.abort();
+    const requestId = discoveryRequestRef.current; // must match the active filter session
+    const abortController = new AbortController();
+    loadMoreAbortRef.current = abortController;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    const nextPage = currentDiscoveryPage.current + 1;
+    try {
+      const result = await propertyService.fetchDiscoveryPage(nextPage, filters.sector, filters.city, abortController.signal, filters);
+      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return; // stale
+      setProperties(prev => [...prev, ...result.properties]);
+      setHasMoreProperties(result.hasMore);
+      currentDiscoveryPage.current = nextPage;
+    } catch (err: any) {
+      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return;
+      // Failure: existing properties preserved, retry button shown
+      setLoadMoreError(err?.message || 'Unable to load more properties. Please try again.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const handleOpenPropertyDetail = (property: Property) => {
+    try {
+      const query = new URLSearchParams(location.search);
+      sessionStorage.setItem('pathome_discovery_context', JSON.stringify({
+        city: query.get('city') || 'Indore',
+        sector: query.get('sector') || '',
+        searchKey: activeDiscoveryKey,
+        filterSector: filterSector || '',
+        page: currentDiscoveryPage.current,
+        properties: properties,
+        hasMore: hasMoreProperties,
+        scrollY: window.scrollY,
+        originPropertyId: property.id
+      }));
+    } catch (_) {}
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    navigate(`/property/${property.id}`);
+  };
+
+  const restoreDiscoveryState = (saved: any): boolean => {
+    if (!saved || !Array.isArray(saved.properties) || saved.properties.length === 0) {
+      return false;
+    }
+    setProperties(saved.properties);
+    setLoadedDiscoveryKey(saved.searchKey || discoverySearchKey({ city: saved.city || 'Indore', sector: saved.sector || undefined, rentalOnly: false }));
+    setHasMoreProperties(Boolean(saved.hasMore));
+    currentDiscoveryPage.current = saved.page ?? 0;
+    setDiscoveryState('READY');
+    setDiscoveryError(null);
+
+    // Polling retry: ensure the target DOM card is rendered before scrolling
+    let attempts = 0;
+    const maxAttempts = 20; // 20 * 30ms = 600ms
+    const interval = setInterval(() => {
+      attempts += 1;
+      const targetEl = saved.originPropertyId
+        ? document.getElementById(`property-card-${saved.originPropertyId}`)
+        : null;
+
+      if (targetEl) {
+        clearInterval(interval);
+        try { sessionStorage.removeItem('pathome_discovery_context'); } catch (_) {}
+        targetEl.scrollIntoView({ behavior: 'instant', block: 'center' });
+        return;
+      }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        try { sessionStorage.removeItem('pathome_discovery_context'); } catch (_) {}
+        if (typeof saved.scrollY === 'number') {
+          window.scrollTo({ top: saved.scrollY, behavior: 'instant' });
+        }
+      }
+    }, 30);
+
+    return true;
+  };
+
+  // Back-to-discovery restoration effect: monitors route transition from property detail back to discovery
   useEffect(() => {
-    loadLiveProperties();
+    const wasPropertyRoute = prevIsPropertyRoute.current;
+    prevIsPropertyRoute.current = isPropertyRoute;
+
+    if (wasPropertyRoute && !isPropertyRoute) {
+      try {
+        const savedRaw = sessionStorage.getItem('pathome_discovery_context');
+        if (savedRaw) {
+          const saved = JSON.parse(savedRaw);
+          const savedKey = saved.searchKey || discoverySearchKey({ city: saved.city || 'Indore', sector: saved.sector || undefined, rentalOnly: false });
+          if (savedKey === activeDiscoveryKey) {
+            const restored = restoreDiscoveryState(saved);
+            if (restored) return;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to restore discovery context on back navigation:', err);
+      }
+    }
+  }, [isPropertyRoute, location.search]);
+
+  useEffect(() => {
+    if (isPropertyRoute) return;
+
+    // Restore preserved discovery context when returning from property detail
+    try {
+      const savedRaw = sessionStorage.getItem('pathome_discovery_context');
+      if (savedRaw) {
+        const saved = JSON.parse(savedRaw);
+        const savedKey = saved.searchKey || discoverySearchKey({ city: saved.city || 'Indore', sector: saved.sector || undefined, rentalOnly: false });
+        if (savedKey === activeDiscoveryKey) {
+          const restored = restoreDiscoveryState(saved);
+          if (restored) return;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to restore discovery context:', err);
+    }
+
+    loadLiveProperties(activeSearchFilters);
 
     const handlePropertyPublished = () => {
-      loadLiveProperties();
+      loadLiveProperties(activeSearchFilters);
     };
     window.addEventListener('pathome_property_published', handlePropertyPublished);
     return () => {
       window.removeEventListener('pathome_property_published', handlePropertyPublished);
+      discoveryAbortRef.current?.abort();
     };
-  }, []);
+  }, [location.search, isPropertyRoute]);
 
   // 1. MULTI-TAB & MULTI-WINDOW CROSS-TAB SESSION SYNCHRONIZATION
   useEffect(() => {
@@ -828,6 +1010,7 @@ export const Home: React.FC = () => {
       localStorage.setItem('pathome_role', role);
       localStorage.setItem('pathome_user', JSON.stringify(user));
 
+      if (isPropertyRoute) return;
       if (role === 'TENANT' && path !== '/tenant') {
         navigate('/tenant', { replace: true });
       } else if (role === 'EMPLOYEE' && path !== '/crm') {
@@ -836,7 +1019,83 @@ export const Home: React.FC = () => {
         navigate('/admin', { replace: true });
       }
     }
-  }, [location.pathname, user, role, navigate]);
+  }, [location.pathname, user, role, navigate, isPropertyRoute]);
+
+  const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>) => {
+    focusResultsAfterSearch.current = true;
+    const query = new URLSearchParams();
+    const effectiveCity = city || undefined;
+    if (effectiveCity) query.set('city', effectiveCity);
+    if (sector && sector !== 'ALL' && sector !== 'All Localities') {
+      query.set('sector', sector);
+    }
+    if (search?.q) query.set('q', search.q);
+    if (search?.bhk) query.set('bhk', search.bhk);
+    if (search?.propertyType) query.set('propertyType', search.propertyType);
+    if (search?.furnishing) query.set('furnishing', search.furnishing);
+    if (search?.minRent) query.set('minRent', String(search.minRent));
+    if (search?.maxRent) query.set('maxRent', String(search.maxRent));
+    if (search?.rentalOnly) query.set('rentalOnly', 'true');
+    const nextFilters: RentalSearchFilters = {
+      city: effectiveCity,
+      sector: query.get('sector') || undefined,
+      q: search?.q,
+      bhk: search?.bhk,
+      propertyType: search?.propertyType,
+      furnishing: search?.furnishing,
+      minRent: search?.minRent,
+      maxRent: search?.maxRent,
+      rentalOnly: Boolean(search?.rentalOnly)
+    };
+    const sameCriteria = discoverySearchKey(nextFilters) === activeDiscoveryKey;
+    if (sameCriteria && discoveryState === 'READY') {
+      focusResultsAfterSearch.current = false;
+      window.requestAnimationFrame(() => document.getElementById('discovery-results-heading')?.focus({ preventScroll: true }));
+    } else if (sameCriteria && discoveryState === 'ERROR') {
+      loadLiveProperties(nextFilters);
+    }
+    navigate(`/?${query.toString()}#listings`);
+    const listingsElement = document.getElementById('listings');
+    if (listingsElement) {
+      listingsElement.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+        block: 'start'
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!focusResultsAfterSearch.current || loadedDiscoveryKey !== activeDiscoveryKey || discoveryState === 'LOADING') return;
+    focusResultsAfterSearch.current = false;
+    window.requestAnimationFrame(() => {
+      document.getElementById(discoveryState === 'ERROR' ? 'discovery-results-error' : 'discovery-results-heading')?.focus({ preventScroll: true });
+    });
+  }, [activeDiscoveryKey, loadedDiscoveryKey, discoveryState]);
+
+  const handleSaveFavorite = (property: Property) => {
+    if (role === 'GUEST' || !user) {
+      try {
+        sessionStorage.setItem('pathome_pending_favorite_property_id', String(property.id));
+      } catch (_) {}
+      setShowAuthModal(true);
+      notifySuccess('Sign in to save properties', 'Create or log into your Pathome account to save your favorite homes.');
+      return;
+    }
+    try {
+      const existing = JSON.parse(sessionStorage.getItem('pathome_session_saved_properties') || '[]');
+      if (!existing.includes(property.id)) {
+        sessionStorage.setItem('pathome_session_saved_properties', JSON.stringify([...existing, property.id]));
+      }
+    } catch (_) {}
+    notifySuccess('Saved for this session', `"${property.title}" is saved for your current session.`);
+  };
+
+  const handleRequestVisit = (property: Property) => {
+    setPendingVisitProperty(property);
+    if (role !== 'TENANT' || !user) {
+      setShowAuthModal(true);
+    }
+  };
 
   const handleBookTour = (property: Property) => {
     if (role === 'GUEST') {
@@ -857,6 +1116,10 @@ export const Home: React.FC = () => {
   const handleLoginSuccess = (userProfile: UserProfile) => {
     setUser(userProfile);
     setRole(userProfile.role);
+    if (pendingVisitProperty && userProfile.role === 'TENANT') {
+      navigate(`/property/${pendingVisitProperty.id}`);
+      return;
+    }
     let targetPath = '/tenant';
     if (userProfile.role === 'EMPLOYEE') targetPath = '/crm';
     else if (userProfile.role === 'SUB_ADMIN' || userProfile.role === 'SUPER_ADMIN' || userProfile.role === 'ADMIN') targetPath = '/admin';
@@ -885,11 +1148,16 @@ export const Home: React.FC = () => {
         onLogout={handleLogout}
         activeAdminTab={activeAdminTab}
         setActiveAdminTab={setActiveAdminTab}
+        isLandingHero={!isPropertyRoute && role === 'GUEST'}
       />
+
+      {isPropertyRoute && (
+        <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />
+      )}
 
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
       <AnimatePresence mode="wait">
-        {role === 'EMPLOYEE' && (
+        {!isPropertyRoute && role === 'EMPLOYEE' && (
           <motion.div 
             key="employee-crm-view"
             initial={{ opacity: 0, y: 16 }}
@@ -904,7 +1172,7 @@ export const Home: React.FC = () => {
 
       {/* MASTER ADMIN CONSOLE & SUB-ADMIN OVERLAY */}
       <AnimatePresence mode="wait">
-        {(role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN') && (
+        {!isPropertyRoute && (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN') && (
           <motion.div 
             key="master-admin-view"
             initial={{ opacity: 0, y: 16 }}
@@ -919,7 +1187,7 @@ export const Home: React.FC = () => {
 
       {/* LOGGED IN TENANT DASHBOARD VIEW vs GUEST HOMEPAGE VIEW */}
       <AnimatePresence mode="wait">
-        {role === 'TENANT' && user ? (
+        {!isPropertyRoute && role === 'TENANT' && user ? (
           <motion.div
             key="tenant-dashboard"
             initial={{ opacity: 0, y: 16 }}
@@ -934,7 +1202,7 @@ export const Home: React.FC = () => {
               onOpenLeaseUpload={() => setShowLeaseModal(true)}
             />
           </motion.div>
-        ) : role === 'GUEST' && (
+        ) : !isPropertyRoute && role === 'GUEST' && (
           <motion.div
             key="guest-homepage"
             initial={{ opacity: 0, y: 16 }}
@@ -943,8 +1211,19 @@ export const Home: React.FC = () => {
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* SECTION 1: HERO SEARCH HUB */}
-            <div id="hero">
-              <HeroSection onSearch={(sector) => setFilterSector(sector)} />
+            <div id="hero" className="-mt-[74.5px]">
+              <HeroSection
+                onSearch={handleDiscoverySearch}
+                selectedCity={activeDiscoveryCity}
+                selectedSector={filterSector}
+                selectedQuery={activeSearchFilters.q}
+                selectedBhk={activeSearchFilters.bhk}
+                selectedPropertyType={activeSearchFilters.propertyType}
+                selectedFurnishing={activeSearchFilters.furnishing}
+                selectedMinRent={activeSearchFilters.minRent}
+                selectedMaxRent={activeSearchFilters.maxRent}
+                refineRequest={refineSearchRequest}
+              />
             </div>
 
             {/* SECTION 2: LIVE TRUST & STATS BAR */}
@@ -958,13 +1237,60 @@ export const Home: React.FC = () => {
             </motion.div>
 
             {/* SECTION 3: FEATURED PROPERTIES GRID */}
-            <div id="listings">
+            <div id="listings" className="scroll-mt-20">
               <PropertyShowcase
                 properties={properties}
-                onBookTour={handleBookTour}
-                onOpenMediaModal={(p, mode) => setGuestModalConfig({ property: p, initialMode: mode })}
+                isLoading={discoveryState === 'LOADING' || loadedDiscoveryKey !== activeDiscoveryKey}
+                error={discoveryState === 'ERROR' ? discoveryError : null}
+                onRetry={() => {
+                  loadLiveProperties(activeSearchFilters);
+                }}
+                onClearLocality={() => handleDiscoverySearch(activeDiscoveryCity, undefined)}
+                onViewDetails={handleOpenPropertyDetail}
+                onRefineSearch={() => setRefineSearchRequest((request) => request + 1)}
+                onOpenMediaModal={handleOpenPropertyDetail}
                 selectedSectorFilter={filterSector}
+                selectedCityFilter={activeDiscoveryCity}
+                onSaveFavorite={handleSaveFavorite}
               />
+              {/* Single Authoritative Show More Properties CTA */}
+              {discoveryState === 'READY' && loadedDiscoveryKey === activeDiscoveryKey && properties.length > 0 && (hasMoreProperties || loadMoreError) && (
+                <div className="mx-auto flex max-w-7xl flex-col items-center gap-3 px-4 pb-8 pt-2">
+                  {loadMoreError && (
+                    <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadMoreError}</p>
+                  )}
+                  {(hasMoreProperties || loadMoreError) && (
+                    <button
+                      type="button"
+                      disabled={loadingMore}
+                      onClick={() => {
+                        loadMoreProperties(activeSearchFilters);
+                      }}
+                      className="group relative inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-emerald-600/35 bg-white px-8 py-3 text-sm font-extrabold text-emerald-700 shadow-xs transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-600/70 hover:bg-emerald-50/90 hover:shadow-md active:translate-y-0 active:scale-[0.98] active:shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-xs"
+                      aria-label={loadingMore ? "Loading more properties" : loadMoreError ? "Retry loading properties" : "Show More Properties"}
+                    >
+                      {loadingMore ? (
+                        <>
+                          <LoaderCircle className="h-4 w-4 animate-spin text-emerald-600" />
+                          <span>Loading more properties…</span>
+                        </>
+                      ) : loadMoreError ? (
+                        <span>Retry</span>
+                      ) : (
+                        <>
+                          <span>Show More Properties</span>
+                          <ChevronDown className="h-4 w-4 text-emerald-600 transition-transform duration-200 group-hover:translate-y-0.5" />
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+              {discoveryState === 'READY' && loadedDiscoveryKey === activeDiscoveryKey && !hasMoreProperties && properties.length > 0 && !loadMoreError && (
+                <div className="mx-auto max-w-7xl px-4 py-6 text-center">
+                  <p className="text-xs font-semibold text-slate-400">You've seen all available properties.</p>
+                </div>
+              )}
             </div>
 
             {/* SECTION 4: 3-STEP HOW IT WORKS */}
@@ -1000,7 +1326,33 @@ export const Home: React.FC = () => {
             </motion.div>
 
             {/* SECTION 7: LANDING PAGE FOOTER */}
-            <Footer />
+            <Footer onSelectSector={handleDiscoverySearch} />
+
+            {/* FLOATING BACK TO TOP CONTROL */}
+            <AnimatePresence>
+              {showBackToTop && (
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.8, y: 12 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.8, y: 12 }}
+                  transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                  type="button"
+                  aria-label="Back to top of listings"
+                  title="Back to top"
+                  onClick={() => {
+                    const listingsEl = document.getElementById('listings');
+                    if (listingsEl) {
+                      listingsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    } else {
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                  }}
+                  className="fixed bottom-6 right-4 z-30 hidden h-11 w-11 items-center justify-center rounded-full border border-slate-200/90 bg-white/95 text-slate-700 shadow-xl backdrop-blur-md transition-all hover:border-emerald-500/50 hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 md:bottom-8 md:right-4 md:flex lg:bottom-8 lg:right-4 xl:right-6 min-[1380px]:right-[max(1.5rem,calc((100vw-80rem)/2-3.75rem))]"
+                >
+                  <ArrowUp className="h-5 w-5" />
+                </motion.button>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1069,13 +1421,10 @@ export const Home: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* GUEST LANDING PAGE MEDIA & PHOTO LIGHTBOX MODAL */}
-      <VideoPlayerModal
-        property={guestModalConfig?.property || null}
-        isOpen={!!guestModalConfig}
-        initialMode={guestModalConfig?.initialMode || 'PHOTOS'}
-        onClose={() => setGuestModalConfig(null)}
-        onBookTour={handleBookTour}
+      <VisitRequestModal
+        property={pendingVisitProperty}
+        isOpen={role === 'TENANT' && !!pendingVisitProperty}
+        onClose={() => setPendingVisitProperty(null)}
       />
 
     </div>

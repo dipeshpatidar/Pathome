@@ -39,7 +39,9 @@ public class ListingGalleryConcurrencyTest {
                 mock(com.indore.pathome.spaces.service.ParserLearningService.class),
                 mock(com.indore.pathome.spaces.service.ParserLearningCaptureService.class),
                 mock(com.indore.pathome.spaces.service.BatchPropertyPublishingService.class),
-                null
+                null,
+                mock(com.indore.pathome.spaces.repository.UserRepository.class),
+                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class)
         );
     }
 

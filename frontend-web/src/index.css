@@ -97,6 +97,11 @@
                 box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1), 
                 border-color 0.35s cubic-bezier(0.16, 1, 0.3, 1);
   }
+
+  .pathome-tagline {
+    letter-spacing: 0.015em;
+    text-wrap: balance;
+  }
 }
 
 @keyframes scanline {
@@ -292,4 +297,3 @@
 .animate-scan-beam {
   animation: scanBeamHorizontal 3s ease-in-out infinite;
 }
-

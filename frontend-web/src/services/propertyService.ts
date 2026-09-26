@@ -2,6 +2,8 @@ import { Property, PropertyMediaAsset, RoomTag } from '../types';
 import { API_ROOT_URL } from '../config/endpoints';
 import { ApiRequestError, createApiRequestError, notifySessionExpired } from './apiError';
 import { prepareMediaForUpload } from '../utils/imageOptimizer';
+import { parseSecurityDeposit } from '../utils/discoveryCardData';
+import { mapRentalSuggestion, RentalSearchFilters, RentalSuggestion, SuggestionRequestError } from '../utils/rentalSearch';
 
 const API_BASE_URL = `${API_ROOT_URL}/properties`;
 const MEDIA_UPLOAD_ATTEMPTS = 3;
@@ -19,6 +21,40 @@ export interface MediaUploadOptions {
   signal?: AbortSignal;
 }
 
+export interface SearchFeedbackPayload {
+  eventType?: 'SUGGESTION_SELECTED' | 'SEARCH_EXECUTED';
+  candidateTerm?: string;
+  canonicalLocality?: string;
+  canonicalCity?: string;
+  selectedType?: string;
+  selectedRank?: number;
+  resolutionMethod?: string;
+  fuzzyConfidence?: number;
+  sessionId?: string;
+  bhkKey?: string;
+  propertyTypeKey?: string;
+  furnishingKey?: string;
+  searchExecuted?: boolean;
+  resultCount?: number;
+  zeroResult?: boolean;
+}
+
+export const getSearchSessionId = (): string => {
+  try {
+    const key = 'pathome_search_session_id';
+    let id = sessionStorage.getItem(key);
+    if (!id) {
+      id = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `sess_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      sessionStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return 'fallback_session';
+  }
+};
+
 const getAdminAuthorizationHeader = (): Record<string, string> => {
   const token = localStorage.getItem('pathome_auth_token');
   if (!token) {
@@ -30,6 +66,100 @@ const getAdminAuthorizationHeader = (): Record<string, string> => {
 
 const wait = (durationMs: number): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, durationMs));
+
+type PublicMediaPayload = {
+  mediaUrl?: unknown;
+  mediaType?: unknown;
+  roomTag?: unknown;
+  primaryCover?: unknown;
+};
+
+const isVideoMedia = (media: PublicMediaPayload): boolean => {
+  const mediaType = typeof media.mediaType === 'string' ? media.mediaType.toUpperCase() : '';
+  const url = typeof media.mediaUrl === 'string' ? media.mediaUrl.toLowerCase() : '';
+  return mediaType === 'VIDEO_WALKTHROUGH' || mediaType === 'VIDEO' || /\.(mp4|webm|mov)(?:[?#]|$)/.test(url);
+};
+
+/** Maps the full public detail projection; uses `media` array from PublicPropertyResponse. */
+const mapPublicProperty = (item: any): Property => {
+  const media = Array.isArray(item?.media)
+    ? item.media.filter((entry: PublicMediaPayload) => typeof entry?.mediaUrl === 'string' && entry.mediaUrl.trim())
+    : [];
+  const imageUrls = media.filter((entry: PublicMediaPayload) => !isVideoMedia(entry))
+    .map((entry: PublicMediaPayload) => entry.mediaUrl as string);
+  const videoUrl = media.find(isVideoMedia)?.mediaUrl as string | undefined;
+
+  return {
+    id: item.id,
+    title: item.title || '',
+    listingType: item.listingType || 'RENT',
+    propertyType: item.propertyType || 'FLAT',
+    city: item.city || '',
+    sector: item.sector || '',
+    bhk: item.bhk || item.bhkCount || '',
+    monthlyRent: item.monthlyRent ? Number(item.monthlyRent) : 0,
+    securityDeposit: parseSecurityDeposit(item.securityDeposit),
+    maintenanceCharge: item.maintenanceCharge ? Number(item.maintenanceCharge) : undefined,
+    askingPrice: item.askingPrice ? Number(item.askingPrice) : undefined,
+    totalAreaSqFt: item.totalAreaSqFt ? Number(item.totalAreaSqFt) : 0,
+    images: imageUrls,
+    videoUrl: videoUrl || '',
+    taggedMedia: media.map((entry: PublicMediaPayload) => ({
+      listingId: item.id,
+      mediaUrl: entry.mediaUrl as string,
+      mediaType: entry.mediaType as any,
+      roomTag: entry.roomTag as RoomTag,
+      isPrimaryCover: Boolean(entry.primaryCover)
+    })),
+    verified: true,
+    description: item.description || undefined,
+    furnishingStatus: item.furnishingStatus || undefined,
+    amenities: item.amenities || undefined,
+    bathroomCount: typeof item.bathroomCount === 'number' ? item.bathroomCount : null,
+    availableFrom: item.availableFrom || null,
+    vastuFacing: item.vastuFacing || undefined,
+    bachelorAllowed: typeof item.bachelorAllowed === 'boolean' ? item.bachelorAllowed : undefined,
+    floor: typeof item.floorNumber === 'number' ? item.floorNumber : (typeof item.floor === 'number' ? item.floor : null),
+    totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
+    preferredTenant: item.preferredTenant || null
+  };
+};
+
+/**
+ * Maps a single PublicDiscoveryResponse item (paginated list endpoint).
+ * Each item carries only `coverImageUrl` for the landing card; no full gallery.
+ */
+const mapDiscoveryProperty = (item: any): Property => ({
+  id: item.id,
+  title: item.title || '',
+  listingType: item.listingType || 'RENT',
+  propertyType: item.propertyType || 'FLAT',
+  city: item.city || '',
+  sector: item.sector || '',
+  bhk: item.bhk || item.bhkCount || '',
+  monthlyRent: item.monthlyRent ? Number(item.monthlyRent) : 0,
+  securityDeposit: parseSecurityDeposit(item.securityDeposit),
+  maintenanceCharge: item.maintenanceCharge ? Number(item.maintenanceCharge) : undefined,
+  totalAreaSqFt: item.totalAreaSqFt ? Number(item.totalAreaSqFt) : 0,
+  // Discovery: a single cover URL in images[0], or [] if no media exists
+  images: typeof item.coverImageUrl === 'string' && item.coverImageUrl.trim() ? [item.coverImageUrl.trim()] : [],
+  coverRoomTag: typeof item.coverImageUrl === 'string' && item.coverImageUrl.trim()
+    ? item.coverRoomTag ?? null : null,
+  videoUrl: '',
+  taggedMedia: [],
+  verified: true,
+  furnishingStatus: item.furnishingStatus || undefined,
+  amenities: item.amenities || undefined,
+  vastuFacing: item.vastuFacing || undefined,
+  bachelorAllowed: typeof item.bachelorAllowed === 'boolean' ? item.bachelorAllowed : undefined,
+  availableFrom: item.availableFrom || null,
+  floor: typeof item.floorNumber === 'number' ? item.floorNumber : null,
+  totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
+  preferredTenant: item.preferredTenant || null,
+  // Carry mediaCount and hasVideo for badge display in the card
+  _mediaCount: typeof item.mediaCount === 'number' ? item.mediaCount : undefined,
+  _hasVideo: typeof item.hasVideo === 'boolean' ? item.hasVideo : false,
+} as any);
 
 export const createStableUploadRequestId = (
   propertyId: number,
@@ -185,53 +315,147 @@ const uploadWithRetry = async <T>(
 
 export const propertyService = {
   /**
-   * Fetches active properties from Spring Boot backend REST API
+   * Fetches a single page of active properties from the paginated public discovery endpoint.
+   * Returns at most 6 properties per page ordered latest-published first (id DESC).
+   * Each property carries only the single best cover image URL.
    */
-  async fetchProperties(sector?: string, city?: string): Promise<Property[]> {
+  async fetchDiscoveryPage(
+    page: number,
+    sector?: string,
+    city?: string,
+    signal?: AbortSignal,
+    search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>
+  ): Promise<{ properties: Property[]; hasMore: boolean; page: number }> {
     const url = new URL(API_BASE_URL, window.location.origin);
+    url.searchParams.set('page', String(page));
     if (sector) url.searchParams.append('sector', sector);
     if (city) url.searchParams.append('city', city);
+    if (search?.q) url.searchParams.set('q', search.q);
+    if (search?.bhk) url.searchParams.set('bhk', search.bhk);
+    if (search?.propertyType) url.searchParams.set('propertyType', search.propertyType);
+    if (search?.furnishing) url.searchParams.set('furnishing', search.furnishing);
+    if (search?.minRent) url.searchParams.set('minRent', String(search.minRent));
+    if (search?.maxRent) url.searchParams.set('maxRent', String(search.maxRent));
+    if (search?.rentalOnly) url.searchParams.set('rentalOnly', 'true');
 
     const response = await fetch(url.toString(), {
-      headers: {
-        'Accept': 'application/json'
-      }
+      signal,
+      headers: { 'Accept': 'application/json' }
     });
-
     if (!response.ok) {
       throw await createApiRequestError(response, 'Unable to load properties. Please try again.');
     }
+    const body = await response.json();
+    const items: Property[] = Array.isArray(body?.properties)
+      ? body.properties.map(mapDiscoveryProperty)
+      : [];
+    return { properties: items, hasMore: Boolean(body?.hasMore), page: body?.page ?? page };
+  },
 
-    const listings = await response.json();
-    
-    return listings.map((item: any) => {
-      const rawMedia = item.mediaGalleryUrls ? item.mediaGalleryUrls.split(',') : [];
-      const images = rawMedia.filter((m: string) => !m.endsWith('.mp4'));
-      const video = rawMedia.find((m: string) => m.endsWith('.mp4'));
+  async fetchRentalSuggestions(query: string, city: string | undefined, signal: AbortSignal): Promise<RentalSuggestion[]> {
+    const url = new URL(`${API_BASE_URL}/search-suggestions`, window.location.origin);
+    url.searchParams.set('q', query);
+    if (city) url.searchParams.set('city', city);
+    url.searchParams.set('limit', '8');
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), { signal, headers: { Accept: 'application/json' } });
+    } catch (error) {
+      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (error instanceof TypeError) throw new SuggestionRequestError('network');
+      throw error;
+    }
+    if (!response.ok) {
+      await createApiRequestError(response, 'Search suggestions are unavailable.');
+      throw new SuggestionRequestError('http', response.status);
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      throw new SuggestionRequestError('json');
+    }
+    if (!body || typeof body !== 'object' || typeof (body as { query?: unknown }).query !== 'string'
+        || !Array.isArray((body as { suggestions?: unknown }).suggestions)) {
+      throw new SuggestionRequestError('contract');
+    }
+    const suggestions = (body as { suggestions: unknown[] }).suggestions
+      .map(mapRentalSuggestion).filter((item: RentalSuggestion | null): item is RentalSuggestion => item !== null);
+    if (suggestions.length !== (body as { suggestions: unknown[] }).suggestions.length) {
+      throw new SuggestionRequestError('contract');
+    }
+    return suggestions;
+  },
 
-      return {
-        id: item.id,
-        title: item.title || '',
-        listingType: item.listingType || 'RENT',
-        propertyType: item.propertyType || 'FLAT',
-        city: item.city || 'Indore',
-        sector: item.sector || '',
-        bhk: item.bhkCount || item.bhk || '',
-        monthlyRent: item.monthlyRent ? Number(item.monthlyRent) : 0,
-        securityDeposit: item.securityDeposit ? Number(item.securityDeposit) : 0,
-        askingPrice: item.askingPrice ? Number(item.askingPrice) : undefined,
-        totalAreaSqFt: item.totalAreaSqFt ? Number(item.totalAreaSqFt) : 0,
-        images: images,
-        videoUrl: video || '',
-        verified: item.status === 'ACTIVE',
-        ownerPhone: item.ownerPhoneNumber || '',
-        latitude: item.latitude,
-        longitude: item.longitude,
-        floor: typeof item.floorNumber === 'number' ? item.floorNumber : (typeof item.floor === 'number' ? item.floor : null),
-        totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
-        preferredTenant: item.preferredTenant || null
-      };
+  /**
+   * Reports lightweight, privacy-safe search feedback (fire-and-forget).
+   */
+  reportSearchFeedback(payload: SearchFeedbackPayload): void {
+    try {
+      const url = `${API_BASE_URL}/search-feedback`;
+      const body = JSON.stringify({
+        ...payload,
+        sessionId: payload.sessionId || getSearchSessionId()
+      });
+      if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+        const blob = new Blob([body], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+      } else {
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          keepalive: true
+        }).catch(() => {});
+      }
+    } catch {
+      // Best-effort telemetry must never throw or affect UX
+    }
+  },
+
+  /**
+   * Fetches active properties from Spring Boot backend REST API
+   * @deprecated Use fetchDiscoveryPage for paginated public discovery.
+   */
+  async fetchProperties(sector?: string, city?: string, signal?: AbortSignal): Promise<Property[]> {
+    const result = await this.fetchDiscoveryPage(0, sector, city, signal);
+    return result.properties;
+  },
+
+  async getPublicProperty(propertyId: number): Promise<Property> {
+    const response = await fetch(`${API_BASE_URL}/${propertyId}`, {
+      headers: { 'Accept': 'application/json' }
     });
+    if (!response.ok) {
+      throw await createApiRequestError(response, response.status === 404
+        ? 'This property is no longer available.'
+        : 'Unable to load this property. Please try again.');
+    }
+    return mapPublicProperty(await response.json());
+  },
+
+  async createVisitRequest(propertyId: number, payload: {
+    budgetMin?: number;
+    budgetMax?: number;
+    preferredAreas?: string;
+    moveInTiming?: string;
+    preferredVisitTiming: string;
+    note?: string;
+  }): Promise<{ requestId: number; propertyId: number; status: string; message: string; receivedAt: string }> {
+    const token = localStorage.getItem('pathome_auth_token');
+    const response = await fetch(`${API_BASE_URL}/${propertyId}/visit-requests`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw await createApiRequestError(response, 'Unable to send your visit request. Please try again.');
+    }
+    return response.json();
   },
 
   /**
@@ -305,12 +529,14 @@ export const propertyService = {
    */
   async fetchTaggedMedia(propertyId: number): Promise<PropertyMediaAsset[]> {
     try {
-      const response = await fetch(`${API_BASE_URL}/${propertyId}/tagged-media`);
-      if (!response.ok) return [];
+      const response = await fetch(`${API_BASE_URL}/${propertyId}/tagged-media`, {
+        headers: { 'Accept': 'application/json', ...getAdminAuthorizationHeader() }
+      });
+      if (!response.ok) throw await createApiRequestError(response, 'Unable to load saved property media.');
       return await response.json();
     } catch (err) {
       console.warn('Failed to fetch tagged media:', err);
-      return [];
+      throw err;
     }
   },
 
