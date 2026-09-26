@@ -474,17 +474,13 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
                   : `${selectedSectorFilter ? `${selectedCityFilter} · ` : ''}Showing ${properties.length} ${properties.length === 1 ? 'home' : 'homes'}`}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {selectedSectorFilter && !isLoading && !error && onClearLocality && (
+          {selectedSectorFilter && !isLoading && !error && onClearLocality && (
+            <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={onClearLocality} className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 shadow-xs transition-colors duration-150 hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
                 Clear locality
               </button>
-            )}
-            <button type="button" onClick={onRefineSearch} className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 shadow-sm transition-colors duration-150 hover:border-emerald-500 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
-              <MapPin className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-              Change search
-            </button>
-          </div>
+            </div>
+          )}
         </motion.div>
 
         {isLoading ? (
@@ -501,15 +497,11 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
             </div>
             <h3 className="font-['Outfit',sans-serif] text-lg font-bold text-slate-900">Unable to load properties</h3>
             <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">{error}</p>
-            <div className="mt-5 flex flex-wrap justify-center gap-3">
-              {onRetry && (
+            {onRetry && (
+              <div className="mt-5 flex flex-wrap justify-center gap-3">
                 <button type="button" onClick={onRetry} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 text-sm font-bold text-white transition-colors hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">Try again</button>
-              )}
-              <button type="button" onClick={onRefineSearch} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
-                <MapPin className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-                Change search
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         ) : properties.length > 0 ? (
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
@@ -537,15 +529,11 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
             </div>
             <h3 className="font-['Outfit',sans-serif] text-xl font-extrabold text-slate-900">No homes found</h3>
             <p className="mx-auto mt-1.5 max-w-md text-sm text-slate-600">Try another location or adjust your filters.</p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              {selectedSectorFilter && onClearLocality && (
+            {selectedSectorFilter && onClearLocality && (
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
                 <button type="button" onClick={onClearLocality} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-bold text-white transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">Clear locality</button>
-              )}
-              <button type="button" onClick={onRefineSearch} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
-                <MapPin className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-                Change search
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         )}
       </div>

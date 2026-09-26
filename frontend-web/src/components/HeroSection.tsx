@@ -7,7 +7,7 @@ import {
 import { ArrowRight, ChevronDown, MapPin, Search, X } from 'lucide-react';
 import { DiscoveryLocationDialog } from './DiscoveryLocationDialog';
 import { propertyService } from '../services/propertyService';
-import { buildRentalSearchFilters, normalizeSearchText, RentalSearchFilters, RentalSuggestion, RentalPropertyType, RentalFurnishing, shouldSurfaceSuggestionFailure, suggestionFailureDiagnostic, suggestionFromStructuredFilters } from '../utils/rentalSearch';
+import { buildRentalSearchFilters, normalizeSearchText, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters, RentalSuggestion, RentalPropertyType, RentalFurnishing, shouldSurfaceSuggestionFailure, suggestionFailureDiagnostic, suggestionFromStructuredFilters } from '../utils/rentalSearch';
 
 interface HeroSectionProps {
   onSearch: (city?: string, sector?: string, filters?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>) => void;
@@ -125,11 +125,49 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
 
   const applySearch = () => {
     setSuggestionsOpen(false);
+    setIsEditing(false);
     const filters = buildRentalSearchFilters(draftCity, searchText, selection);
     if (filters.city && filters.city !== draftCity) {
       setDraftCity(filters.city);
     }
     onSearch(filters.city, filters.sector, filters);
+  };
+
+  const handleManualCityChange = (newCity: string) => {
+    setDraftCity(newCity);
+    setSearchText('');
+    setSelection(null);
+    setIsEditing(false);
+    setSuggestionsOpen(false);
+    setIsLocationOpen(false);
+    const cleanFilters = resetFiltersForManualCityChange(newCity);
+    onSearch(cleanFilters.city, undefined, cleanFilters);
+  };
+
+  const handleClearSearch = () => {
+    setSearchText('');
+    setSelection(null);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestionIndex(-1);
+    setIsEditing(false);
+    searchInputRef.current?.focus({ preventScroll: true });
+
+    const hasCommittedSearch = Boolean(
+      selectedQuery ||
+      selectedSector ||
+      selectedBhk ||
+      selectedPropertyType ||
+      selectedFurnishing ||
+      selectedMinRent ||
+      selectedMaxRent
+    );
+
+    if (hasCommittedSearch) {
+      const currentCity = selectedCity || draftCity || 'Indore';
+      const cleanFilters = resetFiltersForSearchClear(currentCity);
+      onSearch(cleanFilters.city, undefined, cleanFilters);
+    }
   };
 
   const chooseSuggestion = (item: RentalSuggestion) => {
@@ -153,7 +191,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
     setIsEditing(false);
     setSuggestionsOpen(false);
     setActiveSuggestionIndex(-1);
-    searchInputRef.current?.focus();
+    const filters = buildRentalSearchFilters(item.city, item.label, item);
+    onSearch(filters.city, filters.sector, filters);
   };
 
   const currentBanner = HERO_BANNERS[activeBannerIdx];
@@ -287,7 +326,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                   placeholder="Search locality or 2 BHK"
                   className="min-w-0 flex-1 bg-transparent py-3 text-base font-medium text-slate-900 outline-none placeholder:text-slate-500"
                 />
-                {searchText && <button type="button" aria-label="Clear search" onMouseDown={(event) => event.preventDefault()} onClick={() => { setSearchText(''); setSelection(null); setSuggestions([]); setSuggestionsOpen(false); searchInputRef.current?.focus(); }} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"><X className="h-4 w-4" aria-hidden="true" /></button>}
+                {searchText && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={handleClearSearch}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
                   <div ref={suggestionListRef} id="hero-search-suggestions" role="listbox" aria-label="Rental search suggestions" className={suggestionsOpen && suggestionState !== 'idle' ? 'absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 max-h-[min(20rem,45dvh)] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-2xl' : 'hidden'}>
                     {suggestionState === 'loading' && <p role="status" className="px-3 py-3 text-sm text-slate-600">Finding places…</p>}
                     {suggestionState === 'empty' && <p role="status" className="px-3 py-3 text-sm text-slate-600">No matching homes found.</p>}
@@ -370,8 +419,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
         city={draftCity}
         locality=""
         cityOnly
-        onCityChange={(city) => { setDraftCity(city); setSearchText(''); setSelection(null); }}
-        onCitySelected={() => { setIsLocationOpen(false); window.requestAnimationFrame(() => searchInputRef.current?.focus()); }}
+        onCityChange={handleManualCityChange}
+        onCitySelected={() => setIsLocationOpen(false)}
         onLocalityChange={() => {}}
         onApply={applySearch}
         onClose={() => closeLocation(true)}

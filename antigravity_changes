@@ -4,6 +4,85 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-27 04:15 IST — Pathome Search Clear (×) Reset-to-City-Default Bugfix
+
+### Why this work was requested
+The `×` (clear) icon inside the smart-search input previously only cleared local component state (`setSearchText('')`, `setSelection(null)`) without dispatching an updated search or cleaning active URL query parameters. This caused two problems:
+1. **Committed Search State Stale**: Clicking `×` on a committed search (e.g., `Indore + 2 BHK Bhawarkua` or `Pune + 2 BHK Baner`) cleared the text box visually, but left the URL, structured criteria, and filtered property listings completely unchanged.
+2. **City Context Preservation Required**: Clearing an active search within a city (e.g., Pune) must reset discovery to the clean default state for the *current* city (`Pune`), never silently resetting to `Indore`.
+3. **Draft Text vs Committed Search Distinction**: When a user merely types uncommitted draft text (e.g., `"2bhk fla"` without pressing Enter, choosing a suggestion, or clicking "Show homes"), clicking `×` must clear only the draft text without triggering an unnecessary search, modifying the URL, or refetching discovery.
+
+### Key Architectural & Implementation Changes
+1. **Search Clear Contract (`resetFiltersForSearchClear`)**:
+   - Added and exported `resetFiltersForSearchClear(currentCity?: string): RentalSearchFilters` in `frontend-web/src/utils/rentalSearch.ts` returning `{ city: currentCity?.trim() || undefined, rentalOnly: true }`.
+   - Reused by `resetFiltersForManualCityChange(newCity)` to share clear logic without semantics confusion.
+2. **Hero Search Input Clear Handler (`handleClearSearch`)**:
+   - In `HeroSection.tsx`: wired `handleClearSearch` to the `button[aria-label="Clear search"]`.
+   - Clears `searchText` to `""`, clears `selection`, closes suggestion dropdown, and focuses input with `preventScroll: true`.
+   - Distinguishes draft vs committed: checks `hasCommittedSearch` against `selectedQuery`, `selectedSector`, `selectedBhk`, `selectedPropertyType`, `selectedFurnishing`, `selectedMinRent`, `selectedMaxRent`.
+   - If `hasCommittedSearch` is true: resolves `currentCity` (`selectedCity || draftCity || 'Indore'`), builds `cleanFilters = resetFiltersForSearchClear(currentCity)`, and executes `onSearch(cleanFilters.city, undefined, cleanFilters)`.
+   - If `hasCommittedSearch` is false: no search or URL update is triggered.
+3. **Current City Preservation**:
+   - Clearing a search while browsing Pune resets to all Pune listings (`/?city=Pune&rentalOnly=true#listings`).
+   - Clearing a search while browsing Indore resets to all Indore listings (`/?city=Indore&rentalOnly=true#listings`).
+   - Clears all search-derived parameters (`q`, `sector`, `bhk`, `propertyType`, `minRent`, `maxRent`, `furnishing`).
+4. **Immediate Discovery Reload**:
+   - Dispatches `handleDiscoverySearch` immediately upon clicking `×` on a committed search without requiring a second click on "Show homes".
+   - Aborts stale in-flight requests and resets pagination to page 0.
+
+### Verification
+- **Unit Tests**:
+  - `node --test src/tests/rentalSearch.test.mjs`: 15/15 passing (including 2 new tests covering draft-only clear, committed filter clear, cross-city preservation, suggestion-selected clear, query-intent zero-inventory clear, SEARCH_ANYWAY clear, and single-invocation guarantee).
+- **Production Build**:
+  - `npm run build` in `frontend-web`: clean build, 0 errors.
+- **Targeted Browser Automation (recorded)**:
+  - Scenario 1 (Indore committed clear): Indore + selected "Bhawarkua, Indore" -> clicked `×` -> search box cleared, city remained Indore, URL cleaned, all 6 Indore homes loaded immediately without clicking "Show homes".
+  - Scenario 2 (Cross-city committed clear): Submitted "2bhk flat in pune" -> city became Pune -> clicked `×` -> city remained Pune (did NOT revert to Indore), search input cleared, clean Pune state loaded.
+  - Scenario 3 (Draft-only clear): In clean Pune state, typed "luxury penthouse" without submitting -> clicked `×` -> only draft text cleared, URL and discovery state did not reload or change.
+  - Console logs: 0 errors.
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
+## 2026-09-27 04:00 IST — Pathome Search State Reset + Immediate Suggestion Navigation Bugfix
+
+### Why this work was requested
+Three related search UX bugs were addressed:
+1. **Manual City Change Retained Stale Search (Bug 1)**: When a user previously searched (e.g., `2bhk flat in pune`) and subsequently opened the City selector dialog to select another city (e.g., `Indore`), the stale query text, structured filters (BHK, property type, price ranges), and URL query remained attached to the new city instead of resetting into a clean browsing context.
+2. **Redundant "Change search" Buttons**: The results header area and the empty-state card contained redundant "Change search" buttons that cluttered the layout ahead of the planned compact sticky search / location context (Task 2). Both controls needed removal without altering the rest of the discovery layout.
+3. **Autocomplete Suggestion Auto-Commit**: Selecting an actionable suggestion (`SEARCH_QUERY`, `LOCALITY`, `ENTITY_MATCH`, `QUERY_INTENT`, `SEARCH_ANYWAY`, `UNSUPPORTED_CITY`) previously updated the input field but did not immediately commit the search or load results, forcing the user to manually click "Show homes".
+
+### Key Architectural & Implementation Changes
+1. **Manual City Change Reset Contract (`MANUAL_CITY_CHANGE`)**:
+   - Added `resetFiltersForManualCityChange(newCity: string): RentalSearchFilters` in `frontend-web/src/utils/rentalSearch.ts` returning `{ city: newCity.trim(), rentalOnly: true }`.
+   - Wired `handleManualCityChange(newCity: string)` to `DiscoveryLocationDialog` in `HeroSection.tsx`: immediately sets `draftCity`, clears `searchText` to empty `""`, clears `selection` to `null`, closes suggestions and dialog, and fires `onSearch(newCity, undefined, { city: newCity, rentalOnly: true })`.
+   - Cleanly distinguishes manual city changes (which reset all query/filter parameters) from query-driven city overrides (e.g. searching "2bhk flat in pune" with Indore selected, which preserves query intent and synchronizes city to Pune).
+   - In `Home.tsx`, `handleDiscoverySearch` constructs clean URL query `?city=${newCity}&rentalOnly=true#listings`, resets pagination to page 0, and triggers `loadLiveProperties` for the new city's inventory.
+2. **Removed "Change search" Buttons**:
+   - In `frontend-web/src/components/PropertyShowcase.tsx`: removed "Change search" from results header, error state, and empty state card. Kept `Clear locality` button when a locality is filtered.
+   - Made `onRefineSearch?: () => void;` optional in `PropertyShowcaseProps`.
+3. **Autocomplete Suggestion Auto-Commit**:
+   - In `HeroSection.tsx` `chooseSuggestion(item)`: immediately commits `onSearch(filters.city, filters.sector, filters)` on click or Enter selection.
+   - Removed `searchInputRef.current?.focus()` on suggestion click to prevent jarring viewport jumps and allow smooth navigation down to listings `#listings`.
+   - Guaranteed exactly one search invocation per suggestion click (no double firing; button uses `onMouseDown={(e) => e.preventDefault()}` and `onClick={() => chooseSuggestion(item)}` outside of any `<form>`).
+
+### Verification
+- **Unit Tests**:
+  - `node --test src/tests/rentalSearch.test.mjs`: 13/13 passing (including 3 new regressions: manual city change reset contract, suggestion auto-commit across all 6 suggestion types with single invocation assertion, and code regression verifying absence of "Change search" in `PropertyShowcase.tsx`).
+- **Production Build**:
+  - `npm run build` in `frontend-web`: clean build, 0 errors.
+- **Targeted Browser Automation (recorded)**:
+  - Scenario 1: Indore $\to$ searched "2bhk flat in pune" $\to$ Pune committed, 0 homes displayed $\to$ manually switched to Indore $\to$ search input cleared to `""`, heading updated to "Homes in Indore", actual Indore homes loaded, URL clean `?city=Indore&rentalOnly=true#listings`.
+  - Scenario 2: Typed "vijay" $\to$ clicked suggestion "Vijay Nagar, Indore" without clicking "Show homes" $\to$ search committed immediately, dropdown closed, results loaded for Vijay Nagar.
+  - Scenario 3: Confirmed results header and empty state render no "Change search" button.
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
 ## 2026-09-27 01:25 IST — Smart Rental Search + Backend Autocomplete AND Governed Search Learning Loop
 
 ### Why this work was requested
@@ -4661,3 +4740,49 @@ Backend and frontend surgical delta only. Zero layout redesigns. No browser auto
   7. selectedCity=Indore, q=qwertyuiop -> effectiveCity: "Indore", citySource: "SELECTED_UI", SEARCH_ANYWAY ("Search \"qwertyuiop\"", count: 0).
 
 Commit: NO. Push: NO. Main: UNTOUCHED. Browser: NO.
+
+## [2026-09-27 03:42:00 IST] - Hero City Selector Stale After Explicit-City Search Bugfix
+### Context & Why Requested
+- Bug observed: Initial Hero city selector was "Indore". When user typed "2bhk flat in pune" and submitted/selected it, discovery results heading updated to "Homes in Pune" and resolved effectiveCity = "Pune", but the visible Hero city selector remained "Indore" creating contradictory page state.
+- Expected behavior:
+  1. While typing: visible selector remains unchanged (e.g. Indore).
+  2. On submit (Enter / "Show homes") or autocomplete suggestion selection: committed search context synchronizes across Hero city selector, URL `city`, and discovery results heading.
+  3. Reverse search (Pune -> Indore) correctly updates all 3 contexts back to Indore.
+  4. URL and back-navigation restoration from property detail preserves committed city.
+
+### Root Cause Analysis
+1. In `HeroSection.tsx`, `chooseSuggestion(item)` set local `selection`, `searchText`, and `draftCity`, but never executed `onSearch`. Autocomplete suggestion selection never committed the search to URL or Discovery context.
+2. In `HeroSection.tsx`, `applySearch()` previously did not reset `isEditing(false)`.
+3. In `Home.tsx`, `activeDiscoveryCity` fell back to `''` when `currentSearchParams.get('city')` was absent but `q` was present in URL query string (`currentSearchParams.has('q') ? '' : 'Indore'`). Direct query URLs or deep links failed to extract the inferred city from the query text, leaving the Hero city selector blank or defaulting to Indore while backend filtered by the query's effective city.
+4. In `Home.tsx`, `handleOpenPropertyDetail` stored `query.get('city') || 'Indore'` in `sessionStorage`, which dropped the committed city if `city` query param was not explicit.
+
+### Changes Made
+- `frontend-web/src/components/HeroSection.tsx`:
+  - In `chooseSuggestion(item)`: immediately construct search filters using `buildRentalSearchFilters(item.city, item.label, item)` and trigger `onSearch(filters.city, filters.sector, filters)`.
+  - In `applySearch()`: explicitly reset `isEditing(false)`.
+- `frontend-web/src/components/Home.tsx`:
+  - Imported `extractCityFromSearchQuery` from `../utils/rentalSearch`.
+  - Updated `activeDiscoveryCity` calculation: checks `rawUrlCity || inferredCityFromQuery || default`.
+  - In `handleOpenPropertyDetail`: saved `query.get('city') || activeDiscoveryCity || 'Indore'` to preserve active committed discovery context across session back navigation.
+- `frontend-web/src/utils/rentalSearch.ts`:
+  - Updated `suggestionFromStructuredFilters` and `rentalSuggestionLabel` to support structured suggestion labels when `sector` is omitted but other search criteria (such as `bhk`) are present.
+- `frontend-web/src/tests/rentalSearch.test.mjs`:
+  - Added test suite `city selector and discovery synchronization across typing, submission, suggestions, and URL restoration` covering scenarios A through F.
+
+### Verification & Outcomes
+- Frontend Focused Tests: 10/10 tests PASS (`node --test src/tests/rentalSearch.test.mjs`).
+- Frontend Production Build: `npm run build` exits 0 with zero errors (`tsc && vite build` in 2.40s).
+- Targeted Browser Verification (9-step interaction check via Playwright):
+  1. Start Indore -> selector displays "Indore" (CONFIRMED).
+  2. Type "2bhk flat in pune" -> input focused, text entered (CONFIRMED).
+  3. Pre-submit selector -> remains "Indore" while typing (CONFIRMED).
+  4. Submit query -> clicked Show homes (CONFIRMED).
+  5. Selector update -> updates to "Pune" (CONFIRMED).
+  6. Results heading -> displays "Homes in Pune" (CONFIRMED).
+  7. URL check -> contains `city=Pune` (CONFIRMED).
+  8. Reverse test -> type "2bhk flat in indore", submit -> selector updates to "Indore", heading displays "Homes in Indore", URL contains `city=Indore` (CONFIRMED).
+  9. Browser console -> 0 errors (CONFIRMED).
+- Recording saved: `city_sync_verified_1790460587736.webp`.
+- Git hygiene: `git diff --check` passes cleanly.
+
+Commit: NO. Push: NO. Main: UNTOUCHED.

@@ -22,7 +22,7 @@ import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { propertyService } from '../services/propertyService';
 import { useNotification } from '../context/NotificationContext';
-import { discoverySearchKey, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
+import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
 
 const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   try {
@@ -737,7 +737,11 @@ export const Home: React.FC = () => {
   }, [activeAdminTab]);
   const filterSector = new URLSearchParams(location.search).get('sector') || '';
   const currentSearchParams = new URLSearchParams(location.search);
-  const activeDiscoveryCity = currentSearchParams.get('city')
+  const rawUrlCity = currentSearchParams.get('city');
+  const urlQueryText = currentSearchParams.get('q') || '';
+  const inferredCityFromQuery = urlQueryText ? extractCityFromSearchQuery(urlQueryText) : undefined;
+  const activeDiscoveryCity = rawUrlCity
+    || inferredCityFromQuery
     || (currentSearchParams.has('q') || currentSearchParams.get('rentalOnly') === 'true' ? '' : 'Indore');
   const activeSearchFilters: RentalSearchFilters = {
     city: activeDiscoveryCity,
@@ -832,7 +836,7 @@ export const Home: React.FC = () => {
     try {
       const query = new URLSearchParams(location.search);
       sessionStorage.setItem('pathome_discovery_context', JSON.stringify({
-        city: query.get('city') || 'Indore',
+        city: query.get('city') || activeDiscoveryCity || 'Indore',
         sector: query.get('sector') || '',
         searchKey: activeDiscoveryKey,
         filterSector: filterSector || '',

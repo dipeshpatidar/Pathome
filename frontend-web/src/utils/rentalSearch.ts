@@ -119,7 +119,7 @@ export const parseRentFilter = (value: string | null | undefined): number | unde
   return Number.isSafeInteger(amount) && amount > 0 && amount <= 10_000_000 ? amount : undefined;
 };
 
-const rentalSuggestionLabel = (city: string, sector: string, bhk?: string,
+const rentalSuggestionLabel = (city: string, sector?: string, bhk?: string,
   propertyType?: RentalPropertyType, furnishing?: RentalFurnishing,
   minRent?: number, maxRent?: number): string => {
   const prefix = [bhk?.replace(/^(\d+)\s*(BHK|RK)$/i, '$1 $2'),
@@ -127,7 +127,8 @@ const rentalSuggestionLabel = (city: string, sector: string, bhk?: string,
   const description = [prefix, furnishing ? FURNISHING_LABELS[furnishing] : undefined].filter(Boolean).join(', ');
   const rent = maxRent ? ` · ${minRent ? `₹${minRent.toLocaleString('en-IN')}–₹${maxRent.toLocaleString('en-IN')}`
     : `up to ₹${maxRent.toLocaleString('en-IN')}`}` : '';
-  return `${description ? `${description} in ` : ''}${sector}, ${city}${rent}`;
+  const location = sector ? `${sector}, ${city}` : city;
+  return `${description ? `${description} in ` : ''}${location}${rent}`;
 };
 
 export const mapRentalSuggestion = (value: unknown): RentalSuggestion | null => {
@@ -162,10 +163,10 @@ export const suggestionFromStructuredFilters = (
   minRent?: number,
   maxRent?: number
 ): RentalSuggestion | null => {
-  if (!city || !sector) return null;
+  if (!city || (!sector && !bhk && !propertyType && !furnishing && !minRent && !maxRent)) return null;
   const label = rentalSuggestionLabel(city, sector, bhk, propertyType, furnishing, minRent, maxRent);
   return {
-    type: bhk || propertyType || furnishing || minRent || maxRent ? 'SEARCH_QUERY' : 'LOCALITY', label, city, locality: sector,
+    type: bhk || propertyType || furnishing || minRent || maxRent ? 'SEARCH_QUERY' : 'LOCALITY', label, city, locality: sector || null,
     bhk: bhk || null, propertyType: propertyType || null, furnishing: furnishing || null,
     minRent: minRent || null, maxRent: maxRent || null, resultCount: null
   };
@@ -203,6 +204,14 @@ export const buildRentalSearchFilters = (
 
 export const selectionAfterCityChange = (selection: RentalSuggestion | null, city: string): RentalSuggestion | null =>
   selection?.city.toLocaleLowerCase() === city.trim().toLocaleLowerCase() ? selection : null;
+
+export const resetFiltersForSearchClear = (currentCity?: string): RentalSearchFilters => ({
+  city: currentCity?.trim() || undefined,
+  rentalOnly: true
+});
+
+export const resetFiltersForManualCityChange = (newCity: string): RentalSearchFilters =>
+  resetFiltersForSearchClear(newCity);
 
 export const discoverySearchKey = (filters: RentalSearchFilters): string =>
   [filters.city, filters.sector, filters.q, filters.bhk, filters.propertyType, filters.furnishing,
