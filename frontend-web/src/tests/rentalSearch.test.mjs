@@ -120,3 +120,108 @@ test('aborted and stale suggestion failures are silent; real errors have safe di
   });
   assert.equal(suggestionFailureDiagnostic(new Error('secret'), 5).category, 'unexpected');
 });
+
+test('maps QUERY_INTENT and SEARCH_ANYWAY suggestions and constructs proper filters', () => {
+  const queryIntent = mapRentalSuggestion({
+    type: 'QUERY_INTENT',
+    label: 'Search 1 RK homes in Indore',
+    city: 'Indore',
+    bhk: '1RK',
+    propertyType: null,
+    resultCount: 0
+  });
+  assert.deepEqual(queryIntent, {
+    type: 'QUERY_INTENT',
+    label: 'Search 1 RK homes in Indore',
+    city: 'Indore',
+    locality: null,
+    bhk: '1RK',
+    propertyType: null,
+    furnishing: null,
+    minRent: null,
+    maxRent: null,
+    resultCount: 0
+  });
+  assert.deepEqual(buildRentalSearchFilters('Indore', queryIntent.label, queryIntent), {
+    city: 'Indore',
+    bhk: '1RK',
+    rentalOnly: true
+  });
+
+  const searchAnyway = mapRentalSuggestion({
+    type: 'SEARCH_ANYWAY',
+    label: 'Search "luxury penthouse"',
+    city: 'Indore',
+    resultCount: null
+  });
+  assert.deepEqual(searchAnyway, {
+    type: 'SEARCH_ANYWAY',
+    label: 'Search "luxury penthouse"',
+    city: 'Indore',
+    locality: null,
+    bhk: null,
+    propertyType: null,
+    furnishing: null,
+    minRent: null,
+    maxRent: null,
+    resultCount: null
+  });
+  assert.deepEqual(buildRentalSearchFilters('Indore', searchAnyway.label, searchAnyway), {
+    city: 'Indore',
+    q: 'Search "luxury penthouse"',
+    rentalOnly: true
+  });
+});
+
+test('explicit city override and authoritative locality inference in free text search', () => {
+  // 1. Selected Indore + "2bhk flat" -> Indore (selected UI context preserved)
+  assert.deepEqual(buildRentalSearchFilters('Indore', '2bhk flat', null), {
+    city: 'Indore',
+    q: '2bhk flat',
+    rentalOnly: true
+  });
+
+  // 2. Selected Indore + "2bhk flat in pune" -> Pune (explicit city in query overrides UI selector)
+  assert.deepEqual(buildRentalSearchFilters('Indore', '2bhk flat in pune', null), {
+    city: 'Pune',
+    q: '2bhk flat in pune',
+    rentalOnly: true
+  });
+
+  // 3. Selected Pune + "2bhk flat in indore" -> Indore (explicit city overrides)
+  assert.deepEqual(buildRentalSearchFilters('Pune', '2bhk flat in indore', null), {
+    city: 'Indore',
+    q: '2bhk flat in indore',
+    rentalOnly: true
+  });
+
+  // 4. Selected Indore + authoritative Pune locality "3bhk baner" -> Pune (locality resolution)
+  assert.deepEqual(buildRentalSearchFilters('Indore', '3bhk baner', null), {
+    city: 'Pune',
+    q: '3bhk baner',
+    rentalOnly: true
+  });
+
+  // 5. Unsupported explicit city "2bhk in mumbai" -> Mumbai (no fallback to Indore)
+  assert.deepEqual(buildRentalSearchFilters('Indore', '2bhk in mumbai', null), {
+    city: 'Mumbai',
+    q: '2bhk in mumbai',
+    rentalOnly: true
+  });
+
+  // 6. Suggestion selection with UNSUPPORTED_CITY sets city to Mumbai
+  const unsupported = mapRentalSuggestion({
+    type: 'UNSUPPORTED_CITY',
+    label: 'Pathome is not yet available in Mumbai',
+    city: 'Mumbai',
+    resultCount: 0
+  });
+  assert.ok(unsupported);
+  assert.equal(unsupported.type, 'UNSUPPORTED_CITY');
+  assert.equal(unsupported.city, 'Mumbai');
+  assert.deepEqual(buildRentalSearchFilters('Indore', unsupported.label, unsupported), {
+    city: 'Mumbai',
+    q: 'Pathome is not yet available in Mumbai',
+    rentalOnly: true
+  });
+});

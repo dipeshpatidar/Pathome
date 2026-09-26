@@ -12,6 +12,7 @@ import com.indore.pathome.spaces.dto.PublicSearchSuggestion;
 import com.indore.pathome.spaces.dto.PublicSearchSuggestions;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
+import com.indore.pathome.spaces.repository.LocalityRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
@@ -27,6 +28,7 @@ import com.indore.pathome.spaces.service.PropertyParserService;
 import com.indore.pathome.spaces.service.RentalSearchQuery;
 import com.indore.pathome.spaces.service.RentalLocationResolver;
 import com.indore.pathome.spaces.service.SearchLearningService;
+import com.indore.pathome.spaces.service.CityRegistry;
 import com.indore.pathome.spaces.entity.SearchQueryEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -133,6 +135,9 @@ public class PropertyController {
     @Autowired(required = false)
     private SearchLearningService searchLearningService;
 
+    @Autowired(required = false)
+    private LocalityRepository localityRepository;
+
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> activePublishingDrafts = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final Pattern SAFE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
@@ -185,9 +190,19 @@ public class PropertyController {
     }
 
     private RentalLocationResolver getRentalLocationResolver() {
-        return searchLearningService != null
-                ? new RentalLocationResolver(listingRepository, searchLearningService)
+        return searchLearningService != null || localityRepository != null
+                ? new RentalLocationResolver(listingRepository, searchLearningService, localityRepository)
                 : this.rentalLocationResolver;
+    }
+
+    @jakarta.annotation.PostConstruct
+    public void initCityRegistry() {
+        CityRegistry.syncFromDatabase(localityRepository, listingRepository);
+    }
+
+    public void setLocalityRepository(LocalityRepository localityRepository) {
+        this.localityRepository = localityRepository;
+        CityRegistry.syncFromDatabase(localityRepository, listingRepository);
     }
 
     public void setDraftRepository(PropertyUploadDraftRepository draftRepository) {
@@ -251,11 +266,11 @@ public class PropertyController {
             BigDecimal selectedMinRent = minRent == null ? parsed.minRent() : minRent;
             BigDecimal selectedMaxRent = maxRent == null ? parsed.maxRent() : maxRent;
             RentalSearchQuery.validateRentRange(selectedMinRent, selectedMaxRent);
+            RentalLocationResolver.CityResolution cityRes = getRentalLocationResolver().resolveCity(parsed, normalizedCity);
+            String searchCity = cityRes.city();
             RentalLocationResolver.Resolution resolved = normalizedSector == null && !parsed.location().isBlank()
-                    ? getRentalLocationResolver().resolveForDiscovery(parsed, RentalSearchQuery.normalizeLocation(normalizedCity))
+                    ? getRentalLocationResolver().resolveForDiscovery(parsed, RentalSearchQuery.normalizeLocation(searchCity))
                     : new RentalLocationResolver.Resolution(null, null, 1.0, "structured");
-            String searchCity = normalizedCity == null && resolved.city() != null
-                    ? resolved.city() : normalizedCity;
             String searchSector = normalizedSector == null && resolved.locality() != null
                     ? resolved.locality() : normalizedSector;
             String prefix = searchSector == null ? RentalSearchQuery.normalizeLocation(parsed.location()) : "";
@@ -327,20 +342,85 @@ public class PropertyController {
     public ResponseEntity<PublicSearchSuggestions> getSearchSuggestions(
             @RequestParam(required = false) String q,
             @RequestParam(required = false) String city,
+            @RequestParam(required = false) String selectedCity,
             @RequestParam(defaultValue = "8") int limit) {
         if (q == null || q.isBlank()) return ResponseEntity.ok(new PublicSearchSuggestions("", List.of()));
         RentalSearchQuery parsed = RentalSearchQuery.parse(q);
-        String cityFilter = normalizeDiscoveryFilter(city, "city");
-        String cityKey = RentalSearchQuery.normalizeLocation(cityFilter);
+        String incomingCity = (city != null && !city.isBlank()) ? city : selectedCity;
+        String cityFilter = normalizeDiscoveryFilter(incomingCity, "city");
+        RentalLocationResolver.CityResolution cityRes = getRentalLocationResolver().resolveCity(parsed, cityFilter);
+        String effectiveCity = cityRes.city();
+        String citySource = cityRes.source().name();
+        String cityKey = RentalSearchQuery.normalizeLocation(effectiveCity);
         String locationPrefix = RentalSearchQuery.normalizeLocation(parsed.location());
         boolean structured = parsed.bhkKey() != null || parsed.propertyType() != null
-                || parsed.furnishingKey() != null || parsed.minRent() != null || parsed.maxRent() != null;
+                || parsed.furnishingKey() != null || parsed.minRent() != null || parsed.maxRent() != null
+                || parsed.priceState() != RentalSearchQuery.PriceState.NONE
+                || parsed.locationState() == RentalSearchQuery.LocationState.EXPECTING_LOCATION
+                || parsed.explicitCity() != null;
         if (locationPrefix.length() < 2 && !structured) {
-            return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), List.of()));
+            return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), List.of(), effectiveCity, citySource));
         }
+
+        // ── Unsupported City Handling (no silent fallback to Indore) ──
+        if (!cityRes.supported()) {
+            PublicSearchSuggestion unsupported = new PublicSearchSuggestion(
+                    "UNSUPPORTED_CITY", "Pathome is not yet available in " + effectiveCity,
+                    effectiveCity, null, parsed.bhkKey(), parsed.propertyType(),
+                    parsed.furnishingKey(), parsed.minRent(), parsed.maxRent(), 0);
+            return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), List.of(unsupported), effectiveCity, citySource));
+        }
+
         int safeLimit = Math.max(1, Math.min(limit, 10));
         List<PublicSearchSuggestion> suggestions = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+
+        // ── Ambiguous Locality Handling (locality exists in multiple cities without explicit city) ──
+        RentalLocationResolver.LocalityCityMatch localityMatch = getRentalLocationResolver().resolveAuthoritativeLocalityCity(parsed.location());
+        if (localityMatch != null && !localityMatch.isUnique() && localityMatch.matchingCities().size() > 1 && parsed.explicitCity() == null) {
+            List<String> sortedCities = new ArrayList<>(localityMatch.matchingCities());
+            sortedCities.sort((c1, c2) -> {
+                if (c1.equalsIgnoreCase(effectiveCity)) return -1;
+                if (c2.equalsIgnoreCase(effectiveCity)) return 1;
+                return c1.compareToIgnoreCase(c2);
+            });
+            String canonicalLocality = localityMatch.canonicalLocality();
+            for (String cityCandidate : sortedCities) {
+                long count = 0;
+                if (listingRepository != null) {
+                    List<ListingRepository.LocalitySuggestionRow> inv = listingRepository.findPublicRentalLocalitySuggestions(
+                            cityCandidate.toLowerCase(Locale.ROOT),
+                            parsed.bhkKey() != null ? parsed.bhkKey() : "",
+                            parsed.propertyType() != null ? parsed.propertyType().name() : "",
+                            parsed.furnishingKey() != null ? parsed.furnishingKey() : "",
+                            parsed.minRent(), parsed.maxRent(),
+                            RentalSearchQuery.normalizeLocation(canonicalLocality),
+                            PageRequest.of(0, 1));
+                    if (inv != null && !inv.isEmpty()) {
+                        count = inv.get(0).getResultCount();
+                    }
+                }
+                if (count > 0) {
+                    String label = rentalSuggestionLabel(parsed, canonicalLocality, cityCandidate);
+                    suggestions.add(new PublicSearchSuggestion(
+                            structured ? "SEARCH_QUERY" : "LOCALITY",
+                            label, cityCandidate, canonicalLocality,
+                            parsed.bhkKey(), parsed.propertyType(), parsed.furnishingKey(),
+                            parsed.minRent(), parsed.maxRent(), count));
+                } else if (structured) {
+                    String label = queryIntentLabel(parsed, canonicalLocality, cityCandidate);
+                    suggestions.add(new PublicSearchSuggestion(
+                            "QUERY_INTENT", label, cityCandidate, canonicalLocality,
+                            parsed.bhkKey(), parsed.propertyType(), parsed.furnishingKey(),
+                            parsed.minRent(), parsed.maxRent(), 0));
+                } else {
+                    suggestions.add(new PublicSearchSuggestion(
+                            "ENTITY_MATCH", canonicalLocality + ", " + cityCandidate, cityCandidate, canonicalLocality,
+                            null, null, null, null, null, 0));
+                }
+            }
+            return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), suggestions, effectiveCity, citySource));
+        }
 
         // ── Alias resolution: resolve location candidate via approved alias before fuzzy ──
         // This improves on the fuzzy fallback by providing deterministic high-confidence matches
@@ -386,6 +466,35 @@ public class PropertyController {
                         null, null, null, null, null, null, row.getResultCount()));
             }
         }
+
+        // ── Zero-Inventory Intent & Fallback suggestions ─────────────────────────────────
+        if (suggestions.isEmpty()) {
+            String canonicalLocality = getRentalLocationResolver().resolveCanonicalLocalityName(locationPrefix, cityKey);
+            if (structured) {
+                if (canonicalLocality != null) {
+                    String intentLabel = queryIntentLabel(parsed, canonicalLocality, effectiveCity);
+                    suggestions.add(new PublicSearchSuggestion(
+                            "QUERY_INTENT", intentLabel, effectiveCity, canonicalLocality,
+                            parsed.bhkKey(), parsed.propertyType(), parsed.furnishingKey(),
+                            parsed.minRent(), parsed.maxRent(), 0));
+                } else if (locationPrefix.isBlank()) {
+                    String intentLabel = queryIntentLabel(parsed, null, effectiveCity);
+                    suggestions.add(new PublicSearchSuggestion(
+                            "QUERY_INTENT", intentLabel, effectiveCity, null,
+                            parsed.bhkKey(), parsed.propertyType(), parsed.furnishingKey(),
+                            parsed.minRent(), parsed.maxRent(), 0));
+                }
+            } else if (canonicalLocality != null) {
+                suggestions.add(new PublicSearchSuggestion(
+                        "ENTITY_MATCH", canonicalLocality + ", " + effectiveCity, effectiveCity, canonicalLocality,
+                        null, null, null, null, null, 0));
+            } else if (!q.isBlank() && q.trim().length() >= 2) {
+                suggestions.add(new PublicSearchSuggestion(
+                        "SEARCH_ANYWAY", "Search \"" + q.trim() + "\"", effectiveCity, null,
+                        null, null, null, null, null, 0));
+            }
+        }
+
         log.debug("Public rental suggestions category={} resolution={} resultCount={}",
                 structured ? "structured" : "location",
                 localities.isEmpty() ? finalResolutionMethod : localities.get(0).method(), suggestions.size());
@@ -423,7 +532,7 @@ public class PropertyController {
             }
         }
 
-        return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), suggestions));
+        return ResponseEntity.ok(new PublicSearchSuggestions(q.trim(), suggestions, effectiveCity, citySource));
     }
 
     /**
@@ -440,6 +549,28 @@ public class PropertyController {
             }
         }
         return ResponseEntity.ok().build();
+    }
+
+    private static String queryIntentLabel(RentalSearchQuery query, String locality, String city) {
+        StringBuilder label = new StringBuilder("Search ");
+        if (query.bhkLabel() != null) label.append(query.bhkLabel()).append(' ');
+        if (query.propertyTypeLabel() != null) {
+            label.append(query.propertyTypeLabel().toLowerCase(Locale.ROOT)).append("s ");
+        } else {
+            label.append("homes ");
+        }
+        if (locality != null && !locality.isBlank()) {
+            label.append("in ").append(locality).append(", ").append(city);
+        } else {
+            label.append("in ").append(city);
+        }
+        if (query.maxRent() != null) {
+            NumberFormat money = NumberFormat.getIntegerInstance(Locale.forLanguageTag("en-IN"));
+            label.append(query.minRent() == null ? " · up to ₹" : " · ₹")
+                    .append(money.format(query.minRent() == null ? query.maxRent() : query.minRent()));
+            if (query.minRent() != null) label.append("–₹").append(money.format(query.maxRent()));
+        }
+        return label.toString().trim();
     }
 
     private static String rentalSuggestionLabel(RentalSearchQuery query, String locality, String city) {

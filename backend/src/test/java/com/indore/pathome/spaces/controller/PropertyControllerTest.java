@@ -6,6 +6,8 @@ import com.indore.pathome.spaces.dto.CreatePropertyVisitRequest;
 import com.indore.pathome.spaces.dto.PublicDiscoveryPage;
 import com.indore.pathome.spaces.dto.PublicDiscoveryResponse;
 import com.indore.pathome.spaces.dto.PublicPropertyResponse;
+import com.indore.pathome.spaces.dto.PublicSearchSuggestion;
+import com.indore.pathome.spaces.dto.PublicSearchSuggestions;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
@@ -78,6 +80,9 @@ public class PropertyControllerTest {
     private com.indore.pathome.spaces.repository.PropertyUploadDraftRepository draftRepository;
 
     @Mock
+    private com.indore.pathome.spaces.repository.LocalityRepository localityRepository;
+
+    @Mock
     private UserRepository userRepository;
 
     @Mock
@@ -90,6 +95,7 @@ public class PropertyControllerTest {
     public void setUp() {
         MockitoAnnotations.openMocks(this);
         propertyController.setDraftRepository(draftRepository);
+        propertyController.setLocalityRepository(localityRepository);
     }
 
     @Test
@@ -1200,5 +1206,300 @@ public class PropertyControllerTest {
                 eq("indore"), eq("vijay nagar"), eq(""), eq("2BHK"),
                 eq(com.indore.pathome.spaces.entity.PropertyType.FLAT), eq(""),
                 isNull(), isNull(), eq(PageRequest.of(0, 6)));
+    }
+
+    @Test
+    public void partialPriceQueriesDoNotCollapseSuggestions() {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Vijay Nagar");
+        when(row.getResultCount()).thenReturn(5L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of(row));
+
+        // "2bhk flat under" should preserve bhk and flat and not treat "under" as location
+        var result = propertyController.getSearchSuggestions("2bhk flat under", "Indore", 8).getBody();
+        assertNotNull(result);
+        assertEquals(1, result.suggestions().size());
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore", result.suggestions().get(0).label());
+        assertEquals(5L, result.suggestions().get(0).resultCount());
+
+        // "2bhk flat under 2" should also gracefully return the inventory suggestions
+        var result2 = propertyController.getSearchSuggestions("2bhk flat under 2", "Indore", 8).getBody();
+        assertNotNull(result2);
+        assertEquals(1, result2.suggestions().size());
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore", result2.suggestions().get(0).label());
+    }
+
+    @Test
+    public void oneRkQueryReturnsInventoryMatchWhenInventoryExists() {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Bombay Hospital");
+        when(row.getResultCount()).thenReturn(1L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("1RK"), eq(""), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of(row));
+
+        var response = propertyController.getSearchSuggestions("1rk", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals(1, response.suggestions().size());
+        assertEquals("1 RK in Bombay Hospital, Indore", response.suggestions().get(0).label());
+        assertEquals(1L, response.suggestions().get(0).resultCount());
+        assertEquals("1RK", response.suggestions().get(0).bhk());
+    }
+
+    @Test
+    public void zeroInventoryRecognizedIntentReturnsQueryIntentSuggestionWithoutFakeCount() {
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("1RK"), eq(""), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of());
+
+        var response = propertyController.getSearchSuggestions("1rk", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals(1, response.suggestions().size());
+        PublicSearchSuggestion suggestion = response.suggestions().get(0);
+        assertEquals("QUERY_INTENT", suggestion.type());
+        assertEquals("Search 1 RK homes in Indore", suggestion.label());
+        assertEquals(0L, suggestion.resultCount());
+        assertEquals("1RK", suggestion.bhk());
+        assertEquals("Indore", suggestion.city());
+        assertNull(suggestion.locality());
+    }
+
+    @Test
+    public void explicitCityOverrideInQueryRoutesToCorrectCityInventoryOrIntent() {
+        // 1. Selected Indore + "2bhk flat in pune" with zero Pune inventory
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("pune"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of());
+
+        var puneResponse = propertyController.getSearchSuggestions("2bhk flat in pune", "Indore", 8).getBody();
+        assertNotNull(puneResponse);
+        assertEquals("Pune", puneResponse.effectiveCity());
+        assertEquals("EXPLICIT_QUERY", puneResponse.citySource());
+        assertEquals(1, puneResponse.suggestions().size());
+        PublicSearchSuggestion puneIntent = puneResponse.suggestions().get(0);
+        assertEquals("QUERY_INTENT", puneIntent.type());
+        assertEquals("Search 2 BHK flats in Pune", puneIntent.label());
+        assertEquals("Pune", puneIntent.city());
+        assertEquals(0L, puneIntent.resultCount());
+
+        // 2. Selected Pune + "2bhk flat in indore" with Indore inventory
+        ListingRepository.LocalitySuggestionRow indoreRow = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(indoreRow.getCity()).thenReturn("Indore");
+        when(indoreRow.getLocality()).thenReturn("Vijay Nagar");
+        when(indoreRow.getResultCount()).thenReturn(4L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
+                .thenReturn(List.of(indoreRow));
+
+        var indoreResponse = propertyController.getSearchSuggestions("2bhk flat in indore", "Pune", 8).getBody();
+        assertNotNull(indoreResponse);
+        assertEquals("Indore", indoreResponse.effectiveCity());
+        assertEquals("EXPLICIT_QUERY", indoreResponse.citySource());
+        assertEquals(1, indoreResponse.suggestions().size());
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore", indoreResponse.suggestions().get(0).label());
+        assertEquals(4L, indoreResponse.suggestions().get(0).resultCount());
+
+        // 3. Selected Indore + authoritative locality "3bhk baner" -> Pune / LOCALITY_RESOLUTION
+        ListingRepository.LocalitySuggestionRow banerRow = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(banerRow.getCity()).thenReturn("Pune");
+        when(banerRow.getLocality()).thenReturn("Baner");
+        when(banerRow.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("pune"), eq("3BHK"), eq(""), eq(""), isNull(), isNull(), eq("baner"), any()))
+                .thenReturn(List.of(banerRow));
+
+        var banerResponse = propertyController.getSearchSuggestions("3bhk baner", "Indore", 8).getBody();
+        assertNotNull(banerResponse);
+        assertEquals("Pune", banerResponse.effectiveCity());
+        assertEquals("LOCALITY_RESOLUTION", banerResponse.citySource());
+        assertEquals(1, banerResponse.suggestions().size());
+        assertEquals("3 BHK in Baner, Pune", banerResponse.suggestions().get(0).label());
+
+        // 4. Unsupported explicit city "2bhk in mumbai" -> returns UNSUPPORTED_CITY without Indore fallback
+        var mumbaiResponse = propertyController.getSearchSuggestions("2bhk in mumbai", "Indore", 8).getBody();
+        assertNotNull(mumbaiResponse);
+        assertEquals("Mumbai", mumbaiResponse.effectiveCity());
+        assertEquals("EXPLICIT_QUERY", mumbaiResponse.citySource());
+        assertEquals(1, mumbaiResponse.suggestions().size());
+        assertEquals("UNSUPPORTED_CITY", mumbaiResponse.suggestions().get(0).type());
+        assertEquals("Pathome is not yet available in Mumbai", mumbaiResponse.suggestions().get(0).label());
+    }
+
+    @Test
+    public void discoverySearchPropagatesExplicitCityToPublicRentalRepository() {
+        when(listingRepository.searchPublicRentals(any(), any(), anyString(), anyString(), anyString(), anyString(),
+                any(), anyString(), any(), any(), any()))
+                .thenReturn(new SliceImpl<>(List.of(), PageRequest.of(0, 6), false));
+
+        // Selected UI city is "Indore", but query has "2bhk flat in pune" -> searches Pune
+        propertyController.getAllActiveProperties(null, "Indore", "2bhk flat in pune", null, true, 0);
+        verify(listingRepository).searchPublicRentals(
+                eq(ListingStatus.ACTIVE), eq(com.indore.pathome.spaces.entity.ListingType.RENT),
+                eq("pune"), eq(""), eq(""), eq("2BHK"),
+                eq(com.indore.pathome.spaces.entity.PropertyType.FLAT), eq(""),
+                isNull(), isNull(), eq(PageRequest.of(0, 6)));
+    }
+
+    @Test
+    public void selectedIndoreWith3BhkBanerAndZeroInventoryReturnsPuneQueryIntent() {
+        // Zero Pune inventory for 3BHK in Baner
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("pune"), eq("3BHK"), eq(""), eq(""), isNull(), isNull(), eq("baner"), any()))
+                .thenReturn(List.of());
+
+        var response = propertyController.getSearchSuggestions("3bhk baner", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Pune", response.effectiveCity());
+        assertEquals("LOCALITY_RESOLUTION", response.citySource());
+        assertEquals(1, response.suggestions().size());
+
+        PublicSearchSuggestion suggestion = response.suggestions().get(0);
+        assertEquals("QUERY_INTENT", suggestion.type());
+        assertEquals("Search 3 BHK homes in Baner, Pune", suggestion.label());
+        assertEquals("Pune", suggestion.city());
+        assertEquals("Baner", suggestion.locality());
+        assertEquals(0L, suggestion.resultCount());
+
+        // Verify no Indore inventory was queried
+        verify(listingRepository, never()).findPublicRentalLocalitySuggestions(
+                eq("indore"), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void selectedIndoreWithMpNagarCanonicalLocalityReturnsBhopalEntityMatchNotSearchAnyway() {
+        // Zero Bhopal inventory for MP Nagar
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("mp nagar"), any()))
+                .thenReturn(List.of());
+
+        var response = propertyController.getSearchSuggestions("mp nagar", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Bhopal", response.effectiveCity());
+        assertEquals("LOCALITY_RESOLUTION", response.citySource());
+        assertEquals(1, response.suggestions().size());
+
+        PublicSearchSuggestion suggestion = response.suggestions().get(0);
+        assertEquals("ENTITY_MATCH", suggestion.type());
+        assertEquals("MP Nagar, Bhopal", suggestion.label());
+        assertEquals("Bhopal", suggestion.city());
+        assertEquals("MP Nagar", suggestion.locality());
+        assertEquals(0L, suggestion.resultCount());
+    }
+
+    @Test
+    public void knownLocalityWithRealInventoryReturnsLocalityMatch() {
+        ListingRepository.LocalitySuggestionRow row = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(row.getCity()).thenReturn("Indore");
+        when(row.getLocality()).thenReturn("Vijay Nagar");
+        when(row.getResultCount()).thenReturn(6L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("vijay nagar"), any()))
+                .thenReturn(List.of(row));
+
+        var response = propertyController.getSearchSuggestions("vijay nagar", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Indore", response.effectiveCity());
+        assertEquals(1, response.suggestions().size());
+
+        PublicSearchSuggestion suggestion = response.suggestions().get(0);
+        assertEquals("LOCALITY", suggestion.type());
+        assertEquals("Vijay Nagar, Indore", suggestion.label());
+        assertEquals(6L, suggestion.resultCount());
+    }
+
+    @Test
+    public void ambiguousLocalityAcrossMultipleCitiesReturnsCityQualifiedAlternativesWithSelectedUiCityFirst() {
+        // "gandhi nagar" exists in both Indore and Bhopal
+        com.indore.pathome.spaces.entity.Locality indoreLoc = mock(com.indore.pathome.spaces.entity.Locality.class);
+        when(indoreLoc.getCity()).thenReturn("Indore");
+        when(indoreLoc.getSectorName()).thenReturn("Gandhi Nagar");
+
+        com.indore.pathome.spaces.entity.Locality bhopalLoc = mock(com.indore.pathome.spaces.entity.Locality.class);
+        when(bhopalLoc.getCity()).thenReturn("Bhopal");
+        when(bhopalLoc.getSectorName()).thenReturn("Gandhi Nagar");
+
+        when(localityRepository.findAllBySectorNameIgnoreCase("gandhi nagar"))
+                .thenReturn(List.of(bhopalLoc, indoreLoc));
+
+        // Indore has 2 homes, Bhopal has 0 homes
+        ListingRepository.LocalitySuggestionRow indoreRow = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(indoreRow.getCity()).thenReturn("Indore");
+        when(indoreRow.getLocality()).thenReturn("Gandhi Nagar");
+        when(indoreRow.getResultCount()).thenReturn(2L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("indore"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("gandhi nagar"), any()))
+                .thenReturn(List.of(indoreRow));
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("gandhi nagar"), any()))
+                .thenReturn(List.of());
+
+        var response = propertyController.getSearchSuggestions("gandhi nagar", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Indore", response.effectiveCity());
+        assertEquals(2, response.suggestions().size());
+
+        // First suggestion is Indore (selected UI city) with real inventory
+        PublicSearchSuggestion s1 = response.suggestions().get(0);
+        assertEquals("Indore", s1.city());
+        assertEquals("Gandhi Nagar", s1.locality());
+        assertEquals("LOCALITY", s1.type());
+        assertEquals(2L, s1.resultCount());
+
+        // Second suggestion is Bhopal (authoritative alternative) with ENTITY_MATCH (0 inventory)
+        PublicSearchSuggestion s2 = response.suggestions().get(1);
+        assertEquals("Bhopal", s2.city());
+        assertEquals("Gandhi Nagar", s2.locality());
+        assertEquals("ENTITY_MATCH", s2.type());
+        assertEquals(0L, s2.resultCount());
+    }
+
+    @Test
+    public void explicitCityWithAmbiguousLocalityResolvesExplicitCityDirectly() {
+        // "gandhi nagar" exists in both Indore and Bhopal
+        com.indore.pathome.spaces.entity.Locality indoreLoc = mock(com.indore.pathome.spaces.entity.Locality.class);
+        when(indoreLoc.getCity()).thenReturn("Indore");
+        when(indoreLoc.getSectorName()).thenReturn("Gandhi Nagar");
+
+        com.indore.pathome.spaces.entity.Locality bhopalLoc = mock(com.indore.pathome.spaces.entity.Locality.class);
+        when(bhopalLoc.getCity()).thenReturn("Bhopal");
+        when(bhopalLoc.getSectorName()).thenReturn("Gandhi Nagar");
+
+        when(localityRepository.findAllBySectorNameIgnoreCase("gandhi nagar"))
+                .thenReturn(List.of(indoreLoc, bhopalLoc));
+
+        // Query: "gandhi nagar in bhopal" with selectedCity="Indore"
+        ListingRepository.LocalitySuggestionRow bhopalRow = mock(ListingRepository.LocalitySuggestionRow.class);
+        when(bhopalRow.getCity()).thenReturn("Bhopal");
+        when(bhopalRow.getLocality()).thenReturn("Gandhi Nagar");
+        when(bhopalRow.getResultCount()).thenReturn(3L);
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("gandhi nagar"), any()))
+                .thenReturn(List.of(bhopalRow));
+
+        var response = propertyController.getSearchSuggestions("gandhi nagar in bhopal", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Bhopal", response.effectiveCity());
+        assertEquals("EXPLICIT_QUERY", response.citySource());
+        assertEquals(1, response.suggestions().size());
+        assertEquals("Bhopal", response.suggestions().get(0).city());
+        assertEquals("Gandhi Nagar", response.suggestions().get(0).locality());
+    }
+
+    @Test
+    public void unknownArbitraryTextReturnsSearchAnyway() {
+        when(listingRepository.findPublicRentalLocalitySuggestions(
+                anyString(), anyString(), anyString(), anyString(), any(), any(), anyString(), any()))
+                .thenReturn(List.of());
+
+        var response = propertyController.getSearchSuggestions("unmatched query term", "Indore", 8).getBody();
+        assertNotNull(response);
+        assertEquals("Indore", response.effectiveCity());
+        assertEquals(1, response.suggestions().size());
+        assertEquals("SEARCH_ANYWAY", response.suggestions().get(0).type());
+        assertEquals("Search \"unmatched query term\"", response.suggestions().get(0).label());
     }
 }

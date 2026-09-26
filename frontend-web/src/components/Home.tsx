@@ -1211,7 +1211,7 @@ export const Home: React.FC = () => {
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* SECTION 1: HERO SEARCH HUB */}
-            <div id="hero" className="-mt-[74.5px]">
+            <div id="hero" className="relative z-30 -mt-[74.5px]">
               <HeroSection
                 onSearch={handleDiscoverySearch}
                 selectedCity={activeDiscoveryCity}
@@ -1228,6 +1228,7 @@ export const Home: React.FC = () => {
 
             {/* SECTION 2: LIVE TRUST & STATS BAR */}
             <motion.div
+              className="relative z-10"
               initial={{ opacity: 0, y: 24 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-60px" }}

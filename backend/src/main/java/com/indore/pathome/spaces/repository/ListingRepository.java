@@ -74,7 +74,7 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "and (:cityKey = '' or lower(trim(l.city)) = :cityKey) " +
             "and (:sectorKey = '' or lower(trim(l.sector)) = :sectorKey) " +
             "and (:prefix = '' or lower(trim(l.sector)) like concat(:prefix, '%')) " +
-            "and (:bhkKey = '' or upper(replace(l.bhkCount, ' ', '')) = :bhkKey) " +
+            "and (:bhkKey = '' or upper(replace(l.bhkCount, ' ', '')) = :bhkKey or (:bhkKey = '1RK' and upper(replace(l.bhkCount, ' ', '')) in ('1RK', '1RKSTUDIO'))) " +
             "and (:propertyType is null or l.propertyType = :propertyType) " +
             "and (:furnishingKey = '' or " +
             "(:furnishingKey = 'FURNISHED' and upper(replace(replace(l.furnishingStatus, '-', ' '), '_', ' ')) in ('FULLY FURNISHED', 'SEMI FURNISHED')) or " +
@@ -99,7 +99,7 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "from listings l join rental_details r on r.id = l.id " +
             "where l.status = 'ACTIVE' and l.listing_type = 'RENT' " +
             "and (:cityKey = '' or lower(btrim(l.city)) = :cityKey) " +
-            "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey) " +
+            "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey or (:bhkKey = '1RK' and upper(replace(l.bhk_count, ' ', '')) in ('1RK', '1RKSTUDIO'))) " +
             "and (:propertyTypeKey = '' or l.property_type = :propertyTypeKey) " +
             "and (:furnishingKey = '' or " +
             "(:furnishingKey = 'FURNISHED' and upper(replace(replace(l.furnishing_status, '-', ' '), '_', ' ')) in ('FULLY FURNISHED', 'SEMI FURNISHED')) or " +
@@ -125,7 +125,7 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "from listings l join rental_details r on r.id = l.id " +
             "where l.status = 'ACTIVE' and l.listing_type = 'RENT' " +
             "and (:cityKey = '' or lower(btrim(l.city)) = :cityKey) " +
-            "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey) " +
+            "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey or (:bhkKey = '1RK' and upper(replace(l.bhk_count, ' ', '')) in ('1RK', '1RKSTUDIO'))) " +
             "and (:propertyTypeKey = '' or l.property_type = :propertyTypeKey) " +
             "and (:furnishingKey = '' or " +
             "(:furnishingKey = 'FURNISHED' and upper(replace(replace(l.furnishing_status, '-', ' '), '_', ' ')) in ('FULLY FURNISHED', 'SEMI FURNISHED')) or " +

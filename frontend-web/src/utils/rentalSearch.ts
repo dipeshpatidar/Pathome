@@ -32,7 +32,7 @@ export const suggestionFailureDiagnostic = (error: unknown, queryLength: number)
 });
 
 export interface RentalSuggestion {
-  type: 'CITY' | 'LOCALITY' | 'SEARCH_QUERY';
+  type: 'CITY' | 'LOCALITY' | 'SEARCH_QUERY' | 'QUERY_INTENT' | 'SEARCH_ANYWAY' | 'UNSUPPORTED_CITY' | 'ENTITY_MATCH';
   label: string;
   city: string;
   locality: string | null;
@@ -55,6 +55,49 @@ export interface RentalSearchFilters {
   maxRent?: number;
   rentalOnly: boolean;
 }
+
+const KNOWN_METRO_CITIES: Record<string, string> = {
+  indore: 'Indore', bhopal: 'Bhopal', pune: 'Pune', mumbai: 'Mumbai',
+  delhi: 'Delhi', bangalore: 'Bangalore', bengaluru: 'Bangalore', hyderabad: 'Hyderabad',
+  chennai: 'Chennai', kolkata: 'Kolkata', ahmedabad: 'Ahmedabad', jaipur: 'Jaipur',
+  surat: 'Surat', lucknow: 'Lucknow', chandigarh: 'Chandigarh', goa: 'Goa',
+  dewas: 'Dewas', ujjain: 'Ujjain', gwalior: 'Gwalior', jabalpur: 'Jabalpur',
+  noida: 'Noida', gurgaon: 'Gurgaon'
+};
+
+const CANONICAL_LOCALITY_CITIES: Record<string, string> = {
+  'baner': 'Pune', 'wakad': 'Pune', 'hinjewadi': 'Pune', 'kharadi': 'Pune', 'viman nagar': 'Pune',
+  'mp nagar': 'Bhopal', 'arera colony': 'Bhopal', 'kolar road': 'Bhopal', 'hoshangabad road': 'Bhopal',
+  'vijay nagar': 'Indore', 'nanda nagar': 'Indore', 'bhawarkua': 'Indore', 'nipania': 'Indore'
+};
+
+export const extractCityFromSearchQuery = (text: string): string | undefined => {
+  if (!text) return undefined;
+  const query = text.toLowerCase();
+  const connMatch = /(?:^|\b)(?:in|at|of)\s+([a-z]+)(?!\s+(?:road|naka|gate|bypass|highway|circle|square))\b/i.exec(query);
+  if (connMatch) {
+    const candidate = connMatch[1].toLowerCase();
+    if (KNOWN_METRO_CITIES[candidate]) {
+      return KNOWN_METRO_CITIES[candidate];
+    }
+  }
+  for (const [loc, city] of Object.entries(CANONICAL_LOCALITY_CITIES)) {
+    const locRegex = new RegExp(`(?:^|\\b)${loc}(?:\\b|$)`, 'i');
+    if (locRegex.test(query)) {
+      return city;
+    }
+  }
+  for (const [cityKey, cityName] of Object.entries(KNOWN_METRO_CITIES)) {
+    const cityRegex = new RegExp(`(?:^|\\b)${cityKey}(?!\\s+(?:road|naka|gate|bypass|highway|circle|square))\\b`, 'i');
+    if (cityRegex.test(query)) {
+      const withoutCity = query.replace(cityRegex, ' ').replace(/\s+/g, ' ').trim();
+      if (withoutCity.length > 0) {
+        return cityName;
+      }
+    }
+  }
+  return undefined;
+};
 
 export const normalizeSearchText = (text: string): string => text.trim().replace(/\s+/g, ' ');
 
@@ -90,13 +133,14 @@ const rentalSuggestionLabel = (city: string, sector: string, bhk?: string,
 export const mapRentalSuggestion = (value: unknown): RentalSuggestion | null => {
   if (!value || typeof value !== 'object') return null;
   const item = value as Record<string, unknown>;
-  if (item.type !== 'CITY' && item.type !== 'LOCALITY' && item.type !== 'SEARCH_QUERY') return null;
+  const validTypes = ['CITY', 'LOCALITY', 'SEARCH_QUERY', 'QUERY_INTENT', 'SEARCH_ANYWAY', 'UNSUPPORTED_CITY', 'ENTITY_MATCH'];
+  if (!validTypes.includes(item.type as string)) return null;
   if (typeof item.label !== 'string' || !item.label.trim() || typeof item.city !== 'string' || !item.city.trim()) return null;
-  if (item.type !== 'CITY' && (typeof item.locality !== 'string' || !item.locality.trim())) return null;
+  if (item.type !== 'CITY' && item.type !== 'QUERY_INTENT' && item.type !== 'SEARCH_ANYWAY' && item.type !== 'UNSUPPORTED_CITY' && item.type !== 'ENTITY_MATCH' && (typeof item.locality !== 'string' || !item.locality.trim())) return null;
   const propertyType = parseRentalPropertyType(typeof item.propertyType === 'string' ? item.propertyType : null) || null;
   const furnishing = parseRentalFurnishing(typeof item.furnishing === 'string' ? item.furnishing : null) || null;
   return {
-    type: item.type,
+    type: item.type as RentalSuggestion['type'],
     label: item.label,
     city: item.city,
     locality: typeof item.locality === 'string' ? item.locality : null,
@@ -134,11 +178,17 @@ export const buildRentalSearchFilters = (
   selection: RentalSuggestion | null
 ): RentalSearchFilters => {
   const query = normalizeSearchText(text);
-  if (selection && query === selection.label) {
+  if (selection && (query === selection.label || selection.type === 'QUERY_INTENT' || selection.type === 'SEARCH_ANYWAY' || selection.type === 'UNSUPPORTED_CITY' || selection.type === 'ENTITY_MATCH')) {
+    if (selection.type === 'SEARCH_ANYWAY') {
+      return { city: selection.city || city?.trim() || undefined, q: query || undefined, rentalOnly: true };
+    }
+    if (selection.type === 'UNSUPPORTED_CITY') {
+      return { city: selection.city, q: query || undefined, rentalOnly: true };
+    }
     return {
       city: selection.city,
-      sector: selection.locality || undefined,
-      bhk: selection.bhk || undefined,
+      ...(selection.locality ? { sector: selection.locality } : {}),
+      ...(selection.bhk ? { bhk: selection.bhk } : {}),
       ...(selection.propertyType ? { propertyType: selection.propertyType } : {}),
       ...(selection.furnishing ? { furnishing: selection.furnishing } : {}),
       ...(selection.minRent ? { minRent: selection.minRent } : {}),
@@ -146,7 +196,9 @@ export const buildRentalSearchFilters = (
       rentalOnly: true
     };
   }
-  return { city: city?.trim() || undefined, q: query || undefined, rentalOnly: true };
+  const inferredCity = extractCityFromSearchQuery(query);
+  const effectiveCity = inferredCity || city?.trim() || undefined;
+  return { city: effectiveCity, q: query || undefined, rentalOnly: true };
 };
 
 export const selectionAfterCityChange = (selection: RentalSuggestion | null, city: string): RentalSuggestion | null =>

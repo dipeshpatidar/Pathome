@@ -4444,3 +4444,220 @@ DEFERRED BATCH QA — Browser tool intentionally NOT invoked in this task under 
 - Search behavior after alias promotion/disable remains visually clean.
 
 Commit: NO. Push: NO. Existing uncommitted changes preserved.
+
+================================================================================
+Date & Time: 2026-09-27 02:26 IST
+Task: PATHOME — Autocomplete Partial-Query Resilience + Zero-Inventory Intent Suggestions + Dropdown Stacking Fix
+Branch: feature/phase1-landing-search-checkpoint
+
+Why Work Requested:
+1. "2bhk flat under" collapsed prematurely to "No matching homes found" because incomplete price operators and partial digits were treated as location candidates, applying invalid/empty filters.
+2. "1rk" returned "No matching homes found" without distinguishing between query intent understanding and inventory availability. Public database check was required to identify whether 1RK inventory exists and how it is represented.
+3. The autocomplete dropdown in HeroSection visually rendered behind TrustStatsBar cards due to CSS stacking contexts and Framer Motion transforms.
+
+Key Investigations & Findings:
+- Database Inspection for 1RK:
+  - Querying `listings` in PostgreSQL (`pathome_db`) revealed active rental listing ID 32: `title = "1 RK Studio Flat in Bombay Hospital And The"`, `bhk_count = "1 RK Studio"`, `property_type = "FLAT"`, `city = "Indore"`, `sector = "Bombay Hospital And The"`.
+  - The domain distinguishes `1 BHK` (stored as `1 BHK`) and `1 RK` (stored as `1 RK Studio` by `PropertyParserService`).
+  - Previously, `ListingRepository` matched `upper(replace(l.bhkCount, ' ', '')) = '1RK'`, which missed `'1RKSTUDIO'`. Updating the query to `upper(replace(l.bhkCount, ' ', '')) in ('1RK', '1RKSTUDIO')` immediately surfaced listing 32 dynamically without code or schema refactoring.
+- Partial Query Parsing:
+  - Price operators (`under`, `below`, `above`, `between`) without complete numbers fell into remainder text and were treated as location candidates (e.g. `sector like 'under%'`), matching 0 homes.
+  - Adding `PriceState` (`NONE`, `EXPECTING_PRICE`, `EXPECTING_MAX_RENT`, `EXPECTING_MIN_RENT`, `EXPECTING_RANGE_END`, `COMPLETE`) and `LocationState` (`NONE`, `EXPECTING_LOCATION`, `PROVIDED`) enables the parser to recognize dangling operators and partial numeric typing (`under 2`, `under 20`, `in`, `at`) without applying broken filters or treating connectors as localities.
+- Dropdown Stacking Bug:
+  - `<div id="hero">` was unpositioned (`position: static`), whereas its sibling `<motion.div>` wrapping `<TrustStatsBar />` had Framer Motion animation properties (`opacity` and `transform: translateY(24px)`), establishing a new stacking context that rendered in front of static parent content.
+  - Adding `relative z-30` to `#hero` and `relative z-10` to the `<TrustStatsBar />` wrapper establishes a clean stacking hierarchy where the search surface and its dropdown always render in front of TrustStats and subsequent landing page cards.
+
+Files Changed:
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java`:
+  - Added `PriceState` and `LocationState` enums.
+  - Added pre-compiled patterns for partial price expressions (`PARTIAL_MAX_PRICE`, `PARTIAL_MIN_PRICE`, `PARTIAL_BETWEEN_WITH_FIRST`, `PARTIAL_BETWEEN_EMPTY`), trailing connectors (`TRAILING_LOCATION_CONNECTOR`, `TRAILING_FURNISHING_CONNECTOR`), and 1RK regex matching.
+  - Retained backward-compatible constructor for 9-component callers while adding 11-component constructor.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java`:
+  - Updated `searchPublicRentals`, `findPublicRentalLocalitySuggestions`, and `findPublicRentalFuzzyLocalities` to match `:bhkKey = '1RK'` against `('1RK', '1RKSTUDIO')`.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - Broadened structured query detection to include `priceState != NONE` and `locationState == EXPECTING_LOCATION`.
+  - Added `QUERY_INTENT` fallback when inventory count is 0 for recognized structured queries (without fabricating home counts or fake localities).
+  - Added `SEARCH_ANYWAY` fallback for unparsed free-text search.
+  - Added `queryIntentLabel` generator for clear, customer-centric intent copy.
+- `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`:
+  - Added unit tests for partial price expressions (`under`, `under 2`, `under 20`, `under 20000`, `between 20k and`), trailing prepositions (`in`, `at`), and 1RK syntax variations (`1rk`, `1 rk`, `1RK`, `rk`).
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+  - Added tests for partial price suggestions resilience, 1RK inventory suggestions, and zero-inventory recognized query intent (`QUERY_INTENT`).
+- `frontend-web/src/utils/rentalSearch.ts`:
+  - Expanded `RentalSuggestion['type']` union with `'QUERY_INTENT' | 'SEARCH_ANYWAY'`.
+  - Updated `mapRentalSuggestion` to support `QUERY_INTENT` and `SEARCH_ANYWAY` without requiring non-empty locality.
+  - Updated `buildRentalSearchFilters` with conditional object spreading to eliminate keys with `undefined` values.
+- `frontend-web/src/components/Home.tsx`:
+  - Assigned `relative z-30` to `#hero` and `relative z-10` to the `<TrustStatsBar />` wrapper.
+- `frontend-web/src/components/HeroSection.tsx`:
+  - Assigned `relative z-30` to `#hero-search-surface` and the input container.
+  - Updated suggestion item copy rendering: displays "Search this requirement" for `QUERY_INTENT` and "Search all listings" for `SEARCH_ANYWAY`, omitting home counts for zero-inventory suggestions.
+- `frontend-web/src/tests/rentalSearch.test.mjs`:
+  - Added test case verifying mapping and filter creation for `QUERY_INTENT` and `SEARCH_ANYWAY`.
+
+Verification & Outcomes:
+- Backend Tests: 448/448 tests PASS (`mvn test`, BUILD SUCCESS in 17.86s).
+- Frontend Tests: 317/317 tests PASS (`node --test src/tests/*.test.mjs`, all 8 `rentalSearch` tests pass).
+- Frontend Production Build: `npm run build` PASS (`tsc && vite build`, built cleanly in 2.79s).
+- Live Backend API Verification (curl on port 8080):
+  - `GET /search-suggestions?q=2bhk+flat+under&city=Indore` -> 200 OK (8 inventory suggestions for 2 BHK Flat across Nanda Nagar, Bhawarkua, Mari Mata Square, Vijay Nagar, etc., preserving filters).
+  - `GET /search-suggestions?q=2bhk+flat+under+2&city=Indore` -> 200 OK (8 inventory suggestions preserved).
+  - `GET /search-suggestions?q=2bhk+flat+under+20&city=Indore` -> 200 OK (8 inventory suggestions preserved).
+  - `GET /search-suggestions?q=2bhk+flat+under+20000&city=Indore` -> 200 OK (4 inventory suggestions with `maxRent: 20000` filter applied).
+  - `GET /search-suggestions?q=1rk&city=Indore` -> 200 OK (1 inventory suggestion: "1 RK in Bombay Hospital And The, Indore", count 1).
+  - `GET /search-suggestions?q=2bhk+flat+in&city=Indore` -> 200 OK (8 inventory suggestions for 2 BHK Flat).
+  - `GET /search-suggestions?q=2bhk+flat+at&city=Indore` -> 200 OK (8 inventory suggestions for 2 BHK Flat).
+- `git diff --check`: PASS (0 formatting/whitespace issues).
+- `git status` / `git diff --stat`: Clean 9 files changed, 433 insertions(+), 25 deletions(-).
+
+DEFERRED BATCH QA — Browser tool intentionally NOT invoked under Landing Page Batch QA policy:
+- Autocomplete dropdown visual position above TrustStats cards.
+- Mobile viewport dropdown overlay behavior.
+- Incomplete "under" / partial price typing interactions.
+- 1RK suggestion interaction and selection.
+
+Commit: NO. Push: NO. Main: UNTOUCHED.
+
+---
+
+### Date: 2026-09-27 02:55:00 IST
+Task: PATHOME — COMPLETE MISSED EXPLICIT CITY OVERRIDE (DELTA TASK)
+
+Why Requested:
+- The previous Autocomplete Resilience task successfully implemented partial price queries, incomplete connectors, 1RK support, zero-inventory QUERY_INTENT, SEARCH_ANYWAY, dynamic inventory suggestions, and the dropdown stacking fix.
+- However, explicit city override requirements from the specification were missing:
+  1. Selected city was acting as an absolute restriction rather than a default context.
+  2. Queries containing an explicit city (e.g. 2bhk flat in pune when Indore was selected in the UI) collapsed because the search was restricted to Indore, looking for locality "pune" inside Indore.
+  3. Precedence rules: (1) explicit high-confidence city from query (EXPLICIT_QUERY) > (2) authoritative locality owning city (LOCALITY_RESOLUTION) > (3) selected UI city (SELECTED_UI) > (4) configured neutral default (DEFAULT).
+  4. Selector stability while typing: typing an explicit city must NOT immediately mutate visible selector, but autocomplete operates with effectiveCity. UI selector synchronizes only upon suggestion selection or search submission.
+  5. Submission propagation: effective city propagates to URL params, discovery search, and selector without stale city leakage.
+  6. Ambiguity preservation: if a locality exists in multiple cities, no unsafe cross-city inference occurs.
+  7. Unsupported city handling: if typed city is not supported (e.g. Mumbai), return UNSUPPORTED_CITY suggestion without silent fallback to Indore.
+  8. City provenance metadata: effectiveCity and citySource inspectable in DTO.
+
+Investigation & Core Root Causes:
+- RentalSearchQuery had no explicit city component or parser regex.
+- PropertyController hardcoded cityKey from the HTTP query param city (defaulting to Indore), forcing all queries into Indore's locality vocabulary.
+- PostgreSQL database lacked locality records for non-Indore cities (e.g. Pune, Bhopal).
+
+Files Changed:
+- `backend/src/main/resources/db/migration/V16__supported_cities_and_localities.sql`:
+  - Added Flyway migration inserting canonical discovery localities for Pune (Baner, Wakad, Hinjewadi, Kharadi, Viman Nagar), Bhopal (MP Nagar, Arera Colony, Kolar Road, Hoshangabad Road), and Indore.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/LocalityRepository.java`:
+  - Added findAllBySectorNameIgnoreCase(String sectorName).
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicSearchSuggestions.java`:
+  - Added effectiveCity and citySource components with backward-compatible constructor.
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java`:
+  - Added explicitCity record component, backward-compatible constructor overloads.
+  - Added SUPPORTED_CITIES, KNOWN_METRO_CITIES, CITY_CONNECTOR, STANDALONE_CITY regexes.
+  - Added canonicalCityName(String) helper.
+  - Standalone city matches only when accompanied by structured terms or remaining non-blank text, preserving pure city prefix autocomplete.
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalLocationResolver.java`:
+  - Added CitySource enum (EXPLICIT_QUERY, LOCALITY_RESOLUTION, SELECTED_UI, DEFAULT).
+  - Added CityResolution and LocalityCityMatch records.
+  - Implemented 4-tier resolveCity(RentalSearchQuery, String).
+  - Implemented resolveAuthoritativeLocalityCity(String) with multi-city ambiguity check (returns isUnique = false if present in >1 city).
+  - Implemented isCitySupported(String).
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - Injected LocalityRepository.
+  - Resolved cityRes via RentalLocationResolver.resolveCity.
+  - Handled UNSUPPORTED_CITY early return when explicit city is not supported (no fallback to Indore).
+  - Scoped locality search to effectiveCity.
+  - Attached effectiveCity and citySource to PublicSearchSuggestions response.
+  - In getAllActiveProperties: resolved cityRes and scoped searchCity = cityRes.city().
+- `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`:
+  - Added unit tests for explicit city parsing across connectors, structured queries, standalone cities, and unsupported cities.
+- `backend/src/test/java/com/indore/pathome/spaces/service/RentalLocationResolverCityResolutionTest.java`:
+  - Dedicated unit tests covering explicit city override, authoritative locality resolution, multi-city ambiguity preservation, and neutral defaults.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+  - Added tests for explicit city override in suggestion endpoint and discovery search.
+- `frontend-web/src/utils/rentalSearch.ts`:
+  - Added UNSUPPORTED_CITY to RentalSuggestion['type'].
+  - Added extractCityFromSearchQuery for free-form explicit city and locality extraction upon submission.
+  - Updated buildRentalSearchFilters to populate filters.city from query text when selection is null, and handle UNSUPPORTED_CITY.
+- `frontend-web/src/components/HeroSection.tsx`:
+  - Updated applySearch to synchronize draftCity if overridden by filters.city.
+  - Updated suggestion dropdown item rendering to display "City currently unavailable" for UNSUPPORTED_CITY.
+- `frontend-web/src/tests/rentalSearch.test.mjs`:
+  - Added tests for free-text explicit city override (Pune, Indore, Mumbai), locality inference (Baner -> Pune), and UNSUPPORTED_CITY suggestion mapping.
+
+Verification & Outcomes:
+- Backend Unit & Integration Tests: 457/457 tests PASS (mvn test, BUILD SUCCESS in 15.9s).
+- Frontend Tests: 9/9 tests PASS (node --test src/tests/rentalSearch.test.mjs).
+- Frontend Production Build: npm run build PASS (tsc && vite build, built in 14.37s).
+- Direct Backend API Verification (curl on port 8080):
+  1. selectedCity=Indore, q=2bhk flat -> HTTP 200, effectiveCity: "Indore", citySource: "SELECTED_UI", 8 Indore inventory suggestions.
+  2. selectedCity=Indore, q=2bhk flat in pune -> HTTP 200, effectiveCity: "Pune", citySource: "EXPLICIT_QUERY", QUERY_INTENT ("Search 2 BHK flats in Pune", count: 0, zero Indore leakage).
+  3. selectedCity=Pune, q=2bhk flat in indore -> HTTP 200, effectiveCity: "Indore", citySource: "EXPLICIT_QUERY", 8 Indore inventory suggestions.
+  4. selectedCity=Indore, q=3bhk baner -> HTTP 200, effectiveCity: "Pune", citySource: "LOCALITY_RESOLUTION", zero Indore leakage.
+  5. selectedCity=Indore, q=2bhk flat in mumbai -> HTTP 200, effectiveCity: "Mumbai", citySource: "EXPLICIT_QUERY", UNSUPPORTED_CITY ("Pathome is not yet available in Mumbai", zero Indore fallback).
+  6. selectedCity=Indore, q=mp nagar -> HTTP 200, effectiveCity: "Bhopal", citySource: "LOCALITY_RESOLUTION", SEARCH_ANYWAY for Bhopal.
+  7. Discovery search /api/v1/properties?city=Indore&q=2bhk+flat+in+pune -> HTTP 200, 0 properties (Pune inventory 0, zero Indore leakage).
+  8. Discovery search /api/v1/properties?city=Pune&q=2bhk+flat+in+indore -> HTTP 200, 6 active Indore properties returned.
+- git diff --check: PASS (0 issues).
+- git status / git diff --stat: Clean diff on feature/phase1-landing-search-checkpoint.
+
+Deferred: Browser QA intentionally deferred per prompt instructions.
+Commit: NO. Push: NO. Main: UNTOUCHED.
+
+---
+
+## 2026-09-27 03:04 AM IST — Search Semantics Delta: Known-Locality Zero-Inventory Intent, Canonical Locality Entity Match, Multi-City Ambiguity Safety, Data-Driven City Vocabulary
+
+### Why this work was requested
+Product owner requested a surgical search semantics delta on feature/phase1-landing-search-checkpoint before proceeding to autonomous learning:
+1. Fix known-locality zero-inventory dead end: Strongly understood queries with an authoritative locality and 0 matching inventory (e.g. selectedCity=Indore, q=3bhk baner -> Pune/Baner) previously returned empty autocomplete []. Must return actionable QUERY_INTENT ("Search 3 BHK homes in Baner, Pune", count: 0) without fake listings, fake counts, or Indore fallback.
+2. Canonical locality must not become SEARCH_ANYWAY: Authoritative canonical localities with 0 active listings (e.g. selectedCity=Indore, q=mp nagar -> Bhopal) previously collapsed into generic SEARCH_ANYWAY ("Search \"mp nagar\""). Must return ENTITY_MATCH ("MP Nagar, Bhopal", "Explore homes in this area", count: 0).
+3. Ambiguous locality safety: When a locality exists in multiple cities (e.g. Viman Nagar in Indore and Pune), do NOT resolve by silently forcing the selected UI city. Return city-qualified alternatives ("Viman Nagar, Indore" and "Viman Nagar, Pune"), ordered with selected UI city first, without erasing other authoritative candidates. If explicit city is provided, explicit city wins normally.
+4. Data-driven city vocabulary: Refactor parser city recognition so supported-city vocabulary comes from authoritative backend/database data rather than hardcoding city names in Java regex patterns. Preserve truthful unsupported-city recognition without external geocoding or LLMs.
+
+### Scope
+Backend and frontend surgical delta only. Zero layout redesigns. No browser automation.
+
+### Files Changed
+- `backend/src/main/java/com/indore/pathome/spaces/service/CityRegistry.java` (New):
+  - High-performance O(1) concurrent set registry (`ConcurrentHashMap.newKeySet()`) for supported and known metro cities.
+  - Dynamically synchronizes supported cities from PostgreSQL repositories (`syncFromDatabase` via `localityRepository.findDistinctCities()`).
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java`:
+  - Replaced hardcoded city regexes with generic syntax regex `GENERIC_CITY_CONNECTOR`.
+  - Connectors and tokens validate against data-driven `CityRegistry.matchCityName()`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/RentalLocationResolver.java`:
+  - Expanded `LocalityCityMatch` record with `matchingCities` list and `canonicalLocality`.
+  - Implemented `resolveCanonicalLocalityName(String candidate, String cityKey)` to resolve canonical casing and confirm canonical locality status.
+  - Updated `toTitleCase` with canonical acronym preservation (`MP Nagar`, `AB Road`, `LIG Circle`).
+  - Delegated `isCitySupported` to `CityRegistry.isCitySupported`.
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java`:
+  - In `initCityRegistry()` / `setLocalityRepository`: sync dynamic cities from DB on startup.
+  - In `getSearchSuggestions`: added `selectedCity` alias support alongside `city`.
+  - Added multi-city ambiguous locality handler: checks inventory for each candidate; returns `SEARCH_QUERY`/`LOCALITY` if active inventory exists, or `QUERY_INTENT`/`ENTITY_MATCH` if count=0, with selected UI city sorted first.
+  - Fixed zero-inventory fallback: returns `QUERY_INTENT` when structured query has canonical locality; returns `ENTITY_MATCH` when unstructured query matches canonical locality; returns `SEARCH_ANYWAY` for arbitrary unknown text.
+- `frontend-web/src/utils/rentalSearch.ts`:
+  - Added `'ENTITY_MATCH'` to `RentalSuggestion['type']`.
+  - Updated `mapRentalSuggestion` and `buildRentalSearchFilters` to accept `ENTITY_MATCH` and scope to `selection.city` and `sector: selection.locality`.
+- `frontend-web/src/components/HeroSection.tsx`:
+  - Rendered secondary copy for `ENTITY_MATCH`: `"Explore homes in this area"`, suppressing count label.
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`:
+  - Added regression test for `3bhk baner` with 0 inventory -> Pune `QUERY_INTENT`.
+  - Added regression test for `mp nagar` -> Bhopal `ENTITY_MATCH` (not `SEARCH_ANYWAY`).
+  - Added regression test for known locality with real inventory -> `LOCALITY`.
+  - Added regression test for ambiguous locality across multiple cities -> city-qualified alternatives with selected UI city first.
+  - Added regression test for explicit city + ambiguous locality -> explicit city wins.
+  - Added regression test for unknown arbitrary text -> `SEARCH_ANYWAY`.
+- `backend/src/test/java/com/indore/pathome/spaces/service/RentalLocationResolverCityResolutionTest.java`:
+  - Added tests verifying ambiguous locality returns both cities in `matchingCities` list and `resolveCanonicalLocalityName` preserves canonical casing.
+
+### Verification & Outcomes
+- Backend Unit & Integration Tests: 464/464 tests PASS (`mvn test`, BUILD SUCCESS).
+- Focused Tests: 67/67 tests PASS (`RentalSearchQueryTest`, `RentalLocationResolverCityResolutionTest`, `PropertyControllerTest`).
+- Frontend Tests: 9/9 tests PASS (`node --test src/tests/rentalSearch.test.mjs`).
+- Frontend Production Build: `npm run build` exits 0 with zero errors (`tsc && vite build` in 2.18s).
+- Direct Backend API Verification (curl on port 8080):
+  1. selectedCity=Indore, q=2bhk flat in pune -> effectiveCity: "Pune", citySource: "EXPLICIT_QUERY", QUERY_INTENT ("Search 2 BHK flats in Pune", count: 0).
+  2. selectedCity=Pune, q=2bhk flat in indore -> effectiveCity: "Indore", citySource: "EXPLICIT_QUERY", SEARCH_QUERY (17 homes in Nanda Nagar, Indore).
+  3. selectedCity=Indore, q=3bhk baner -> effectiveCity: "Pune", citySource: "LOCALITY_RESOLUTION", resolved locality: "Baner", QUERY_INTENT ("Search 3 BHK homes in Baner, Pune", count: 0, no Indore fallback).
+  4. selectedCity=Indore, q=mp nagar -> effectiveCity: "Bhopal", citySource: "LOCALITY_RESOLUTION", resolved locality: "MP Nagar", ENTITY_MATCH ("MP Nagar, Bhopal", "Explore homes in this area", count: 0, NOT SEARCH_ANYWAY).
+  5. selectedCity=Indore, q=viman nagar (Ambiguity fixture in Indore & Pune) -> effectiveCity: "Indore", citySource: "SELECTED_UI", returns both: "Viman Nagar, Indore" (LOCALITY, count: 1) first, and "Viman Nagar, Pune" (ENTITY_MATCH, count: 0) second.
+  6. selectedCity=Indore, q=viman nagar in pune -> effectiveCity: "Pune", citySource: "EXPLICIT_QUERY", explicit city wins cleanly.
+  7. selectedCity=Indore, q=qwertyuiop -> effectiveCity: "Indore", citySource: "SELECTED_UI", SEARCH_ANYWAY ("Search \"qwertyuiop\"", count: 0).
+
+Commit: NO. Push: NO. Main: UNTOUCHED. Browser: NO.

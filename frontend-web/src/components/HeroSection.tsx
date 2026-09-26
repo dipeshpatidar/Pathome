@@ -126,6 +126,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
   const applySearch = () => {
     setSuggestionsOpen(false);
     const filters = buildRentalSearchFilters(draftCity, searchText, selection);
+    if (filters.city && filters.city !== draftCity) {
+      setDraftCity(filters.city);
+    }
     onSearch(filters.city, filters.sector, filters);
   };
 
@@ -224,7 +227,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                   : { type: 'spring', stiffness: 280, damping: 24, delay: 0.24 }
               }
               id="hero-search-surface"
-              className="relative z-20 grid min-w-0 grid-cols-1 gap-1.5 rounded-2xl border border-white/20 bg-white p-1.5 shadow-xl shadow-slate-950/25 sm:grid-cols-2 sm:p-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,2fr)_auto] lg:items-stretch"
+              className="relative z-30 grid min-w-0 grid-cols-1 gap-1.5 rounded-2xl border border-white/20 bg-white p-1.5 shadow-xl shadow-slate-950/25 sm:grid-cols-2 sm:p-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,2fr)_auto] lg:items-stretch"
             >
               <button
                 type="button"
@@ -241,7 +244,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 group-hover:translate-y-0.5" aria-hidden="true" />
               </button>
-              <div className="relative flex min-h-14 min-w-0 items-center gap-2 rounded-xl px-4 focus-within:ring-2 focus-within:ring-emerald-600">
+              <div className="relative z-30 flex min-h-14 min-w-0 items-center gap-2 rounded-xl px-4 focus-within:ring-2 focus-within:ring-emerald-600">
                 <Search className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
                 <label htmlFor="hero-smart-search" className="sr-only">Search rental homes by locality or BHK</label>
                 <input
@@ -291,7 +294,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                     {suggestionState === 'error' && <p role="status" className="px-3 py-3 text-sm text-slate-600">Suggestions are temporarily unavailable. You can still search.</p>}
                     {suggestionState === 'results' && suggestions.map((item, index) => (
                       <button
-                        key={`${item.type}-${item.city}-${item.locality || ''}-${item.bhk || ''}`}
+                        key={`${item.type}-${item.city}-${item.locality || ''}-${item.bhk || ''}-${index}`}
                         id={`hero-search-option-${index}`}
                         type="button"
                         role="option"
@@ -302,7 +305,27 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                         className={`flex min-h-12 w-full min-w-0 items-center gap-3 rounded-xl px-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${index === activeSuggestionIndex ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'}`}
                       >
                         <MapPin className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
-                        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{item.label}</span><span className="block truncate text-xs text-slate-500">{item.type === 'CITY' ? 'City' : item.type === 'SEARCH_QUERY' ? 'BHK and locality' : 'Locality'}{item.resultCount !== null ? ` · ${item.resultCount} ${item.resultCount === 1 ? 'home' : 'homes'}` : ''}</span></span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold">{item.label}</span>
+                          <span className="block truncate text-xs text-slate-500">
+                            {item.type === 'ENTITY_MATCH'
+                              ? 'Explore homes in this area'
+                              : item.type === 'UNSUPPORTED_CITY'
+                              ? 'City currently unavailable'
+                              : item.type === 'QUERY_INTENT'
+                              ? 'Search this requirement'
+                              : item.type === 'SEARCH_ANYWAY'
+                              ? 'Search all listings'
+                              : item.type === 'CITY'
+                              ? 'City'
+                              : item.type === 'SEARCH_QUERY'
+                              ? 'BHK and locality'
+                              : 'Locality'}
+                            {item.type !== 'QUERY_INTENT' && item.type !== 'SEARCH_ANYWAY' && item.type !== 'UNSUPPORTED_CITY' && item.type !== 'ENTITY_MATCH' && item.resultCount !== null
+                              ? ` · ${item.resultCount} ${item.resultCount === 1 ? 'home' : 'homes'}`
+                              : ''}
+                          </span>
+                        </span>
                       </button>
                     ))}
                   </div>
