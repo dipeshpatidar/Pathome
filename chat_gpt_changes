@@ -1515,3 +1515,23 @@ Changed: AGENTS.md was replaced with the approved 16-section constitution. The o
 Verification: Read the complete resulting AGENTS.md; confirmed all 16 sections; compared it directly with the proposal and confirmed only sections 6, 12, and 15 differ as approved; git diff --check passed; reviewed git status and AGENTS.md diff. Application tests, frontend build, and browser automation were not run for this documentation-only task. Existing truthfulness-cleanup frontend work, run-app.sh, and other unrelated changes were left untouched.
 
 Commit: NO. Push: NO.
+
+## 2026-09-27 19:52:48 IST — Pathome local launcher checkpoint review and focused fixes
+
+Why: Review and separately checkpoint the existing run-app.sh hardening while preserving all truthfulness-cleanup and constitution work.
+
+Changed: run-app.sh now selects TCP LISTEN PIDs only, uses exact backend/frontend cwd matches, bounds the PostgreSQL connection checks, avoids printing another process's command line on port conflicts, and captures process-tree PIDs before TERM so a KILL fallback can reach survivors if their parent exits. This chat_gpt_changes entry records the review. The existing launcher-related antigravity_changes entry is being staged separately from its unrelated truthfulness entry; no application code was changed.
+
+Verification: bash -n run-app.sh PASS; git diff --check PASS. The listener-only lsof selector returned the existing 8080 and 5173 listener PIDs. The existing Antigravity launcher entry reports a prior successful end-to-end start/shutdown and port-release check. No new end-to-end launcher run was performed because those ports currently host active services. A focused process-tree test timed out because sandboxed pgrep/ps process inspection was unavailable; an attempt to verify outside the sandbox failed when automatic approval review returned a 403 model-access error. Runtime cleanup of the revised function remains unverified in this session.
+
+Commit: pending launcher checkpoint. Push: NO.
+
+## 2026-09-27 20:26:46 IST — Manual launcher end-to-end verification received
+
+Why: Complete the pending run-app.sh checkpoint after the owner performed the controlled end-to-end test outside the sandbox. This supersedes the earlier entry's pending runtime-verification status.
+
+Changed: chat_gpt_changes (this append-only verification record). The checkpoint stages only run-app.sh and launcher-related chat_gpt_changes additions. antigravity_changes and all truthfulness-cleanup files remain uncommitted and untouched.
+
+Verification reported by the owner for the current run-app.sh: backend HTTP 401, expected because the root endpoint requires authentication; frontend HTTP 200. After Ctrl+C, the launcher, Pathome Maven/Spring Boot children, npm/Vite children, and other Pathome launcher processes exited; ports 8080 and 5173 were released; PostgreSQL remained running on 5432. Local bash -n run-app.sh and git diff --check also passed. No second launcher cycle was run by this agent.
+
+Commit: pending this checkpoint. Push: NO.
