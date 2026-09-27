@@ -1505,3 +1505,13 @@ Baseline investigation: exact baseline backend archived to a temporary directory
 Failure accounting: an intermediate Maven rerun was invalidated by my overlapping clean compile with test execution (missing compiled classes); reran sequentially after clean compilation. Earlier V2 reset clock/ownership defects and fixture issues were fixed and verified by the final full pass.
 Limitations: anonymous hashes do not prove different humans; no signed feedback receipts; behavioral negatives require competing selections; low-volume aliases may never qualify; no multi-node cache invalidation; evidence history retained without a new retention job. Deployment/test connection details and credentials intentionally omitted.
 Git status: NO commit, NO push; no branch/worktree changes, resets, restores, stashes, merges or rebases. Ready for human review.
+
+## 2026-09-27 19:40:56 IST — Approved Pathome Engineering Constitution adoption
+
+Why: Replace the repository-root agent guidance with the complete approved Pathome Engineering Constitution from AGENTS_PROPOSAL_REVIEW.md.
+
+Changed: AGENTS.md was replaced with the approved 16-section constitution. The only deviations from the proposal are the per-command/cohesive-batch ten-minute verification limit, the ChatGPT / OpenAI Codex and Antigravity change-log ownership mapping with other agents using their explicitly designated log, and a production-impacting data backup/restore and recovery requirement. This append-only chat_gpt_changes entry records the work. No application code was changed.
+
+Verification: Read the complete resulting AGENTS.md; confirmed all 16 sections; compared it directly with the proposal and confirmed only sections 6, 12, and 15 differ as approved; git diff --check passed; reviewed git status and AGENTS.md diff. Application tests, frontend build, and browser automation were not run for this documentation-only task. Existing truthfulness-cleanup frontend work, run-app.sh, and other unrelated changes were left untouched.
+
+Commit: NO. Push: NO.
