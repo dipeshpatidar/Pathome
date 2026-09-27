@@ -24,7 +24,7 @@ public interface SearchAliasCandidateRepository extends JpaRepository<SearchAlia
      *   - status = CANDIDATE (not yet promoted or rejected)
      */
     @Query("SELECT c FROM SearchAliasCandidate c " +
-           "WHERE c.status = 'CANDIDATE' " +
+           "WHERE c.status = 'CANDIDATE' AND c.policyVersion IS NULL " +
            "  AND c.evidenceCount >= :minEvidence " +
            "  AND c.selectionRate >= :minSelectionRate " +
            "  AND c.rejectionCount = 0")
@@ -33,7 +33,7 @@ public interface SearchAliasCandidateRepository extends JpaRepository<SearchAlia
             @Param("minSelectionRate") double minSelectionRate);
 
     @Query("SELECT c FROM SearchAliasCandidate c " +
-           "WHERE c.status = 'CANDIDATE' " +
+           "WHERE c.status = 'CANDIDATE' AND c.policyVersion IS NULL " +
            "  AND c.evidenceCount >= :minEvidence " +
            "  AND c.uniqueSessionCount >= :minUniqueSessions " +
            "  AND c.selectionRate >= :minSelectionRate " +

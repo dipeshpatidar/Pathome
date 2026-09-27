@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
+import com.indore.pathome.spaces.service.searchlearning.AliasMutationCoordinator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -127,6 +127,9 @@ public class SearchLearningService {
         this.aliasRepository = aliasRepository;
     }
 
+    @Autowired(required = false)
+    private AliasMutationCoordinator mutations;
+
     // ─── Public Telemetry API ──────────────────────────────────────────────────
 
     /**
@@ -219,8 +222,9 @@ public class SearchLearningService {
     @Transactional(readOnly = true)
     public void refreshAliasCache() {
         try {
-            localityAliasCache.clear();
+            if (mutations != null) { mutations.refreshCache(); return; }
             List<SearchAlias> active = aliasRepository.findActiveLocalityAliasesForCity("");
+            localityAliasCache.clear();
             for (SearchAlias alias : active) {
                 String key = cacheKey(alias.getAliasTerm(),
                         alias.getEntityCity() == null ? "" : alias.getEntityCity().toLowerCase(Locale.ROOT).strip());
@@ -247,7 +251,6 @@ public class SearchLearningService {
      * Scheduled aggregation job: runs every 15 minutes.
      * Computes candidate evidence, unique session count, and real selection rate.
      */
-    @Scheduled(fixedDelayString = "PT15M", initialDelayString = "PT2M")
     @Transactional
     public void aggregateCandidates() {
         try {
@@ -277,7 +280,7 @@ public class SearchLearningService {
 
                 if (existing.isPresent()) {
                     SearchAliasCandidate c = existing.get();
-                    if (!"CANDIDATE".equals(c.getStatus()) && !"ELIGIBLE_FOR_REVIEW".equals(c.getStatus())) {
+                    if (c.getPolicyVersion() != null || (!"CANDIDATE".equals(c.getStatus()) && !"ELIGIBLE_FOR_REVIEW".equals(c.getStatus()))) {
                         continue;
                     }
                     c.setEvidenceCount((int) row.getEvidenceCount());
@@ -334,7 +337,6 @@ public class SearchLearningService {
      * In Phase-1: uncontrolled AUTO-PROMOTION is disabled.
      * Eligible candidates are marked as ELIGIBLE_FOR_REVIEW for human/admin inspection.
      */
-    @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT5M")
     @Transactional
     public void promoteEligibleCandidates() {
         if (!AUTO_PROMOTION_ENABLED) {
@@ -435,6 +437,7 @@ public class SearchLearningService {
      */
     @Transactional
     public SearchAlias approveCandidate(Long candidateId, String approvedBy) {
+        if (mutations != null) mutations.lockCandidate(candidateId);
         SearchAliasCandidate candidate = candidateRepository.findById(candidateId)
                 .orElseThrow(() -> new IllegalArgumentException("Candidate not found: " + candidateId));
 
@@ -487,8 +490,14 @@ public class SearchLearningService {
                 candidate.getPromotedBy()));
         candidateRepository.save(candidate);
 
-        // Immediate cache update
-        putCacheEntry(savedAlias.getAliasTerm(), savedAlias.getEntityCity(), savedAlias.getEntityValue());
+        if (mutations != null) {
+            aliasRepository.flush();
+            candidateRepository.flush();
+            mutations.manualApproval(candidateId, savedAlias.getId());
+            mutations.syncAfterCommit(savedAlias.getAliasTerm(), savedAlias.getEntityType(), savedAlias.getEntityCity());
+        } else {
+            putCacheEntry(savedAlias.getAliasTerm(), savedAlias.getEntityCity(), savedAlias.getEntityValue());
+        }
         log.info("Alias approved: candidateId={} term='{}' -> '{}' (city={}, approvedBy={})",
                 candidateId, savedAlias.getAliasTerm(), savedAlias.getEntityValue(),
                 savedAlias.getEntityCity(), candidate.getPromotedBy());
@@ -500,6 +509,7 @@ public class SearchLearningService {
      */
     @Transactional
     public SearchAliasCandidate rejectCandidate(Long candidateId, String rejectedBy, String reason) {
+        if (mutations != null) mutations.lockCandidate(candidateId);
         SearchAliasCandidate candidate = candidateRepository.findById(candidateId)
                 .orElseThrow(() -> new IllegalArgumentException("Candidate not found: " + candidateId));
 
@@ -509,7 +519,12 @@ public class SearchLearningService {
         candidate.setPromotionEvidence(String.format("{\"rejectionReason\":\"%s\"}", reason != null ? reason : ""));
         log.info("Candidate rejected: candidateId={} term='{}' rejectedBy='{}' reason='{}'",
                 candidateId, candidate.getCandidateTerm(), candidate.getPromotedBy(), reason);
-        return candidateRepository.save(candidate);
+        SearchAliasCandidate saved = candidateRepository.save(candidate);
+        if (mutations != null) {
+            candidateRepository.flush();
+            mutations.manualReject(candidateId);
+        }
+        return saved;
     }
 
     /**
@@ -518,6 +533,7 @@ public class SearchLearningService {
      */
     @Transactional
     public SearchAlias disableAlias(Long aliasId, String disabledReason) {
+        if (mutations != null) mutations.lockAlias(aliasId);
         SearchAlias alias = aliasRepository.findById(aliasId)
                 .orElseThrow(() -> new IllegalArgumentException("Alias not found: " + aliasId));
 
@@ -526,8 +542,7 @@ public class SearchLearningService {
         alias.setDisabledReason(disabledReason != null ? disabledReason : "Administrative disable");
         SearchAlias saved = aliasRepository.save(alias);
 
-        // Immediate cache eviction
-        evictFromCache(alias.getAliasTerm(), alias.getEntityCity());
+        if (mutations == null) evictFromCache(alias.getAliasTerm(), alias.getEntityCity());
 
         if (alias.getSourceCandidateId() != null) {
             candidateRepository.findById(alias.getSourceCandidateId()).ifPresent(c -> {
@@ -535,9 +550,21 @@ public class SearchLearningService {
                 candidateRepository.save(c);
             });
         }
+        if (mutations != null) {
+            aliasRepository.flush();
+            candidateRepository.flush();
+            mutations.manualDisable(aliasId);
+            mutations.syncAfterCommit(alias.getAliasTerm(), alias.getEntityType(), alias.getEntityCity());
+        }
         log.info("Alias disabled: aliasId={} term='{}' city='{}' reason='{}'",
                 aliasId, alias.getAliasTerm(), alias.getEntityCity(), disabledReason);
         return saved;
+    }
+
+    @Transactional
+    public void resetAutonomousCandidate(Long candidateId) {
+        if (mutations == null) throw new IllegalStateException("Autonomous learning is unavailable");
+        mutations.reset(candidateId);
     }
 
     // ─── Metrics / Observability ────────────────────────────────────────────────
@@ -600,6 +627,11 @@ public class SearchLearningService {
     void putCacheEntry(String aliasTerm, String cityKey, String locality) {
         localityAliasCache.put(cacheKey(aliasTerm, cityKey), locality);
     }
+
+    /** Shared production cache entry point for committed autonomous mutations. */
+    public void installCacheEntry(String term, String city, String target) { putCacheEntry(term, city, target); }
+
+    public void evictScopedCacheEntry(String term, String city) { localityAliasCache.remove(cacheKey(term, city)); }
 
     /** Package-visible for testing: check cache size. */
     int getCacheSize() { return localityAliasCache.size(); }

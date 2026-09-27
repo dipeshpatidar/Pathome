@@ -109,6 +109,16 @@ public class SearchAliasCandidate {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+    @Column(name = "lifecycle_state", length = 30, insertable = false, updatable = false)
+    private String lifecycleState;
+    @Column(name = "policy_version", length = 30, insertable = false, updatable = false)
+    private String policyVersion;
+    @Column(name = "last_decision", columnDefinition = "TEXT", insertable = false, updatable = false)
+    private String lastDecision;
+    public String getLifecycleState() { return lifecycleState; }
+    public String getPolicyVersion() { return policyVersion; }
+    public String getLastDecision() { return lastDecision; }
+
     public SearchAliasCandidate() {}
 
     @PreUpdate

@@ -1469,3 +1469,39 @@ Why: Make suggestion request failures diagnosable without changing friendly UI c
 Changed: `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java` (known type aliases and flat prefixes after BHK), `backend/src/main/java/com/indore/pathome/spaces/repository/ListingRepository.java` (property-type predicates), `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java` (optional propertyType discovery filter and inventory-backed suggestion labels), `backend/src/main/java/com/indore/pathome/spaces/dto/PublicSearchSuggestion.java` (typed propertyType), `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`, `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java`, `frontend-web/src/utils/rentalSearch.ts` (typed structured selection, URL key, safe diagnostic metadata and abort/stale gate), `frontend-web/src/services/propertyService.ts` (propertyType discovery parameter and categorized suggestion request failures), `frontend-web/src/components/HeroSection.tsx` (development-only diagnostic; unchanged friendly fallback), `frontend-web/src/components/Home.tsx` (propertyType URL/first page/load-more/retry/restore propagation), `frontend-web/src/tests/rentalSearch.test.mjs`, and this `chat_gpt_changes` entry. No card/detail design or landmark matching changes.
 
 Verification: focused backend parser/controller tests PASS 43/43; `mvn clean compile` PASS; `mvn -DskipTests package` PASS; frontend focused tests PASS 6/6, full suite PASS 315/315, build PASS; `git diff --check` PASS. A temporary local backend on port 8081 used the existing development PostgreSQL inventory and was stopped after read-only HTTP checks. `2bhk fla` returned real FLAT 2BHK locality suggestions, `2bhk flat vijay nagar` returned one locality with two listings, `4bhk vijay nagar` returned no suggestions, and structured discovery returned the two real FLAT listings. The existing product-level Indore fallback in Home and restoration remains outside this focused task. Browser/Playwright/screenshots were not used by explicit batched-QA instruction. No commit or push.
+
+
+## 2026-09-27 13:44:34 IST — Autonomous Search Intelligence V2 implementation and completion verification
+Requested: implement a conservative autonomous backend alias-learning layer, preserve deterministic search and unfinished Task-2 frontend, verify the complete lifecycle and baseline test-signature mismatch, and leave all work uncommitted for human review.
+Baseline: feature/search-autonomous-intelligence-v2 at ab7f2753e84890a68de65e19d61078a612a19c9f. Actual old thresholds: 10 events / 3 sessions / 0.70 selection rate; legacy automatic activation disabled.
+Changed files:
+- backend/src/main/java/com/indore/pathome/spaces/controller/AdminSearchLearningController.java
+- backend/src/main/java/com/indore/pathome/spaces/entity/SearchAliasCandidate.java
+- backend/src/main/java/com/indore/pathome/spaces/repository/SearchAliasCandidateRepository.java
+- backend/src/main/java/com/indore/pathome/spaces/repository/SearchAliasRepository.java
+- backend/src/main/java/com/indore/pathome/spaces/service/SearchLearningService.java
+- backend/src/main/resources/application.yml
+- backend/src/test/java/com/indore/pathome/spaces/controller/AdminSearchLearningControllerTest.java
+- backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java
+- backend/docs/AUTONOMOUS_SEARCH_INTELLIGENCE_V2.md
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AliasEvidenceClassifier.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AliasEvidenceSnapshot.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AliasLifecycle.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AliasMutationCoordinator.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AliasPolicyDecision.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AutonomousAliasEvaluator.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AutonomousAliasPolicy.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/AutonomousLearningProperties.java
+- backend/src/main/java/com/indore/pathome/spaces/service/searchlearning/WilsonConfidence.java
+- backend/src/main/resources/db/migration/V17__autonomous_search_alias_learning.sql
+- backend/src/test/java/com/indore/pathome/spaces/service/searchlearning/AliasEvidenceClassifierTest.java
+- backend/src/test/java/com/indore/pathome/spaces/service/searchlearning/AutonomousAliasPolicyTest.java
+- backend/src/test/java/com/indore/pathome/spaces/service/searchlearning/AutonomousAliasPostgresTest.java
+- backend/src/test/java/com/indore/pathome/spaces/service/searchlearning/WilsonConfidenceTest.java
+- chat_gpt_changes (this append-only entry).
+Outcome: added additive V17, explicit V2 lifecycle/policy reasons, 95% Wilson lower confidence bound, canonical/city validation, per-session SQL contribution cap, time/burst/dominance gates, independent deterministic shadow evaluation, transactional autonomous activation, recent health/degradation/disable, cooldown/relearning, persistent manual veto/reset, PostgreSQL locking/uniqueness, after-commit existing-cache synchronization, bounded scheduler and internal documentation. No runtime AI, ranking changes, canonical creation, frontend changes or distributed cache.
+Verification: final sequential mvn test PASS: 526 tests, 0 failures, 0 errors, 0 skipped. Includes policy 26, statistics 12, taxonomy 8, real PostgreSQL V2 14, admin controller 10, legacy learning service 19, prior database lifecycle 3, and parser/resolver/controller suites 70. mvn clean compile PASS. PostgreSQL fixtures use a separate test database and per-test schemas; V17 migration, historical alias preservation, backfill, unique constraints, races, shadow/no-admin lifecycle, auto/manual cache eviction, rollback, null sessions and kill switch verified. No frontend build/tests or browser automation per explicit instruction.
+Baseline investigation: exact baseline backend archived to a temporary directory and mvn test-compile failed at the same 20 old three-argument suggestion calls. Baseline production signature already had optional selectedCity as the third argument; production PropertyController is byte-identical. Only the 20 PropertyControllerTest calls add null, preserving assertions and semantics. V15/V16 byte-identical to baseline.
+Failure accounting: an intermediate Maven rerun was invalidated by my overlapping clean compile with test execution (missing compiled classes); reran sequentially after clean compilation. Earlier V2 reset clock/ownership defects and fixture issues were fixed and verified by the final full pass.
+Limitations: anonymous hashes do not prove different humans; no signed feedback receipts; behavioral negatives require competing selections; low-volume aliases may never qualify; no multi-node cache invalidation; evidence history retained without a new retention job. Deployment/test connection details and credentials intentionally omitted.
+Git status: NO commit, NO push; no branch/worktree changes, resets, restores, stashes, merges or rebases. Ready for human review.

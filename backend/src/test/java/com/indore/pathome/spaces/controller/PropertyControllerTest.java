@@ -1074,7 +1074,7 @@ public class PropertyControllerTest {
                 isNull(), isNull(), eq("vijay"), any()))
                 .thenReturn(List.of(first, duplicate));
 
-        var response = propertyController.getSearchSuggestions("4bhk in vijay", "Indore", 8);
+        var response = propertyController.getSearchSuggestions("4bhk in vijay", "Indore", null, 8);
         assertEquals(200, response.getStatusCode().value());
         assertEquals(1, response.getBody().suggestions().size());
         assertEquals("SEARCH_QUERY", response.getBody().suggestions().get(0).type());
@@ -1086,7 +1086,7 @@ public class PropertyControllerTest {
 
     @Test
     public void rentalSuggestionsHandleEmptyQueryCitySelectionAndBoundedLimit() throws Exception {
-        assertTrue(propertyController.getSearchSuggestions(" ", "Indore", 8).getBody().suggestions().isEmpty());
+        assertTrue(propertyController.getSearchSuggestions(" ", "Indore", null, 8).getBody().suggestions().isEmpty());
         verifyNoInteractions(listingRepository);
 
         ListingRepository.CitySuggestionRow pune = mock(ListingRepository.CitySuggestionRow.class);
@@ -1096,7 +1096,7 @@ public class PropertyControllerTest {
         when(listingRepository.findPublicRentalLocalitySuggestions(eq("indore"), eq(""), eq(""), eq(""),
                 isNull(), isNull(), eq("pune"), any()))
                 .thenReturn(List.of());
-        var result = propertyController.getSearchSuggestions("Pune", "Indore", 999).getBody();
+        var result = propertyController.getSearchSuggestions("Pune", "Indore", null, 999).getBody();
         assertEquals(1, result.suggestions().size());
         assertEquals("CITY", result.suggestions().get(0).type());
         assertEquals("Pune", result.suggestions().get(0).city());
@@ -1163,7 +1163,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(),
                 eq("vijay nagar"), any())).thenReturn(List.of(row));
 
-        var matched = propertyController.getSearchSuggestions("2bhk flat in vijay nagar", "Indore", 8).getBody();
+        var matched = propertyController.getSearchSuggestions("2bhk flat in vijay nagar", "Indore", null, 8).getBody();
         assertEquals(1, matched.suggestions().size());
         assertEquals("2 BHK Flat in Vijay Nagar, Indore", matched.suggestions().get(0).label());
         assertEquals(com.indore.pathome.spaces.entity.PropertyType.FLAT, matched.suggestions().get(0).propertyType());
@@ -1172,7 +1172,7 @@ public class PropertyControllerTest {
         assertTrue(publicJson.contains("\"propertyType\":\"FLAT\""));
         assertFalse(publicJson.contains("ownerPhone"));
 
-        var absent = propertyController.getSearchSuggestions("2bhk flat in unknown", "Indore", 8).getBody();
+        var absent = propertyController.getSearchSuggestions("2bhk flat in unknown", "Indore", null, 8).getBody();
         assertTrue(absent.suggestions().isEmpty());
         verify(listingRepository).findPublicRentalLocalitySuggestions(
                 eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq("unknown"), any());
@@ -1188,7 +1188,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
                 .thenReturn(List.of(row));
         assertEquals("2 BHK Flat in Vijay Nagar, Indore",
-                propertyController.getSearchSuggestions("2bhk fla", "Indore", 8).getBody().suggestions().get(0).label());
+                propertyController.getSearchSuggestions("2bhk fla", "Indore", null, 8).getBody().suggestions().get(0).label());
 
         when(listingRepository.searchPublicRentals(any(), any(), anyString(), anyString(), anyString(), anyString(),
                 any(), anyString(), any(), any(), any()))
@@ -1219,14 +1219,14 @@ public class PropertyControllerTest {
                 .thenReturn(List.of(row));
 
         // "2bhk flat under" should preserve bhk and flat and not treat "under" as location
-        var result = propertyController.getSearchSuggestions("2bhk flat under", "Indore", 8).getBody();
+        var result = propertyController.getSearchSuggestions("2bhk flat under", "Indore", null, 8).getBody();
         assertNotNull(result);
         assertEquals(1, result.suggestions().size());
         assertEquals("2 BHK Flat in Vijay Nagar, Indore", result.suggestions().get(0).label());
         assertEquals(5L, result.suggestions().get(0).resultCount());
 
         // "2bhk flat under 2" should also gracefully return the inventory suggestions
-        var result2 = propertyController.getSearchSuggestions("2bhk flat under 2", "Indore", 8).getBody();
+        var result2 = propertyController.getSearchSuggestions("2bhk flat under 2", "Indore", null, 8).getBody();
         assertNotNull(result2);
         assertEquals(1, result2.suggestions().size());
         assertEquals("2 BHK Flat in Vijay Nagar, Indore", result2.suggestions().get(0).label());
@@ -1242,7 +1242,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq("1RK"), eq(""), eq(""), isNull(), isNull(), eq(""), any()))
                 .thenReturn(List.of(row));
 
-        var response = propertyController.getSearchSuggestions("1rk", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("1rk", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals(1, response.suggestions().size());
         assertEquals("1 RK in Bombay Hospital, Indore", response.suggestions().get(0).label());
@@ -1256,7 +1256,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq("1RK"), eq(""), eq(""), isNull(), isNull(), eq(""), any()))
                 .thenReturn(List.of());
 
-        var response = propertyController.getSearchSuggestions("1rk", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("1rk", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals(1, response.suggestions().size());
         PublicSearchSuggestion suggestion = response.suggestions().get(0);
@@ -1275,7 +1275,7 @@ public class PropertyControllerTest {
                 eq("pune"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
                 .thenReturn(List.of());
 
-        var puneResponse = propertyController.getSearchSuggestions("2bhk flat in pune", "Indore", 8).getBody();
+        var puneResponse = propertyController.getSearchSuggestions("2bhk flat in pune", "Indore", null, 8).getBody();
         assertNotNull(puneResponse);
         assertEquals("Pune", puneResponse.effectiveCity());
         assertEquals("EXPLICIT_QUERY", puneResponse.citySource());
@@ -1295,7 +1295,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq("2BHK"), eq("FLAT"), eq(""), isNull(), isNull(), eq(""), any()))
                 .thenReturn(List.of(indoreRow));
 
-        var indoreResponse = propertyController.getSearchSuggestions("2bhk flat in indore", "Pune", 8).getBody();
+        var indoreResponse = propertyController.getSearchSuggestions("2bhk flat in indore", "Pune", null, 8).getBody();
         assertNotNull(indoreResponse);
         assertEquals("Indore", indoreResponse.effectiveCity());
         assertEquals("EXPLICIT_QUERY", indoreResponse.citySource());
@@ -1312,7 +1312,7 @@ public class PropertyControllerTest {
                 eq("pune"), eq("3BHK"), eq(""), eq(""), isNull(), isNull(), eq("baner"), any()))
                 .thenReturn(List.of(banerRow));
 
-        var banerResponse = propertyController.getSearchSuggestions("3bhk baner", "Indore", 8).getBody();
+        var banerResponse = propertyController.getSearchSuggestions("3bhk baner", "Indore", null, 8).getBody();
         assertNotNull(banerResponse);
         assertEquals("Pune", banerResponse.effectiveCity());
         assertEquals("LOCALITY_RESOLUTION", banerResponse.citySource());
@@ -1320,7 +1320,7 @@ public class PropertyControllerTest {
         assertEquals("3 BHK in Baner, Pune", banerResponse.suggestions().get(0).label());
 
         // 4. Unsupported explicit city "2bhk in mumbai" -> returns UNSUPPORTED_CITY without Indore fallback
-        var mumbaiResponse = propertyController.getSearchSuggestions("2bhk in mumbai", "Indore", 8).getBody();
+        var mumbaiResponse = propertyController.getSearchSuggestions("2bhk in mumbai", "Indore", null, 8).getBody();
         assertNotNull(mumbaiResponse);
         assertEquals("Mumbai", mumbaiResponse.effectiveCity());
         assertEquals("EXPLICIT_QUERY", mumbaiResponse.citySource());
@@ -1351,7 +1351,7 @@ public class PropertyControllerTest {
                 eq("pune"), eq("3BHK"), eq(""), eq(""), isNull(), isNull(), eq("baner"), any()))
                 .thenReturn(List.of());
 
-        var response = propertyController.getSearchSuggestions("3bhk baner", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("3bhk baner", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Pune", response.effectiveCity());
         assertEquals("LOCALITY_RESOLUTION", response.citySource());
@@ -1376,7 +1376,7 @@ public class PropertyControllerTest {
                 eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("mp nagar"), any()))
                 .thenReturn(List.of());
 
-        var response = propertyController.getSearchSuggestions("mp nagar", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("mp nagar", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Bhopal", response.effectiveCity());
         assertEquals("LOCALITY_RESOLUTION", response.citySource());
@@ -1400,7 +1400,7 @@ public class PropertyControllerTest {
                 eq("indore"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("vijay nagar"), any()))
                 .thenReturn(List.of(row));
 
-        var response = propertyController.getSearchSuggestions("vijay nagar", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("vijay nagar", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Indore", response.effectiveCity());
         assertEquals(1, response.suggestions().size());
@@ -1437,7 +1437,7 @@ public class PropertyControllerTest {
                 eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("gandhi nagar"), any()))
                 .thenReturn(List.of());
 
-        var response = propertyController.getSearchSuggestions("gandhi nagar", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("gandhi nagar", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Indore", response.effectiveCity());
         assertEquals(2, response.suggestions().size());
@@ -1480,7 +1480,7 @@ public class PropertyControllerTest {
                 eq("bhopal"), eq(""), eq(""), eq(""), isNull(), isNull(), eq("gandhi nagar"), any()))
                 .thenReturn(List.of(bhopalRow));
 
-        var response = propertyController.getSearchSuggestions("gandhi nagar in bhopal", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("gandhi nagar in bhopal", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Bhopal", response.effectiveCity());
         assertEquals("EXPLICIT_QUERY", response.citySource());
@@ -1495,7 +1495,7 @@ public class PropertyControllerTest {
                 anyString(), anyString(), anyString(), anyString(), any(), any(), anyString(), any()))
                 .thenReturn(List.of());
 
-        var response = propertyController.getSearchSuggestions("unmatched query term", "Indore", 8).getBody();
+        var response = propertyController.getSearchSuggestions("unmatched query term", "Indore", null, 8).getBody();
         assertNotNull(response);
         assertEquals("Indore", response.effectiveCity());
         assertEquals(1, response.suggestions().size());

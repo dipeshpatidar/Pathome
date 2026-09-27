@@ -37,8 +37,10 @@ public interface SearchAliasRepository extends JpaRepository<SearchAlias, Long> 
             @Param("cityKey") String cityKey);
 
     /** Check if an active alias already exists for this term+type+city combination. */
+    @Query("SELECT a FROM SearchAlias a WHERE lower(trim(a.aliasTerm)) = lower(trim(:aliasTerm)) "
+            + "AND a.entityType = :entityType AND lower(trim(coalesce(a.entityCity, ''))) = lower(trim(coalesce(:entityCity, '')))")
     Optional<SearchAlias> findByAliasTermAndEntityTypeAndEntityCity(
-            String aliasTerm, String entityType, String entityCity);
+            @Param("aliasTerm") String aliasTerm, @Param("entityType") String entityType, @Param("entityCity") String entityCity);
 
     long countByStatus(String status);
 }

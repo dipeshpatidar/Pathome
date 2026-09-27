@@ -75,6 +75,12 @@ public class AdminSearchLearningController {
         return ResponseEntity.ok(alias);
     }
 
+    @PostMapping("/candidates/{id}/reset")
+    public ResponseEntity<Map<String, String>> resetCandidate(@PathVariable Long id) {
+        searchLearningService.resetAutonomousCandidate(id);
+        return ResponseEntity.ok(Map.of("status", "SUCCESS", "message", "Candidate reset for fresh evidence"));
+    }
+
     @GetMapping("/metrics")
     public ResponseEntity<SearchLearningService.SearchLearningMetrics> getMetrics() {
         return ResponseEntity.ok(searchLearningService.getMetrics());

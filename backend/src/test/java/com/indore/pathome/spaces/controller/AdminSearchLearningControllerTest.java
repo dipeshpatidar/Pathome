@@ -138,4 +138,18 @@ class AdminSearchLearningControllerTest {
         assertEquals("SUCCESS", response.getBody().get("status"));
         verify(searchLearningService, times(1)).refreshAliasCache();
     }
+    @Test
+    void resetCandidate_requiresExplicitServiceResetWithoutApproval() {
+        var response=controller.resetCandidate(25L);
+        assertEquals(200,response.getStatusCode().value());
+        verify(searchLearningService).resetAutonomousCandidate(25L);
+        verify(searchLearningService,never()).approveCandidate(anyLong(),any());
+    }
+
+    @Test
+    void resetCandidate_preservesGlobalExceptionHandling() {
+        doThrow(new IllegalStateException("Only disabled candidates can be reset"))
+                .when(searchLearningService).resetAutonomousCandidate(25L);
+        assertThrows(IllegalStateException.class,()->controller.resetCandidate(25L));
+    }
 }
