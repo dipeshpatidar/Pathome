@@ -4,6 +4,356 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-27 06:15 IST — Pathome Task 2 Micro-UX Cleanup: Conditional Clear Controls + Context/Edit Modes
+
+### Why this work was requested
+The sticky compact search was visually cluttered: both `×` (clear draft) and `Clear all` (clear committed filters) were rendered simultaneously whenever `hasFilters` was true. This caused semantic ambiguity. The task was to implement strict separation between **Context Mode** (committed state, not actively editing) and **Edit Mode** (user clicked to type / input focused).
+
+### Files Changed
+- `frontend-web/src/components/CompactSearchContext.tsx`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **New `isEditing` State** — replaces `isInputFocused`. The search `<input>` is conditionally rendered only in Edit Mode.
+2. **Context Mode (`!isEditing`)**: Renders `<button id="compact-search-trigger">` (summary or placeholder). Renders `Clear all` only when `hasFilters`. `×` and `→` are never rendered.
+3. **Edit Mode (`isEditing`)**: Renders `<input id="compact-search-input">`. `Clear all` is completely absent from the DOM. `×` only when `searchText.length > 0`. `→` always present.
+4. **`enterEditMode()`**: Uses `flushSync` to render input synchronously before calling `.focus()`. Re-opens suggestions if draft ≥ 2 chars.
+5. **`exitEditMode()`**: Called on Escape, click outside, page scroll gesture (>10px), suggestion click, submit. Restores `searchText` to committed summary.
+6. **Autocomplete guard**: Only fetches / displays when `isEditing && showSuggestions`.
+7. **Mobile**: `×` and `Clear all` never co-rendered. No full-screen overlay. Discovery page stays visible.
+
+### Verification
+- **Unit Tests**: 17/17 passed (`rentalSearch.test.mjs`).
+- **Build**: `npm --prefix frontend-web run build` — clean, exit code 0.
+- **Browser QA**:
+  - Filtered Context Mode (1440px): `[ Indore ▾ | Nanda Nagar · 2 BHK | Clear all ]` — no `×`, no `→`. ✅
+  - Edit Mode (1440px): `[ Indore ▾ | input | × | → ]` — `Clear all` absent. ✅
+  - After submit: Returns to clean context mode with placeholder. ✅
+  - Mobile 390px Filtered: `Clear all` visible, no `×`. ✅
+  - Mobile 390px Edit: `×` visible, `Clear all` absent. ✅
+  - No horizontal overflow at 390px and 320px. ✅
+
+### Commit / Push Status
+- Uncommitted. Branch: `feature/phase1-landing-search-checkpoint`. Main branch untouched.
+
+---
+
+## 2026-09-27 05:55 IST — Pathome Task 2: Strict Correction — Full-Bar Autocomplete Alignment & Simple Persistent Mobile Search
+
+### Why this work was requested
+A strict correction was requested to resolve two specific UX misunderstandings from the previous pass:
+1. **Desktop Autocomplete Width Correction**: The autocomplete dropdown had been nested inside the inner search region after the city divider. The approved requirement is that the entire floating search bar `[ City Selector | Search Input | Actions ]` is visually ONE unified search box. The autocomplete panel must match the **COMPLETE OUTER FLOATING BAR WIDTH** (exact same left edge, right edge, and width, with $\le 1\text{px}$ tolerance).
+2. **Mobile Search Correction (Removed Full-Screen Overlay)**: The opaque full-screen mobile search overlay was rejected because it concealed the property discovery page. The property discovery grid and media must remain visible below and behind the sticky search. The mobile search bar must contain a **real persistent `<input>` element** in the DOM that users tap directly, allowing the virtual keyboard to open naturally on the first tap without any portals, `flushSync`, or focus hacks.
+
+### Key Architectural & Implementation Changes
+1. **Full-Bar Autocomplete Geometry**:
+   - Replaced inner search-region dropdown nesting with outer wrapper structural anchoring:
+     ```
+     FLOATING SEARCH WRAPPER (relative mx-auto w-full max-w-[860px])
+       ├── SEARCH BAR (w-full: city, divider, input, ×, →)
+       └── AUTOCOMPLETE (absolute left-0 right-0 w-full top-[calc(100%+8px)])
+     ```
+   - Because `#compact-search-bar` is `w-full` and `#compact-search-suggestions` is `absolute left-0 right-0 w-full` inside the same parent wrapper, DOM `getBoundingClientRect()` measurements confirm:
+     - 1440px: Left diff = 0px, Right diff = 0px, Width diff = 0px (859px vs 859px).
+     - 1024px: Left diff = 0px, Right diff = 0px, Width diff = 0px (859px vs 859px).
+     - 390px: Left diff = 0px, Right diff = 0px, Width diff = 0px (370px vs 370px).
+   - Vertical gap is precisely 8px (`top-[calc(100%+8px)]`).
+2. **Simple Persistent Mobile Search**:
+   - The compact sticky mobile search contains a real persistent `<input>` element directly in the DOM.
+   - Tapping the input natively triggers focus and launches the virtual keyboard on the first tap.
+   - The property discovery cards and imagery remain completely visible underneath.
+   - Autocomplete dropdown height is bounded to `max-h-[260px] sm:max-h-[300px]` with `overflow-y-auto overscroll-contain`.
+3. **Touch-Gesture Page Scroll Dismissal**:
+   - While the search input is focused, `touchstart` / `touchmove` listeners on `document` track vertical movement originating strictly outside both `#compact-discovery-context` and `#compact-search-suggestions`.
+   - When external touch displacement exceeds 10px (user swiping the discovery page), blurs the input and closes suggestions, naturally dismissing the virtual keyboard.
+   - Scrolling inside `#compact-search-suggestions` or interacting with the search bar is completely ignored, keeping keyboard and suggestions open.
+4. **Draft & Discovery State Preservation**:
+   - When page scroll dismisses the keyboard, draft text in `searchText` is preserved in the input.
+   - Committed discovery state, URL parameters, and property inventory are unaffected until explicit suggestion selection or search submission.
+5. **Dead Code Elimination**:
+   - Removed `createPortal` and `flushSync` from `react-dom` imports.
+   - Removed overlay-specific state, body scroll lock, and overlay JSX.
+
+### Verification
+- **DOM Rect Measurements (Browser QA)**:
+  - 1440px: Bar left: 290.5px, Dropdown left: 290.5px (diff: 0px); Bar right: 1149.5px, Dropdown right: 1149.5px (diff: 0px); Width: 859px vs 859px (diff: 0px); Gap: 8px.
+  - 1024px: Bar left: 82.5px, Dropdown left: 82.5px (diff: 0px); Bar right: 941.5px, Dropdown right: 941.5px (diff: 0px); Width: 859px vs 859px (diff: 0px); Gap: 8px.
+  - 390px: Bar left: 10px, Dropdown left: 10px (diff: 0px); Bar right: 380px, Dropdown right: 380px (diff: 0px); Width: 370px vs 370px (diff: 0px); Gap: 8px.
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 17/17 passed.
+- **Production Build**: `npm --prefix frontend-web run build` — Clean build in 2.43s, exit code 0.
+- **Visual Browser QA Screenshots (Recorded)**:
+  - `screenshot_a_1440_fullbar.png` (Desktop 1440 complete width alignment)
+  - `screenshot_b_1024_fullbar.png` (Laptop 1024 complete width alignment)
+  - `screenshot_c_mobile_390_fullbar.png` (Mobile 390 complete width alignment with discovery visible)
+  - `screenshot_d_mobile_320_fullbar.png` (Mobile 320 complete width alignment with discovery visible)
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
+## 2026-09-27 05:40 IST — Pathome Task 2: Final UX Rearchitecture — Clean Desktop Autocomplete + Focused Mobile Full-Screen Search Overlay
+
+### Why this work was requested
+Visual and mobile interaction review of Task 2 identified that inline mobile editing had become fragile, cluttered, and visually dominant, obscuring property carousel imagery and battling software keyboard viewports. A clean architectural split was requested:
+1. **Desktop / Tablet (>=640px)**: Refined into an intentionally sized compact floating island (`max-w-[860px]`, `h-14`) with a unified **dark theme autocomplete dropdown** (`bg-slate-900/95`) replacing the large white panel, flush-aligned to the search region with bounded 4–5 row density.
+2. **Mobile (<640px)**: Completely eliminated inline two-row editing in the sticky bar. Replaced with:
+   - **Compact Single-Row Browsing Bar**: ~48–52px height (`h-12`), showing `[ 📍 City ▾ ] | [ 🔍 Summary / Search homes ]`, acting strictly as a navigation/search trigger that never obscures property media.
+   - **Full-Screen Search Overlay (`createPortal` to `document.body`)**: Tapping the mobile bar opens an opaque dark full-screen overlay (`fixed inset-0 z-[9999] bg-slate-950`) that hides background cards/carousels completely.
+   - **Synchronous First-Tap Focus via `flushSync`**: Guarantees `mobileSearchInputRef.current?.focus({ preventScroll: true })` executes synchronously inside the native user tap gesture, opening the virtual software keyboard immediately without requiring a second tap.
+   - **Background Scroll Locking**: Locks `document.body.style.overflow = 'hidden'` while overlay is active; suggestions scroll independently above the keyboard without any scroll conflicts.
+
+### Key Architectural & Implementation Changes
+1. **Desktop Floating Island & Dark Autocomplete**:
+   - Tuned desktop container to `max-w-[860px]` with deep navy/charcoal smoked glass (`bg-slate-950/80 backdrop-blur-xl border border-white/15`).
+   - Upgraded desktop autocomplete listbox to a dark cohesive palette (`bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 text-white divide-y divide-slate-800/60`).
+   - Maintained exact search-region structural alignment (`absolute inset-x-0 top-[calc(100%+8px)] z-50 w-full max-h-[300px] overflow-y-auto overscroll-contain`).
+2. **Mobile Single-Row Sticky Browsing Bar**:
+   - Refined mobile collapsed bar to a single row: City selector button on left, faint divider, and a clickable search trigger displaying active filter summary or "Search homes".
+   - Height constrained to ~48–52px (`h-12`), keeping property cards and media carousel unobstructed.
+3. **Mobile Full-Screen Search Overlay**:
+   - Rendered via React portal directly to `document.body`, escaping any parent transform/fixed contexts.
+   - Header with Back arrow button (`ArrowLeft`, closes overlay, preserves draft text, does not submit), title "Search homes", and "Clear all" action (when filters exist).
+   - Dedicated City selector row (`[ 📍 City ▾ ]`) connected to `DiscoveryLocationDialog`.
+   - Dedicated search input row with emerald search icon, `text-base` input ($\ge 16\text{px}$ to prevent iOS Safari auto-zoom), single `×` clear button, and submit arrow button `(→)`.
+   - Scrollable suggestions list (`flex-1 min-h-0 overflow-y-auto overscroll-contain`) displaying dark suggestion rows with concise locality-first formatting and truthful counts.
+4. **Dead Workaround Elimination**:
+   - Removed all `visualViewport` translation compensation hacks, RAF translate loops, and window page-scroll blur listeners.
+   - Background page scroll lock (`overflow: hidden` on body) naturally prevents page scrolling while searching on mobile.
+
+### Verification
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 17/17 passed.
+- **Production Build**: `npm --prefix frontend-web run build` — Clean build in 2.15s, exit code 0.
+- **Visual Browser QA (Recorded)**:
+  - `screenshot_a_desktop_1440_idle.png` (Desktop 1440 idle compact pill)
+  - `screenshot_b_desktop_1440_autocomplete.png` (Desktop 1440 autocomplete open in dark theme)
+  - `screenshot_c_desktop_1440_filtered.png` (Desktop 1440 filtered state with active filter badges)
+  - `screenshot_d_mobile_390_browsing.png` (Mobile 390 compact single-row browsing bar)
+  - `screenshot_e_mobile_390_overlay.png` (Mobile 390 full-screen search overlay)
+  - `screenshot_f_mobile_390_suggestions.png` (Mobile 390 full-screen overlay with suggestions)
+  - `screenshot_g_mobile_320_overlay.png` (Mobile 320 small screen overlay)
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
+## 2026-09-27 05:15 IST — Pathome Task 2: Final Autocomplete Alignment & Mobile Page Scroll Keyboard Dismissal
+
+### Why this work was requested
+Visual review of Task 2 autocomplete and mobile interactions identified two final requirements:
+1. **Desktop Dropdown Alignment & Arbitrary Width Removal**: The previous `max-w-[580px]` caused the autocomplete dropdown to terminate prematurely on the right before the search region's right edge (submit arrow), creating an artificial gap. The dropdown required 100% exact alignment to the search region: left edge = search region left edge, right edge = search region right edge.
+2. **Revised Mobile Keyboard UX Strategy**: Product decision was revised to immediately dismiss the software keyboard when the user scrolls the PAGE, rather than attempting to keep the keyboard open while compensating for `visualViewport` offsets.
+3. **Dead Code Elimination**: The previous `visualViewport` translateY compensation mechanism (`computeVisualViewportOffsetY`, scroll/resize listeners on visualViewport, RAF callbacks) was removed completely.
+4. **Draft Text Preservation**: When page scroll dismisses the keyboard, draft text in `searchText` must be preserved, without committing a search, without wiping the input, and without changing the URL.
+
+### Key Architectural & Implementation Changes
+1. **Exact Search-Region Dropdown Alignment (`inset-x-0`)**:
+   - In `CompactSearchContext.tsx`, changed the desktop autocomplete dropdown from `absolute left-0 top-[calc(100%+8px)] z-50 w-full max-w-[580px]` to `absolute inset-x-0 top-[calc(100%+8px)] z-50 w-full max-h-[280px] sm:max-h-[300px] overflow-y-auto overscroll-contain`.
+   - Removed `max-w-[580px]`.
+   - Left edge now matches search region left edge (directly following the city divider) and right edge matches search region right edge (flush with the submit arrow button).
+   - Changing city width (e.g. `Indore`, `Pune`, `Bhopal`, `Bengaluru`, `Navi Mumbai`, `Visakhapatnam`) naturally resizes the remaining search region, and the dropdown follows flush across both boundaries.
+2. **Mobile Page Scroll Keyboard Dismissal**:
+   - Added `isInputFocused` state to track active input focus.
+   - Registered a passive `window.addEventListener('scroll', handlePageScroll, { passive: true })` active ONLY when `isEditing`, `isInputFocused`, and on mobile viewports (`window.innerWidth < 640`).
+   - When actual page scrolling occurs (after 150ms focus settling and $>8\text{px}$ displacement), blurs the input (naturally dismissing the virtual keyboard), closes suggestions, and exits active editing mode.
+   - Crucially, internal scrolling inside the autocomplete suggestion list (`overflow-y-auto`) does NOT trigger window scroll events, preserving keyboard focus and list interaction.
+3. **Draft Preservation Across Reopen**:
+   - Tracked `lastCommittedFiltersRef` to distinguish external committed filter changes from in-progress draft typing.
+   - When user taps search again after scrolling, previously typed draft text (e.g. `2bhk flat`) is preserved in the input ready for editing or submission.
+4. **Clean Badge Styling**:
+   - Quieted home count badges to clean right-aligned text (`text-[11px] font-normal text-slate-400`).
+5. **Removed visualViewport Pinning Hack**:
+   - Removed `computeVisualViewportOffsetY` from `rentalSearch.ts` and `rentalSearch.test.mjs`.
+   - Removed all `window.visualViewport` listeners, RAF translate compensation, and inline transform styles from `CompactSearchContext.tsx`.
+
+### Verification
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 17/17 passed (0 dead code, 0 regressions).
+- **Production Build**: `npm --prefix frontend-web run build` — Clean build in 2.25s, exit code 0.
+- **Visual Browser QA Screenshots (Recorded)**:
+  - `screenshot_a_1440_aligned.png` (Desktop 1440: Autocomplete flush with search region left & right boundaries)
+  - `screenshot_b_1024_aligned.png` (Laptop 1024: Autocomplete flush with search region boundaries)
+  - `screenshot_c_mobile_390_aligned.png` (Mobile 390: Autocomplete flush with Row 2 search container)
+  - `screenshot_d_mobile_320_aligned.png` (Small mobile 320: Autocomplete responsive full width in Row 2)
+- **Git Hygiene**:
+  - `git diff --check`: 0 whitespace or EOF issues.
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
+## 2026-09-27 05:05 IST — Pathome Task 2: Dropdown Structural Anchoring, Shell Transparency & Mobile Keyboard Fix
+
+### Why this work was requested
+Visual and mobile device review of the Task 2 compact sticky search identified five specific issues:
+1. **Magic City-Width Dropdown Misalignment**: Autocomplete was positioned at the floating shell level using a hardcoded `sm:left-[175px]` offset, which broke alignment whenever city names changed in length (e.g. Indore vs Bengaluru vs Navi Mumbai) or screen resized.
+2. **Autocomplete Width & Height**: The dropdown was excessively wide (spanning the entire shell) resembling a second results panel rather than an input autocomplete, and needed tight bounding (~280–300px max height, ~560–580px max width).
+3. **Suggestion Density**: Row height was overly spacious; needed ~50–54px rows with concise locality-first hierarchy (bold locality, muted criteria/city, compact home count badge on right).
+4. **Shell Opacity**: The dark smoked-glass shell was overly opaque (~85%); needed tuning to ~75% (`bg-slate-950/75 backdrop-blur-xl backdrop-saturate-150`) so underlying listing imagery is faintly perceptible while preserving crisp typography.
+5. **Mobile Software Keyboard & Visual Viewport Bug**: When the software keyboard opened on mobile and the user scrolled without dismissing it, `visualViewport.offsetTop` caused standard `position: fixed` elements to scroll off-screen. Sticky search needed to remain pinned to the visual viewport top.
+
+### Key Architectural & Implementation Changes
+1. **Structural Anchoring to Search Region (Zero Magic Offsets)**:
+   - On Desktop: Moved the autocomplete dropdown `<div role="listbox">` directly inside the relative SEARCH REGION (`<div className="relative flex-1 ...">`). Positioned with `absolute left-0 top-[calc(100%+8px)] z-50 w-full max-w-[580px]`. The dropdown left edge is structurally locked to the search field regardless of city name length (`Indore`, `Pune`, `Bhopal`, `Bengaluru`, `Navi Mumbai`, `Visakhapatnam`).
+   - On Mobile: Moved the mobile autocomplete dropdown directly inside mobile Row 2's relative search region with `absolute inset-x-0 top-[calc(100%+8px)] z-50 max-h-[260px]`.
+   - Removed all magic city-width offsets (`sm:left-[175px]`, `sm:right-2`).
+2. **Autocomplete Density & Dimensions**:
+   - Desktop max-width: `w-full max-w-[580px]`.
+   - Desktop max-height: `max-h-[300px]` (~4–5 rows) with `overflow-y-auto overscroll-contain`.
+   - Suggestion row height: ~50–54px, padded `py-2 px-3.5`, crisp typography, compact `bg-slate-100 text-slate-500` badge.
+3. **Smoked-Glass Shell Transparency**:
+   - Updated floating shell from `bg-slate-950/85` to `bg-slate-950/75 backdrop-blur-xl backdrop-saturate-150 border-white/15 ring-1 ring-white/10 text-white shadow-[0_12px_40px_rgb(0,0,0,0.25)]` (~75% visual opacity).
+4. **Mobile Software Keyboard `visualViewport` Pinning**:
+   - Added `computeVisualViewportOffsetY(viewport)` pure helper in `frontend-web/src/utils/rentalSearch.ts` and unit tested.
+   - In `CompactSearchContext.tsx`, registered `resize` and `scroll` listeners on `window.visualViewport` exclusively when `isEditing` is true on mobile / touch environments.
+   - Updated fixed container's vertical offset using `requestAnimationFrame` and direct `style.transform = offsetY > 0 ? \`translateY(${offsetY}px)\` : ''` to eliminate React re-render overhead while maintaining 60fps tracking.
+   - Fully cleaned up listeners and RAF callbacks on blur, editing exit, and component unmount. Safe fallback when `window.visualViewport` is unsupported.
+   - Used `searchInputRef.current?.focus({ preventScroll: true })` to prevent unwanted viewport jumping upon entering edit mode.
+
+### Verification
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 18/18 passed (including new `computeVisualViewportOffsetY` test).
+- **Production Build**: `npm --prefix frontend-web run build` — Clean build in 2.30s, exit code 0.
+- **Visual Browser QA Screenshots (Recorded)**:
+  - `screenshot_a_desktop_1440_transparent.png` (Desktop 1440 transparent shell)
+  - `screenshot_b_desktop_autocomplete_open.png` (Desktop 1440 autocomplete open anchored to search region)
+  - `screenshot_c_desktop_autocomplete_scrollbar.png` (Desktop 1440 autocomplete with internal scrollbar)
+  - `screenshot_d_1024_autocomplete_open.png` (1024px autocomplete open anchored to search region)
+  - `screenshot_e_mobile_390_edit_state.png` (Mobile 390 edit state with single `×` and city on Row 1)
+  - `screenshot_f_mobile_390_autocomplete.png` (Mobile 390 autocomplete open anchored to search row)
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
+## 2026-09-27 04:53 IST — Pathome Task 2: Final Premium UX Polish — Smoked-Glass Sticky Search + Compact Autocomplete
+
+### Why this work was requested
+Following user visual review of the floating sticky search, a final premium UX refinement was requested to elevate the component to consumer luxury marketplace quality:
+1. **Dark Smoked-Glass Floating Island**: Replaced the white form surface with a deep navy/slate translucent surface (`bg-slate-950/85 backdrop-blur-xl border border-white/15 ring-1 ring-white/10 text-white shadow-2xl`), establishing crisp visual separation against the light discovery listings page and harmonizing with Pathome's dark Hero theme.
+2. **Preserved City Selector**: Maintained the city selector (`[ 📍 Indore ▾ ]`) with high-contrast white text, emerald `MapPin`, muted chevron, and safe truncation across desktop and mobile.
+3. **Mobile Duplicate `×` Removal**: Removed the ambiguous top-row `×` button from mobile edit mode. Now exactly ONE `×` appears on mobile (inside the search input row), with the clear and exclusive meaning of clearing draft text.
+4. **Bounded Compact Autocomplete Dropdown**:
+   - Constrained desktop max-height to 320px (`max-h-[300px] sm:max-h-[320px] overflow-y-auto overscroll-contain`) showing ~4-5 concise rows with internal scrolling for additional items.
+   - Anchored desktop dropdown to the search field alignment (`sm:left-[175px] sm:right-2`) so it no longer obscures the City selector.
+   - Restructured suggestion rows into a concise locality-first hierarchy: Locality bold primary, `BHK · PropertyType · City` muted secondary, and structured home count badge on the right (`17 homes`, `3 homes`).
+   - Clean action row styling for free-text search fallback (`SEARCH_ANYWAY`) and truthful presentation for zero-result `QUERY_INTENT` and `UNSUPPORTED_CITY`.
+   - Opaque crisp light material (`bg-white border border-slate-200 shadow-2xl rounded-2xl`) with zero background bleed-through.
+5. **Secondary Clear All**: Styled as a refined neutral/emerald secondary button (`text-slate-300 hover:text-emerald-400 hover:bg-white/10 px-2.5 py-1 rounded-lg`) that avoids destructive red/rose styling while preserving exact city-preservation reset semantics.
+
+### Files Modified
+- `frontend-web/src/components/CompactSearchContext.tsx`:
+  - Upgraded main floating shell to dark smoked-glass theme (`bg-slate-950/85 border-white/15 ring-1 ring-white/10 text-white`).
+  - Added `formatSuggestionRow()` helper for concise locality-first suggestion rows with home count badges and action indicators.
+  - Aligned desktop autocomplete listbox to `sm:left-[175px] sm:right-2` with max height 320px and internal scroll.
+  - Removed top-row `×` button from mobile editing state.
+  - Styled "Clear all" button with neutral/emerald hover states.
+
+### Verification
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 17/17 passed.
+- **Production Build**: `npm --prefix frontend-web run build` — Clean build in 2.49s, exit code 0.
+- **Visual Browser QA Screenshots Captured**:
+  - `desktop_1440_clean_sticky.png` (Desktop 1440 clean sticky in dark smoked glass)
+  - `desktop_1440_editable_sticky.png` (Desktop 1440 editable sticky with borderless input and submit arrow)
+  - `desktop_1440_autocomplete_open.png` (Desktop 1440 compact autocomplete open for "2bhk flat" showing ~4-5 concise locality rows)
+  - `desktop_1440_filtered_sticky.png` (Desktop 1440 filtered state with active context and subtle Clear all)
+  - `mobile_390_editable_state.png` (Mobile 390 editable state with single `×` inside input and city selector on Row 1)
+  - `mobile_390_autocomplete_open.png` (Mobile 390 compact autocomplete dropdown open)
+  - Console logs: 0 errors across all browser checks.
+
+---
+
+## 2026-09-27 04:47 IST — Pathome Task 2: Visual Polish Pass — Premium Floating / Hanging Compact Search
+
+### Why this work was requested
+Following the functional implementation of Task 2's compact sticky search, visual polish was requested to elevate it into a top-tier consumer marketplace surface:
+1. **Floating / Hanging Impression**: The search bar was previously attached directly under the navbar and stretched wide across the discovery grid. It needed visible breathing room above (under navbar), below (above discovery), and on both lateral sides, giving a floating suspended look.
+2. **Narrower Desktop Max-Width**: Reduced width from `max-w-7xl` down to a deliberate `max-w-[920px]`, leaving generous empty margins at 1440px/1280px.
+3. **Preserved City Selector**: Maintained the City selector (`[ 📍 Indore ▾ ]`) in BOTH normal and editable states across desktop and mobile.
+4. **Removal of Clunky Text Buttons**: Removed the text "Search" button and text "Cancel" button in edit mode. Replaced with an integrated borderless input, quiet `×` draft clear button, and an emerald circular submit arrow button `(→)` inside the search container.
+5. **Secondary Clear All**: Preserved the approved "Clear all" contract as a subtle, understated secondary action.
+6. **Mobile Refinement (<640px)**: Refined two-row layout with input font size $\ge 16\text{px}$ to prevent iOS Safari auto-zoom, and an opaque solid white suggestions dropdown to eliminate background text bleed-through.
+
+### Files Modified
+- `frontend-web/src/components/CompactSearchContext.tsx`:
+  - Narrowed floating container to `max-w-[920px]`.
+  - Upgraded glassmorphism styling to `rounded-2xl border border-slate-200/90 bg-white/95 backdrop-blur-xl shadow-[0_10px_35px_rgb(0,0,0,0.08)]`.
+  - Preserved City selector button in both normal and editable states with MapPin, city name (`truncate max-w-[150px]`), and ChevronDown.
+  - Replaced text "Search" button with emerald circular submit arrow button (`#compact-search-submit`, `ArrowRight`, `aria-label="Submit search"`).
+  - Replaced text "Cancel" button with quiet draft text clear `×` button and Escape/outside click dismissal.
+  - Made autocomplete suggestions listbox opaque white (`bg-white shadow-2xl`) to prevent background card text bleed-through.
+- `frontend-web/src/components/Home.tsx`:
+  - Adjusted fixed position to `top-[86px] sm:top-[88px]`, providing a clean 12-14px floating visual gap beneath the 74.5px Navbar.
+
+### Verification
+- **Unit Tests**: `node --test frontend-web/src/tests/rentalSearch.test.mjs` — 17/17 passed.
+- **Production Build**: `npm --prefix frontend-web run build` — 0 errors, clean build in 10.27s.
+- **Targeted Browser Verification & Screenshots**:
+  - Screenshot A: `desktop_1440_clean_city_sticky.png` (Desktop 1440 normal clean-city sticky state)
+  - Screenshot B: `desktop_1440_editable_sticky.png` (Desktop 1440 editable sticky search with preserved city and submit arrow)
+  - Screenshot C: `desktop_1440_filtered_sticky.png` (Desktop 1440 filtered state with active context and subtle Clear all)
+  - Screenshot D: `mobile_390_filtered_sticky.png` (Mobile 390 filtered state in 2 compact rows)
+  - Screenshot E: `mobile_390_editable_sticky.png` (Mobile 390 editable search with suggestions dropdown and 16px font)
+  - Console logs: 0 errors across all browser tests.
+
+---
+
+## 2026-09-27 04:30 IST — Pathome Task 2: Premium Compact Sticky Search / Location Context
+
+### Why this work was requested
+A lightweight, consumer-grade sticky discovery search and location context was requested to eliminate friction when users browse listings below the Hero section:
+1. **Context Awareness**: Users need to continuously see WHERE they are browsing (city) and WHAT search/filter context is active (locality, BHK, property type, price range, furnishing, query).
+2. **Search Refinement without Scrolling to Hero**: Users can edit or start a new search directly from the compact bar, with full backend autocomplete auto-commit, without scrolling back to the Hero.
+3. **Clean City Switch**: Switching city from the sticky bar resets all stale query text and filters, cleanly committing the new city's inventory.
+4. **Dedicated "Clear all" Control**: When active search criteria exist, a secondary "Clear all" button clears all search criteria while strictly preserving the current city (e.g. Pune + filters -> Pune + all homes, Indore + filters -> Indore + all homes).
+5. **Calm, High-Information, Low-Height Design**: Not a second giant search bar; integrates seamlessly beneath the sticky Navbar without competing for attention, layout shifts, or horizontal overflow on mobile (320px, 390px, tablet 768px, desktop 1280px/1440px).
+
+### Architectural & Implementation Details
+1. **Committed State Ownership**:
+   - `CompactSearchContext` does not manage a secondary search state machine. It consumes `activeDiscoveryCity` and `activeSearchFilters` directly from `Home.tsx` and dispatches `handleDiscoverySearch`, `onManualCityChange`, and `onClearAll`.
+2. **Appearance Trigger**:
+   - Uses `IntersectionObserver` observing `#hero-search-surface` with `rootMargin: '-75px 0px 0px 0px'`.
+   - Hidden when Hero search is in view. Gently slides and fades in (`y: -8 -> 0`, `opacity: 0 -> 1`) when Hero search scrolls beneath the sticky Navbar.
+   - Smooth `AnimatePresence` exit when Hero search scrolls back into view. Zero scroll flicker or layout shift.
+3. **Navbar Integration**:
+   - Navbar is `sticky top-0 z-[100]` with height `74.5px`.
+   - `CompactSearchContext` is positioned at `fixed top-[74.5px] inset-x-0 z-[90] px-3 sm:px-6 lg:px-8 pointer-events-none` with an inner `max-w-7xl mx-auto pointer-events-auto`.
+   - Results section `#listings` updated with `scroll-mt-36` (144px) so that internal anchor navigation never hides under the sticky context.
+4. **Active Context Summarization (`formatCompactSearchContext`)**:
+   - In `rentalSearch.ts`: formats concise human-readable summaries from structured filters (`"Bhawarkua · 2 BHK · Flat"`, `"₹15k–₹25k · Furnished"`, `"Vijay Nagar · House"`, `"2bhk flat in pune"`). Returns `null` when only clean city browsing is active.
+   - Truncates adaptively with `+N` indicator if more than 3 criteria are active, preventing text overflow.
+5. **Search / Refine Experience**:
+   - Clicking the compact search trigger toggles an inline editable search input with auto-focus, live debounced backend suggestions dropdown (`#compact-search-suggestions`), input clear `×` button, Enter submit, and Escape dismiss.
+   - Autocomplete suggestion selection auto-commits immediately and closes the inline search, refreshing discovery properties.
+6. **Dedicated "Clear all" Contract**:
+   - Displays only when `hasActiveSearchFilters(filters)` is true.
+   - Dispatches `onClearAll()` which calls `resetFiltersForSearchClear(currentCity)`, clearing all search parameters while strictly preserving the current city.
+7. **Responsive Layout**:
+   - Mobile (< 640px): 2 compact rows (Row 1: City button with MapPin & ChevronDown + Clear all button; Row 2: Search/context trigger with Search icon).
+   - Desktop (>= 640px): Single streamlined translucent glass pill with vertical divider separating City and Search, plus Clear all button on the right edge.
+   - Safe touch targets >= 44px, no horizontal page overflow.
+
+### Verification
+- **Unit Tests**:
+  - `node --test src/tests/rentalSearch.test.mjs`: 17/17 passing (added 2 new comprehensive test blocks verifying clean city presentation, structured filters, price/furnishing formatting, free text commit, long context truncation, Clear all city preservation contract for Indore and Pune, manual city change reset, and suggestion auto-commit).
+- **Production Build**:
+  - `npm --prefix frontend-web run build`: clean build (exit code 0, 945KB JS bundle).
+- **Targeted Browser Automation (recorded)**:
+  - Desktop ~1280px & Mobile ~390px:
+    1. Hero visible -> compact context hidden.
+    2. Scrolled into discovery -> compact context gently appeared below Navbar.
+    3. Filtered state: "Bhawarkua · 2 BHK · Flat" + "Clear all" visible.
+    4. Clicked "Clear all" -> city remained Indore, all 6 Indore homes loaded, "Clear all" disappeared.
+    5. Changed city to Pune -> previous filters cleared, clean Pune discovery loaded.
+    6. Refined search via sticky bar -> typed "baner", selected "Baner, Pune" suggestion -> committed immediately, Baner homes loaded.
+    7. Scrolled back to top -> compact bar smoothly disappeared.
+    8. Mobile 390px -> verified zero horizontal overflow, comfortable touch targets, clean layout.
+    9. Console logs: 0 errors.
+- **Git Hygiene**:
+  - `git diff --check`: 0 issues.
+  - Working tree on `feature/phase1-landing-search-checkpoint`. Main branch untouched. Uncommitted.
+
+---
+
 ## 2026-09-27 04:15 IST — Pathome Search Clear (×) Reset-to-City-Default Bugfix
 
 ### Why this work was requested

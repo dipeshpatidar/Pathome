@@ -20,9 +20,10 @@ import { VisitRequestModal } from './VisitRequestModal';
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
+import { CompactSearchContext } from './CompactSearchContext';
 import { propertyService } from '../services/propertyService';
 import { useNotification } from '../context/NotificationContext';
-import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
+import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters } from '../utils/rentalSearch';
 
 const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
   try {
@@ -776,6 +777,32 @@ export const Home: React.FC = () => {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  const [showCompactSearch, setShowCompactSearch] = useState(false);
+
+  useEffect(() => {
+    if (isPropertyRoute || role !== 'GUEST') {
+      setShowCompactSearch(false);
+      return undefined;
+    }
+
+    const heroSearchEl = document.getElementById('hero-search-surface');
+    if (!heroSearchEl) return undefined;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const isPastHero = !entry.isIntersecting && entry.boundingClientRect.top < 80;
+        setShowCompactSearch(isPastHero);
+      },
+      {
+        rootMargin: '-75px 0px 0px 0px',
+        threshold: 0
+      }
+    );
+
+    observer.observe(heroSearchEl);
+    return () => observer.disconnect();
+  }, [isPropertyRoute, role, location.pathname]);
+
   // Fetch live properties — resets to page 0 and discards previous results on every call
   const loadLiveProperties = async (filters: RentalSearchFilters) => {
     discoveryAbortRef.current?.abort();
@@ -1241,8 +1268,38 @@ export const Home: React.FC = () => {
               <TrustStatsBar />
             </motion.div>
 
+            {/* Sticky Compact Search / Location Context (Task 2) */}
+            <AnimatePresence>
+              {showCompactSearch && (
+                <motion.div
+                  key="compact-search-wrapper"
+                  initial={typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? { opacity: 0 } : { opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? { opacity: 0 } : { opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                  className="fixed top-[86px] sm:top-[88px] inset-x-0 z-[90] px-3 sm:px-6 pointer-events-none"
+                >
+                  <div className="pointer-events-auto">
+                    <CompactSearchContext
+                      city={activeDiscoveryCity}
+                      filters={activeSearchFilters}
+                      onSearch={handleDiscoverySearch}
+                      onManualCityChange={(newCity) => {
+                        const clean = resetFiltersForManualCityChange(newCity);
+                        handleDiscoverySearch(clean.city, undefined, clean);
+                      }}
+                      onClearAll={() => {
+                        const clean = resetFiltersForSearchClear(activeDiscoveryCity);
+                        handleDiscoverySearch(clean.city, undefined, clean);
+                      }}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* SECTION 3: FEATURED PROPERTIES GRID */}
-            <div id="listings" className="scroll-mt-20">
+            <div id="listings" className="scroll-mt-36">
               <PropertyShowcase
                 properties={properties}
                 isLoading={discoveryState === 'LOADING' || loadedDiscoveryKey !== activeDiscoveryKey}

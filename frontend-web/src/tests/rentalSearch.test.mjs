@@ -12,6 +12,9 @@ import {
   selectionAfterCityChange,
   resetFiltersForManualCityChange,
   resetFiltersForSearchClear,
+  formatCompactSearchContext,
+  hasActiveSearchFilters,
+  formatRentDisplay,
   shouldSurfaceSuggestionFailure,
   suggestionFailureDiagnostic,
   SuggestionRequestError,
@@ -677,4 +680,137 @@ test('search clear (×) handles uncommitted draft text vs committed search corre
   // Simulate clicking × once:
   singleCallCheck();
   assert.equal(callCount, 1, 'Search clear must fire exactly once per click');
+});
+
+test('Task 2: compact search context summarization and active filter detection', () => {
+  // A. Rent display formatter
+  assert.equal(formatRentDisplay(15000), '15k');
+  assert.equal(formatRentDisplay(25000), '25k');
+  assert.equal(formatRentDisplay(100000), '1L');
+  assert.equal(formatRentDisplay(15500), '15,500');
+
+  // B. Clean city browsing state
+  const cleanFilters = { city: 'Indore', rentalOnly: true };
+  assert.equal(hasActiveSearchFilters(cleanFilters), false);
+  assert.equal(formatCompactSearchContext(cleanFilters), null);
+
+  // C. Locality + BHK + Property Type
+  const structuredFilters = {
+    city: 'Indore',
+    sector: 'Bhawarkua',
+    bhk: '2 BHK',
+    propertyType: 'FLAT',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(structuredFilters), true);
+  assert.equal(formatCompactSearchContext(structuredFilters), 'Bhawarkua · 2 BHK · Flat');
+
+  // D. Price range + Furnishing
+  const priceFurnishedFilters = {
+    city: 'Indore',
+    minRent: 15000,
+    maxRent: 25000,
+    furnishing: 'FURNISHED',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(priceFurnishedFilters), true);
+  assert.equal(formatCompactSearchContext(priceFurnishedFilters), '₹15k–₹25k · Furnished');
+
+  // E. Locality + Property Type
+  const localityHouseFilters = {
+    city: 'Indore',
+    sector: 'Vijay Nagar',
+    propertyType: 'HOUSE',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(localityHouseFilters), true);
+  assert.equal(formatCompactSearchContext(localityHouseFilters), 'Vijay Nagar · House');
+
+  // F. Free-text search
+  const freeTextFilters = {
+    city: 'Pune',
+    q: '2bhk flat in pune',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(freeTextFilters), true);
+  assert.equal(formatCompactSearchContext(freeTextFilters), '2bhk flat in pune');
+
+  // G. Long context handles multiple criteria gracefully
+  const longFilters = {
+    city: 'Indore',
+    sector: 'Vijay Nagar',
+    bhk: '3 BHK',
+    propertyType: 'HOUSE',
+    minRent: 20000,
+    maxRent: 40000,
+    furnishing: 'FULLY_FURNISHED',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(longFilters), true);
+  assert.equal(
+    formatCompactSearchContext(longFilters),
+    'Vijay Nagar · 3 BHK · House · ₹20k–₹40k · Fully furnished'
+  );
+});
+
+test('Task 2: Clear all contract clears search requirements while preserving current city', () => {
+  // A. Indore + Bhawarkua · 2 BHK · Flat -> Clear all -> Indore + clean
+  const indoreFiltered = {
+    city: 'Indore',
+    sector: 'Bhawarkua',
+    bhk: '2 BHK',
+    propertyType: 'FLAT',
+    minRent: 15000,
+    maxRent: 30000,
+    furnishing: 'SEMI_FURNISHED',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(indoreFiltered), true);
+
+  const indoreCleared = resetFiltersForSearchClear(indoreFiltered.city);
+  assert.deepEqual(indoreCleared, { city: 'Indore', rentalOnly: true });
+  assert.equal(hasActiveSearchFilters(indoreCleared), false);
+  assert.equal(formatCompactSearchContext(indoreCleared), null);
+
+  // B. Pune + Baner + 2 BHK -> Clear all -> Pune + clean (NOT Indore!)
+  const puneFiltered = {
+    city: 'Pune',
+    sector: 'Baner',
+    bhk: '2 BHK',
+    rentalOnly: true
+  };
+  assert.equal(hasActiveSearchFilters(puneFiltered), true);
+
+  const puneCleared = resetFiltersForSearchClear(puneFiltered.city);
+  assert.deepEqual(puneCleared, { city: 'Pune', rentalOnly: true });
+  assert.equal(puneCleared.city, 'Pune', 'Clear all must preserve Pune and NEVER revert to Indore');
+  assert.equal(hasActiveSearchFilters(puneCleared), false);
+
+  // C. Manual city change via sticky context
+  const switchedToIndore = resetFiltersForManualCityChange('Indore');
+  assert.deepEqual(switchedToIndore, { city: 'Indore', rentalOnly: true });
+
+  // D. Free text and autocomplete from sticky context
+  const stickySuggestion = mapRentalSuggestion({
+    type: 'SEARCH_QUERY',
+    label: '2 BHK Flat in Vijay Nagar, Indore',
+    city: 'Indore',
+    locality: 'Vijay Nagar',
+    bhk: '2 BHK',
+    propertyType: 'FLAT',
+    resultCount: 5
+  });
+  assert.ok(stickySuggestion);
+  const committedFromSticky = buildRentalSearchFilters(
+    stickySuggestion.city,
+    stickySuggestion.label,
+    stickySuggestion
+  );
+  assert.deepEqual(committedFromSticky, {
+    city: 'Indore',
+    sector: 'Vijay Nagar',
+    bhk: '2 BHK',
+    propertyType: 'FLAT',
+    rentalOnly: true
+  });
 });

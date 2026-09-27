@@ -1,11 +1,11 @@
 export type RentalPropertyType = 'FLAT' | 'HOUSE' | 'PENTHOUSE' | 'STUDIO' | 'SERVICED_APARTMENT';
 export type RentalFurnishing = 'FURNISHED' | 'FULLY_FURNISHED' | 'SEMI_FURNISHED' | 'UNFURNISHED';
 
-const PROPERTY_TYPE_LABELS: Record<RentalPropertyType, string> = {
+export const PROPERTY_TYPE_LABELS: Record<RentalPropertyType, string> = {
   FLAT: 'Flat', HOUSE: 'House', PENTHOUSE: 'Penthouse',
   STUDIO: 'Studio', SERVICED_APARTMENT: 'Serviced Apartment'
 };
-const FURNISHING_LABELS: Record<RentalFurnishing, string> = {
+export const FURNISHING_LABELS: Record<RentalFurnishing, string> = {
   FURNISHED: 'Furnished', FULLY_FURNISHED: 'Fully furnished',
   SEMI_FURNISHED: 'Semi-furnished', UNFURNISHED: 'Unfurnished'
 };
@@ -217,3 +217,50 @@ export const discoverySearchKey = (filters: RentalSearchFilters): string =>
   [filters.city, filters.sector, filters.q, filters.bhk, filters.propertyType, filters.furnishing,
     filters.minRent, filters.maxRent, filters.rentalOnly ? 'rent' : 'all']
     .map((value) => normalizeSearchText(String(value || '')).toLocaleLowerCase()).join('|');
+
+export const formatRentDisplay = (amount: number): string => {
+  if (amount >= 100_000 && amount % 100_000 === 0) return `${amount / 100_000}L`;
+  if (amount >= 1_000 && amount % 1_000 === 0) return `${amount / 1_000}k`;
+  return amount.toLocaleString('en-IN');
+};
+
+export const hasActiveSearchFilters = (filters: RentalSearchFilters): boolean =>
+  Boolean(
+    (filters.sector && filters.sector !== 'ALL' && filters.sector !== 'All Localities') ||
+    filters.q ||
+    filters.bhk ||
+    filters.propertyType ||
+    filters.furnishing ||
+    filters.minRent ||
+    filters.maxRent
+  );
+
+export const formatCompactSearchContext = (filters: RentalSearchFilters): string | null => {
+  const parts: string[] = [];
+
+  if (filters.sector && filters.sector !== 'ALL' && filters.sector !== 'All Localities') {
+    parts.push(filters.sector);
+  }
+  if (filters.bhk) {
+    parts.push(filters.bhk.replace(/^(\d+)\s*(BHK|RK)$/i, '$1 $2'));
+  }
+  if (filters.propertyType && PROPERTY_TYPE_LABELS[filters.propertyType]) {
+    parts.push(PROPERTY_TYPE_LABELS[filters.propertyType]);
+  }
+  if (filters.minRent && filters.maxRent) {
+    parts.push(`₹${formatRentDisplay(filters.minRent)}–₹${formatRentDisplay(filters.maxRent)}`);
+  } else if (filters.maxRent) {
+    parts.push(`Up to ₹${formatRentDisplay(filters.maxRent)}`);
+  } else if (filters.minRent) {
+    parts.push(`From ₹${formatRentDisplay(filters.minRent)}`);
+  }
+  if (filters.furnishing && FURNISHING_LABELS[filters.furnishing]) {
+    parts.push(FURNISHING_LABELS[filters.furnishing]);
+  }
+
+  if (parts.length === 0 && filters.q) {
+    return filters.q;
+  }
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+};
