@@ -7,7 +7,6 @@ import { HeroSection } from './HeroSection';
 import { PropertyShowcase } from './PropertyShowcase';
 import { ValueBanner } from './ValueBanner';
 import { FutureExpansion } from './FutureExpansion';
-import { TrustStatsBar } from './TrustStatsBar';
 import { HowItWorks } from './HowItWorks';
 import { Footer } from './Footer';
 import { AuthModal } from './AuthModal';
@@ -1140,7 +1139,7 @@ export const Home: React.FC = () => {
     } else {
       const updatedVisits = currentVisits + 1;
       setUser(prev => prev ? { ...prev, freeVisitsUsed: updatedVisits } : null);
-      notifySuccess('Property tour requested', `Your visit pass ${updatedVisits} of 5 is active for ${property.title}.`, 'An on-site escort will be assigned before your visit.');
+      notifySuccess('Visit request submitted', `Visit request recorded for ${property.title}.`, 'Property visit request submitted online.');
     }
   };
 
@@ -1257,16 +1256,6 @@ export const Home: React.FC = () => {
               />
             </div>
 
-            {/* SECTION 2: LIVE TRUST & STATS BAR */}
-            <motion.div
-              className="relative z-10"
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-60px" }}
-              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            >
-              <TrustStatsBar />
-            </motion.div>
 
             {/* Sticky Compact Search / Location Context (Task 2) */}
             <AnimatePresence>
@@ -1426,13 +1415,13 @@ export const Home: React.FC = () => {
         onSuccess={handleLoginSuccess}
       />
 
-      {/* LEASE CASHBACK UPLOAD MODAL */}
+      {/* LEASE UPLOAD MODAL */}
       <LeaseUploadModal
         isOpen={showLeaseModal}
         onClose={() => setShowLeaseModal(false)}
       />
 
-      {/* 6th VISIT COMMITMENT PAYWALL MODAL */}
+      {/* ADDITIONAL VISIT REQUEST MODAL */}
       <AnimatePresence>
         {showDepositModal && (
           <motion.div 
@@ -1461,22 +1450,22 @@ export const Home: React.FC = () => {
                 <CreditCard className="w-6 h-6 text-amber-600" />
               </div>
               <h3 className="text-2xl font-bold text-slate-900 font-['Outfit'] mb-1">
-                6th Visit Commitment Lock
+                Additional Visit Request
               </h3>
               <p className="text-xs text-slate-600 mb-5 leading-relaxed">
-                You have completed 5 free property passes. The 6th visit requires a refundable ₹100 commitment deposit via UPI.
+                You have reached 5 visit requests for this session. You can activate an additional visit request below.
               </p>
               <motion.button
                 whileHover={{ scale: 1.02, y: -1 }}
                 whileTap={{ scale: 0.97 }}
                 transition={{ type: 'spring', stiffness: 450, damping: 25 }}
                 onClick={() => {
-                  notifySuccess('Visit pass activated', 'Your additional visit pass is now active.');
+                  notifySuccess('Visit request activated', 'Your additional visit request is now active.');
                   setShowDepositModal(false);
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-xs shadow-md shadow-emerald-600/20 transition-all"
               >
-                Pay ₹100 via UPI & Unlock Tour Pass
+                Activate Additional Visit Request
               </motion.button>
             </motion.div>
           </motion.div>

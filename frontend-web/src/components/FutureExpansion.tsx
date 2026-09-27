@@ -34,7 +34,7 @@ export const FutureExpansion: React.FC = () => {
           
           <div className="max-w-2xl space-y-3 relative z-10">
             <div className="inline-flex items-center gap-2 bg-amber-500/10 text-amber-400 text-xs font-bold px-3.5 py-1 rounded-full border border-amber-500/30 shadow-sm font-mono">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Phase 2 Land & Plot Registry
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Phase 2 — Land & Plots
             </div>
             
             <h2 className="text-3xl sm:text-4xl font-black font-['Outfit',sans-serif] text-white tracking-tight leading-tight">
@@ -42,7 +42,7 @@ export const FutureExpansion: React.FC = () => {
             </h2>
             
             <p className="text-slate-300 text-xs sm:text-sm leading-relaxed">
-              Prime Indore commercial plots & residential land in Super Corridor, AB Road & Nipania coming soon. Verified title deeds backed by PostGIS spatial geofencing.
+              Planned support for land and plot listings.
             </p>
           </div>
 

@@ -251,7 +251,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
               transition={{ duration: prefersReducedMotion ? 0 : 0.4, delay: 0.18 }}
               className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-300 sm:mx-0 sm:mt-4 sm:text-base"
             >
-              Verified rental homes with transparent pricing — request a visit in minutes.
+              Explore rental homes with clear property details and request a visit online.
             </motion.p>
           </div>
 

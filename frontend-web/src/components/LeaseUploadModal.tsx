@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Gift, Upload, CheckCircle2, FileText, CreditCard } from 'lucide-react';
+import { X, Upload, CheckCircle2, FileText } from 'lucide-react';
 
 interface LeaseUploadModalProps {
   isOpen: boolean;
@@ -9,7 +9,6 @@ interface LeaseUploadModalProps {
 
 export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onClose }) => {
   const [fileSelected, setFileSelected] = useState(false);
-  const [upiId, setUpiId] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
   if (!isOpen) return null;
@@ -61,13 +60,13 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
               >
                 <div className="text-center mb-6">
                   <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-emerald-200/80 shadow-xs">
-                    <Gift className="w-6 h-6 text-emerald-600" />
+                    <FileText className="w-6 h-6 text-emerald-600" />
                   </div>
                   <h3 className="text-2xl font-bold text-slate-900 font-['Outfit',sans-serif]">
-                    Claim ₹1,000 Cash-Back
+                    Submit Rent Agreement
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
-                    Upload your signed rent agreement to receive a direct UPI transfer
+                    Upload your executed rent agreement for tenancy records
                   </p>
                 </div>
 
@@ -95,7 +94,7 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
                           className="flex items-center justify-center gap-2 text-emerald-700 font-bold text-xs"
                         >
                           <FileText className="w-5 h-5 text-emerald-600" />
-                          Rent_Agreement_Signed.pdf (Uploaded ✓)
+                          Rent_Agreement_Signed.pdf (Selected ✓)
                         </motion.div>
                       ) : (
                         <div>
@@ -107,24 +106,6 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
                     </motion.div>
                   </div>
 
-                  {/* UPI ID Field */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 block mb-1.5 uppercase tracking-wider">
-                      Your UPI ID (GPay / PhonePe / Paytm)
-                    </label>
-                    <div className="relative">
-                      <CreditCard className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                      <input
-                        type="text"
-                        value={upiId}
-                        onChange={(e) => setUpiId(e.target.value)}
-                        placeholder="mobileNumber@upi"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
-                        required
-                      />
-                    </div>
-                  </div>
-
                   <motion.button
                     whileHover={{ scale: 1.02, y: -1 }}
                     whileTap={{ scale: 0.97 }}
@@ -132,8 +113,8 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
                     type="submit"
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-xs shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
                   >
-                    <Gift className="w-4 h-4" />
-                    Submit & Process ₹1,000 Payout
+                    <Upload className="w-4 h-4" />
+                    Submit Agreement
                   </motion.button>
 
                 </form>
@@ -154,10 +135,10 @@ export const LeaseUploadModal: React.FC<LeaseUploadModalProps> = ({ isOpen, onCl
                   <CheckCircle2 className="w-16 h-16 text-emerald-600 mx-auto mb-4" />
                 </motion.div>
                 <h3 className="text-2xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-1">
-                  Agreement Upload Verified!
+                  Agreement Submitted
                 </h3>
                 <p className="text-xs text-slate-600">
-                  ₹1,000 UPI Cashback successfully queued for transfer to <span className="font-mono font-bold text-slate-900">{upiId}</span>.
+                  Your signed rent agreement has been received and saved for tenancy records.
                 </p>
               </motion.div>
             )}

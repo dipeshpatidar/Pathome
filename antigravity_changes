@@ -4,6 +4,133 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-27 21:05 IST — Phase 1 Frontend Truthfulness Cleanup Finalization & Checkpoint
+
+### Why this work was requested
+Finalize and checkpoint the Phase 1 landing and public discovery copy cleanup across Pathome frontend components, ensuring every visible claim strictly reflects existing implemented capabilities or explicitly planned features. Eliminates fake counters, unbacked on-site escort/Double-OTP guarantees, unsupported PostGIS geofencing/spatial claims, fabricated UPI cashback/deposit promises, and unbacked visit coordination claims, while preserving approved layouts, typography, responsiveness, and interaction quality.
+
+### Files Changed
+- `frontend-web/src/components/AuthModal.tsx`
+- `frontend-web/src/components/Footer.tsx`
+- `frontend-web/src/components/FutureExpansion.tsx`
+- `frontend-web/src/components/HeroSection.tsx`
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/HowItWorks.tsx`
+- `frontend-web/src/components/LeaseUploadModal.tsx`
+- `frontend-web/src/components/Navbar.tsx`
+- `frontend-web/src/components/ValueBanner.tsx`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Hero Section**: Standardized hero subtitle to approved exact copy: `"Explore rental homes with clear property details and request a visit online."`.
+2. **Fake Counter / Stats Removal**: Removed `TrustStatsBar` section from `Home.tsx`, eliminating all 4 hardcoded fake counters ("184+ Free Passes Claimed Today", "100% On-Site Ground Escort", "DOUBLE-OTP", "₹1,000 Lease Closing Cashback").
+3. **Visit Request & Commitment Modal Grounding**: Neutralized unbacked UPI deposit promises and fake tour pass claims in `Home.tsx` (`"Pay ₹100 via UPI"` -> `"Activate Additional Visit Request"`). Removed fake on-site escort assignment notifications.
+4. **How It Works & Value Banner**:
+   - Replaced unbacked 150m spatial radius check with transparent search & locality discovery.
+   - Replaced on-site escort / Double-OTP badges with online visit scheduling.
+   - Replaced UPI cashback promises with direct owner lease agreements and upfront pricing.
+   - Scoped zero-brokerage claims specifically to direct owner listings and tenant fee structures without platform-wide overreach.
+5. **Navbar & Lease Upload Modal**:
+   - Replaced "Claim ₹1,000 Cash-Back" button with "Upload Lease Agreement".
+   - Converted `LeaseUploadModal` from fake instant UPI transfer claim to tenancy agreement submission for records; eliminated unbacked UPI ID input.
+   - In `PostPropertyModal`: Replaced escorted visit guarantees with online visit requests; neutralized verified claims to direct onboarding assistance.
+   - Replaced "Verified Rentals" navigation labels with "Rental Homes" / "Rental Listings".
+6. **Future Expansion & Footer**:
+   - Updated future expansion to approved neutral planned language: `"Planned support for land and plot listings."`.
+   - Replaced PostGIS geofencing and active field personnel claims in footer with `"Direct Owner Listings"`, `"Transparent Pricing"`, and `"Direct Support · Online Visit Requests"`.
+7. **Accidental Duplicate Cleanup**: Reconfirmed and safely deleted 18 untracked exact-duplicate `* 2.java` files and 8 untracked non-Java `* 2.*` files. All Git-tracked original source files remain intact.
+
+### Verification
+- **Build**: Frontend production build (`npm --prefix frontend-web run build`) passed with exit code 0 (`✓ built in 11m 24s`).
+- **Diff Check**: `git diff --check` PASSED with 0 warnings/errors.
+- **Phrase Check**: Targeted search for 15 known unsupported phrases (`184+`, `Free Passes Claimed`, `100% On-Site`, `DOUBLE-OTP`, `Cashback`, `Instant Transfer`, `UPI`, `150m`, `Geofence`, `GPS radius`, `Spatial Engine`, `Field Personnel Active`, `5 Free Passes`, `Verified rental homes`, `Assisted Visit Coordination`) returned 0 occurrences across all modified frontend files.
+- **Git Safety**: Working tree contains only the 9 approved frontend files and `antigravity_changes`. Untracked review markdown files remain untouched.
+
+### Commit / Push Status
+- Committed: `fix(frontend): align public copy with supported capabilities`
+- Pushed: `origin feature/phase1-truthfulness-cleanup`
+
+---
+
+## 2026-09-27 17:16 IST — Hardened run-app.sh for One-Command Local Startup
+
+### Why this work was requested
+Following a machine reboot and terminal restart, running `mvn spring-boot:run` failed due to missing `JWT_SECRET` because plain `source .env.local` did not export shell variables to child Java/Maven processes, and `./run-app.sh` was invoked from inside `backend/`. The unified launcher `run-app.sh` needed hardening to guarantee one-command local startup from any invocation directory without requiring manual sourcing or developer navigation, while preventing silent credential generation and arbitrary port process killing.
+
+### Files Changed
+- `run-app.sh`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Working-Directory Independence**: Derived `ROOT_DIR`, `BACKEND_DIR`, `FRONTEND_DIR`, and `ENV_FILE` from `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`. Running `./run-app.sh` or `/path/to/run-app.sh` now works from any caller CWD.
+2. **Automated Export-Aware Env Loading**: Automatically executes `set -a && source "${ENV_FILE}" && set +a`. Fails fast with clear actionable error message if `.env.local` is missing.
+3. **Removed Silent JWT Generation**: Eliminated OpenSSL auto-generation and in-place rewriting of `.env.local`. Missing or sub-32-character `JWT_SECRET` now safely halts startup with an informative message.
+4. **Required Configuration Validation**: Validates mandatory backend variables (`JWT_SECRET`, `SPRING_DATASOURCE_PASSWORD`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`) and optional profile requirements without exposing any secret values.
+5. **PostgreSQL Preflight Check**: Parses host and port from `SPRING_DATASOURCE_URL` (defaulting to `localhost:5432`) and verifies reachability via `nc` and `pg_isready` before starting Spring Boot; fails fast if unreachable.
+6. **Targeted Port Handling**: Replaced unconditional `kill -9` with process inspection. Distinguishes stale Pathome backend/frontend instances from third-party developer processes, cleanly terminating only Pathome listeners while halting and reporting any unrelated port conflict.
+7. **Readiness Probes & Clean Lifecycle**: Polling readiness on backend (`/api/v1/properties`) and frontend (curl / socket connectivity) before logging readiness banner. Process tracking with trap (`SIGINT`, `SIGTERM`, `EXIT`) terminates child process trees (`pkill -P`), releasing ports 8080 and 5173 without leaving orphaned JVM or Node processes.
+8. **Application Code Untouched**: Zero changes to backend Java, `application.yml`, Flyway migrations, frontend React components, `pom.xml`, or `package.json`. Truthfulness-cleanup frontend changes preserved completely.
+
+### Verification
+- `bash -n run-app.sh`: PASS
+- `git diff --check`: PASS
+- End-to-end first run: Started Spring Boot (8080) and Vite (5173), verified HTTP 200 on `/api/v1/properties`, verified readiness banner.
+- Graceful shutdown: Cleanly caught shutdown signal, stopped child processes, released ports 8080 and 5173, verified PostgreSQL remained running.
+- Repeat startup: Started second instance successfully from clean state and cleanly terminated.
+- Working tree check: All 9 truthfulness-cleanup files remain intact.
+
+### Commit / Push Status
+- Uncommitted. Branch: `feature/phase1-truthfulness-cleanup`.
+- Commit: NO
+- Push: NO
+
+---
+
+## 2026-09-27 15:00 IST — Pathome Phase 1 Landing Page Truthfulness Cleanup
+
+### Why this work was requested
+Audit and remove or rewrite all user-facing claims across the Pathome landing/discovery experience that were not backed by real implemented functionality or real data. In particular, eliminate fake activity counters, unsupported trust badges, technical theater (such as PostGIS geofencing and spatial engine marketing claims), fabricated on-site escort/Double-OTP promises, and unbacked cashback/transfer commitments, while preserving visual quality and responsive layout hierarchy.
+
+### Files Changed
+- `frontend-web/src/components/HeroSection.tsx`
+- `frontend-web/src/components/Home.tsx`
+- `frontend-web/src/components/HowItWorks.tsx`
+- `frontend-web/src/components/ValueBanner.tsx`
+- `frontend-web/src/components/FutureExpansion.tsx`
+- `frontend-web/src/components/Footer.tsx`
+- `frontend-web/src/components/Navbar.tsx`
+- `frontend-web/src/components/AuthModal.tsx`
+- `frontend-web/src/components/LeaseUploadModal.tsx`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Hero Section Subtitle**: Rewrote to `"Explore rental homes with clear property details and request a visit online."`.
+2. **Fake Counter / Trust Stats Bar**: Completely removed `TrustStatsBar` invocation from `Home.tsx`, removing the 4 hardcoded fake counters ("184+ Free Passes Claimed Today", "100% On-Site Ground Escort", "DOUBLE-OTP", "₹1,000 Lease Closing Cashback").
+3. **How It Works & Value Banner**:
+   - Replaced unbacked "PostGIS 150m spatial radius check" and "100% verified flats" with truthful discovery copy: "Search by city, locality, and BHK", "Detailed photos, amenities, and pricing", "Direct property details without middleman markups".
+   - Replaced "Free Escorted Tour with On-Site Escort" / "Double-OTP" with "Request a Property Visit Online" / "Assisted Scheduling" / "Online visit request submission", "Flexible date and timing preferences".
+   - Replaced "Finalize Lease & Claim ₹1,000 Cashback" / "Direct UPI Payout" with "Connect Directly & Finalize Lease" / "Direct Agreement" / "Direct owner discussions", "Clear rent and deposit terms".
+   - Rewrote Value Banner cards: "Zero Brokerage for Tenants" (Direct Owner Listings), "Grounded Property Details" (Clear Information), "Transparent Pricing" (Upfront Pricing).
+4. **Footer & Navbar**:
+   - Removed fake technical badges ("PostGIS Spatial Geofence Active", "₹1,000 Direct Cashback") and replaced with "Direct Owner Listings" and "Transparent Pricing".
+   - Replaced "Field-Verified Escorted Visits" and "On-Site Verification Team: Field Personnel Active" with "Assisted Visit Coordination" and "Direct Support · Dedicated Visit Coordination".
+   - Replaced "Claim ₹1,000 Cash-Back" button in Navbar with "Upload Lease Agreement".
+5. **Lease Agreement Modal**: Refocused from fake instant UPI cashback promise to rent agreement submission.
+6. **Autonomous Search Intelligence V2 & Backend**: Untouched. Zero changes to backend or search policy.
+
+### Verification
+- **Unit Tests**: 37/37 passed across `rentalSearch.test.mjs`, `discoveryPerformanceAndNavigation.test.mjs`, and `discoveryCardData.test.mjs`.
+- **TypeScript**: `tsc -p tsconfig.json --noEmit` exited code 0 with 0 errors.
+- **Vite Dev Server**: All modified components (`HeroSection`, `Home`, `HowItWorks`, `ValueBanner`, `FutureExpansion`, `Footer`, `Navbar`, `AuthModal`, `LeaseUploadModal`) compile cleanly with HTTP 200 OK.
+- **Browser QA**: Targeted visual inspection across 1440px (desktop), 768px (tablet), and 390px (mobile) confirmed zero broken layouts, seamless spacing where stats bar was removed, natural copy wrapping, and zero horizontal page overflow.
+
+### Commit / Push Status
+- Uncommitted. Branch: `feature/phase1-truthfulness-cleanup`.
+- Commit: NO
+- Push: NO
+
+---
+
 ## 2026-09-27 06:15 IST — Pathome Task 2 Micro-UX Cleanup: Conditional Clear Controls + Context/Edit Modes
 
 ### Why this work was requested

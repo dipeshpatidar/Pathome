@@ -100,7 +100,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               {authMode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Access zero-brokerage rentals & verified homes
+              Access rental homes with transparent pricing
             </p>
           </div>
 

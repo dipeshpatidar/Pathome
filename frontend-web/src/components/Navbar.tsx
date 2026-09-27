@@ -8,7 +8,7 @@ import { UserRole, UserProfile } from '../types';
 import {
   Building2,
   Sparkles,
-  Gift,
+  FileText,
   User,
   LogOut,
   ChevronDown,
@@ -91,11 +91,11 @@ const PostPropertyModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
         <div className="mt-5 space-y-3">
           <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-3.5">
             <p className="text-xs font-bold text-white">0% Brokerage for Direct Owners</p>
-            <p className="mt-1 text-xs text-slate-300">Connect directly with verified tenants without middleman commissions.</p>
+            <p className="mt-1 text-xs text-slate-300">Connect directly with prospective tenants without middleman commissions.</p>
           </div>
           <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-3.5">
-            <p className="text-xs font-bold text-white">Field-Verified Escorted Visits</p>
-            <p className="mt-1 text-xs text-slate-300">Our local operations team assists verified tenant visits on your schedule.</p>
+            <p className="text-xs font-bold text-white">Online Visit Requests</p>
+            <p className="mt-1 text-xs text-slate-300">Receive tenant visit requests directly for your property.</p>
           </div>
           <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-3.5">
             <p className="text-xs font-bold text-white">Digital Lease Agreements</p>
@@ -104,7 +104,7 @@ const PostPropertyModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
         </div>
 
         <div className="mt-6 rounded-2xl border border-emerald-500/20 bg-emerald-950/40 p-4 text-xs text-emerald-200 leading-relaxed">
-          Online self-listing is actively expanding across our supported cities. Today, our property onboarding team lists and verifies homes directly.
+          Online self-listing is actively expanding across our supported cities. Today, our property onboarding team assists with listing onboarding directly.
         </div>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -250,7 +250,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     isHeroTop ? 'text-white/80 hover:text-white' : 'text-slate-700 hover:text-emerald-600'
                   }`}
                 >
-                  Verified Rentals
+                  Rental Homes
                 </a>
                 <a
                   href="#how-it-works"
@@ -335,8 +335,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={onOpenLeaseUpload}
                   className="hidden sm:flex bg-slate-900 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition-all items-center gap-1.5 shadow-sm"
                 >
-                  <Gift className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Claim ₹1,000 Cash-Back</span>
+                  <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Upload Lease Agreement</span>
                 </motion.button>
               </>
             )}
@@ -457,7 +457,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     isHeroTop ? 'text-white/90 hover:bg-white/10 hover:text-white' : 'text-slate-700 hover:bg-slate-100 hover:text-emerald-600'
                   }`}
                 >
-                  Verified Rentals
+                  Rental Homes
                 </a>
                 <a
                   href="#how-it-works"

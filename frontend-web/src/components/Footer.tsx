@@ -34,16 +34,16 @@ export const Footer: React.FC<FooterProps> = ({ onSelectSector }) => {
             </div>
 
             <p className="text-xs leading-relaxed text-slate-400 max-w-sm">
-              Pathome — <span className="pathome-tagline text-white font-semibold">Your Dreams, Our Efforts.</span> Premier zero-brokerage rental & plot marketplace backed by PostGIS spatial geofencing and physical verification.
+              Pathome — <span className="pathome-tagline text-white font-semibold">Your Dreams, Our Efforts.</span> Premier rental marketplace connecting tenants and property owners directly with transparent pricing and clear property details.
             </p>
 
             <div className="pt-2 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                PostGIS Spatial Geofence Active
+                Direct Owner Listings
               </span>
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-amber-400 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20 font-mono">
-                ₹1,000 Direct Cashback
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-300 bg-slate-800/80 px-3 py-1 rounded-full border border-slate-700/60 font-mono">
+                Transparent Pricing
               </span>
             </div>
           </div>
@@ -58,7 +58,7 @@ export const Footer: React.FC<FooterProps> = ({ onSelectSector }) => {
                 <a href="#hero" className="hover:text-emerald-400 transition-colors">Home & Search</a>
               </li>
               <li>
-                <a href="#listings" className="hover:text-emerald-400 transition-colors">Verified Rentals</a>
+                <a href="#listings" className="hover:text-emerald-400 transition-colors">Rental Listings</a>
               </li>
               <li>
                 <a href="#how-it-works" className="hover:text-emerald-400 transition-colors">How It Works</a>
@@ -120,7 +120,7 @@ export const Footer: React.FC<FooterProps> = ({ onSelectSector }) => {
 
             <div className="pt-3">
               <span className="text-[10px] font-semibold text-slate-400 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 inline-block">
-                On-Site Verification Team: Field Personnel Active
+                Direct Support · Online Visit Requests
               </span>
             </div>
           </div>

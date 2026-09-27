@@ -5,30 +5,30 @@ import { Search, UserCheck, Gift, ArrowRight, ShieldCheck, CheckCircle2 } from '
 const steps = [
   {
     number: '01',
-    title: 'Search & Pick Verified Homes',
-    description: 'Filter 100% verified flats, independent houses, or land plots with transparent pricing and zero broker involvement.',
+    title: 'Search & Discover Rental Homes',
+    description: 'Filter flats and residential properties with transparent pricing, accurate locality details, and direct property information.',
     icon: Search,
     color: 'emerald',
-    badge: '100% Direct Owner',
-    bullets: ['PostGIS 150m spatial radius check', 'Real photo galleries & amenities', 'Zero brokerage list pricing']
+    badge: 'Direct Listings',
+    bullets: ['Search by city, locality, and BHK', 'Detailed photos, amenities, and pricing', 'Direct property details without middleman markups']
   },
   {
     number: '02',
-    title: 'Free Escorted Tour with On-Site Escort',
-    description: 'Request a visit pass (first 5 visits are completely free). Our local on-site escort accompanies you on the visit and verifies property access via secure Double-OTP.',
+    title: 'Request a Property Visit Online',
+    description: 'Choose your preferred visit timing and submit your request online. View property details and schedule visits directly through the platform.',
     icon: UserCheck,
     color: 'blue',
-    badge: 'Physical Escort Pass',
-    bullets: ['On-site escort meeting', 'Double-OTP tenant & owner sign-off', '5 free visit passes guaranteed']
+    badge: 'Online Scheduling',
+    bullets: ['Submit visit requests online', 'Flexible date and timing preferences', 'Direct property visit requests']
   },
   {
     number: '03',
-    title: 'Finalize Lease & Claim ₹1,000 Cashback',
-    description: 'Finalize rent directly with the owner. Upload your executed lease agreement on Pathome to get ₹1,000 credited directly to your UPI bank account.',
+    title: 'Connect Directly & Finalize Lease',
+    description: 'Discuss and agree on rental terms directly with the property owner. Move forward with your rental agreement with full transparency and zero broker commissions.',
     icon: Gift,
     color: 'amber',
-    badge: 'Direct UPI Payout',
-    bullets: ['No hidden processing deductions', '24-hour verification turnaround', 'Direct bank payout']
+    badge: 'Direct Agreement',
+    bullets: ['Direct owner discussions', 'Clear rent and deposit terms', 'Zero middleman commission traps']
   }
 ];
 
@@ -56,7 +56,7 @@ export const HowItWorks: React.FC = () => {
             How Pathome Works
           </h2>
           <p className="text-slate-600 text-xs sm:text-sm mt-2.5 leading-relaxed">
-            Eliminating broker markups and ghost listings with physical ground verification & direct cashback rewards.
+            Eliminating broker markups and ghost listings with transparent pricing & direct visit requests.
           </p>
         </motion.div>
 
@@ -127,8 +127,8 @@ export const HowItWorks: React.FC = () => {
               <ShieldCheck className="w-6 h-6" />
             </div>
             <div>
-              <h4 className="text-lg font-bold font-['Outfit',sans-serif]">Ready to explore verified rental spaces?</h4>
-              <p className="text-xs text-slate-300 mt-0.5">Start your 5 free visit passes with physical on-site escort today.</p>
+              <h4 className="text-lg font-bold font-['Outfit',sans-serif]">Ready to explore available rental homes?</h4>
+              <p className="text-xs text-slate-300 mt-0.5">Browse active listings across Indore and request a property visit online.</p>
             </div>
           </div>
 
@@ -136,7 +136,7 @@ export const HowItWorks: React.FC = () => {
             href="#listings"
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-6 py-3.5 rounded-xl transition-all shadow-md shadow-emerald-600/30 flex items-center gap-2 whitespace-nowrap shrink-0"
           >
-            <span>Browse Verified Listings</span>
+            <span>Browse Rental Listings</span>
             <ArrowRight className="w-4 h-4" />
           </a>
         </motion.div>

@@ -39,7 +39,7 @@ export const ValueBanner: React.FC = () => {
             Your Dreams, Our Efforts.
           </h2>
           <p className="text-slate-500 text-xs sm:text-sm mt-1.5 leading-relaxed">
-            Built to eliminate fake broker spam and unverified listings.
+            Built for transparent rental discovery without broker markups or ghost listings.
           </p>
         </motion.div>
 
@@ -62,15 +62,15 @@ export const ValueBanner: React.FC = () => {
                 <Sparkles className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
-                Zero Tenant Fee
+                Zero Brokerage for Tenants
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                Enjoy 100% free, un-cut guided property tours for your first 5 unique visits. No brokerage fee traps or hidden registration markups.
+                Explore rental listings and submit property visit requests without middleman commissions or hidden registration markups.
               </p>
             </div>
             <div>
               <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg inline-block border border-emerald-200">
-                5 Free Passes Included
+                Direct Owner Listings
               </div>
             </div>
           </motion.div>
@@ -85,15 +85,15 @@ export const ValueBanner: React.FC = () => {
                 <ShieldCheck className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
-                100% On-Site Vetted
+                Grounded Property Details
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                Every listing is personally inspected and geo-tagged by our local on-site team. Zero fake broker spam or ghost addresses.
+                Every listing displays key rental information, photos, amenities, and accurate locality mapping so you can browse with confidence.
               </p>
             </div>
             <div>
               <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg inline-block border border-emerald-200">
-                On-Site Escort & Double-OTP
+                Clear Information
               </div>
             </div>
           </motion.div>
@@ -108,15 +108,15 @@ export const ValueBanner: React.FC = () => {
                 <Gift className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
-                Instant ₹1,000 Cash-Back
+                Transparent Pricing
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                Upon successful lease closure, simply upload your signed rent agreement to the portal to claim your direct ₹1,000 UPI cashback reward.
+                View monthly rent, security deposit, and maintenance upfront. No surprise fees, arbitrary markups, or hidden broker charges.
               </p>
             </div>
             <div>
               <div className="text-[11px] font-bold text-amber-800 bg-amber-50 px-3 py-1 rounded-lg inline-block border border-amber-200 font-mono">
-                Direct UPI Payout
+                Upfront Pricing
               </div>
             </div>
           </motion.div>
