@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ArrowRight, Building2, Plus } from 'lucide-react';
 import { getErrorMessage } from '../services/apiError';
 import { LessorDraftSummary, lessorDraftService } from '../services/lessorDraftService';
@@ -43,8 +44,23 @@ export function LessorPortfolio({ onAdd, onOpenDraft, onOpenListing }: {
 
   const empty = !loadingDrafts && !loadingListings && !draftError && !listingError && drafts.length === 0 && listings.length === 0;
   return <section>
-    <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your workspace</p><h1 className="mt-1 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">My Properties</h1></div><button className={BUTTON} onClick={onAdd}><Plus className="h-4 w-4"/>Add property</button></div>
-    {empty && <div className="mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-7"><Building2 className="mb-4 h-7 w-7 text-emerald-700"/><h2 className="text-xl font-semibold text-slate-950">Your first property starts here</h2><p className="mt-2 text-sm text-slate-600">Add the basics now. You can return to finish later.</p><button className={`${BUTTON} mt-5`} onClick={onAdd}>Add property</button></div>}
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your workspace</p>
+        <h1 className="mt-1 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">My Properties</h1>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          to="/"
+          className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-semibold text-slate-700 shadow-2xs transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+        >
+          <Building2 className="h-4 w-4 text-slate-500" />
+          <span>Browse rental homes</span>
+        </Link>
+        <button className={BUTTON} onClick={onAdd}><Plus className="h-4 w-4"/>Add property</button>
+      </div>
+    </div>
+    {empty && <div className="mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-7"><Building2 className="mb-4 h-7 w-7 text-emerald-700"/><h2 className="text-xl font-semibold text-slate-950">Your first property starts here</h2><p className="mt-2 text-sm text-slate-600">Add the basics now. You can return to finish later.</p><div className="mt-5 flex flex-wrap items-center gap-3"><button className={BUTTON} onClick={onAdd}>Add property</button><Link to="/" className={SECONDARY}>Browse rental homes</Link></div></div>}
     {(loadingDrafts || loadingListings) && drafts.length === 0 && listings.length === 0 && <div aria-label="Loading properties" className="mt-8 grid gap-4 sm:grid-cols-2">{[1, 2].map(number => <div key={number} className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="aspect-[16/9] animate-pulse motion-reduce:animate-none bg-slate-200"/><div className="space-y-3 p-4"><div className="h-4 w-24 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-6 w-3/4 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-4 w-1/2 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-11 w-28 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/></div></div>)}</div>}
     {(drafts.length > 0 || draftError) && <div className="mt-9"><h2 className="text-lg font-semibold text-slate-950">Drafts</h2>{draftError && <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{draftError}<button className="ml-3 underline" onClick={() => { void loadDrafts(draftPage); }}>Retry</button></p>}
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drafts.map(draft => {

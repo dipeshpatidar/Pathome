@@ -125,28 +125,59 @@ public class LandlordMediaService {
         return name.isEmpty() ? "property-media" : name.substring(0, Math.min(name.length(), 255));
     }
 
+    String resolveMime(MultipartFile file) {
+        String raw = file.getContentType();
+        String mime = raw == null ? "" : raw.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        if (mime.equals("image/jpg") || mime.equals("image/pjpeg")) {
+            mime = "image/jpeg";
+        }
+        if (mime.isEmpty() || mime.equals("application/octet-stream")) {
+            String name = file.getOriginalFilename();
+            if (name != null) {
+                int dot = name.lastIndexOf('.');
+                if (dot >= 0) {
+                    String ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+                    switch (ext) {
+                        case "jpg", "jpeg" -> mime = "image/jpeg";
+                        case "png" -> mime = "image/png";
+                        case "webp" -> mime = "image/webp";
+                        case "heic" -> mime = "image/heic";
+                        case "heif" -> mime = "image/heif";
+                        case "mp4" -> mime = "video/mp4";
+                        case "mov" -> mime = "video/quicktime";
+                    }
+                }
+            }
+        }
+        return mime;
+    }
+
     String validateFile(MultipartFile file) {
-        if (file == null || file.isEmpty()) throw new IllegalArgumentException("Choose a nonempty photo or video");
-        String mime = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
+        if (file == null || file.isEmpty()) throw new IllegalArgumentException("We couldn't read this file. Choose another file.");
+        String mime = resolveMime(file);
         boolean image = List.of("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif").contains(mime);
         boolean video = List.of("video/mp4", "video/quicktime").contains(mime);
-        if (!image && !video) throw new IllegalArgumentException("Choose a supported photo or video format");
+        if (!image && !video) {
+            String orig = file.getOriginalFilename();
+            boolean likelyVideo = orig != null && (orig.toLowerCase(Locale.ROOT).endsWith(".mp4") || orig.toLowerCase(Locale.ROOT).endsWith(".mov"));
+            throw new IllegalArgumentException(likelyVideo ? "This video format isn't supported. Choose another video." : "This file type isn't supported. Choose another image.");
+        }
         if (file.getSize() > (video ? CloudinaryService.MAX_VIDEO_BYTES : CloudinaryService.MAX_IMAGE_BYTES)) {
-            throw new IllegalArgumentException(video ? "Video must be 100 MB or smaller" : "Photo must be 10 MB or smaller");
+            throw new IllegalArgumentException(video ? "This video is too large. Maximum size is 100 MB." : "This image is too large. Maximum size is 10 MB.");
         }
         byte[] header;
         try (InputStream input = file.getInputStream()) {
             header = input.readNBytes(16);
-            if (header.length < 12) throw new IllegalArgumentException("File could not be verified");
-        } catch (IOException ex) { throw new IllegalArgumentException("File could not be read"); }
+            if (header.length < 12) throw new IllegalArgumentException("We couldn't read this file. Choose another file.");
+        } catch (IOException ex) { throw new IllegalArgumentException("We couldn't read this file. Choose another file."); }
         boolean jpeg = (header[0] & 0xff) == 0xff && (header[1] & 0xff) == 0xd8 && (header[2] & 0xff) == 0xff;
         boolean png = header[0] == (byte) 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G';
         boolean webp = new String(header, 0, 4, java.nio.charset.StandardCharsets.US_ASCII).equals("RIFF")
                 && new String(header, 8, 4, java.nio.charset.StandardCharsets.US_ASCII).equals("WEBP");
         String box = new String(header, 4, 4, java.nio.charset.StandardCharsets.US_ASCII);
         String brand = new String(header, 8, 4, java.nio.charset.StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
-        boolean heif = box.equals("ftyp") && (brand.startsWith("hei") || brand.startsWith("mif"));
-        boolean movie = box.equals("ftyp") && !heif;
+        boolean heif = box.equals("ftyp") && (brand.startsWith("hei") || brand.startsWith("mif") || brand.startsWith("hev") || brand.startsWith("msf"));
+        boolean movie = (box.equals("ftyp") && !heif) || box.equals("moov") || box.equals("wide") || box.equals("mdat");
         if (image && !(mime.equals("image/jpeg") && jpeg || mime.equals("image/png") && png
                 || mime.equals("image/webp") && webp || (mime.equals("image/heic") || mime.equals("image/heif")) && heif)
                 || video && !movie) {

@@ -2,6 +2,53 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 20:58 IST — Harden Mobile Media Upload Feedback and Exit Flow
+
+### Why this work was requested
+Two approved issues in the landlord/lessor property onboarding flow:
+1. Mobile Media Upload Reliability: On a physical phone, selecting media in the property onboarding flow failed silently or failed to upload with no status indication, no error diagnosis, no distinction between image and video, and no retry action.
+2. Safe Exit UX: Users needed an unambiguous way to leave the property-upload editor without losing work (Exit preserves draft; Discard remains separate and explicitly confirmed). Active uploads and unsaved autosave failures needed explicit confirmation guards prior to exit.
+
+### Root Cause
+1. Insecure Context Cryptography: `LessorMediaStep.tsx` previously used `crypto.randomUUID()` directly for tracking local media items. On mobile devices accessing LAN HTTP endpoints (e.g. `http://<ip>:5173` or `http://*.local:5173`), `crypto.randomUUID` is `undefined` because it is restricted to Secure Contexts (HTTPS/localhost). Calling it threw a `TypeError: crypto.randomUUID is not a function`, terminating the file selection handler immediately and silently without starting any upload or rendering any placeholder.
+2. Mobile MIME & Extension Variances: Mobile browsers frequently report empty `file.type === ""` or `image/jpg` or generic `application/octet-stream` for photos taken by the phone camera or selected from camera roll. Strict backend and frontend checks previously rejected these files as unsupported formats.
+3. Lack of Visible Per-Item Upload States: File selection lacked intermediate visible upload progress/status, honest failure categorization, or per-file retry actions.
+4. Exit Navigation Semantics: Guest discard navigated to `/lessor` instead of `/`, and active local-only uploads could be cancelled without warning on exit.
+
+### Implementation Details
+1. **Frontend Media Pipeline & Resilience (`lessorMedia.ts`, `LessorMediaStep.tsx`)**:
+   - Implemented RFC 4122 v4 UUID generator (`generateMediaId()`) with fallbacks (`crypto.getRandomValues` and math pseudo-random) safe for non-secure HTTP LAN environments.
+   - Added robust MIME normalization (`normalizeMediaType()`) resolving `image/jpg`, `image/pjpeg`, empty types, and octet-stream using file extension fallbacks.
+   - Built truthful error categorization (`classifyMediaError()`) adhering strictly to the 8 approved user-facing categories (SIZE, FORMAT, CORRUPT/INVALID, NETWORK, TIMEOUT/TRANSIENT, SESSION/AUTH, PERMISSION/OWNERSHIP, UNKNOWN SAFE FALLBACK) with appropriate `retryable` flags.
+   - Rendered per-item visual cards displaying immediate image previews (`URL.createObjectURL`), honest upload badges ("Uploading X%", "Retrying…", "Upload failed"), error messages placed directly below the failed item, and actionable `Retry` / `Remove` buttons.
+   - Propagated active upload status via `onActiveUploadsChange`.
+2. **Backend Media Normalization & Error Precision (`LandlordMediaService.java`)**:
+   - Added `resolveMime()` normalizing `image/jpg`, `image/pjpeg`, stripping parameters (e.g. `; charset=UTF-8`), and falling back to file extension inspection for empty or octet-stream types.
+   - Added HEIF/HEIC (`hev`, `msf`) and QuickTime (`moov`, `wide`, `mdat`) magic byte recognition in addition to JPEG/PNG/WebP/MP4.
+   - Replaced generic messages with truthful, standardized error messages matching frontend classification.
+3. **Safe Exit Semantics & Confirmation Dialogs (`LessorOnboardingHeader.tsx`, `LessorWorkspace.tsx`, `LessorPortfolio.tsx`)**:
+   - `LessorOnboardingHeader`: Added an active-upload confirmation dialog ("Uploads are still in progress. Leaving now may stop unfinished uploads." with "Stay" and "Leave anyway" options).
+   - Polished unsaved autosave failure dialog with "Stay and retry", "Leave anyway", and "Retry & exit".
+   - Aligned guest exit destination to `/` and authenticated lessor exit destination to `/lessor`.
+   - Updated discard to route guests to `/` and authenticated lessors to `/lessor`.
+   - Added clear marketplace escape link ("Browse rental homes") on `/lessor` (`LessorPortfolio.tsx`).
+4. **Tests**:
+   - `backend/src/test/java/com/indore/pathome/spaces/service/LandlordMediaServiceTest.java`: Added unit tests for mobile MIME normalization, parameter stripping, oversized files, and unsupported formats.
+   - `frontend-web/src/tests/lessorMedia.test.mjs`: Added unit tests for `generateMediaId`, `normalizeMediaType`, and `classifyMediaError`.
+
+### Verification Performed
+- Backend tests: `mvn -f backend/pom.xml test -Dtest="LandlordMediaServiceTest,GuestMediaServiceTest,GuestRequestGuardTest,GuestOriginSecurityIntegrationTest"`: **74/74 passed** (0 failures).
+- Frontend tests: `node --test frontend-web/src/tests/lessorMedia.test.mjs`: **7/7 passed** (0 failures).
+- Frontend build: `npm run build` in `frontend-web`: **0 errors, build successful**.
+- Git diff check: `git diff --check`: **PASS (0 whitespace errors)**.
+
+### Outstanding Checks
+- Physical phone manual QA on mobile network/LAN: MANUAL QA.
+
+### Commit / Push Status
+- Commit: Pending
+- Push: Pending
+
 ## 2026-09-28 20:32 IST — Unify Guest Development Origin Validation (CORS & Guard Policy Alignment)
 
 ### Why this work was requested

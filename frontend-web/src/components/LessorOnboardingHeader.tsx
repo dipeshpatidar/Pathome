@@ -14,6 +14,7 @@ import type { LessorSaveStatus } from '../services/lessorAutosave';
 export interface LessorOnboardingHeaderProps {
   status?: LessorSaveStatus | null;
   guest?: boolean;
+  hasActiveUploads?: boolean;
   onExit: () => Promise<boolean | void> | boolean | void;
   onExitToLanding: () => void;
   onRetrySave?: () => void;
@@ -28,6 +29,7 @@ export interface LessorOnboardingHeaderProps {
 export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   status,
   guest = false,
+  hasActiveUploads = false,
   onExit,
   onExitToLanding,
   onRetrySave,
@@ -39,6 +41,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   onDiscard
 }) => {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [showUploadsConfirm, setShowUploadsConfirm] = useState(false);
   const [pendingExitAction, setPendingExitAction] = useState<'exit' | 'landing'>('exit');
   const [isFlushing, setIsFlushing] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
@@ -84,6 +87,11 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   }, [showDiscardConfirm, isDiscarding]);
 
   const handleAction = async (action: 'exit' | 'landing') => {
+    if (hasActiveUploads) {
+      setPendingExitAction(action);
+      setShowUploadsConfirm(true);
+      return;
+    }
     // If status is already in error or conflict, show recovery dialog directly
     if (status === 'error' || status === 'conflict') {
       setPendingExitAction(action);
@@ -99,9 +107,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
         setShowExitConfirm(true);
         return;
       }
-      if (action === 'landing') {
-        onExitToLanding();
-      }
+      onExitToLanding();
     } catch {
       setPendingExitAction(action);
       setShowExitConfirm(true);
@@ -124,9 +130,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
       const ok = await onExit();
       if (ok !== false) {
         setShowExitConfirm(false);
-        if (pendingExitAction === 'landing') {
-          onExitToLanding();
-        }
+        onExitToLanding();
       }
     } finally {
       setIsFlushing(false);
@@ -276,6 +280,47 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
         </div>
       </header>
 
+      {/* ACTIVE UPLOADS CONFIRMATION DIALOG */}
+      {showUploadsConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-uploads-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-800">
+              <AlertCircle className="h-6 w-6" />
+            </div>
+            <h2 id="confirm-uploads-title" className="mt-4 font-['Outfit',sans-serif] text-xl font-bold text-slate-950">
+              Uploads are still in progress
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">
+              Leaving now may stop unfinished uploads.
+            </p>
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowUploadsConfirm(false)}
+                className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUploadsConfirm(false);
+                  onExitToLanding();
+                }}
+                className="inline-flex min-h-11 items-center justify-center rounded-xl bg-amber-700 px-4 text-sm font-semibold text-white hover:bg-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 cursor-pointer"
+              >
+                Leave anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* RECOVERY-SAFE EXIT CONFIRMATION DIALOG (Shown only when pending/failed sync exists) */}
       {showExitConfirm && (
         <div
@@ -289,10 +334,10 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               <AlertCircle className="h-6 w-6" />
             </div>
             <h2 id="confirm-exit-title" className="mt-4 font-['Outfit',sans-serif] text-xl font-bold text-slate-950">
-              We couldn't save your latest changes.
+              Your latest changes haven't been saved.
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Your edits are safely preserved on this device, but could not be synced to the server. You can retry syncing or keep editing.
+              Your edits are safely preserved on this device, but could not be synced to the server. You can retry syncing or leave anyway.
             </p>
             <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button
@@ -300,14 +345,14 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
                 onClick={() => setShowExitConfirm(false)}
                 className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
               >
-                Keep editing
+                Stay and retry
               </button>
               <button
                 type="button"
                 onClick={handleConfirmExit}
                 className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-3 text-xs font-medium text-slate-600 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
               >
-                Exit anyway
+                Leave anyway
               </button>
               <button
                 type="button"
@@ -320,6 +365,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
           </div>
         </div>
       )}
+
 
       {/* DESTRUCTIVE DISCARD CONFIRMATION DIALOG */}
       {showDiscardConfirm && (

@@ -90,6 +90,40 @@ class LandlordMediaServiceTest {
         verifyNoInteractions(cloudinary);
     }
 
+    @Test
+    void normalizesMobileJpegMimeTypeAndAcceptsValidJpeg() {
+        var file = new MockMultipartFile("file", "photo.jpg", "image/jpg", jpegBytes());
+        assertEquals("image/jpeg", service.validateFile(file));
+    }
+
+    @Test
+    void normalizesOctetStreamFromExtensionAndValidMagicBytes() {
+        var file = new MockMultipartFile("file", "photo.jpeg", "application/octet-stream", jpegBytes());
+        assertEquals("image/jpeg", service.validateFile(file));
+    }
+
+    @Test
+    void handlesMimeTypeWithCharsetParameter() {
+        var file = new MockMultipartFile("file", "photo.jpg", "image/jpeg; charset=UTF-8", jpegBytes());
+        assertEquals("image/jpeg", service.validateFile(file));
+    }
+
+    @Test
+    void rejectsOversizedImageWithTruthfulMessage() {
+        byte[] oversized = new byte[(int) (10L * 1024L * 1024L + 1)];
+        System.arraycopy(jpegBytes(), 0, oversized, 0, 16);
+        var file = new MockMultipartFile("file", "big.jpg", "image/jpeg", oversized);
+        var ex = assertThrows(IllegalArgumentException.class, () -> service.validateFile(file));
+        assertEquals("This image is too large. Maximum size is 10 MB.", ex.getMessage());
+    }
+
+    @Test
+    void rejectsUnsupportedFormatWithTruthfulMessage() {
+        var file = new MockMultipartFile("file", "document.pdf", "application/pdf", new byte[50]);
+        var ex = assertThrows(IllegalArgumentException.class, () -> service.validateFile(file));
+        assertEquals("This file type isn't supported. Choose another image.", ex.getMessage());
+    }
+
     private byte[] jpegBytes() {
         return new byte[] { (byte) 0xff, (byte) 0xd8, (byte) 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
     }

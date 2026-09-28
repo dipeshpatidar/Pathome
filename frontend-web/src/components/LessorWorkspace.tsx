@@ -671,6 +671,7 @@ function LessorEditor({
     description: ''
   });
   const [mediaItems, setMediaItems] = useState<LessorMediaItem[]>([]);
+  const [hasActiveUploads, setHasActiveUploads] = useState(false);
   const [cities, setCities] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<LessorLocalityOption[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
@@ -957,7 +958,7 @@ function LessorEditor({
         ? `Changes to your ${description} were discarded. Your published property remains available.`
         : `Your ${description} draft was discarded.`
     );
-    navigate('/lessor', { replace: true });
+    navigate(guest ? '/' : '/lessor', { replace: true });
   };
 
   if (error && !draft)
@@ -1013,6 +1014,7 @@ function LessorEditor({
       <LessorOnboardingHeader
         status={status}
         guest={guest}
+        hasActiveUploads={hasActiveUploads}
         onExit={handleExit}
         onExitToLanding={onBack}
         onRetrySave={() => {
@@ -1427,6 +1429,7 @@ function LessorEditor({
                     draftId={draftId}
                     guest={guest}
                     onMediaChange={items => setMediaItems(items)}
+                    onActiveUploadsChange={setHasActiveUploads}
                     onNext={() => {
                       setDirection(1);
                       setStep('details');

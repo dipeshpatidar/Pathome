@@ -1,5 +1,157 @@
 import type { LessorMediaItem } from '../services/lessorMediaService.ts';
 
+export const ALLOWED_MEDIA_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'video/mp4',
+  'video/quicktime'
+]);
+
+export function generateMediaId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10xx
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export function normalizeMediaType(file: { name?: string; type?: string }): {
+  mime: string;
+  isVideo: boolean;
+  supported: boolean;
+} {
+  let type = (file.type || '').toLowerCase().split(';')[0].trim();
+  if (type === 'image/jpg' || type === 'image/pjpeg') {
+    type = 'image/jpeg';
+  }
+  if (!type || type === 'application/octet-stream') {
+    const ext = file.name ? file.name.split('.').pop()?.toLowerCase() : '';
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        type = 'image/jpeg';
+        break;
+      case 'png':
+        type = 'image/png';
+        break;
+      case 'webp':
+        type = 'image/webp';
+        break;
+      case 'heic':
+        type = 'image/heic';
+        break;
+      case 'heif':
+        type = 'image/heif';
+        break;
+      case 'mp4':
+        type = 'video/mp4';
+        break;
+      case 'mov':
+        type = 'video/quicktime';
+        break;
+      default:
+        break;
+    }
+  }
+  const ext = file.name ? file.name.split('.').pop()?.toLowerCase() : '';
+  const isVideo = type.startsWith('video/') || ext === 'mp4' || ext === 'mov';
+  const supported = ALLOWED_MEDIA_MIME_TYPES.has(type);
+  return { mime: type, isVideo, supported };
+}
+
+export function classifyMediaError(
+  cause: unknown,
+  file: { size: number; name?: string; type?: string },
+  isVideo: boolean
+): { message: string; retryable: boolean } {
+  const maxBytes = (isVideo ? 100 : 10) * 1024 * 1024;
+  if (file.size === 0) {
+    return { message: "We couldn't read this file. Choose another file.", retryable: false };
+  }
+  if (file.size > maxBytes) {
+    return {
+      message: isVideo
+        ? 'This video is too large. Maximum size is 100 MB.'
+        : 'This image is too large. Maximum size is 10 MB.',
+      retryable: false
+    };
+  }
+
+  if (typeof cause === 'object' && cause !== null) {
+    const status = (cause as { status?: number }).status;
+    const rawMsg = (cause as { message?: string }).message || '';
+
+    if (status === 401) {
+      return { message: 'Your session has expired. Sign in again to continue.', retryable: false };
+    }
+    if (status === 403) {
+      return { message: "You don't have permission to upload media to this property.", retryable: false };
+    }
+    if (status === 413) {
+      return {
+        message: isVideo
+          ? 'This video is too large. Maximum size is 100 MB.'
+          : 'This image is too large. Maximum size is 10 MB.',
+        retryable: false
+      };
+    }
+    if (status === 400) {
+      if (/format|content-type|mime|unsupported/i.test(rawMsg)) {
+        return {
+          message: isVideo
+            ? "This video format isn't supported. Choose another video."
+            : "This file type isn't supported. Choose another image.",
+          retryable: false
+        };
+      }
+      if (/size|too large|exceeds/i.test(rawMsg)) {
+        return {
+          message: isVideo
+            ? 'This video is too large. Maximum size is 100 MB.'
+            : 'This image is too large. Maximum size is 10 MB.',
+          retryable: false
+        };
+      }
+      if (/verified|corrupt|read|empty/i.test(rawMsg)) {
+        return { message: "We couldn't read this file. Choose another file.", retryable: false };
+      }
+      return {
+        message: isVideo
+          ? "This video format isn't supported. Choose another video."
+          : "This file type isn't supported. Choose another image.",
+        retryable: false
+      };
+    }
+    if (status === 408 || status === 504 || /timeout/i.test(rawMsg)) {
+      return { message: "We couldn't upload this file right now. Try again.", retryable: true };
+    }
+    if (typeof status === 'number' && status >= 500) {
+      return { message: "We couldn't upload this file right now. Try again.", retryable: true };
+    }
+  }
+
+  const errStr = String((cause as { message?: string })?.message || cause || '');
+  if (/connection|network|offline|failed to fetch|lost/i.test(errStr)) {
+    return { message: 'Upload was interrupted. Check your connection and try again.', retryable: true };
+  }
+
+  return { message: "We couldn't upload this file. Try again.", retryable: true };
+}
+
 export function hasCoverImage(items: LessorMediaItem[]): boolean {
   return items.some(item => (item.status === 'UPLOADED' || item.status === 'STAGED') && item.contentType.startsWith('image/') && item.cover);
 }
