@@ -24,8 +24,11 @@ public class PropertyDraftMedia {
     @Column(name = "draft_id", nullable = false, length = 64)
     private String draftId;
 
-    @Column(name = "admin_id", nullable = false, length = 120)
+    @Column(name = "admin_id", length = 120)
     private String adminId;
+
+    @Column(name = "landlord_user_id")
+    private Long landlordUserId;
 
     @Column(name = "card_id", length = 64)
     private String cardId;
@@ -39,8 +42,23 @@ public class PropertyDraftMedia {
     @Column(name = "content_type", nullable = false, length = 100)
     private String contentType = "image/jpeg";
 
-    @Column(name = "staging_object_key", nullable = false, length = 300)
+    @Column(name = "staging_object_key", length = 300)
     private String stagingObjectKey;
+
+    @Column(name = "cloudinary_url", length = 1000)
+    private String cloudinaryUrl;
+
+    @Column(name = "cloudinary_public_id", length = 300)
+    private String cloudinaryPublicId;
+
+    @Column(name = "upload_status", length = 20)
+    private String uploadStatus;
+
+    @Column(name = "sort_order")
+    private Integer sortOrder;
+
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt = LocalDateTime.now();
 
     @Column(name = "room_tag", length = 40)
     private String roomTag;
@@ -65,6 +83,9 @@ public class PropertyDraftMedia {
     public String getAdminId() { return adminId; }
     public void setAdminId(String adminId) { this.adminId = adminId; }
 
+    public Long getLandlordUserId() { return landlordUserId; }
+    public void setLandlordUserId(Long landlordUserId) { this.landlordUserId = landlordUserId; }
+
     public String getCardId() { return cardId; }
     public void setCardId(String cardId) { this.cardId = cardId; }
 
@@ -79,6 +100,21 @@ public class PropertyDraftMedia {
 
     public String getStagingObjectKey() { return stagingObjectKey; }
     public void setStagingObjectKey(String stagingObjectKey) { this.stagingObjectKey = stagingObjectKey; }
+
+    public String getCloudinaryUrl() { return cloudinaryUrl; }
+    public void setCloudinaryUrl(String cloudinaryUrl) { this.cloudinaryUrl = cloudinaryUrl; }
+
+    public String getCloudinaryPublicId() { return cloudinaryPublicId; }
+    public void setCloudinaryPublicId(String cloudinaryPublicId) { this.cloudinaryPublicId = cloudinaryPublicId; }
+
+    public String getUploadStatus() { return uploadStatus; }
+    public void setUploadStatus(String uploadStatus) { this.uploadStatus = uploadStatus; }
+
+    public Integer getSortOrder() { return sortOrder; }
+    public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
+
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 
     public String getRoomTag() { return roomTag; }
     public void setRoomTag(String roomTag) { this.roomTag = roomTag; }

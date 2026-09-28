@@ -21,6 +21,19 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
 
     Optional<PropertyDraftMedia> findByMediaId(String mediaId);
 
+    List<PropertyDraftMedia> findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(String draftId, Long landlordUserId);
+
+    Optional<PropertyDraftMedia> findByMediaIdAndDraftIdAndLandlordUserId(String mediaId, String draftId, Long landlordUserId);
+
+    boolean existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
+            String draftId, Long landlordUserId, String uploadStatus, String contentTypePrefix);
+
+    @Query("SELECT DISTINCT m.draftId FROM PropertyDraftMedia m WHERE m.draftId IN :draftIds " +
+            "AND m.landlordUserId = :ownerId AND m.uploadStatus = 'UPLOADED' " +
+            "AND m.isCover = true AND m.contentType LIKE 'image/%'")
+    List<String> findUploadedCoverDraftIds(@Param("draftIds") List<String> draftIds,
+                                           @Param("ownerId") Long ownerId);
+
     @Modifying
     @Query("UPDATE PropertyDraftMedia m SET m.isCover = false WHERE m.draftId = :draftId AND m.adminId = :adminId")
     int clearCoverFlagForDraft(@Param("draftId") String draftId, @Param("adminId") String adminId);

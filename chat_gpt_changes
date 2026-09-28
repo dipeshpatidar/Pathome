@@ -1665,3 +1665,13 @@ Changed: LocalityRepository.java adds bounded city-scoped canonical/fuzzy sugges
 Verification: focused Maven LandlordLocationServiceTest and LandlordDraftServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Native suggestion query and UI visual behavior still need environment/browser verification. Media and submission follow in later slices.
 
 Commit: pending Slice 4 checkpoint. Push: NO.
+
+## 2026-09-28 10:47:23 IST — Phase 1B Slice 5 landlord draft media
+
+Why: Let landlords add multiple photos and optional video with owner-scoped, recoverable uploads and a real cover invariant before submission.
+
+Changed: PropertyDraftMedia.java, its repository, PropertyUploadDraftRepository.java, and V21__landlord_draft_media.sql extend existing draft media metadata for disjoint landlord ownership, Cloudinary URL/public ID, sort order, and upload state while preserving the admin staging path. LandlordMediaController.java, LandlordMediaService.java, LandlordMediaStore.java, and LandlordMediaItem.java add validated content/header/size upload, deterministic request-ID recovery, pending/failed tracking, cover, order, and removal with cover promotion; CloudinaryService.java adds removal by stored public ID. LandlordDraftService.java includes persisted cover in completion percent. LessorMediaStep.tsx, lessorMediaService.ts, LessorWorkspace.tsx, and lessorMedia.ts provide multi-select, progress, retry/recovery, cover, accessible move controls, remove, and successful-upload preservation. Tests cover core media invariants and no duplicate reupload after cloud success. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordMediaStoreTest, LandlordMediaServiceTest, and LandlordDraftServiceTest PASS; frontend Node lessorMedia.test.mjs PASS 2/2; frontend TypeScript no-emit PASS; git diff --check PASS. Cloudinary and migration were not exercised with live credentials/database; browser media QA remains outstanding.
+
+Commit: pending Slice 5 checkpoint. Push: NO.

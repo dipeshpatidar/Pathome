@@ -7,6 +7,7 @@ import { createApiRequestError, getErrorMessage } from '../services/apiError';
 import { LessorAutosave, LessorSaveStatus } from '../services/lessorAutosave';
 import { LessorBasics, LessorDraft, LessorDraftSummary, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
 import { LessorLocalityOption, lessorLocationService } from '../services/lessorLocationService';
+import { LessorMediaStep } from './LessorMediaStep';
 import { bhkChoice, exactBhk, pricingReady } from '../utils/lessorConfiguration';
 
 const TYPES: { value: ResidentialType; label: string }[] = [
@@ -198,7 +199,7 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
       <div><label htmlFor="lessor-address" className="text-sm font-semibold text-slate-800">Street address</label><input id="lessor-address" className={`${FIELD} mt-2`} maxLength={500} value={propertyLocation.address} onChange={event => updateLocation({ ...propertyLocation, address: event.target.value })} onBlur={() => { void queue.current?.flush(); }} placeholder="Building, street and house number"/><p className="mt-1 text-xs text-slate-500">Only Pathome’s review team sees the full address.</p></div>
       <div><label htmlFor="lessor-landmark" className="text-sm font-semibold text-slate-800">Landmark <span className="font-normal text-slate-500">(optional)</span></label><input id="lessor-landmark" className={`${FIELD} mt-2`} maxLength={200} value={propertyLocation.landmark} onChange={event => updateLocation({ ...propertyLocation, landmark: event.target.value })} onBlur={() => { void queue.current?.flush(); }}/></div></div>
     </>}
-    {step === 'media' && <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6"><h1 className="text-xl font-bold text-slate-950">Photos are next</h1><p className="mt-2 text-sm text-slate-600">Your saved location is ready for the media step.</p></div>}
+    {step === 'media' && <LessorMediaStep draftId={draftId} onNext={() => { setStep('details'); window.scrollTo({ top: 0, behavior: 'instant' }); }}/>}
     {error && <p role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
     {status === 'error' && <button className={`${SECONDARY} mt-4`} onClick={() => { void queue.current?.flush(); }}><RefreshCw className="h-4 w-4"/>Retry save</button>}
     {status === 'conflict' && <p className="mt-3 text-sm text-rose-700">Another tab saved a newer version. Your unsynced entries remain on this device. Copy them before reloading this draft.</p>}

@@ -295,4 +295,24 @@ public class CloudinaryService {
             );
         }
     }
+
+    /** Remove an asset by its server-recorded public ID; absent assets are already removed. */
+    public void deleteResource(String publicId, boolean isVideo) {
+        if (publicId == null || publicId.isBlank()) return;
+        try {
+            Map<?, ?> response = cloudinary.uploader().destroy(publicId,
+                    ObjectUtils.asMap("resource_type", isVideo ? "video" : "image"));
+            String result = Objects.toString(response.get("result"), "");
+            if (!"ok".equals(result) && !"not found".equals(result)) {
+                throw new IllegalStateException("Cloud storage did not confirm removal");
+            }
+        } catch (Exception ex) {
+            throw new MediaUploadException(
+                    MediaUploadException.Stage.CLOUDINARY_UPLOAD,
+                    "The file could not be removed right now. Please retry.",
+                    "Cloudinary removal failed for publicId=" + publicId,
+                    com.indore.pathome.spaces.exception.CloudinaryFailureCategory.UNKNOWN,
+                    null, ex);
+        }
+    }
 }

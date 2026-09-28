@@ -11,6 +11,7 @@ import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.RentalMode;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
+import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.PageRequest;
@@ -37,14 +38,16 @@ public class LandlordDraftService {
     private final LandlordCapabilityService capabilities;
     private final ObjectMapper mapper;
     private final LandlordLocationService locations;
+    private final PropertyDraftMediaRepository media;
 
     public LandlordDraftService(PropertyUploadDraftRepository drafts,
                                 LandlordCapabilityService capabilities, ObjectMapper mapper,
-                                LandlordLocationService locations) {
+                                LandlordLocationService locations, PropertyDraftMediaRepository media) {
         this.drafts = drafts;
         this.capabilities = capabilities;
         this.mapper = mapper;
         this.locations = locations;
+        this.media = media;
     }
 
     @Transactional
@@ -75,10 +78,12 @@ public class LandlordDraftService {
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         Slice<PropertyUploadDraft> slice = drafts.findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
                 ownerId, "DRAFT", PageRequest.of(page, PAGE_SIZE));
+        java.util.Set<String> covers = slice.isEmpty() ? java.util.Set.of() : new java.util.HashSet<>(
+                media.findUploadedCoverDraftIds(slice.getContent().stream().map(PropertyUploadDraft::getDraftId).toList(), ownerId));
         return new LandlordDraftPage(slice.getContent().stream().map(draft -> {
             LandlordDraftData data = readData(draft);
             return new LandlordDraftSummary(draft.getDraftId(), draft.getTitleSummary(), draft.getStatus(),
-                    completionPercent(data), draft.getUpdatedAt());
+                    completionPercent(data, covers.contains(draft.getDraftId())), draft.getUpdatedAt());
         }).toList(), page, slice.hasNext());
     }
 
@@ -147,6 +152,10 @@ public class LandlordDraftService {
     }
 
     public int completionPercent(LandlordDraftData data) {
+        return completionPercent(data, false);
+    }
+
+    public int completionPercent(LandlordDraftData data, boolean hasCover) {
         int complete = 0;
         if (data.basics() != null && data.basics().propertyType() != null) complete++;
         if (data.basics() != null && data.basics().bhkCount() != null) complete++;
@@ -156,7 +165,7 @@ public class LandlordDraftService {
         if (data.location() != null && data.location().canonicalLocalityId() != null) complete++;
         if (data.location() != null && present(data.location().address())) complete++;
         if (data.details() != null && data.details().availableFrom() != null) complete++;
-        // The ninth requirement is a successful cover image, derived from persisted media in Slice 5.
+        if (hasCover) complete++;
         return complete * 100 / 9;
     }
 
@@ -192,8 +201,10 @@ public class LandlordDraftService {
     }
 
     private LandlordDraftResponse toResponse(PropertyUploadDraft draft, LandlordDraftData data) {
+        boolean hasCover = media.existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
+                draft.getDraftId(), draft.getLandlordUserId(), "UPLOADED", "image/");
         return new LandlordDraftResponse(draft.getDraftId(), draft.getStatus(), draft.getVersion(),
-                completionPercent(data), data, draft.getCreatedAt(), draft.getUpdatedAt());
+                completionPercent(data, hasCover), data, draft.getCreatedAt(), draft.getUpdatedAt());
     }
 
     private String writeData(LandlordDraftData data) {

@@ -7,6 +7,7 @@ import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.RentalMode;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
+import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,8 @@ class LandlordDraftServiceTest {
         drafts = mock(PropertyUploadDraftRepository.class);
         capabilities = mock(LandlordCapabilityService.class);
         locations = mock(LandlordLocationService.class);
-        service = new LandlordDraftService(drafts, capabilities, mapper, locations);
+        service = new LandlordDraftService(drafts, capabilities, mapper, locations,
+                mock(PropertyDraftMediaRepository.class));
         when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
     }
 
@@ -111,6 +113,17 @@ class LandlordDraftServiceTest {
         assertThrows(IllegalArgumentException.class,
                 () -> service.updateLocation("owner@example.com", "draft-one", 1, selected));
         verify(drafts, times(1)).saveAndFlush(any());
+    }
+
+    @Test
+    void successfulCoverCompletesFinalRequirementWithoutChangingDraftFields() {
+        var full = new LandlordDraftData(
+                new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK"),
+                new LandlordDraftData.Pricing(new BigDecimal("15000"), BigDecimal.ZERO),
+                new LandlordDraftData.Location("Indore", 10L, "Vijay Nagar", "10 Example Road", ""),
+                new LandlordDraftData.Details(java.time.LocalDate.now(), "", null, null, null, "", ""));
+        assertEquals(88, service.completionPercent(full));
+        assertEquals(100, service.completionPercent(full, true));
     }
 
     private PropertyUploadDraft storedDraft(Long ownerId) throws Exception {
