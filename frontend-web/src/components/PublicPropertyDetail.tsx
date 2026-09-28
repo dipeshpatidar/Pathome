@@ -3,7 +3,7 @@ import { Link, useNavigate, useNavigationType } from 'react-router-dom';
 import {
   Bath, BedDouble, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert,
   Dumbbell, Image as LucideImage, LayoutDashboard, LoaderCircle, MapPin,
-  Maximize2, Minimize2, Play, Ruler, Sofa, UtensilsCrossed,
+  Maximize2, Minimize2, Ruler, Sofa, UtensilsCrossed,
   Video, WalletCards, Wind, X
 } from 'lucide-react';
 import { Property, RoomTag } from '../types';
@@ -300,7 +300,7 @@ const Lightbox: React.FC<{
         <>
           <button
             type="button"
-            aria-label="Previous photo"
+            aria-label="Previous property media"
             onClick={() => setIdx(i => (i - 1 + media.length) % media.length)}
             className="absolute left-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/30 transition"
           >
@@ -308,7 +308,7 @@ const Lightbox: React.FC<{
           </button>
           <button
             type="button"
-            aria-label="Next photo"
+            aria-label="Next property media"
             onClick={() => setIdx(i => (i + 1) % media.length)}
             className="absolute right-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/30 transition"
           >
@@ -329,14 +329,9 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
   const [error, setError] = useState<string | null>(null);
   const [activeMedia, setActiveMedia] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setIsVideoPlaying(false);
-  }, [activeMedia]);
 
   // Track fullscreen state changes (including browser Esc key)
   useEffect(() => {
@@ -458,7 +453,6 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
     }
     if (videoRef.current) {
       videoRef.current.pause();
-      setIsVideoPlaying(false);
     }
     setActiveMedia((prev) => (media.length > 0 ? (prev - 1 + media.length) % media.length : 0));
   }, [media.length]);
@@ -470,7 +464,6 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
     }
     if (videoRef.current) {
       videoRef.current.pause();
-      setIsVideoPlaying(false);
     }
     setActiveMedia((prev) => (media.length > 0 ? (prev + 1) % media.length : 0));
   }, [media.length]);
@@ -533,6 +526,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
   }
 
   const currentMedia = media[activeMedia];
+  const videoPoster = currentMedia?.type === 'VIDEO' ? deriveVideoPosterUrl(currentMedia.url) : null;
   const amenities = property.amenities?.split(',').map((item) => item.trim()).filter(Boolean) || [];
   const preferredTenant = property.preferredTenant?.split(',').map((item) => item.replace(/_/g, ' ').toLowerCase()).join(', ');
 
@@ -587,68 +581,27 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
               <div className="flex h-full w-full items-center justify-center">
                 {currentMedia ? (
                   currentMedia.type === 'VIDEO' ? (
-                    (() => {
-                      const poster = deriveVideoPosterUrl(currentMedia.url);
-                      const togglePlay = () => {
-                        if (videoRef.current) {
-                          if (videoRef.current.paused) {
-                            videoRef.current.play().then(() => setIsVideoPlaying(true)).catch(() => {});
-                          } else {
-                            videoRef.current.pause();
-                            setIsVideoPlaying(false);
-                          }
-                        }
-                      };
-
-                      return (
-                        <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
-                          {/* Ambient blurred backdrop */}
-                          {poster && (
-                            <img
-                              src={poster}
-                              alt=""
-                              aria-hidden="true"
-                              className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-25 blur-2xl"
-                            />
-                          )}
-                          {/*
-                            Video element with native controls.
-                            z-10 keeps it above the backdrop.
-                            The center play-button overlay is z-20 but positioned
-                            to NOT cover the bottom native control bar (bottom-14),
-                            and with pointer-events-none once playing so controls
-                            remain fully interactive at all times.
-                          */}
-                          <video
-                            ref={videoRef}
-                            controls
-                            aria-label={currentMedia.tagLabel ? `${property.title} — ${currentMedia.tagLabel} video` : `${property.title} video`}
-                            playsInline
-                            preload="metadata"
-                            poster={poster || undefined}
-                            src={currentMedia.url}
-                            onPlay={() => setIsVideoPlaying(true)}
-                            onPause={() => setIsVideoPlaying(false)}
-                            onEnded={() => setIsVideoPlaying(false)}
-                            className="relative z-10 max-h-full w-auto max-w-full object-contain shadow-2xl"
-                          />
-                          {/* Center Play affordance — visible only when paused, does NOT cover control bar */}
-                          {!isVideoPlaying && (
-                            <button
-                              type="button"
-                              aria-label="Play video walkthrough"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePlay();
-                              }}
-                              className="pointer-events-auto absolute bottom-16 left-1/2 z-20 flex h-16 w-16 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-600/90 text-white shadow-2xl backdrop-blur-sm transition-all hover:scale-110 hover:bg-emerald-500 active:scale-95 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-400"
-                            >
-                              <Play className="ml-1 h-7 w-7 fill-current" />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })()
+                    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+                      {/* Ambient blurred backdrop preserves the full portrait video. */}
+                      {videoPoster && (
+                        <img
+                          src={videoPoster}
+                          alt=""
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-25 blur-2xl"
+                        />
+                      )}
+                      <video
+                        ref={videoRef}
+                        controls
+                        aria-label={currentMedia.tagLabel ? `${property.title} — ${currentMedia.tagLabel} video` : `${property.title} video`}
+                        playsInline
+                        preload="metadata"
+                        poster={videoPoster || undefined}
+                        src={currentMedia.url}
+                        className="relative z-10 max-h-full w-auto max-w-full object-contain shadow-2xl"
+                      />
+                    </div>
                   ) : (
                     /* Image: contain preserves full content. Click to expand in lightbox. */
                     <button
@@ -686,7 +639,6 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
                   onSelect={(idx) => {
                     if (videoRef.current) {
                       videoRef.current.pause();
-                      setIsVideoPlaying(false);
                     }
                     setActiveMedia(idx);
                   }}
@@ -699,7 +651,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
                   type="button"
                   aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                   onClick={toggleFullscreen}
-                  className="absolute right-4 top-4 z-30 flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-slate-950/70 text-white shadow-md backdrop-blur-md transition-all hover:bg-slate-900 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                  className="absolute right-4 top-4 z-30 flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-slate-950/70 text-white shadow-md backdrop-blur-md transition-colors hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                 >
                   {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                 </button>
@@ -712,7 +664,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
                     type="button"
                     aria-label="Previous property media"
                     onClick={handlePrevMedia}
-                    className="absolute left-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/75 text-white shadow-xl backdrop-blur-md transition-all hover:scale-105 hover:bg-slate-900 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                    className="absolute left-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/60 text-white shadow-md backdrop-blur-md transition-colors hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                   >
                     <ChevronLeft className="h-5 w-5" />
                   </button>
@@ -720,7 +672,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
                     type="button"
                     aria-label="Next property media"
                     onClick={handleNextMedia}
-                    className="absolute right-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/75 text-white shadow-xl backdrop-blur-md transition-all hover:scale-105 hover:bg-slate-900 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                    className="absolute right-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/60 text-white shadow-md backdrop-blur-md transition-colors hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                   >
                     <ChevronRight className="h-5 w-5" />
                   </button>

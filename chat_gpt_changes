@@ -1535,3 +1535,83 @@ Changed: chat_gpt_changes (this append-only verification record). The checkpoint
 Verification reported by the owner for the current run-app.sh: backend HTTP 401, expected because the root endpoint requires authentication; frontend HTTP 200. After Ctrl+C, the launcher, Pathome Maven/Spring Boot children, npm/Vite children, and other Pathome launcher processes exited; ports 8080 and 5173 were released; PostgreSQL remained running on 5432. Local bash -n run-app.sh and git diff --check also passed. No second launcher cycle was run by this agent.
 
 Commit: pending this checkpoint. Push: NO.
+
+## 2026-09-27 21:17:02 IST — Premium Hero search and scroll motion UX refinement
+
+Why: The approved Hero search surface dominated the carousel at tablet/mobile widths; the user requested an image-led composition, compact search controls, and restrained scroll motion without changing search behavior or truthful copy.
+
+Changed: frontend-web/src/components/HeroSection.tsx (taller image-led Hero, lower copy/search placement, lighter accessible image overlay, compact responsive search surface, cohesive focus/CTA states, and 44px carousel indicator targets); frontend-web/src/components/Home.tsx (reduced-motion handling and shorter section reveals); frontend-web/src/components/PropertyShowcase.tsx (restrained 70ms maximum card stagger and reduced-motion handling); chat_gpt_changes (this entry). No search semantics, routes, APIs, backend, database, dependencies, Navbar, or product copy changed.
+
+Verification: git diff --check PASS; frontend TypeScript no-emit check PASS; focused rental-search and discovery navigation tests PASS 35/35. A local Vite listener was present, but targeted browser QA was blocked before tab creation when automatic approval review returned a 403 model-access error. A focused Tailwind CLI compile produced no output for about one minute and was stopped safely; it was not rerun. Full npm run build was not run because the previous run took 11m24s, exceeding the per-batch autonomous verification limit. Manual visual review at 390px, 768px, and 1440px, including reduced motion, and a manual production build remain outstanding.
+
+Commit: NO. Push: NO.
+
+## 2026-09-27 21:25:21 IST — Property video and mobile owner CTA UX refinement
+
+Why: Manual visual QA found a duplicate oversized play button over property video and insufficiently visible owner listing action on mobile.
+
+Changed: frontend-web/src/components/PublicPropertyDetail.tsx removes the custom paused-video overlay and unused playback state while retaining native controls, portrait containment, backdrop, media navigation, and fullscreen; media arrows are visually quieter, fullscreen touch target is 44px, and lightbox navigation labels now describe media. frontend-web/src/components/Navbar.tsx exposes the existing Post Property modal action in the guest mobile header, makes space for it at narrow widths, preserves sign-in/menu access, adds 44px action targets and visible keyboard focus, and respects reduced motion for sign-in scaling. chat_gpt_changes records this work. Existing Hero/scroll edits remain untouched.
+
+Verification: frontend TypeScript no-emit PASS; focused discovery/navigation and media-routing tests PASS 28/28; git diff --check PASS. Browser visual QA was not run because no local frontend server was listening and this task requires foreground-only commands. Manual review at 320px, 390px, 768px, and 1440px plus portrait-video playback and controls remains outstanding. Full production build was not run because its prior 11m24 duration exceeds the autonomous verification limit.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 02:49:19 IST — Mobile search focus lifecycle fix
+
+Why: The user reported that the mobile search keyboard sometimes closes during typing, particularly on a later focus, and requested a targeted focus lifecycle fix.
+
+Changed: frontend-web/src/components/CompactSearchContext.tsx now compares committed search criteria with a stable semantic key rather than the new filters object that Home creates on each render, preventing unrelated parent updates from exiting edit mode and unmounting the focused input; the compact input uses 16px text to avoid iOS Safari input zoom. frontend-web/src/components/Home.tsx keeps the focused Hero or compact search surface stable when the intersection observer responds to mobile viewport changes, then resumes normal compact-search visibility after focus changes. frontend-web/src/components/HeroSection.tsx pauses the existing 7-second carousel interval during search editing, open suggestions, or city selection, and keeps editing active when clearing a still-focused input. This entry appends to chat_gpt_changes. Existing Hero/scroll/video/navbar work remains otherwise untouched.
+
+Verification: frontend TypeScript no-emit PASS; focused rental-search and discovery/navigation tests PASS 35/35; git diff --check PASS. No mobile keyboard/browser run was performed because no local frontend server was listening and this task requires foreground-only execution. Manual keyboard QA at 320px, 390px, and 430px, including two focus cycles over 7 seconds, remains outstanding. Full production build was not run because its prior duration exceeded ten minutes.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 02:57:29 IST — Premium landing scroll motion pass
+
+Why: The user requested a coherent, restrained motion language connecting the Hero, discovery cards, and landing sections without scroll hijacking or regression of mobile search focus.
+
+Changed: frontend-web/src/utils/landingMotion.ts defines shared section, heading, and card entrance timing, easing, limited stagger, reduced-motion behavior, and an observer fallback. frontend-web/src/components/HeroSection.tsx adds modest scroll-linked background/copy depth while leaving the search surface stationary and preserving the focus/autoplay fix. frontend-web/src/components/Home.tsx applies shared section entrances and reduced-motion behavior to the guest page and back-to-top control. frontend-web/src/components/PropertyShowcase.tsx, HowItWorks.tsx, ValueBanner.tsx, and FutureExpansion.tsx use the common once-only entrance rhythm; the plots image has a small one-time scale settle and its continuous glow pulse is removed. frontend-web/src/components/Navbar.tsx smooths the existing top/scrolled color and shadow transition without changing its structure. chat_gpt_changes records this work. Existing uncommitted search, media, and mobile owner CTA changes remain preserved.
+
+Verification: frontend TypeScript no-emit PASS; focused rental-search and discovery/navigation tests PASS 35/35; git diff --check PASS. The frontend was not listening on port 5173, so browser visual QA at 390px, 768px, 1440px, fast/upward scrolling, and reduced-motion mode remains a manual handoff. The full production build was not run because the prior build exceeded ten minutes. Native scrolling and search contracts were not changed.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 03:08:10 IST — Premium mobile navigation and landing scroll refinement
+
+Why: The user approved a lighter mobile Post Property navigation treatment and a more connected, enjoyable landing scroll sequence while preserving search focus, product behavior, and existing uncommitted work.
+
+Changed: frontend-web/src/components/Navbar.tsx makes the guest mobile header shorter, keeps Post Property immediately visible as a restrained outlined action, and reduces sign-in/menu visual weight without changing their handlers. frontend-web/src/components/Home.tsx aligns Hero and compact-search offsets to the new header, keeps focused Hero controls above the overlapping discovery edge, makes compact-search motion instant under reduced-motion settings, and removes redundant whole-section rise animations. frontend-web/src/components/CompactSearchContext.tsx slims only the mobile compact-search frame. frontend-web/src/utils/landingMotion.ts adds small directional entrances and a restrained heading mask with reduced-motion and observer fallbacks. frontend-web/src/components/PropertyShowcase.tsx overlaps the Hero edge with a soft tinted handoff, sequences the discovery heading/context, and limits property-card stagger to the first row. frontend-web/src/components/HowItWorks.tsx, ValueBanner.tsx, and FutureExpansion.tsx use related but alternating text/CTA entrances; the existing plots image scale settle remains. chat_gpt_changes contains this append-only record. Hero/search input logic, media logic, backend, APIs, routes, copy, and dependencies were not changed in this pass.
+
+Verification: frontend TypeScript no-emit PASS; focused rental-search and discovery/navigation tests PASS 35/35; git diff --check PASS. Browser QA could not run because the sandbox denied Vite binding to 127.0.0.1:5173 with EPERM. Manual visual review remains necessary at 320px, 390px, 768px, and 1440px, including slow/fast/upward scrolling, reduced motion, menu/modal access, and repeated mobile search focus. Full production build was not run because its previous duration exceeded ten minutes.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 03:19:23 IST — Mobile owner pathway and editorial landing scroll journey
+
+Why: The user rejected the mobile Post Property button and repeated conservative section reveals, and approved a cleaner mobile toolbar with a distinct, connected scroll experience.
+
+Changed: frontend-web/src/components/Navbar.tsx removes Post Property from the primary mobile/tablet toolbar, retains the desktop action and the existing owner informational modal, makes guest profile/menu controls quieter, restores the full brand mark on narrow screens, and accounts for top safe area. frontend-web/src/components/Home.tsx shares the existing owner modal action with the Hero and aligns Hero/compact-search positions with safe area. frontend-web/src/components/HeroSection.tsx adds a secondary owner text action beside search on mobile/tablet without changing search input logic, carousel behavior, or desktop owner navigation. frontend-web/src/components/PropertyShowcase.tsx strengthens the layered Hero handoff and gives only the first two real cover images an 8px total scroll-linked movement inside their clipped frames; videos, controls, and later cards remain stationary. frontend-web/src/components/HowItWorks.tsx presents the same three steps as an editorial rail with a short desktop-only sticky heading. frontend-web/src/components/ValueBanner.tsx changes the same value copy from three large cards to a quiet tinted editorial row. frontend-web/src/components/FutureExpansion.tsx replaces the nested dark card with a full-width image-led close and one restrained image mask reveal. chat_gpt_changes contains this append-only record. Existing media, search semantics, backend, routes, auth, business behavior, and dependencies were preserved.
+
+Verification: frontend TypeScript no-emit PASS; focused rental-search and discovery/navigation tests PASS 35/35; git diff --check PASS. Browser QA remains a manual handoff because no frontend server is listening on 127.0.0.1:5173 and this sandbox previously denied local Vite binding with EPERM. Manual checks are required at 320px, 390px, 768px, and 1440px for downward/upward scroll, owner modal access, first-card imagery, reduced motion, overflow, and repeated mobile search focus. Full production build was not run because the prior build exceeded ten minutes.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 08:52:05 IST — Stop property-card flicker during scroll and hover
+
+Why: The user reported that properties flicker when scrolling and hovering over them and asked whether this was intentional. The flashing was not intended.
+
+Changed: frontend-web/src/components/PropertyShowcase.tsx removes the first-row card entrance/hover translation and scroll-linked cover translation introduced during the latest motion pass, so listing cards and covers remain fixed in layout. The existing desktop video preview now waits for a settled 350ms hover and resets that wait on page scroll, preventing an incidental pointer pass from starting video while the page moves. The cover stays scaled consistently under preview, and the video is exposed only after frame data is ready. Photo carousel crossfades, property data, media controls, and search behavior remain unchanged. chat_gpt_changes contains this append-only record.
+
+Verification: frontend TypeScript no-emit PASS; focused rental-search and discovery/navigation tests PASS 35/35; git diff --check PASS. Browser observation remains outstanding because no frontend server is listening on 127.0.0.1:5173 and local Vite binding was previously denied by the sandbox. Manually verify slow/fast downward and upward scrolling through listings with the pointer crossing card edges, a stationary hover over a video card, and photo-arrow navigation.
+
+Commit: NO. Push: NO.
+
+## 2026-09-28 09:08:09 IST — Discovery media visibility and touch browsing pass
+
+Why: The user requested a focused performance and responsive UX review of the existing property discovery flow after reports of card flicker during scrolling and hover.
+
+Changed: frontend-web/src/components/PropertyShowcase.tsx reuses the current discovery card and skeleton, treats missing image arrays safely, limits card hover styling and video previews to fine hover pointers, waits for a settled hover before resolving video, observes only the hovered video card for useful viewport visibility, pauses/unmounts preview video when media leaves that range or the tab hides, and avoids React state updates on every scroll event. It also stops preview if reduced-motion preference becomes active. Existing grid, card information hierarchy, cover-style image treatment, stable media aspect ratio, Cloudinary discovery rendition, and detail/portrait media remain unchanged. chat_gpt_changes contains this append-only record. Other existing uncommitted work was preserved.
+
+Verification: frontend TypeScript no-emit PASS; focused Node node:test discovery data, discovery navigation/performance, and rental search tests PASS 37/37; git diff --check PASS. Code inspection confirms one discovery column below 1024px, two from 1024px, no scroll snapping, a width-800 Cloudinary discovery preset, and matched skeleton/card media geometry. Browser observation at 390px, 768px, and 1440px, including off-screen video pause and scrolling smoothness, remains a manual handoff because no frontend server is listening on 127.0.0.1:5173 and local Vite binding was previously denied by the sandbox. Full production build was not run because a prior build exceeded ten minutes.
+
+Commit: NO. Push: NO.

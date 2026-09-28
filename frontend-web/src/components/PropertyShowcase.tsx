@@ -14,6 +14,7 @@ import { Property } from '../types';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
 import { propertyService } from '../services/propertyService';
+import { landingEntrance, landingHeadingMask } from '../utils/landingMotion';
 
 interface PropertyShowcaseProps {
   properties: Property[];
@@ -103,6 +104,7 @@ const SkeletonPropertyCard: React.FC = () => (
 
 interface DiscoveryPropertyCardProps {
   prop: Property;
+  images: string[];
   index: number;
   reduceMotion: boolean | null;
   onViewDetails: (property: Property) => void;
@@ -114,6 +116,7 @@ interface DiscoveryPropertyCardProps {
 
 const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
   prop,
+  images,
   index,
   reduceMotion,
   onViewDetails,
@@ -123,6 +126,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
   onChangeImage
 }) => {
   const [isHovered, setIsHovered] = useState<boolean>(false);
+  const [previewRequested, setPreviewRequested] = useState<boolean>(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
   const [videoFailed, setVideoFailed] = useState<boolean>(false);
   const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string | null>(() => {
@@ -134,15 +138,19 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
     return directUrl || videoUrlCache.get(prop.id) || null;
   });
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaRef = useRef<HTMLDivElement>(null);
+  const mediaVisibleRef = useRef(false);
+  const previewRequestedRef = useRef(false);
   const fetchingVideoRef = useRef<boolean>(false);
+  const [mediaVisible, setMediaVisible] = useState(false);
 
   const hasVideo = Boolean(
     (prop.videoUrl && typeof prop.videoUrl === 'string' && prop.videoUrl.trim()) ||
     (typeof prop._hasVideo === 'boolean' && prop._hasVideo)
   );
   // Cloudinary-optimized delivery URL for the current cover image
-  const coverDeliveryUrl = buildCloudinaryUrl(prop.images[currentImgIdx] || prop.images[0], 'DISCOVERY_CARD');
-  const mediaCount = prop._mediaCount ?? prop.images.length;
+  const coverDeliveryUrl = buildCloudinaryUrl(images[currentImgIdx] || images[0], 'DISCOVERY_CARD');
+  const mediaCount = prop._mediaCount ?? images.length;
   const mediaLabel = hasVideo ? `${mediaCount} photos & videos` : `${mediaCount} ${mediaCount === 1 ? 'photo' : 'photos'}`;
   const location = [prop.sector, prop.city].filter(Boolean).join(', ');
   const area = formatPropertyArea(prop.totalAreaSqFt);
@@ -154,77 +162,165 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
 
   // On desktop deliberate hover: resolve real property video URL and start preview
   const handleMouseEnter = () => {
-    const canHover = typeof window !== 'undefined' && window.matchMedia('(hover: hover)').matches;
+    const canHover = typeof window !== 'undefined' && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
     if (!canHover || reduceMotion) return;
 
     setIsHovered(true);
-
-    if (hasVideo && !videoFailed) {
-      // 1 & 2. Use direct or cached real video URL if already available
-      if (resolvedVideoUrl) return;
-
-      // 3. Lazily resolve real property video via safe public property detail endpoint
-      if (!fetchingVideoRef.current) {
-        fetchingVideoRef.current = true;
-        propertyService
-          .getPublicProperty(prop.id)
-          .then((detail) => {
-            const legitimateUrl = detail.videoUrl && typeof detail.videoUrl === 'string' && detail.videoUrl.trim()
-              ? detail.videoUrl.trim()
-              : null;
-            if (legitimateUrl) {
-              videoUrlCache.set(prop.id, legitimateUrl);
-              setResolvedVideoUrl(legitimateUrl);
-            } else {
-              // 4. No legitimate video exists for this property: remain on real cover image
-              setVideoFailed(true);
-            }
-          })
-          .catch(() => {
-            // 4. Request fails: remain on real cover image
-            setVideoFailed(true);
-          })
-          .finally(() => {
-            fetchingVideoRef.current = false;
-          });
-      }
-    }
   };
 
   const handleMouseLeave = () => {
     setIsHovered(false);
-    if (videoRef.current) {
-      videoRef.current.pause();
-    }
+    mediaVisibleRef.current = false;
+    setMediaVisible(false);
+    previewRequestedRef.current = false;
+    setPreviewRequested(false);
+    if (videoRef.current) videoRef.current.pause();
     setIsVideoPlaying(false);
   };
+
+  useEffect(() => {
+    if (!reduceMotion) return;
+    videoRef.current?.pause();
+    mediaVisibleRef.current = false;
+    setMediaVisible(false);
+    previewRequestedRef.current = false;
+    setPreviewRequested(false);
+    setIsVideoPlaying(false);
+  }, [reduceMotion]);
+
+  // Observe only a hovered video card; browsing content stays mounted and visible.
+  useEffect(() => {
+    if (!isHovered || !hasVideo || videoFailed || reduceMotion) return undefined;
+    const media = mediaRef.current;
+    if (!media) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setMediaVisible(true);
+      return undefined;
+    }
+
+    const stopPreview = () => {
+      videoRef.current?.pause();
+      mediaVisibleRef.current = false;
+      setMediaVisible(false);
+      previewRequestedRef.current = false;
+      setPreviewRequested(false);
+      setIsVideoPlaying(false);
+    };
+    const observer = new IntersectionObserver(([entry]) => {
+      const usefulRatio = mediaVisibleRef.current ? 0.25 : 0.5;
+      if (entry.isIntersecting && entry.intersectionRatio >= usefulRatio && document.visibilityState !== 'hidden') {
+        mediaVisibleRef.current = true;
+        setMediaVisible(true);
+      } else {
+        stopPreview();
+      }
+    }, { threshold: [0, 0.25, 0.5] });
+    const handlePageVisibility = () => {
+      if (document.visibilityState === 'hidden') stopPreview();
+      else {
+        observer.unobserve(media);
+        observer.observe(media);
+      }
+    };
+    observer.observe(media);
+    document.addEventListener('visibilitychange', handlePageVisibility);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', handlePageVisibility);
+    };
+  }, [isHovered, hasVideo, videoFailed, reduceMotion]);
+
+  // Passing over a card while scrolling must not start a video preview.
+  useEffect(() => {
+    if (!isHovered || !hasVideo || videoFailed || reduceMotion || !mediaVisible) return undefined;
+    let previewTimer = 0;
+    const schedulePreview = () => {
+      window.clearTimeout(previewTimer);
+      if (previewRequestedRef.current) {
+        videoRef.current?.pause();
+        previewRequestedRef.current = false;
+        setIsVideoPlaying(false);
+        setPreviewRequested(false);
+      }
+      previewTimer = window.setTimeout(() => {
+        previewRequestedRef.current = true;
+        setPreviewRequested(true);
+      }, 350);
+    };
+    schedulePreview();
+    window.addEventListener('scroll', schedulePreview, { passive: true });
+    return () => {
+      window.clearTimeout(previewTimer);
+      window.removeEventListener('scroll', schedulePreview);
+    };
+  }, [isHovered, hasVideo, videoFailed, reduceMotion, mediaVisible]);
+
+  // Resolve media only after a settled hover, preserving the existing preview path.
+  useEffect(() => {
+    if (!previewRequested || !mediaVisible || reduceMotion || !hasVideo || videoFailed || resolvedVideoUrl || fetchingVideoRef.current) return;
+    fetchingVideoRef.current = true;
+    propertyService
+      .getPublicProperty(prop.id)
+      .then((detail) => {
+        const legitimateUrl = detail.videoUrl && typeof detail.videoUrl === 'string' && detail.videoUrl.trim()
+          ? detail.videoUrl.trim()
+          : null;
+        if (legitimateUrl) {
+          videoUrlCache.set(prop.id, legitimateUrl);
+          setResolvedVideoUrl(legitimateUrl);
+        } else {
+          setVideoFailed(true);
+        }
+      })
+      .catch(() => setVideoFailed(true))
+      .finally(() => {
+        fetchingVideoRef.current = false;
+      });
+  }, [previewRequested, mediaVisible, reduceMotion, hasVideo, videoFailed, resolvedVideoUrl, prop.id]);
 
   // Video playback enforcement
   useEffect(() => {
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    if (isHovered && resolvedVideoUrl && !videoFailed) {
+    if (previewRequested && mediaVisible && !reduceMotion && resolvedVideoUrl && !videoFailed) {
       videoEl.muted = true;
       videoEl.currentTime = 0;
       const playPromise = videoEl.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => {
-            setIsVideoPlaying(true);
-          })
-          .catch(() => {
-            setIsVideoPlaying(false);
-          });
-      }
+      playPromise?.catch(() => setIsVideoPlaying(false));
     } else {
       videoEl.pause();
       setIsVideoPlaying(false);
     }
-  }, [isHovered, resolvedVideoUrl, videoFailed]);
+  }, [previewRequested, mediaVisible, reduceMotion, resolvedVideoUrl, videoFailed]);
+
+  const coverPhoto = (
+    <AnimatePresence mode="wait" initial={false}>
+      {images.length > 0 ? (
+        <motion.img
+          key={`${prop.id}-${currentImgIdx}`}
+          initial={reduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={reduceMotion ? undefined : { opacity: 0 }}
+          transition={{ duration: 0.18 }}
+          src={coverDeliveryUrl || images[currentImgIdx] || images[0]}
+          alt={prop.title || 'Property photo'}
+          loading={index === 0 ? 'eager' : 'lazy'}
+          {...({ fetchPriority: index === 0 ? 'high' : 'low' } as any)}
+          className={`absolute inset-0 h-full w-full object-cover object-center transition-transform duration-700 ease-out ${
+            isHovered && !reduceMotion ? 'scale-[1.03]' : 'scale-100'
+          }`}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center px-6 text-center text-sm font-medium text-slate-400">
+          Property media will be shared when available.
+        </div>
+      )}
+    </AnimatePresence>
+  );
 
   return (
-    <motion.article
+    <article
       id={`property-card-${prop.id}`}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest('button, a, input, select')) return;
@@ -232,41 +328,15 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
       }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      whileHover={reduceMotion ? undefined : { y: -2 }}
-      viewport={{ once: true, margin: '-40px' }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
       className="group flex min-w-0 w-full cursor-pointer flex-col md:max-w-[640px] md:mx-auto lg:max-w-none"
     >
       {/* MEDIA SURFACE: EDGE-TO-EDGE THUMBNAIL WITH OBJECT-COVER */}
-      <div className="relative aspect-[16/10] overflow-hidden rounded-[24px] bg-slate-200/60 sm:aspect-[16/9]">
-        {/* Cover Photo */}
-        <AnimatePresence mode="wait" initial={false}>
-          {prop.images.length > 0 ? (
-            <motion.img
-              key={`${prop.id}-${currentImgIdx}`}
-              initial={reduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={reduceMotion ? undefined : { opacity: 0 }}
-              transition={{ duration: 0.18 }}
-              src={coverDeliveryUrl || prop.images[currentImgIdx] || prop.images[0]}
-              alt={prop.title}
-              loading={index === 0 ? 'eager' : 'lazy'}
-              {...({ fetchPriority: index === 0 ? 'high' : 'low' } as any)}
-              className={`absolute inset-0 h-full w-full object-cover object-center transition-transform duration-700 ease-out ${
-                isHovered && !isVideoPlaying && !reduceMotion ? 'scale-[1.03]' : 'scale-100'
-              }`}
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center px-6 text-center text-sm font-medium text-slate-400">
-              Property media will be shared when available.
-            </div>
-          )}
-        </AnimatePresence>
+      <div ref={mediaRef} className="relative aspect-[16/10] overflow-hidden rounded-[24px] bg-slate-200/60 sm:aspect-[16/9]">
+        {/* Cover and controls remain fixed in layout while scrolling. */}
+        {coverPhoto}
 
         {/* Video Surface (Active during desktop hover preview) */}
-        {hasVideo && resolvedVideoUrl && !videoFailed && (
+        {hasVideo && resolvedVideoUrl && !videoFailed && !reduceMotion && previewRequested && mediaVisible && (
           <video
             ref={videoRef}
             src={resolvedVideoUrl}
@@ -274,7 +344,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
             loop
             playsInline
             preload="none"
-            onPlaying={() => setIsVideoPlaying(true)}
+            onPlaying={(event) => { if (previewRequested && event.currentTarget.readyState >= 2) setIsVideoPlaying(true); }}
             onError={() => {
               setVideoFailed(true);
               setIsVideoPlaying(false);
@@ -322,7 +392,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
         </div>
 
         {/* Carousel Navigation Arrows */}
-        {prop.images.length > 1 && !isVideoPlaying && (
+        {images.length > 1 && !isVideoPlaying && (
           <>
             <button
               type="button"
@@ -347,7 +417,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
       </div>
 
       {/* OVERLAPPING FLOATING INFORMATION PANEL */}
-      <div className="relative z-10 mx-3 -mt-7 flex min-w-0 flex-1 flex-col rounded-[22px] border border-slate-200/90 bg-white p-3.5 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.12),0_4px_12px_-4px_rgba(15,23,42,0.06)] transition-[box-shadow,border-color] duration-200 group-hover:border-slate-300 group-hover:shadow-[0_20px_35px_-12px_rgba(15,23,42,0.18),0_6px_14px_-4px_rgba(15,23,42,0.08)] group-focus-within:ring-2 group-focus-within:ring-emerald-500 motion-reduce:transition-none sm:mx-4 sm:-mt-9 sm:px-4.5 sm:pt-3.5 sm:pb-4">
+      <div className={`relative z-10 mx-3 -mt-7 flex min-w-0 flex-1 flex-col rounded-[22px] border bg-white p-3.5 transition-[box-shadow,border-color] duration-200 group-focus-within:ring-2 group-focus-within:ring-emerald-500 motion-reduce:transition-none sm:mx-4 sm:-mt-9 sm:px-4.5 sm:pt-3.5 sm:pb-4 ${isHovered ? 'border-slate-300 shadow-[0_20px_35px_-12px_rgba(15,23,42,0.18),0_6px_14px_-4px_rgba(15,23,42,0.08)]' : 'border-slate-200/90 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.12),0_4px_12px_-4px_rgba(15,23,42,0.06)]'}`}>
         <div className="flex min-w-0 items-center justify-between gap-3 text-xs font-semibold text-slate-600">
           {location && (
             <span className="flex min-w-0 items-center gap-1.5" title={location}>
@@ -422,7 +492,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
           </div>
         </div>
       </div>
-    </motion.article>
+    </article>
   );
 };
 
@@ -451,28 +521,23 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
   };
 
   return (
-    <section className="relative overflow-hidden border-b border-slate-200/80 bg-slate-50/80 py-10 font-['Inter',sans-serif] sm:py-12">
+    <section className="relative z-40 -mt-6 overflow-hidden rounded-t-[26px] border-b border-t border-slate-200/80 bg-slate-50 py-10 shadow-[0_-12px_36px_rgba(2,6,23,0.12)] font-['Inter',sans-serif] sm:-mt-8 sm:rounded-t-[32px] sm:py-12 lg:-mt-10">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-36 bg-gradient-to-b from-emerald-50/70 to-transparent" aria-hidden="true" />
       <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {/* Results context header and location refinement actions */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          className="mb-8 flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between w-full md:max-w-[640px] md:mx-auto lg:max-w-none"
-        >
+        <div className="mb-8 flex w-full flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between md:mx-auto md:max-w-[640px] lg:max-w-none">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Rental homes</p>
-            <h2 id="discovery-results-heading" tabIndex={-1} className="mt-2 break-words font-['Outfit',sans-serif] text-3xl font-extrabold tracking-tight text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 sm:text-4xl">
+            <motion.p {...landingEntrance(reduceMotion, 'heading', 0, 'left')} className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Rental homes</motion.p>
+            <motion.h2 {...landingHeadingMask(reduceMotion, 0.07)} id="discovery-results-heading" tabIndex={-1} className="mt-2 break-words font-['Outfit',sans-serif] text-3xl font-extrabold tracking-tight text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 sm:text-4xl">
               Homes in <span className="text-emerald-700">{selectedSectorFilter || selectedCityFilter}</span>
-            </h2>
-            <p className="mt-1 text-sm text-slate-600">
+            </motion.h2>
+            <motion.p {...landingEntrance(reduceMotion, 'section', 0.11)} className="mt-1 text-sm text-slate-600">
               {isLoading
                 ? `Loading homes in ${selectedSectorFilter || selectedCityFilter}…`
                 : error
                   ? `Unable to load homes in ${selectedSectorFilter || selectedCityFilter}`
                   : `${selectedSectorFilter ? `${selectedCityFilter} · ` : ''}Showing ${properties.length} ${properties.length === 1 ? 'home' : 'homes'}`}
-            </p>
+            </motion.p>
           </div>
           {selectedSectorFilter && !isLoading && !error && onClearLocality && (
             <div className="flex flex-wrap items-center gap-2">
@@ -481,7 +546,7 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
               </button>
             </div>
           )}
-        </motion.div>
+        </div>
 
         {isLoading ? (
           <div role="status" aria-label="Loading available properties" aria-busy="true">
@@ -506,18 +571,20 @@ export const PropertyShowcase: React.FC<PropertyShowcaseProps> = ({
         ) : properties.length > 0 ? (
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
             {properties.map((prop, index) => {
-              const currentImgIdx = Math.min(activeImageIndex[prop.id] || 0, Math.max(prop.images.length - 1, 0));
+              const images = Array.isArray(prop.images) ? prop.images : [];
+              const currentImgIdx = Math.min(activeImageIndex[prop.id] || 0, Math.max(images.length - 1, 0));
               return (
                 <DiscoveryPropertyCard
                   key={prop.id}
                   prop={prop}
+                  images={images}
                   index={index}
                   reduceMotion={reduceMotion}
                   onViewDetails={onViewDetails}
                   onOpenMediaModal={onOpenMediaModal}
                   onSaveFavorite={onSaveFavorite}
                   currentImgIdx={currentImgIdx}
-                  onChangeImage={(dir, e) => changeImage(prop.id, prop.images.length, dir, e)}
+                  onChangeImage={(dir, e) => changeImage(prop.id, images.length, dir, e)}
                 />
               );
             })}
