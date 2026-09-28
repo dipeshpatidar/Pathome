@@ -137,6 +137,53 @@ class GuestDraftServiceTest {
         verify(drafts, never()).delete(any());
     }
 
+    @Test
+    void guestCanDiscardOwnDraftAndDeletesStagedMedia() {
+        var created = service.create(basics, null, "127.0.0.1");
+        PropertyUploadDraft draft = draftFor(created);
+        PropertyDraftMedia stagedMedia = new PropertyDraftMedia();
+        stagedMedia.setDraftId(draft.getDraftId());
+        stagedMedia.setGuestOwned(true);
+        stagedMedia.setStagingObjectKey("drafts/guest/photo1.jpg");
+
+        when(drafts.findByDraftIdForUpdate(draft.getDraftId())).thenReturn(Optional.of(draft));
+        when(media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(draft.getDraftId()))
+                .thenReturn(List.of(stagedMedia));
+
+        service.discard(draft.getDraftId(), created.credential());
+
+        verify(staging).delete("drafts/guest/photo1.jpg");
+        verify(media).deleteAll(List.of(stagedMedia));
+        verify(drafts).delete(draft);
+    }
+
+    @Test
+    void guestCannotDiscardWithInvalidOrOtherToken() {
+        var created = service.create(basics, null, "127.0.0.1");
+        PropertyUploadDraft draft = draftFor(created);
+        when(drafts.findByDraftIdForUpdate(draft.getDraftId())).thenReturn(Optional.of(draft));
+
+        assertThrows(EntityNotFoundException.class,
+                () -> service.discard(draft.getDraftId(), "x".repeat(43)));
+
+        verify(drafts, never()).delete(any());
+        verify(media, never()).deleteAll(any());
+        verifyNoInteractions(staging);
+    }
+
+    @Test
+    void guestCannotDiscardSubmittedDraft() {
+        var created = service.create(basics, null, "127.0.0.1");
+        PropertyUploadDraft draft = draftFor(created);
+        draft.setStatus("SUBMITTED");
+        when(drafts.findByDraftIdForUpdate(draft.getDraftId())).thenReturn(Optional.of(draft));
+
+        assertThrows(EntityNotFoundException.class,
+                () -> service.discard(draft.getDraftId(), created.credential()));
+
+        verify(drafts, never()).delete(any());
+    }
+
     private PropertyUploadDraft draftFor(GuestDraftService.Created created) {
         var captor = org.mockito.ArgumentCaptor.forClass(PropertyUploadDraft.class);
         verify(drafts, atLeastOnce()).saveAndFlush(captor.capture());

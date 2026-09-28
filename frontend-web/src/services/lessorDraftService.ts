@@ -34,6 +34,7 @@ async function request<T>(url: string, init: RequestInit = {}, guest = false, au
   const response = await fetch(url, { ...init, credentials: guest ? 'include' : 'same-origin',
     headers: { ...(guest ? { Accept: 'application/json' } : authHeaders()), ...init.headers } });
   if (!response.ok) throw await createApiRequestError(response, 'Unable to save your property right now.', guest && !authenticatedClaim);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -52,6 +53,9 @@ export const lessorDraftService = {
   },
   get(draftId: string, guest = false) { return request<LessorDraft>(`${guest ? GUEST_BASE : BASE}/${encodeURIComponent(draftId)}`, {}, guest); },
   list(page = 0) { return request<LessorDraftPage>(`${BASE}?page=${page}`); },
+  discard(draftId: string, guest = false) {
+    return request<void>(`${guest ? GUEST_BASE : BASE}/${encodeURIComponent(draftId)}`, { method: 'DELETE' }, guest);
+  },
   save(draftId: string, section: DraftSection, version: number, value: DraftSectionValue, guest = false) {
     return request<LessorDraft>(`${guest ? GUEST_BASE : BASE}/${encodeURIComponent(draftId)}/sections/${section}`, {
       method: 'PATCH',

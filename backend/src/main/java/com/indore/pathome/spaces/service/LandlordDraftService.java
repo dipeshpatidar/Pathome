@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
@@ -41,15 +42,46 @@ public class LandlordDraftService {
     private final ObjectMapper mapper;
     private final LandlordLocationService locations;
     private final PropertyDraftMediaRepository media;
+    private final LandlordMediaService mediaService;
 
     public LandlordDraftService(PropertyUploadDraftRepository drafts,
                                 LandlordCapabilityService capabilities, ObjectMapper mapper,
                                 LandlordLocationService locations, PropertyDraftMediaRepository media) {
+        this(drafts, capabilities, mapper, locations, media, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public LandlordDraftService(PropertyUploadDraftRepository drafts,
+                                LandlordCapabilityService capabilities, ObjectMapper mapper,
+                                LandlordLocationService locations, PropertyDraftMediaRepository media,
+                                LandlordMediaService mediaService) {
         this.drafts = drafts;
         this.capabilities = capabilities;
         this.mapper = mapper;
         this.locations = locations;
         this.media = media;
+        this.mediaService = mediaService;
+    }
+
+    @Transactional
+    public void discard(String email, String draftId) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        PropertyUploadDraft draft = drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
+        if (draft.getAdminId() != null) {
+            throw new EntityNotFoundException("Draft not found");
+        }
+        if (!"DRAFT".equals(draft.getStatus())) {
+            throw new DraftConflictException(draftId, draft.getVersion() == null ? 0 : draft.getVersion(),
+                    "Only in-progress drafts can be discarded");
+        }
+        if (mediaService != null) {
+            mediaService.discardDraftMedia(ownerId, draftId);
+        } else {
+            List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+            media.deleteAll(items);
+        }
+        drafts.delete(draft);
     }
 
     @Transactional

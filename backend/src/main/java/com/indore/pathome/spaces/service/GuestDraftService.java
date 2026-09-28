@@ -120,6 +120,30 @@ public class GuestDraftService {
     }
 
     @Transactional
+    public void discard(String draftId, String credential) {
+        PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
+        if (!authorized(draft, credential)) throw new EntityNotFoundException("Draft unavailable");
+        if (!"DRAFT".equals(draft.getStatus())) {
+            throw new com.indore.pathome.spaces.exception.DraftConflictException(draftId,
+                    draft.getVersion() == null ? 0 : draft.getVersion(),
+                    "Only in-progress drafts can be discarded");
+        }
+        List<PropertyDraftMedia> rows = media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(draftId);
+        for (PropertyDraftMedia row : rows) {
+            if (row.getStagingObjectKey() != null) {
+                try {
+                    staging.delete(row.getStagingObjectKey());
+                } catch (RuntimeException ex) {
+                    log.warn("Could not delete staging media {} during discard: {}", row.getStagingObjectKey(), ex.getMessage());
+                }
+            }
+        }
+        media.deleteAll(rows);
+        drafts.delete(draft);
+    }
+
+    @Transactional
     public LandlordDraftResponse claim(String draftId, String credential, String email) {
         // The row lock serializes competing claims. A repeat by the rightful owner is safe.
         PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)

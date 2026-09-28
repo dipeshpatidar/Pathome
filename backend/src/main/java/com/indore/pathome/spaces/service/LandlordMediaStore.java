@@ -209,4 +209,15 @@ public class LandlordMediaStore {
                 url, item.getUploadStatus(), Boolean.TRUE.equals(item.getIsCover()),
                 item.getSortOrder() == null ? 0 : item.getSortOrder());
     }
+
+    public List<PropertyDraftMedia> listRaw(Long ownerId, String draftId) {
+        return media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+    }
+
+    @Transactional
+    public void deleteAllForDraft(Long ownerId, String draftId) {
+        List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+        media.deleteAll(items);
+        media.flush();
+    }
 }

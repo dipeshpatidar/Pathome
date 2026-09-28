@@ -259,6 +259,12 @@ export function LessorWorkspace({
         <LessorOnboardingHeader
           status={null}
           guest={!user}
+          canDiscard={Boolean(selectedType)}
+          hasServerDraft={false}
+          onDiscard={() => {
+            setSelectedType(null);
+            navigate(user ? '/lessor' : '/');
+          }}
           onExit={() => {
             navigate(user ? '/lessor' : '/');
             return true;
@@ -587,6 +593,7 @@ function LessorEditor({
   onRequestAuth: (draftId: string, submit: boolean) => void;
   previewRevision: number;
 }) {
+  const navigate = useNavigate();
   const [draft, setDraft] = useState<LessorDraft | null>(null);
   const [basics, setBasics] = useState<LessorBasics | null>(null);
   const [pricing, setPricing] = useState<LessorPricing>({ monthlyRent: null, securityDeposit: null });
@@ -867,6 +874,22 @@ function LessorEditor({
     return false;
   };
 
+  const handleDiscard = async () => {
+    queue.current?.abandon();
+    localStorage.removeItem(`pathome_lessor_unsynced_${userId ?? 0}_${draftId}`);
+    localStorage.removeItem(`pathome_guest_step_${draftId}`);
+    if (guest) {
+      localStorage.removeItem('pathome_guest_draft_id');
+      sessionStorage.removeItem('pathome_guest_submit_draft');
+    }
+    await lessorDraftService.discard(draftId, guest);
+    if (guest) {
+      navigate('/');
+    } else {
+      navigate('/lessor');
+    }
+  };
+
   if (error && !draft)
     return (
       <div role="alert" className="mx-auto max-w-xl rounded-2xl border border-rose-200 bg-rose-50 p-6 text-rose-800">
@@ -929,6 +952,10 @@ function LessorEditor({
           void requestAuth(false);
         }}
         currentStepLabel={STEP_LABELS[step]}
+        canDiscard={draft.status === 'DRAFT'}
+        isRevision={Boolean(draft.revisionOfListingId)}
+        hasServerDraft={true}
+        onDiscard={handleDiscard}
       />
 
       {/* GUIDED PROGRESS EXPERIENCE */}

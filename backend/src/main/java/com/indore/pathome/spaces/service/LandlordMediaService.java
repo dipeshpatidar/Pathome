@@ -107,6 +107,35 @@ public class LandlordMediaService {
         store.finishDeleting(email, draftId, mediaId);
     }
 
+    public void discardDraftMedia(Long ownerId, String draftId) {
+        List<PropertyDraftMedia> items = store.listRaw(ownerId, draftId);
+        for (PropertyDraftMedia item : items) {
+            if (item.getStagingObjectKey() != null && item.getCloudinaryUrl() == null) {
+                if (staging != null) {
+                    try {
+                        staging.delete(item.getStagingObjectKey());
+                    } catch (RuntimeException ignored) {}
+                }
+                continue;
+            }
+            if (Boolean.TRUE.equals(item.getReusedFromListing())) {
+                continue;
+            }
+            try {
+                boolean video = item.getContentType() != null && item.getContentType().startsWith("video/");
+                String publicId = item.getCloudinaryPublicId();
+                if (publicId == null || publicId.isBlank()) {
+                    publicId = cloudinary.findExistingResourceByUploadRequestId(requestId(item), video)
+                            .map(CloudinaryService.CloudinaryUploadResult::publicId).orElse(null);
+                }
+                if (publicId != null && !publicId.isBlank()) {
+                    cloudinary.deleteResource(publicId, video);
+                }
+            } catch (RuntimeException ignored) {}
+        }
+        store.deleteAllForDraft(ownerId, draftId);
+    }
+
     private String requestId(PropertyDraftMedia item) {
         return "lessor-" + item.getLandlordUserId() + "-" + item.getMediaId().replace("-", "");
     }

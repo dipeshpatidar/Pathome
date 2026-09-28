@@ -141,6 +141,50 @@ class LandlordDraftServiceTest {
         assertEquals(100, service.completionPercent(full, true));
     }
 
+    @Test
+    void landlordCanDiscardOwnDraft() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+
+        service.discard("owner@example.com", "draft-one");
+
+        verify(drafts).delete(draft);
+    }
+
+    @Test
+    void landlordCannotDiscardAnotherLandlordsDraft() {
+        when(drafts.findByDraftIdAndLandlordUserId("draft-other", 5L)).thenReturn(Optional.empty());
+
+        assertThrows(EntityNotFoundException.class,
+                () -> service.discard("owner@example.com", "draft-other"));
+
+        verify(drafts, never()).delete(any());
+    }
+
+    @Test
+    void landlordCannotDiscardSubmittedDraft() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        draft.setStatus("SUBMITTED");
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+
+        assertThrows(DraftConflictException.class,
+                () -> service.discard("owner@example.com", "draft-one"));
+
+        verify(drafts, never()).delete(any());
+    }
+
+    @Test
+    void discardingRevisionDraftLeavesPublishedListingUntouched() throws Exception {
+        PropertyUploadDraft revisionDraft = storedDraft(5L);
+        revisionDraft.setPublishedPropertyId(42L);
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(revisionDraft));
+
+        service.discard("owner@example.com", "draft-one");
+
+        verify(drafts).delete(revisionDraft);
+        assertEquals(42L, revisionDraft.getPublishedPropertyId());
+    }
+
     private PropertyUploadDraft storedDraft(Long ownerId) throws Exception {
         PropertyUploadDraft draft = new PropertyUploadDraft();
         draft.setDraftId("draft-one");

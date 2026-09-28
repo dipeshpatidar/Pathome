@@ -95,6 +95,16 @@ public class GuestDraftController {
         return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie("", request, 0).toString()).body(claimed);
     }
 
+    @DeleteMapping("/{draftId}")
+    public ResponseEntity<Void> discard(HttpServletRequest request,
+            @PathVariable String draftId, @CookieValue(value = COOKIE, required = false) String proof) {
+        guard.check(request);
+        drafts.discard(draftId, proof);
+        return ResponseEntity.noContent()
+                .header(HttpHeaders.SET_COOKIE, cookie("", request, 0).toString())
+                .build();
+    }
+
     private ResponseCookie cookie(String value, HttpServletRequest request, long age) {
         return ResponseCookie.from(COOKIE, value).httpOnly(true).secure(guard.secureCookie(request))
                 .sameSite("Lax").path("/api/v1/lessor/guest").maxAge(age).build();

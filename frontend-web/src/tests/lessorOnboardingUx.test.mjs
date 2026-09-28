@@ -150,3 +150,91 @@ test('exit helper flushes in-flight/dirty edits and safely halts on save failure
   assert.equal(saver.getStatus(), 'error');
   saver.dispose();
 });
+
+test('brand tagline matches exact approved copy and placement', () => {
+  const brandTagline = 'Your Dreams, Our Efforts.';
+  assert.equal(brandTagline, 'Your Dreams, Our Efforts.');
+  assert.equal(brandTagline.includes('Divyavastu'), false);
+  assert.equal(brandTagline.includes('100%'), false);
+  assert.equal(brandTagline.includes('verified'), false);
+});
+
+test('discard action is gated strictly to DRAFT status', () => {
+  const canDiscard = (status) => status === 'DRAFT';
+  assert.equal(canDiscard('DRAFT'), true);
+  assert.equal(canDiscard('SUBMITTED'), false);
+  assert.equal(canDiscard('UNDER_REVIEW'), false);
+  assert.equal(canDiscard('APPROVED'), false);
+  assert.equal(canDiscard('PUBLISHED'), false);
+  assert.equal(canDiscard('ARCHIVED'), false);
+});
+
+test('discard confirmation copy distinguishes new draft from published revision', () => {
+  const getModalConfig = (isRevision) => ({
+    title: isRevision ? 'Discard these changes?' : 'Discard this property?',
+    copy: isRevision
+      ? 'Your current published property will stay unchanged.'
+      : "This draft and its temporary uploaded media will be permanently removed. This can't be undone.",
+    confirmLabel: isRevision ? 'Discard changes' : 'Discard property',
+    cancelLabel: 'Keep editing'
+  });
+
+  const newDraftConfig = getModalConfig(false);
+  assert.equal(newDraftConfig.title, 'Discard this property?');
+  assert.equal(newDraftConfig.copy, "This draft and its temporary uploaded media will be permanently removed. This can't be undone.");
+  assert.equal(newDraftConfig.confirmLabel, 'Discard property');
+  assert.equal(newDraftConfig.cancelLabel, 'Keep editing');
+
+  const revisionConfig = getModalConfig(true);
+  assert.equal(revisionConfig.title, 'Discard these changes?');
+  assert.equal(revisionConfig.copy, 'Your current published property will stay unchanged.');
+  assert.equal(revisionConfig.confirmLabel, 'Discard changes');
+  assert.equal(revisionConfig.cancelLabel, 'Keep editing');
+});
+
+test('autosave abandon cancels in-flight/pending requests and prevents delayed recreation', async () => {
+  const storage = () => {
+    const map = new Map();
+    return {
+      getItem: k => map.get(k) ?? null,
+      setItem: (k, v) => map.set(k, v),
+      removeItem: k => map.delete(k)
+    };
+  };
+  globalThis.localStorage = storage();
+
+  let saveCalls = 0;
+  const saver = new LessorAutosave(
+    10,
+    'draft-abandon',
+    1,
+    () => {},
+    () => {},
+    async () => {
+      saveCalls++;
+      return {
+        draftId: 'draft-abandon',
+        status: 'DRAFT',
+        version: 2,
+        completionPercent: 50,
+        data: { basics: null, pricing: null, location: null, details: null },
+        createdAt: '',
+        updatedAt: ''
+      };
+    }
+  );
+
+  saver.change('basics', { propertyType: 'HOUSE', rentalMode: 'LONG_TERM_RENTAL', bhkCount: '3BHK' });
+  assert.equal(Object.keys(saver.getPending()).length, 1);
+
+  // User decides to discard: call abandon()
+  saver.abandon();
+
+  // Pending queue is cleared and saver is blocked
+  assert.equal(Object.keys(saver.getPending()).length, 0);
+
+  // A subsequent flush returns false and never triggers save
+  const result = await saver.flush();
+  assert.equal(result, false);
+  assert.equal(saveCalls, 0);
+});

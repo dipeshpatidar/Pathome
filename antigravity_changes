@@ -4,6 +4,67 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-28 15:47 IST — Location Safety Audit & Onboarding Brand/Discard UX
+
+### Why this work was requested
+1. Audit commit 4a7d906 to verify that Pathome's approved locality fallback order and semantics were preserved.
+2. Restore Pathome's brand tagline ("Your Dreams, Our Efforts.") in the lessor onboarding header in an elegant, responsive manner.
+3. Add a safe, truthful state-aware Discard Draft / Discard Changes capability distinct from Exit.
+4. Preserve all Phase 1B / 1B.1 / Location Resolver V2 behavior.
+
+### Files Changed
+- `backend/src/main/java/com/indore/pathome/spaces/service/GuestDraftService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/GuestDraftController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordDraftService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/LandlordDraftController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordMediaService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordMediaStore.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/GuestDraftServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordDraftServiceTest.java`
+- `frontend-web/src/components/LessorOnboardingHeader.tsx`
+- `frontend-web/src/components/LessorWorkspace.tsx`
+- `frontend-web/src/services/lessorDraftService.ts`
+- `frontend-web/src/services/lessorAutosave.ts`
+- `frontend-web/src/tests/lessorOnboardingUx.test.mjs`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Safety Audit of 4a7d906**:
+   - Confirmed `LandlordLocationService.java` was untouched.
+   - Resolution hierarchy strictly preserved: (1) Canonical exact -> (2) Alias exact -> (3) Prefix DB match -> (4) External provider (MapTiler) ONLY when internal confidence is insufficient -> (5) Manual fallback.
+   - Changes in 4a7d906 classified as: provider wiring/config (types), provider response parsing (context matching insideCity), fallback behavior (query whitespace collapse + relevance checks), tests (unit + live integration).
+2. **Brand Tagline Restoration**:
+   - Restored exact tagline: `"Your Dreams, Our Efforts."` directly beneath `Pathome` logo block in muted typography (`text-[10px] sm:text-[11px] text-slate-500`) without cluttering header actions.
+   - Preserved `Property Onboarding` badge.
+   - Responsive and safe at all viewports (320px to 1440px+).
+3. **State-Aware Discard Draft UX**:
+   - Discrete desktop & mobile `[⋯]` overflow menu (44px touch target) offering "Discard draft" / "Discard changes".
+   - State-specific semantics:
+     - Case 1 (local state on /lessor/new): Clears selection and navigates back safely.
+     - Case 2 (guest server draft): Requires valid proof, purges temporary staged media from disk, deletes draft & media DB records, clears guest cookie via `Max-Age=0`, invalidates localStorage pointers, and returns to landing.
+     - Case 3 (authenticated landlord draft): Validates user ownership, cleans draft-only media, deletes draft DB record, returns to My Properties.
+     - Case 4 (revision of published listing): Destructive action labeled "Discard changes"; deletes only revision draft and draft-only media; live listing and reused media (`reusedFromListing`) remain untouched.
+     - Case 5 (submitted/under review): Gated; Discard hidden and disallowed.
+4. **Discard Confirmation Modal**:
+   - Exact copy implemented for new draft ("Discard this property?") vs published revision ("Discard these changes?").
+   - "Keep editing" safe default focus; loading state and double-click protection; calm error handling on failure.
+5. **Autosave Race Prevention**:
+   - Added `abandon()` to `LessorAutosave` clearing timers, setting `blocked = true`, and clearing localStorage queue so delayed/in-flight autosaves cannot revive discarded drafts.
+
+### Verification
+- Focused backend tests: 32/32 tests passed (`GuestDraftServiceTest`, `LandlordDraftServiceTest`, `LandlordLocationServiceTest`, `MapTilerLocalityProviderTest`).
+- Security tests: 5/5 passed (`GuestDraftSecurityTest`, `LandlordDraftSecurityTest`).
+- Focused frontend tests: 23/23 tests passed (`frontend-web/src/tests/lessor*.test.mjs`).
+- TypeScript: `tsc -p tsconfig.json --noEmit` exited code 0 with 0 errors.
+- `git diff --check`: PASS.
+
+### Commit / Push Status
+- Branch: `feature/phase1-truthfulness-cleanup`
+- Commit: pending
+- Push: pending
+
+---
+
 ## 2026-09-28 15:20 IST — MapTiler Locality Fallback Fix & End-to-End Verification
 
 ### Why this work was requested

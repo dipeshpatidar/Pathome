@@ -81,12 +81,14 @@ export class LessorAutosave {
       if (!value) continue;
       try {
         const draft = await this.save(this.draftId, section, this.version, value);
+        if (this.blocked) return false;
         this.version = draft.version;
         this.persistedBaseVersion = this.version;
         if (this.pending[section] === value) delete this.pending[section];
         this.persist();
         this.onSaved(draft);
       } catch (error) {
+        if (this.blocked) return false;
         if (error && typeof error === 'object' && 'status' in error && error.status === 409) {
           this.blocked = true;
           this.setStatus('conflict');
@@ -115,6 +117,18 @@ export class LessorAutosave {
     if (this.status === next) return;
     this.status = next;
     this.onStatus(next);
+  }
+
+  abandon(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.blocked = true;
+    this.pending = {};
+    if (this.persistLocally) {
+      try {
+        localStorage.removeItem(this.storageKey);
+      } catch {}
+    }
   }
 
   dispose(): void {
