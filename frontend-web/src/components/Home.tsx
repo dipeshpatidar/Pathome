@@ -776,6 +776,7 @@ export const Home: React.FC = () => {
   const loadMoreAbortRef = useRef<AbortController | null>(null);
   const isPropertyRoute = location.pathname.startsWith('/property/');
   const isLessorRoute = location.pathname === '/lessor' || location.pathname.startsWith('/lessor/');
+  const isOnboardingFlow = isLessorRoute && (location.pathname === '/lessor/new' || location.pathname.startsWith('/lessor/drafts/'));
   const isPublicPropertyRoute = /^\/property\/\d+$/.test(location.pathname);
   const publicPropertyId = isPublicPropertyRoute ? Number(location.pathname.split('/').pop()) : null;
 
@@ -1220,20 +1221,22 @@ export const Home: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Inter',sans-serif]">
       
-      {/* 1. Dynamic Role-Based Sticky Navbar Component */}
-      <Navbar
-        user={user}
-        role={role}
-        onOpenAuthModal={() => setShowAuthModal(true)}
-        onOpenLeaseUpload={() => setShowLeaseModal(true)}
-        onLogout={handleLogout}
-        onOpenPostProperty={openPostProperty}
-        postPropertyModalOpen={showPostPropertyModal}
-        onClosePostProperty={closePostProperty}
-        activeAdminTab={activeAdminTab}
-        setActiveAdminTab={setActiveAdminTab}
-        isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
-      />
+      {/* 1. Dynamic Role-Based Sticky Navbar Component (Omitted during active onboarding flow) */}
+      {!isOnboardingFlow && (
+        <Navbar
+          user={user}
+          role={role}
+          onOpenAuthModal={() => setShowAuthModal(true)}
+          onOpenLeaseUpload={() => setShowLeaseModal(true)}
+          onLogout={handleLogout}
+          onOpenPostProperty={openPostProperty}
+          postPropertyModalOpen={showPostPropertyModal}
+          onClosePostProperty={closePostProperty}
+          activeAdminTab={activeAdminTab}
+          setActiveAdminTab={setActiveAdminTab}
+          isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
+        />
+      )}
 
       {isPropertyRoute && (
         <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />

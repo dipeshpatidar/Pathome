@@ -136,4 +136,27 @@ public class NotificationServiceTest {
         assertEquals(eventKey, result.get().getEventKey());
         verify(txManager, times(1)).commit(txStatus);
     }
+
+    @Test
+    public void testSanitizeLegacyNotifications() {
+        SystemNotification legacyNotif = new SystemNotification(
+                TargetRole.TENANT,
+                null,
+                "Welcome to Divyavastu Spaces!",
+                "Browse verified 100% direct listings in Vijay Nagar, Palasia, and Nanda Nagar with zero brokerage hassle.",
+                "VIP Pass Status: 5 Free Visits Active",
+                "PROPERTY",
+                "success"
+        );
+        legacyNotif.setId(99L);
+
+        when(repository.findAll()).thenReturn(List.of(legacyNotif));
+
+        notificationService.sanitizeLegacyNotifications();
+
+        assertEquals("Welcome to Pathome!", legacyNotif.getTitle());
+        assertEquals("Explore rental listings in Vijay Nagar, Palasia, and Nanda Nagar and request property visits online.", legacyNotif.getMessage());
+        assertEquals("Browse Rentals", legacyNotif.getDetails());
+        verify(repository, times(1)).save(legacyNotif);
+    }
 }

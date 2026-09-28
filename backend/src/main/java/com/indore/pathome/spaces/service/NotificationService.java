@@ -40,6 +40,8 @@ public class NotificationService {
         try {
             if (repository.count() == 0) {
                 seedDefaultNotifications();
+            } else {
+                sanitizeLegacyNotifications();
             }
             refreshCache();
         } catch (Exception e) {
@@ -175,10 +177,41 @@ public class NotificationService {
                 TargetRole.TENANT,
                 null,
                 "Welcome to Pathome!",
-                "Browse verified 100% direct listings in Vijay Nagar, Palasia, and Nanda Nagar with zero brokerage hassle.",
-                "VIP Pass Status: 5 Free Visits Active",
+                "Explore rental listings in Vijay Nagar, Palasia, and Nanda Nagar and request property visits online.",
+                "Browse Rentals",
                 "PROPERTY",
                 "success"
         ));
+    }
+
+    public void sanitizeLegacyNotifications() {
+        try {
+            List<SystemNotification> all = repository.findAll();
+            for (SystemNotification n : all) {
+                boolean itemChanged = false;
+                if (n.getTitle() != null && n.getTitle().contains("Divyavastu")) {
+                    n.setTitle(n.getTitle().replace("Divyavastu Spaces", "Pathome").replace("Divyavastu", "Pathome"));
+                    itemChanged = true;
+                }
+                if (n.getMessage() != null && (n.getMessage().contains("Divyavastu") || n.getMessage().contains("100% direct listings"))) {
+                    String msg = n.getMessage()
+                            .replace("Divyavastu Spaces", "Pathome")
+                            .replace("Divyavastu", "Pathome")
+                            .replace("Browse verified 100% direct listings in Vijay Nagar, Palasia, and Nanda Nagar with zero brokerage hassle.",
+                                    "Explore rental listings in Vijay Nagar, Palasia, and Nanda Nagar and request property visits online.");
+                    n.setMessage(msg);
+                    itemChanged = true;
+                }
+                if (n.getDetails() != null && (n.getDetails().contains("VIP Pass") || n.getDetails().contains("5 Free Visits"))) {
+                    n.setDetails("Browse Rentals");
+                    itemChanged = true;
+                }
+                if (itemChanged) {
+                    repository.save(n);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Deferred legacy notification sanitization: {}", e.getMessage());
+        }
     }
 }

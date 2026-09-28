@@ -5263,3 +5263,46 @@ Commit: NO. Push: NO. Main: UNTOUCHED. Browser: NO.
 - Git hygiene: `git diff --check` passes cleanly.
 
 Commit: NO. Push: NO. Main: UNTOUCHED.
+
+---
+
+## 2026-09-28 13:08 IST — Pathome Lessor Onboarding UX Refinement & Legacy Brand Cleanup
+
+### Why this work was requested
+Improve the landlord/lessor property onboarding experience so it feels premium, focused, intuitive, and polished, while eliminating distracting public marketing navigation during active property onboarding and resolving legacy branding ("Divyavastu Spaces", "VIP Pass Status: 5 Free Visits Active", "100% direct listings") in notification data.
+
+### Exact Files Changed / Created
+- `backend/src/main/java/com/indore/pathome/spaces/service/NotificationService.java`:
+  - Replaced unsupported seed notification copy with truthful Pathome text ("Explore rental listings in Vijay Nagar, Palasia, and Nanda Nagar and request property visits online." / "Browse Rentals").
+  - Added `sanitizeLegacyNotifications()` during `@PostConstruct init()` to sanitize any persisted legacy rows in the database containing "Divyavastu" or "VIP Pass" or "100% direct listings".
+- `backend/src/test/java/com/indore/pathome/spaces/service/NotificationServiceTest.java`:
+  - Added unit test `testSanitizeLegacyNotifications` verifying legacy notifications are safely sanitized.
+- `frontend-web/src/components/Home.tsx`:
+  - Defined `isOnboardingFlow = isLessorRoute && (location.pathname === '/lessor/new' || location.pathname.startsWith('/lessor/drafts/'))`.
+  - Conditioned public marketing `Navbar` rendering to `!isOnboardingFlow` so marketing links are never displayed during active property creation/upload.
+- `frontend-web/src/components/LessorOnboardingHeader.tsx` (NEW):
+  - Dedicated focused onboarding header with Pathome logo (returns to home `/`), real-time autosave status micro-UX (`Saved ✓`, `Saving…`, `Couldn't save — Retry`), subtle guest sign-in ("to save across devices"), and clear `Save & exit` action with a recovery-safe confirmation modal if unsaved changes exist.
+- `frontend-web/src/components/LessorProgressBar.tsx` (NEW):
+  - Responsive guided progress indicator: desktop breadcrumb tracking all 6 steps + review (`Property — Configuration — Pricing — Location — Photos — Availability — Review`) with active/completed styling, and compact mobile progress indicator (`Step X of 6`, progress bar, and title).
+- `frontend-web/src/components/LessorLivePreview.tsx` (NEW):
+  - Desktop sticky live evolving preview panel displaying real-time tenant-facing card (cover image, title, locality/city without private address/landmark, rent, deposit, key features, and privacy notice).
+- `frontend-web/src/components/LessorWorkspace.tsx`:
+  - Integrated `LessorOnboardingHeader`, `LessorProgressBar`, and `LessorLivePreview`.
+  - Upgraded Step 1 (`/lessor/new`) property choices into selectable cards/chips with icons (`Building2`, `Home`, `Building`, `Sparkles`, `Hotel`) and descriptions (Flat: Apartment home, House: Independent home, Studio: Single-room home, Penthouse: Top-floor luxury residence, Serviced apartment: Furnished living), selected border, check indicators, and visually activating Continue button.
+  - Desktop 2-column layout (form on left, live preview on right) collapsing to single-column on mobile.
+  - Tasteful 180-200ms directional slide/fade transitions using `framer-motion` respecting `prefers-reduced-motion`.
+  - Mobile UX optimizations: safe-area bottom padding, 16px font inputs to avoid iOS auto-zoom, and 44px+ touch targets.
+  - Replaced ambiguous copy ("← Your listing") with clear "Back" and "Save & exit".
+  - Contextual feedback micro-UX ("Location confirmed ✓", "Cover photo ready", "Next up: Your property is ready to preview.").
+- `frontend-web/src/components/LessorMediaStep.tsx`:
+  - Enhanced cover badge with prominent green pill (`Cover photo`), "Make cover" button, stable thumbnail geometry (`aspect-[4/3]`), per-item upload status, and `onMediaChange` callback to feed live preview.
+- `frontend-web/src/tests/lessorOnboardingUx.test.mjs` (NEW):
+  - Unit tests covering step sequence, supported property types, live preview location privacy enforcement, and rent formatting.
+
+### Verification Performed
+- `git diff --check`: PASS (0 whitespace / formatting issues).
+- TypeScript: `npm --prefix frontend-web exec -- tsc -p frontend-web/tsconfig.json --noEmit` exited code 0 with 0 errors.
+- Frontend tests: `node --test frontend-web/src/tests/lessor*.test.mjs` — 14/14 tests PASS.
+- Backend tests: `mvn -f backend/pom.xml test -Dtest=NotificationServiceTest` — 6/6 tests PASS.
+
+Commit: NO. Push: NO. Branch: `feature/phase1-truthfulness-cleanup`.

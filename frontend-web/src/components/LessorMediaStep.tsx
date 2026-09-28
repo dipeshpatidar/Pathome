@@ -8,7 +8,7 @@ import { LessorMediaAsset } from './LessorMediaAsset';
 interface LocalUpload { id: string; file: File; progress: number; status: 'preparing' | 'uploading' | 'retrying' | 'failed'; error?: string; invalid?: boolean }
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-50';
 
-export function LessorMediaStep({ draftId, onNext, guest = false }: { draftId: string; onNext: () => void; guest?: boolean }) {
+export function LessorMediaStep({ draftId, onNext, guest = false, onMediaChange }: { draftId: string; onNext: () => void; guest?: boolean; onMediaChange?: (items: LessorMediaItem[]) => void }) {
   const [items, setItems] = useState<LessorMediaItem[]>([]);
   const [local, setLocal] = useState<LocalUpload[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,6 +16,10 @@ export function LessorMediaStep({ draftId, onNext, guest = false }: { draftId: s
   const [busy, setBusy] = useState(false);
   const uploaded = useMemo(() => items.filter(item => item.status === 'UPLOADED' || item.status === 'STAGED'), [items]);
   const hasImage = hasCoverImage(uploaded);
+
+  useEffect(() => {
+    onMediaChange?.(items);
+  }, [items, onMediaChange]);
 
   const refresh = async () => {
     const loaded = await lessorMediaService.list(draftId, guest);
@@ -110,12 +114,18 @@ export function LessorMediaStep({ draftId, onNext, guest = false }: { draftId: s
     {!guest && uploaded.some(item => item.status === 'STAGED') && <button type="button" disabled={busy} className={`${SECONDARY} mt-5`} onClick={() => { setBusy(true); setError(''); void lessorMediaService.promote(draftId).then(refresh).catch(cause => setError(getErrorMessage(cause, 'Could not prepare your photos. Retry.'))).finally(() => setBusy(false)); }}>Prepare your photos</button>}
     <div className="mt-6 grid gap-4 sm:grid-cols-2">{uploaded.map((item, index) => <article key={item.mediaId} className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="aspect-[4/3] bg-slate-100"><LessorMediaAsset url={item.url} contentType={item.contentType} alt={item.contentType.startsWith('video/') ? `Property video ${index + 1}` : `Property photo ${index + 1}`} className={`h-full w-full ${item.contentType.startsWith('video/') ? 'object-contain' : 'object-cover'}`}/></div>
-      <div className="p-3"><div className="flex items-center justify-between gap-2"><p className="min-w-0 truncate text-xs text-slate-600" title={item.filename}>{item.filename}</p>{item.cover && <span className="flex shrink-0 items-center gap-1 text-xs font-semibold text-emerald-800"><Check className="h-3 w-3"/>Cover</span>}</div>
+      <div className="p-3"><div className="flex items-center justify-between gap-2"><p className="min-w-0 truncate text-xs text-slate-600" title={item.filename}>{item.filename}</p>{item.cover && <span className="inline-flex items-center gap-1 rounded-full bg-emerald-700 px-2.5 py-0.5 text-xs font-bold text-white shadow-xs"><Check className="h-3 w-3 stroke-[3]"/>Cover photo</span>}</div>
       <div className="mt-3 flex flex-wrap gap-2">{item.contentType.startsWith('image/') && !item.cover && <button type="button" disabled={busy} className={SECONDARY} onClick={() => { void changeCover(item.mediaId); }}><Star className="h-4 w-4"/>Make cover</button>}<button type="button" disabled={busy || index === 0} className={SECONDARY} aria-label={`Move ${item.filename} up`} onClick={() => { void move(index, -1); }}><ArrowUp className="h-4 w-4"/></button><button type="button" disabled={busy || index === uploaded.length - 1} className={SECONDARY} aria-label={`Move ${item.filename} down`} onClick={() => { void move(index, 1); }}><ArrowDown className="h-4 w-4"/></button><button type="button" disabled={busy} className={SECONDARY} onClick={() => { void remove(item.mediaId); }}><Trash2 className="h-4 w-4"/>Remove</button></div></div>
     </article>)}
     {local.map(row => <div key={row.id} className="rounded-2xl border border-slate-200 bg-white p-4"><p className="truncate text-sm font-semibold text-slate-800">{row.file.name}</p><p aria-live="polite" className="mt-2 text-xs text-slate-600">{row.status === 'preparing' ? 'Preparing…' : row.status === 'retrying' ? 'Retrying…' : row.status === 'uploading' ? `Uploading ${row.progress}%` : 'Upload failed'}</p>{row.status === 'uploading' && <progress value={row.progress} max={100} className="mt-2 w-full accent-emerald-700"/>}{row.status === 'failed' && <><p role="alert" className="mt-1 text-xs text-rose-700">{row.error}</p><div className="mt-3 flex flex-wrap gap-2">{!row.invalid && <button className={SECONDARY} onClick={() => { void retry(row); }}><RefreshCw className="h-4 w-4"/>Retry</button>}<button className={SECONDARY} onClick={() => setLocal(previous => previous.filter(item => item.id !== row.id))}>Dismiss</button></div></>}</div>)}
     {items.filter(item => item.status !== 'UPLOADED' && item.status !== 'STAGED' && !local.some(row => row.id === item.mediaId)).map(item => <div key={item.mediaId} className="rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="truncate text-sm font-semibold text-slate-800">{item.filename}</p><p className="mt-1 text-xs text-amber-800">{item.status === 'DELETING' ? 'Removal needs retry' : 'Upload needs recovery or original file'}</p><div className="mt-3 flex flex-wrap gap-2">{item.status !== 'DELETING' && <button className={SECONDARY} onClick={() => { void lessorMediaService.recover(draftId, item.mediaId, guest).then(refresh).catch(cause => setError(getErrorMessage(cause, 'Automatic recovery unavailable. Select the original file to retry.'))); }}><RefreshCw className="h-4 w-4"/>Check upload</button>}<button className={SECONDARY} onClick={() => { void remove(item.mediaId); }}>{item.status === 'DELETING' ? 'Retry removal' : 'Remove failed item'}</button></div></div>)}
     </div>
+    {hasImage && (
+      <div className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-950">
+        <Check className="h-4 w-4 text-emerald-700 stroke-[3]" />
+        <span>Cover photo ready</span>
+      </div>
+    )}
     <button type="button" disabled={!hasImage || local.some(row => row.status === 'uploading' || row.status === 'preparing')} onClick={onNext} className="mt-8 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-emerald-700 px-6 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto">Continue</button>
   </div>;
 }
