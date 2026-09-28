@@ -4,6 +4,39 @@ Purpose: A chronological handoff record maintained by Antigravity for future eng
 
 ---
 
+## 2026-09-28 15:20 IST — MapTiler Locality Fallback Fix & End-to-End Verification
+
+### Why this work was requested
+Verify MapTiler locality integration using configured MAPTILER_API_KEY from .env.local, ensuring external locality fallback functions end-to-end for unknown localities while preserving internal canonical matches and safe manual fallback for garbage inputs.
+
+### Files Changed
+- `backend/src/main/java/com/indore/pathome/spaces/service/MapTilerLocalityProvider.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/MapTilerLocalityProviderTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordLocationServiceTest.java`
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Types Parameter Expansion**: Added `address,subregion,municipal_district` to MapTiler geocoding types so valid Indian localities indexed as addresses (e.g. `address.18984382` for Ranipura) are not excluded.
+2. **Robust Indian City Context Matching in `insideCity`**: Updated context verification to check `municipality.`, `subregion.`, `county.`, or `place.` context elements against canonical city name, `city + " City"`, or city prefix, properly handling Indore ("Indore City" municipality and "Indore" subregion) while rejecting other districts/regions (e.g. Bhind, Dhar, Bhopal).
+3. **Compound Word Fallback for Indian Localities**: Added automatic whitespace-collapsed fallback (e.g., trying "ranipura, Indore" if "rani pura, Indore" returns no within-city results) to handle split spellings.
+4. **Relevance Filtering**: Added `isRelevant` check ensuring returned features contain or match the user query tokens, rejecting irrelevant city names or roads returned for garbage input (e.g., `xyzabc999`).
+5. **Name Formatting**: Added title casing helper (`formatName`) so raw lowercase MapTiler place names are displayed cleanly.
+6. **Live & Unit Test Coverage**: Added comprehensive unit and live integration tests verifying canonical "Vijay Nagar" resolution without external calls, "rani pura" fallback returning "Ranipura" with signed token, "xyzabc999" returning 0 results for manual fallback, and graceful error handling on provider failure.
+
+### Verification
+- `LandlordLocationServiceTest` (8 tests): PASS
+- `MapTilerLocalityProviderTest` (4 tests): PASS
+- `LandlordSubmissionServiceTest`, `LandlordDraftServiceTest`, `LandlordReviewServiceTest`: PASS
+- Frontend focused tests (`node --test frontend-web/src/tests/lessor*.test.mjs` - 19 tests): PASS
+- TypeScript check (`tsc --noEmit`): PASS
+- `git diff --check`: PASS
+
+### Commit / Push Status
+- Committed: `fix(location): enable MapTiler locality fallback`
+- Push: SUCCESS
+
+---
+
 ## 2026-09-27 21:05 IST — Phase 1 Frontend Truthfulness Cleanup Finalization & Checkpoint
 
 ### Why this work was requested

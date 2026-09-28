@@ -119,4 +119,41 @@ class LandlordLocationServiceTest {
         locality.setSectorName(name);
         return locality;
     }
+
+    @Test
+    void liveMapTilerEndToEndResolutionWhenConfigured() {
+        String key = System.getenv("MAPTILER_API_KEY");
+        if (key == null || key.isBlank()) return;
+
+        var maptiler = new MapTilerLocalityProvider(key, new com.fasterxml.jackson.databind.ObjectMapper());
+        var resolver = new LandlordLocationService(localities, aliases, maptiler, "test-secret");
+
+        // 1. Known locality: Vijay Nagar (mocked canonical) -> returns canonical
+        Locality vijay = locality(10L, "Indore", "Vijay Nagar");
+        when(localities.findByCityIgnoreCaseAndSectorNameIgnoreCase("Indore", "Vijay Nagar"))
+                .thenReturn(Optional.of(vijay));
+        var vijayChoices = resolver.suggest("Indore", "Vijay Nagar");
+        assertEquals(1, vijayChoices.size());
+        assertEquals("canonical", vijayChoices.get(0).match());
+
+        // 2. Real locality not known internally: rani pura -> MapTiler returns Ranipura
+        when(localities.findByCityIgnoreCaseAndSectorNameIgnoreCase("Indore", "rani pura"))
+                .thenReturn(Optional.empty());
+        when(localities.findOnboardingSuggestions(eq("Indore"), eq("rani pura"), any(Pageable.class)))
+                .thenReturn(List.of());
+        var raniPuraChoices = resolver.suggest("Indore", "rani pura");
+        assertFalse(raniPuraChoices.isEmpty(), "Expected external resolution for rani pura");
+        var choice = raniPuraChoices.get(0);
+        assertEquals("Ranipura", choice.name());
+        assertEquals("Indore", choice.city());
+        assertEquals("external", choice.match());
+        assertEquals("MAPTILER", choice.provider());
+        assertNotNull(choice.providerPlaceId());
+        assertTrue(resolver.validExternalSelection("Indore", choice.name(), choice.provider(),
+                choice.providerPlaceId(), choice.selectionToken()));
+
+        // 3. Garbage input: xyzabc999 -> rejected, empty list
+        var garbageChoices = resolver.suggest("Indore", "xyzabc999");
+        assertTrue(garbageChoices.isEmpty(), "Garbage input must not fabricate confident results");
+    }
 }

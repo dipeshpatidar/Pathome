@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 
@@ -54,31 +55,16 @@ public class MapTilerLocalityProvider implements ExternalLocalityProvider {
         }
         if (!inFlight.tryAcquire()) return List.of();
         try {
-            URI uri = UriComponentsBuilder.fromUriString("https://api.maptiler.com/geocoding/{query}.json")
-                    .queryParam("key", apiKey).queryParam("country", "in")
-                    .queryParam("types", "locality,neighbourhood,place,road")
-                    .queryParam("limit", 6).queryParam("autocomplete", true)
-                    .buildAndExpand(query + ", " + city).encode().toUri();
-            HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(3))
-                    .header("Accept", "application/json").GET().build();
-            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            byte[] body;
-            try (InputStream stream = response.body()) {
-                if (response.statusCode() != 200) return List.of();
-                body = stream.readNBytes(250_001);
+            List<String> attempts = new ArrayList<>(2);
+            attempts.add(query + ", " + city);
+            String collapsed = query.replaceAll("\\s+", "");
+            if (!collapsed.equalsIgnoreCase(query) && collapsed.length() >= 3) {
+                attempts.add(collapsed + ", " + city);
             }
-            if (body.length > 250_000) return List.of();
-            JsonNode features = mapper.readTree(new String(body, StandardCharsets.UTF_8)).path("features");
-            if (!features.isArray()) return List.of();
             List<Result> result = new ArrayList<>();
-            for (JsonNode feature : features) {
-                if (result.size() == 6) break;
-                String name = feature.path("text").asText("").trim();
-                String id = feature.path("id").asText("").trim();
-                if (name.isBlank() || name.length() > 120 || name.chars().anyMatch(Character::isISOControl)
-                        || id.isBlank() || id.length() > 160 || id.chars().anyMatch(Character::isISOControl)
-                        || !insideCity(feature, city)) continue;
-                result.add(new Result(name, city, "MAPTILER", id));
+            for (String attempt : attempts) {
+                result = fetchFeatures(attempt, city, query);
+                if (!result.isEmpty()) break;
             }
             synchronized (cache) {
                 if (cache.size() >= 256) cache.clear();
@@ -94,12 +80,72 @@ public class MapTilerLocalityProvider implements ExternalLocalityProvider {
         }
     }
 
+    private List<Result> fetchFeatures(String targetQuery, String city, String userQuery) throws Exception {
+        URI uri = UriComponentsBuilder.fromUriString("https://api.maptiler.com/geocoding/{query}.json")
+                .queryParam("key", apiKey).queryParam("country", "in")
+                .queryParam("types", "locality,neighbourhood,place,road,address,subregion,municipal_district")
+                .queryParam("limit", 6).queryParam("autocomplete", true)
+                .buildAndExpand(targetQuery).encode().toUri();
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(3))
+                .header("Accept", "application/json").GET().build();
+        HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        byte[] body;
+        try (InputStream stream = response.body()) {
+            if (response.statusCode() != 200) return List.of();
+            body = stream.readNBytes(250_001);
+        }
+        if (body.length > 250_000) return List.of();
+        JsonNode features = mapper.readTree(new String(body, StandardCharsets.UTF_8)).path("features");
+        if (!features.isArray()) return List.of();
+        List<Result> list = new ArrayList<>();
+        for (JsonNode feature : features) {
+            if (list.size() == 6) break;
+            String rawName = feature.path("text").asText("").trim();
+            String id = feature.path("id").asText("").trim();
+            if (rawName.isBlank() || rawName.length() > 120 || rawName.chars().anyMatch(Character::isISOControl)
+                    || id.isBlank() || id.length() > 160 || id.chars().anyMatch(Character::isISOControl)
+                    || !insideCity(feature, city)
+                    || !isRelevant(rawName, userQuery, city)) continue;
+            list.add(new Result(formatName(rawName), city, "MAPTILER", id));
+        }
+        return list;
+    }
+
+    static boolean isRelevant(String name, String query, String city) {
+        if (name.equalsIgnoreCase(city) || name.equalsIgnoreCase(city + " City")) return false;
+        String nName = name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        String nQuery = query.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        if (nQuery.length() < 2) return false;
+        return nName.contains(nQuery) || nQuery.contains(nName);
+    }
+
+    static String formatName(String name) {
+        if (name == null || name.isBlank()) return "";
+        String[] parts = name.trim().split("\\s+");
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) {
+                sb.append(part.substring(1));
+            }
+        }
+        return sb.toString();
+    }
+
     static boolean insideCity(JsonNode feature, String city) {
         if (!"in".equalsIgnoreCase(feature.path("properties").path("country_code").asText(""))) return false;
+        String canonicalCity = city.trim().toLowerCase(Locale.ROOT);
+        String cityWithCity = canonicalCity + " city";
         for (JsonNode context : feature.path("context")) {
-            String id = context.path("id").asText("");
-            if (id.startsWith("municipality.")
-                    && city.equalsIgnoreCase(context.path("text").asText(""))) return true;
+            String id = context.path("id").asText("").toLowerCase(Locale.ROOT);
+            String text = context.path("text").asText("").trim().toLowerCase(Locale.ROOT);
+            if (id.startsWith("municipality.") || id.startsWith("subregion.") || id.startsWith("county.") || id.startsWith("place.")) {
+                if (text.equals(canonicalCity) || text.equals(cityWithCity) || text.startsWith(canonicalCity + " ")) {
+                    return true;
+                }
+            }
         }
         return false;
     }
