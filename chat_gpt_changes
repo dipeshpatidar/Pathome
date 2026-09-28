@@ -2,6 +2,38 @@
 
 Purpose: a chronological handoff record for future engineers or AI agents working on the Pathome Spaces property-upload flow. Times use Asia/Kolkata (IST). No credentials, tokens, or other secret configuration values are recorded here.
 
+## 2026-09-28 18:05 IST — Timezone Semantics for Last Updated & Navigation Policy Cleanup
+
+### Why this work was requested
+Address the two remaining findings from the premium review:
+1. "Last Updated" timestamps previously sent offset-free `LocalDateTime` values, causing JavaScript in browsers across different timezones to misinterpret local days/times. Fix the data contract to unambiguous timezone/instant semantics (`Instant` serialized as ISO-8601 string with "Z") without changing DB storage or leaking pending revision timestamps.
+2. `navigationPolicy.ts` contained speculative OE/GE branches and an unused `resolveOnboardingExitDestination` helper. Remove genuinely dead code while keeping current authorized routes for Guest, Public, Tenant, Lessor, and Admin/Sub-admin.
+
+### Implementation Details
+1. **Timezone Data Contract Hardening**:
+   - `PublicDiscoveryResponse.java`: Updated `updatedAt` field to `@JsonFormat(shape = JsonFormat.Shape.STRING) Instant updatedAt`.
+   - `LandlordDraftSummary.java`: Updated `updatedAt` field to `@JsonFormat(shape = JsonFormat.Shape.STRING) Instant updatedAt`.
+   - `LandlordListingSummary.java`: Updated `updatedAt` field to `@JsonFormat(shape = JsonFormat.Shape.STRING) Instant updatedAt`.
+   - `PropertyController.java`: Converted listing `LocalDateTime` to `Instant` using authoritative India zone (`ZoneId.of("Asia/Kolkata")`) and passed to `PublicDiscoveryResponse`. Preserved live published listing timestamp safety (no pending revision leakage).
+   - `LandlordDraftService.java`: Converted draft `LocalDateTime` to `Instant` via India zone.
+   - `LandlordPortfolioService.java`: Converted listing `LocalDateTime` to `Instant` via India zone.
+2. **Navigation Policy Dead Code Cleanup (`navigationPolicy.ts`)**:
+   - Removed speculative `'OE'` and `'GE'` from `WorkspaceContext`.
+   - Removed `/oe` and `/ge` route resolution in `resolveWorkspaceContext`.
+   - Removed OE and GE cases in `resolveLogoDestination`.
+   - Removed unused `resolveOnboardingExitDestination` helper.
+3. **Focused Tests**:
+   - `PropertyControllerTest.java`: Added `publicDiscoveryUpdatedAtHasUnambiguousUtcInstantSemantics` proving `updatedAt` produces an unambiguous UTC `Instant` formatted with `"Z"` in JSON.
+   - `navigationAndPublicUpdated.test.mjs`: Removed dead OE/GE and exit helper tests; added tests proving viewer-local day calculation for today, yesterday, older, null omission, and protection against revision leakage.
+
+### Verification
+- Backend tests: `mvn test -Dtest=PropertyControllerTest` passed (50/50 tests, 0 failures, 0 errors).
+- Frontend tests: `node --test frontend-web/src/tests/lastUpdatedActivityDot.test.mjs frontend-web/src/tests/lessorLastUpdated.test.mjs frontend-web/src/tests/navigationAndPublicUpdated.test.mjs` passed (15/15 tests, 0 failures).
+- TypeScript: `tsc -p frontend-web/tsconfig.json --noEmit` passed with 0 errors.
+- Whitespace / formatting: `git diff --check` passed cleanly.
+
+---
+
 ## 2026-09-16 — Earlier session, before 12:24 IST
 
 ### Property parser audit and correctness hardening

@@ -48,6 +48,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.math.BigDecimal;
 import java.text.NumberFormat;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -1941,7 +1942,12 @@ public class PropertyController {
                 totalMedia,
                 hasVideo,
                 hasMore,
-                listing.getUpdatedAt());
+                toInstant(listing.getUpdatedAt()));
+    }
+
+    private static Instant toInstant(LocalDateTime localDateTime) {
+        if (localDateTime == null) return null;
+        return localDateTime.atZone(INDIA_ZONE).toInstant();
     }
 
     /**

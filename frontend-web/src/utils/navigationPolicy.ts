@@ -3,9 +3,7 @@ export type WorkspaceContext =
   | 'TENANT'
   | 'LESSOR'
   | 'ADMIN'
-  | 'SUB_ADMIN'
-  | 'OE'
-  | 'GE';
+  | 'SUB_ADMIN';
 
 export interface LogoDestination {
   path: string;
@@ -33,12 +31,6 @@ export function resolveWorkspaceContext(pathname: string, role?: string | null):
     }
     return 'ADMIN';
   }
-  if (path === '/oe' || path.startsWith('/oe/')) {
-    return 'OE';
-  }
-  if (path === '/ge' || path.startsWith('/ge/')) {
-    return 'GE';
-  }
 
   // When on public or tenant rental-browsing routes (/, /tenant, /property/:id, etc.)
   if (role && role !== 'GUEST') {
@@ -56,7 +48,6 @@ export function resolveWorkspaceContext(pathname: string, role?: string | null):
  * - LESSOR WORKSPACE: /lessor (Lessor Home / My Properties)
  * - ADMIN WORKSPACE: /admin (Admin dashboard/home)
  * - SUB_ADMIN WORKSPACE: /admin (authorized Sub-admin/Admin workspace home)
- * - OE / GE: Not present in standalone web router; architecture supports them and reports isAvailable: false
  */
 export function resolveLogoDestination(context: WorkspaceContext): LogoDestination {
   switch (context) {
@@ -66,26 +57,9 @@ export function resolveLogoDestination(context: WorkspaceContext): LogoDestinati
       return { path: '/admin', label: 'Return to Admin dashboard', isAvailable: true };
     case 'SUB_ADMIN':
       return { path: '/admin', label: 'Return to Admin workspace', isAvailable: true };
-    case 'OE':
-      // OE standalone workspace route not present in current web router
-      return { path: '/', label: 'Return to Home', isAvailable: false };
-    case 'GE':
-      // GE standalone workspace route not present in current web router
-      return { path: '/', label: 'Return to Home', isAvailable: false };
     case 'TENANT':
     case 'PUBLIC':
     default:
       return { path: '/', label: 'Return to Pathome home', isAvailable: true };
   }
-}
-
-/**
- * Resolves the onboarding Exit destination based on whether the user is a guest or authenticated lessor.
- *
- * Rules:
- * - Guest onboarding exit: / (main marketplace landing, resumable draft remains safe)
- * - Authenticated lessor onboarding exit: /lessor (Lessor Home / My Properties, draft remains safe)
- */
-export function resolveOnboardingExitDestination(guest: boolean): string {
-  return guest ? '/' : '/lessor';
 }

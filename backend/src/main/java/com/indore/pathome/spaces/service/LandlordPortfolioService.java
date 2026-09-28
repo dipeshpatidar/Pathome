@@ -17,6 +17,9 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -24,6 +27,7 @@ import java.util.stream.Collectors;
 @Service
 public class LandlordPortfolioService {
     private static final int PAGE_SIZE = 20;
+    private static final ZoneId INDIA_ZONE = ZoneId.of("Asia/Kolkata");
     private final LandlordCapabilityService capabilities;
     private final ListingRepository listings;
     private final PropertyMediaAssetRepository assets;
@@ -59,11 +63,16 @@ public class LandlordPortfolioService {
                     .map(PropertyMediaAsset::getMediaUrl).orElse(null);
             return new LandlordListingSummary(rental.getId(), rental.getTitle(), rental.getPropertyType(),
                     rental.getBhkCount(), rental.getCity(), rental.getSector(), rental.getMonthlyRent(),
-                    rental.getWorkflowStatus(), rental.getUpdatedAt(), cover,
+                    rental.getWorkflowStatus(), toInstant(rental.getUpdatedAt()), cover,
                     revisions.containsKey(rental.getId()) ? revisions.get(rental.getId()).getDraftId() : null,
                     revisions.containsKey(rental.getId()) ? revisions.get(rental.getId()).getStatus() : null);
         }).toList();
         return new LandlordListingPage(summaries, page, slice.hasNext());
+    }
+
+    private static Instant toInstant(LocalDateTime localDateTime) {
+        if (localDateTime == null) return null;
+        return localDateTime.atZone(INDIA_ZONE).toInstant();
     }
 
     @Transactional(readOnly = true)

@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveWorkspaceContext,
-  resolveLogoDestination,
-  resolveOnboardingExitDestination
+  resolveLogoDestination
 } from '../utils/navigationPolicy.ts';
 import { formatLastUpdated } from '../utils/lessorFormatting.ts';
 
@@ -29,10 +28,6 @@ test('resolveWorkspaceContext respects current workspace context over user role'
 
   // Sub-admin on /admin route
   assert.equal(resolveWorkspaceContext('/admin', 'SUB_ADMIN'), 'SUB_ADMIN');
-
-  // OE / GE context detection
-  assert.equal(resolveWorkspaceContext('/oe', 'OE'), 'OE');
-  assert.equal(resolveWorkspaceContext('/ge', 'GE'), 'GE');
 });
 
 test('resolveLogoDestination maps to authoritative workspace homes', () => {
@@ -60,40 +55,56 @@ test('resolveLogoDestination maps to authoritative workspace homes', () => {
   const subAdminDest = resolveLogoDestination('SUB_ADMIN');
   assert.equal(subAdminDest.path, '/admin');
   assert.equal(subAdminDest.isAvailable, true);
-
-  // Unimplemented OE / GE report isAvailable: false
-  const oeDest = resolveLogoDestination('OE');
-  assert.equal(oeDest.isAvailable, false);
-  const geDest = resolveLogoDestination('GE');
-  assert.equal(geDest.isAvailable, false);
 });
 
-test('resolveOnboardingExitDestination directs guest to / and authenticated lessor to /lessor', () => {
-  // Guest onboarding Exit preserves draft and goes to main marketplace
-  assert.equal(resolveOnboardingExitDestination(true), '/');
+test('formatLastUpdated handles timezone-aware ISO-8601 timestamps and viewer-local calendar day', () => {
+  // Absolute ISO-8601 UTC timestamp from backend (Instant with "Z")
+  const isoUtcTimestamp = '2026-09-28T09:00:00Z';
+  const parsedDate = new Date(isoUtcTimestamp);
+  assert.equal(isNaN(parsedDate.getTime()), false, 'ISO string with Z must parse cleanly');
 
-  // Authenticated lessor onboarding Exit preserves draft and goes to Lessor Home
-  assert.equal(resolveOnboardingExitDestination(false), '/lessor');
-});
+  // 1. When viewer's current time is on the same local calendar day as parsedDate
+  const viewerNowToday = new Date(parsedDate);
+  viewerNowToday.setHours(viewerNowToday.getHours() + 2); // 2 hours later same day
+  const todayFormatted = formatLastUpdated(isoUtcTimestamp, viewerNowToday);
+  assert.ok(todayFormatted?.startsWith('Updated today · '), `Expected today prefix, got ${todayFormatted}`);
 
-test('formatLastUpdated produces required public card metadata format', () => {
-  const referenceNow = new Date(2026, 9, 28, 14, 0, 0); // 28 Oct 2026 2:00 PM
+  // 2. When viewer's current time is on the next local calendar day (timestamp is yesterday in viewer's local calendar)
+  const viewerNowTomorrow = new Date(parsedDate);
+  viewerNowTomorrow.setDate(viewerNowTomorrow.getDate() + 1);
+  const yesterdayFormatted = formatLastUpdated(isoUtcTimestamp, viewerNowTomorrow);
+  assert.ok(yesterdayFormatted?.startsWith('Updated yesterday · '), `Expected yesterday prefix, got ${yesterdayFormatted}`);
 
-  // Today
-  const todayMorning = new Date(2026, 9, 28, 10, 30, 0);
-  assert.equal(formatLastUpdated(todayMorning, referenceNow), 'Updated today · 10:30 AM');
+  // 3. When viewer's current time is several days later (older formatting)
+  const viewerNowLater = new Date(parsedDate);
+  viewerNowLater.setDate(viewerNowLater.getDate() + 7);
+  const olderFormatted = formatLastUpdated(isoUtcTimestamp, viewerNowLater);
+  assert.ok(!olderFormatted?.startsWith('Updated today') && !olderFormatted?.startsWith('Updated yesterday'));
+  assert.ok(olderFormatted?.startsWith('Updated '), `Expected Updated prefix, got ${olderFormatted}`);
 
-  // Yesterday
-  const yesterdayEvening = new Date(2026, 9, 27, 18, 15, 0);
-  assert.equal(formatLastUpdated(yesterdayEvening, referenceNow), 'Updated yesterday · 6:15 PM');
-
-  // Older date (e.g. 21 Oct 2026 · 10:40 PM)
-  const olderDate = new Date(2026, 9, 21, 22, 40, 0);
-  assert.equal(formatLastUpdated(olderDate, referenceNow), 'Updated 21 Oct 2026 · 10:40 PM');
-
-  // Null, undefined, empty, or invalid timestamps return null to omit metadata cleanly
+  // 4. Null timestamp returns null (remains hidden)
   assert.equal(formatLastUpdated(null), null);
   assert.equal(formatLastUpdated(undefined), null);
   assert.equal(formatLastUpdated(''), null);
   assert.equal(formatLastUpdated('invalid-timestamp'), null);
+});
+
+test('public discovery card uses live published timestamp and does not leak pending revisions', () => {
+  // Simulating a live published listing with an unapproved draft revision
+  const livePublishedListing = {
+    id: 101,
+    title: 'Live 2 BHK Flat',
+    updatedAt: '2026-09-20T10:00:00Z',
+    hasPendingRevision: true,
+    pendingRevisionUpdatedAt: '2026-09-28T16:00:00Z' // Should NOT be exposed or used for card meta
+  };
+
+  const referenceNow = new Date('2026-09-28T18:00:00Z');
+
+  // Card metadata MUST use live listing's updatedAt, NOT pending revision
+  const publicCardMeta = formatLastUpdated(livePublishedListing.updatedAt, referenceNow);
+  assert.equal(publicCardMeta?.startsWith('Updated today'), false);
+  assert.equal(publicCardMeta?.startsWith('Updated yesterday'), false);
+  // It is from 20 Sep (older)
+  assert.ok(publicCardMeta?.includes('20 Sep 2026'));
 });

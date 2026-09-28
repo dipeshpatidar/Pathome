@@ -22,7 +22,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.UUID;
@@ -36,6 +38,7 @@ public class LandlordDraftService {
             PropertyType.PENTHOUSE, PropertyType.SERVICED_APARTMENT);
     private static final Pattern BHK_PATTERN = Pattern.compile("^(?:1RK|[1-9][0-9]?BHK)$");
     private static final int PAGE_SIZE = 20;
+    private static final ZoneId INDIA_ZONE = ZoneId.of("Asia/Kolkata");
 
     private final PropertyUploadDraftRepository drafts;
     private final LandlordCapabilityService capabilities;
@@ -110,7 +113,7 @@ public class LandlordDraftService {
         return new LandlordDraftPage(slice.getContent().stream().map(draft -> {
             LandlordDraftData data = readData(draft);
             return new LandlordDraftSummary(draft.getDraftId(), draft.getTitleSummary(), draft.getStatus(),
-                    completionPercent(data, covers.containsKey(draft.getDraftId())), draft.getUpdatedAt(),
+                    completionPercent(data, covers.containsKey(draft.getDraftId())), toInstant(draft.getUpdatedAt()),
                     data.basics() == null ? null : data.basics().propertyType(),
                     data.basics() == null ? null : data.basics().bhkCount(),
                     data.location() == null ? null : data.location().city(),
@@ -118,6 +121,11 @@ public class LandlordDraftService {
                     data.pricing() == null ? null : data.pricing().monthlyRent(),
                     covers.containsKey(draft.getDraftId()) ? covers.get(draft.getDraftId()).getCloudinaryUrl() : null);
         }).toList(), page, slice.hasNext());
+    }
+
+    private static Instant toInstant(LocalDateTime localDateTime) {
+        if (localDateTime == null) return null;
+        return localDateTime.atZone(INDIA_ZONE).toInstant();
     }
 
     @Transactional

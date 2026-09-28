@@ -9,6 +9,8 @@ import com.indore.pathome.spaces.dto.PublicPropertyResponse;
 import com.indore.pathome.spaces.dto.PublicSearchSuggestion;
 import com.indore.pathome.spaces.dto.PublicSearchSuggestions;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.ParserInputSource;
@@ -1502,5 +1504,36 @@ public class PropertyControllerTest {
         assertEquals(1, response.suggestions().size());
         assertEquals("SEARCH_ANYWAY", response.suggestions().get(0).type());
         assertEquals("Search \"unmatched query term\"", response.suggestions().get(0).label());
+    }
+
+    @Test
+    public void publicDiscoveryUpdatedAtHasUnambiguousUtcInstantSemantics() throws Exception {
+        RentalDetails rental = new RentalDetails();
+        rental.setId(101L);
+        rental.setTitle("Timezone Test Property");
+        rental.setCity("Indore");
+        rental.setSector("Vijay Nagar");
+        rental.setBhkCount("2 BHK");
+        rental.setMonthlyRent(BigDecimal.valueOf(20000));
+        rental.setStatus(ListingStatus.ACTIVE);
+        // Explicitly set an IST timestamp: 2026-09-28 14:30:00 (UTC+05:30)
+        rental.setUpdatedAt(LocalDateTime.of(2026, 9, 28, 14, 30, 0));
+
+        when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
+                .thenReturn(new SliceImpl<Listing>(List.of(rental), PageRequest.of(0, 6), false));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(101L)).thenReturn(List.of());
+
+        ResponseEntity<PublicDiscoveryPage> response = propertyController.getAllActiveProperties(null, null, 0);
+        assertNotNull(response);
+        assertNotNull(response.getBody());
+        PublicDiscoveryResponse property = response.getBody().properties().get(0);
+
+        // Instant must match 14:30 IST -> 09:00 UTC
+        assertEquals(Instant.parse("2026-09-28T09:00:00Z"), property.updatedAt());
+
+        // Serialized JSON must contain explicit "Z" offset
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(property);
+        assertTrue(json.contains("\"updatedAt\":\"2026-09-28T09:00:00Z\""),
+                "Expected JSON to contain ISO-8601 UTC instant ending in Z, got: " + json);
     }
 }

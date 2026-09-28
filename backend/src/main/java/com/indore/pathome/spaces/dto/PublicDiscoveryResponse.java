@@ -1,10 +1,12 @@
 package com.indore.pathome.spaces.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.indore.pathome.spaces.entity.ListingType;
 import com.indore.pathome.spaces.entity.PropertyType;
 import com.indore.pathome.spaces.entity.RoomTag;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 
 /**
@@ -43,6 +45,7 @@ public record PublicDiscoveryResponse(
         boolean hasVideo,
         /** True when there is a subsequent page — client should show "Show More". */
         boolean hasMore,
-        /** Authoritative last-updated timestamp of the live published listing. */
-        LocalDateTime updatedAt
+        /** Authoritative last-updated timestamp of the live published listing in UTC. */
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        Instant updatedAt
 ) {}
