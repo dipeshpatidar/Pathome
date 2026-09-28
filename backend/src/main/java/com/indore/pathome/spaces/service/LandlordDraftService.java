@@ -1,0 +1,205 @@
+package com.indore.pathome.spaces.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftData;
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftPage;
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftResponse;
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftSummary;
+import com.indore.pathome.spaces.entity.PropertyType;
+import com.indore.pathome.spaces.entity.PropertyUploadDraft;
+import com.indore.pathome.spaces.entity.RentalMode;
+import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
+import jakarta.persistence.EntityNotFoundException;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.EnumSet;
+import java.util.UUID;
+import java.util.function.UnaryOperator;
+import java.util.regex.Pattern;
+
+@Service
+public class LandlordDraftService {
+    private static final EnumSet<PropertyType> SUPPORTED_TYPES = EnumSet.of(
+            PropertyType.FLAT, PropertyType.HOUSE, PropertyType.STUDIO,
+            PropertyType.PENTHOUSE, PropertyType.SERVICED_APARTMENT);
+    private static final Pattern BHK_PATTERN = Pattern.compile("^(?:1RK|[1-9][0-9]?BHK)$");
+    private static final int PAGE_SIZE = 20;
+
+    private final PropertyUploadDraftRepository drafts;
+    private final LandlordCapabilityService capabilities;
+    private final ObjectMapper mapper;
+
+    public LandlordDraftService(PropertyUploadDraftRepository drafts,
+                                LandlordCapabilityService capabilities, ObjectMapper mapper) {
+        this.drafts = drafts;
+        this.capabilities = capabilities;
+        this.mapper = mapper;
+    }
+
+    @Transactional
+    public LandlordDraftResponse create(String email, LandlordDraftData.Basics basics) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        LandlordDraftData.Basics validated = validateBasics(basics);
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId("landlord-" + UUID.randomUUID());
+        draft.setLandlordUserId(ownerId);
+        draft.setDraftType("SINGLE");
+        draft.setStatus("DRAFT");
+        draft.setTitleSummary(validated.propertyType().name() + " draft");
+        draft.setItemCount(1);
+        LandlordDraftData data = new LandlordDraftData(validated, null, null, null);
+        draft.setPayload(writeData(data));
+        return toResponse(drafts.saveAndFlush(draft), data);
+    }
+
+    @Transactional(readOnly = true)
+    public LandlordDraftResponse get(String email, String draftId) {
+        PropertyUploadDraft draft = requireOwned(email, draftId);
+        return toResponse(draft, readData(draft));
+    }
+
+    @Transactional(readOnly = true)
+    public LandlordDraftPage list(String email, int page) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
+        Slice<PropertyUploadDraft> slice = drafts.findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
+                ownerId, "DRAFT", PageRequest.of(page, PAGE_SIZE));
+        return new LandlordDraftPage(slice.getContent().stream().map(draft -> {
+            LandlordDraftData data = readData(draft);
+            return new LandlordDraftSummary(draft.getDraftId(), draft.getTitleSummary(), draft.getStatus(),
+                    completionPercent(data), draft.getUpdatedAt());
+        }).toList(), page, slice.hasNext());
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateBasics(String email, String draftId, int expectedVersion,
+                                              LandlordDraftData.Basics basics) {
+        LandlordDraftData.Basics validated = validateBasics(basics);
+        return update(email, draftId, expectedVersion,
+                data -> new LandlordDraftData(validated, data.pricing(), data.location(), data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updatePricing(String email, String draftId, int expectedVersion,
+                                               LandlordDraftData.Pricing pricing) {
+        if (pricing == null || pricing.monthlyRent() != null && pricing.monthlyRent().signum() <= 0
+                || pricing.securityDeposit() != null && pricing.securityDeposit().signum() < 0) {
+            throw new IllegalArgumentException("Rent must be positive and deposit cannot be negative");
+        }
+        return update(email, draftId, expectedVersion,
+                data -> new LandlordDraftData(data.basics(), pricing, data.location(), data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateLocation(String email, String draftId, int expectedVersion,
+                                                LandlordDraftData.Location location) {
+        if (location == null || tooLong(location.city(), 120) || tooLong(location.localityInput(), 120)
+                || tooLong(location.address(), 500) || tooLong(location.landmark(), 200)
+                || location.canonicalLocalityId() != null && location.canonicalLocalityId() <= 0) {
+            throw new IllegalArgumentException("Location contains an invalid value");
+        }
+        return update(email, draftId, expectedVersion,
+                data -> new LandlordDraftData(data.basics(), data.pricing(), location, data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateDetails(String email, String draftId, int expectedVersion,
+                                               LandlordDraftData.Details details) {
+        if (details == null || details.totalAreaSqFt() != null &&
+                (!Double.isFinite(details.totalAreaSqFt()) || details.totalAreaSqFt() <= 0)
+                || details.floorNumber() != null && details.floorNumber() < 0
+                || details.totalFloors() != null && details.totalFloors() < 1
+                || tooLong(details.furnishingStatus(), 80) || tooLong(details.amenities(), 2000)
+                || tooLong(details.description(), 4000)) {
+            throw new IllegalArgumentException("Details contain an invalid value");
+        }
+        return update(email, draftId, expectedVersion,
+                data -> new LandlordDraftData(data.basics(), data.pricing(), data.location(), details));
+    }
+
+    @Transactional(readOnly = true)
+    public PropertyUploadDraft requireOwned(String email, String draftId) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        return drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
+    }
+
+    public LandlordDraftData readData(PropertyUploadDraft draft) {
+        try {
+            return mapper.readValue(draft.getPayload(), LandlordDraftData.class);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Saved draft could not be read");
+        }
+    }
+
+    public int completionPercent(LandlordDraftData data) {
+        int complete = 0;
+        if (data.basics() != null && data.basics().propertyType() != null) complete++;
+        if (data.basics() != null && data.basics().bhkCount() != null) complete++;
+        if (data.pricing() != null && data.pricing().monthlyRent() != null) complete++;
+        if (data.pricing() != null && data.pricing().securityDeposit() != null) complete++;
+        if (data.location() != null && present(data.location().city())) complete++;
+        if (data.location() != null && data.location().canonicalLocalityId() != null) complete++;
+        if (data.location() != null && present(data.location().address())) complete++;
+        if (data.details() != null && data.details().availableFrom() != null) complete++;
+        // The ninth requirement is a successful cover image, derived from persisted media in Slice 5.
+        return complete * 100 / 9;
+    }
+
+    private LandlordDraftResponse update(String email, String draftId, int expectedVersion,
+                                         UnaryOperator<LandlordDraftData> change) {
+        PropertyUploadDraft draft = requireOwned(email, draftId);
+        if (!"DRAFT".equals(draft.getStatus())) {
+            throw new IllegalStateException("Draft can no longer be edited");
+        }
+        if (draft.getVersion() == null || draft.getVersion() != expectedVersion) {
+            throw new DraftConflictException(draftId, draft.getVersion() == null ? 0 : draft.getVersion(),
+                    "A newer version of this draft exists. Review it before saving again.");
+        }
+        LandlordDraftData data = change.apply(readData(draft));
+        draft.setPayload(writeData(data));
+        draft.setUpdatedAt(LocalDateTime.now());
+        if (data.basics() != null) draft.setTitleSummary(data.basics().propertyType().name() + " draft");
+        try {
+            return toResponse(drafts.saveAndFlush(draft), data);
+        } catch (OptimisticLockingFailureException ex) {
+            throw new DraftConflictException(draftId, expectedVersion + 1,
+                    "A newer version of this draft exists. Review it before saving again.");
+        }
+    }
+
+    private LandlordDraftData.Basics validateBasics(LandlordDraftData.Basics basics) {
+        if (basics == null || basics.propertyType() == null || !SUPPORTED_TYPES.contains(basics.propertyType())
+                || basics.rentalMode() != RentalMode.LONG_TERM_RENTAL
+                || basics.bhkCount() != null && !BHK_PATTERN.matcher(basics.bhkCount()).matches()) {
+            throw new IllegalArgumentException("Choose a supported long-term rental type and exact configuration");
+        }
+        return basics;
+    }
+
+    private LandlordDraftResponse toResponse(PropertyUploadDraft draft, LandlordDraftData data) {
+        return new LandlordDraftResponse(draft.getDraftId(), draft.getStatus(), draft.getVersion(),
+                completionPercent(data), data, draft.getCreatedAt(), draft.getUpdatedAt());
+    }
+
+    private String writeData(LandlordDraftData data) {
+        try {
+            String payload = mapper.writeValueAsString(data);
+            if (payload.length() > 64_000) throw new IllegalArgumentException("Draft is too large");
+            return payload;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Draft could not be saved");
+        }
+    }
+
+    private static boolean present(String value) { return value != null && !value.isBlank(); }
+    private static boolean tooLong(String value, int max) { return value != null && value.length() > max; }
+}

@@ -1635,3 +1635,13 @@ Changed: Listing.java gains nullable owner, rental mode, workflow status, optimi
 Verification: focused Maven ListingWorkflowServiceTest and OwnedListingAccessTest PASS 7/7; git diff --check PASS. The additive migration was reviewed but not applied against a live database; no public query or UI was changed in this slice.
 
 Commit: pending Slice 1 checkpoint. Push: NO.
+
+## 2026-09-28 10:32:19 IST — Phase 1B Slice 2 recoverable landlord drafts
+
+Why: Give each landlord multiple owner-scoped drafts with typed section updates, optimistic conflicts, and recoverable autosave before building the guided form.
+
+Changed: PropertyUploadDraft.java and PropertyUploadDraftRepository.java add separate landlord ownership and paged queries; V20__landlord_owned_drafts.sql preserves admin drafts while enforcing exactly one owner. LandlordDraftController.java, LandlordDraftService.java, and dto/lessor/* add create/list/resume and typed section PATCH with server-derived ownership, version checks, input bounds, and completion. GlobalExceptionHandler.java returns 400 for a missing version header. frontend-web/src/services/lessorDraftService.ts and lessorAutosave.ts add a sequential 800ms section save queue that keeps unsynced edits locally and blocks silent replay after conflict. Focused Java and Node tests cover ownership, multiple drafts, conflicts, authorization, and queue recovery. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordDraftServiceTest and LandlordDraftSecurityTest PASS 7/7; Node lessorAutosave.test.mjs PASS 3/3; frontend TypeScript no-emit PASS; git diff --check PASS. Migration has not been applied against a live database. UI integration and browser QA follow in later slices.
+
+Commit: pending Slice 2 checkpoint. Push: NO.

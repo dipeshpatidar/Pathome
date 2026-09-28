@@ -22,8 +22,11 @@ public class PropertyUploadDraft {
     @Column(name = "draft_id", nullable = false, unique = true, length = 64)
     private String draftId;
 
-    @Column(name = "admin_id", nullable = false, length = 120)
+    @Column(name = "admin_id", length = 120)
     private String adminId;
+
+    @Column(name = "landlord_user_id")
+    private Long landlordUserId;
 
     @Column(name = "draft_type", nullable = false, length = 30)
     private String draftType = "SINGLE"; // SINGLE or BATCH
@@ -63,6 +66,9 @@ public class PropertyUploadDraft {
 
     public String getAdminId() { return adminId; }
     public void setAdminId(String adminId) { this.adminId = adminId; }
+
+    public Long getLandlordUserId() { return landlordUserId; }
+    public void setLandlordUserId(Long landlordUserId) { this.landlordUserId = landlordUserId; }
 
     public String getDraftType() { return draftType; }
     public void setDraftType(String draftType) { this.draftType = draftType; }

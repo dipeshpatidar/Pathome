@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.repository;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -20,6 +21,11 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
     List<PropertyUploadDraft> findAllByAdminIdAndStatusNotOrderByUpdatedAtDesc(String adminId, String status);
 
     Optional<PropertyUploadDraft> findByDraftIdAndAdminId(String draftId, String adminId);
+
+    Optional<PropertyUploadDraft> findByDraftIdAndLandlordUserId(String draftId, Long landlordUserId);
+
+    Slice<PropertyUploadDraft> findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
+            Long landlordUserId, String status, Pageable pageable);
 
     Optional<PropertyUploadDraft> findByDraftId(String draftId);
 
