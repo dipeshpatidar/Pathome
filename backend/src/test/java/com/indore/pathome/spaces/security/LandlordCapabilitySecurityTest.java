@@ -38,7 +38,7 @@ class LandlordCapabilitySecurityTest {
     @WithMockUser(username = "tenant@example.com", roles = "TENANT")
     void activationUsesAuthenticatedIdentityAndIgnoresClientRole() throws Exception {
         when(capabilities.activate("tenant@example.com"))
-                .thenReturn(new LandlordCapabilityService.Capability(true, LocalDateTime.of(2026, 9, 28, 10, 0)));
+                .thenReturn(new LandlordCapabilityService.Capability(17L, true, false, LocalDateTime.of(2026, 9, 28, 10, 0)));
 
         mockMvc.perform(post("/api/v1/lessor/capability")
                         .contentType("application/json")
@@ -52,7 +52,7 @@ class LandlordCapabilitySecurityTest {
     @WithMockUser(username = "tenant@example.com", roles = "TENANT")
     void capabilityCanBeReadWithoutMutation() throws Exception {
         when(capabilities.getCapability("tenant@example.com"))
-                .thenReturn(new LandlordCapabilityService.Capability(false, null));
+                .thenReturn(new LandlordCapabilityService.Capability(17L, false, false, null));
 
         mockMvc.perform(get("/api/v1/lessor/capability"))
                 .andExpect(status().isOk())

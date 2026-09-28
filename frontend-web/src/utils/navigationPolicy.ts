@@ -78,7 +78,7 @@ export function resolveLogoDestination(context: WorkspaceContext): LogoDestinati
  */
 export function shouldShowMyProperties(role?: string | null, hasLessorProfile?: boolean): boolean {
   if (!role || role === 'GUEST') return false;
-  return Boolean(hasLessorProfile || role === 'LANDLORD' || role === 'ROLE_LANDLORD');
+  return hasLessorProfile === true;
 }
 
 /**

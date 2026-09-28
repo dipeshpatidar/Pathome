@@ -1789,3 +1789,13 @@ Changed: frontend-web/src/context/NotificationContext.tsx and frontend-web/src/u
 Outcome: Old-account history is hidden immediately and stale responses cannot enter the new account; a duplicate event is an atomic no-op in the workflow transaction. A missing or unlinked lessor profile skips the in-app notification while submission succeeds. A later resubmission of the same draft uses a new persisted version. Published approval says changes are live; paused approval says the property remains paused.
 
 Verification: Four focused backend test classes passed (41 tests); two focused frontend notification test files passed (12 tests); frontend production build passed; git diff --check passed before this log entry. Live PostgreSQL concurrency and mounted browser interaction were not exercised. Commit: not created. Push: not attempted.
+
+## 2026-09-28 23:20 IST — Lessor capability review fixes
+
+Why: Fix the P0/P1 review findings in f4ba056: ambiguous Spring bean constructors, role-derived lessor profile claims, and cached or stale client capability across account changes.
+
+Changed: AuthController.java and LandlordCapabilityService.java now each have one production constructor, derive hasLessorProfile only from LessorProfileRepository.existsByLinkedUserId(user.id), and keep profile-based access distinct from explicit self-service activation. AuthControllerTest.java, LandlordCapabilityServiceTest.java, LandlordCapabilitySecurityTest.java, and new LessorCapabilityBeanWiringTest.java cover persistence truth, role-only denial, linked access, and actual Spring bean construction. Home.tsx and Navbar.tsx clear capability on auth transitions, ignore cached profile flags, reject stale or mismatched async results through new lessorCapabilityState.ts, and use navigationPolicy.ts without a role fallback. lessorCapabilityNavigation.test.mjs exercises the production tracker across account switches, fetch failure, and stale responses. The two untracked AGENTS review files were untouched.
+
+Outcome: A ROLE_LANDLORD flag without a linked profile no longer claims hasLessorProfile or enables portfolio access; a linked profile works for tenant and lessor navigation. Direct /lessor self-service entry remains intact. No OTP implementation, schema change, or Phase-2 work was performed.
+
+Verification: Focused backend AuthControllerTest, LandlordCapabilityServiceTest, LandlordCapabilitySecurityTest, and LessorCapabilityBeanWiringTest passed (19 tests). Focused frontend lessorCapabilityNavigation.test.mjs passed (11 tests). Frontend production build passed. git diff --check passed before this log entry; final diff check follows. Browser interaction and live database integration were not run. Commit: not created. Push: not attempted.

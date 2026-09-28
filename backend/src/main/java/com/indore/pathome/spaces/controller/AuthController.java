@@ -26,10 +26,6 @@ public class AuthController {
     private final JwtUtils jwtUtils;
     private final LessorProfileRepository lessorProfileRepository;
 
-    public AuthController(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtUtils jwtUtils) {
-        this(userRepository, passwordEncoder, jwtUtils, null);
-    }
-
     public AuthController(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtUtils jwtUtils,
                           LessorProfileRepository lessorProfileRepository) {
         this.userRepository = userRepository;
@@ -94,8 +90,7 @@ public class AuthController {
         User user = userOpt.get();
         String token = jwtUtils.generateToken(user.getId(), user.getEmail(), user.getRole().name());
 
-        boolean hasLessorProfile = (lessorProfileRepository != null && lessorProfileRepository.findByLinkedUserId(user.getId()).isPresent())
-                || user.getRole() == Role.ROLE_LANDLORD;
+        boolean hasLessorProfile = lessorProfileRepository.existsByLinkedUserId(user.getId());
 
         return ResponseEntity.ok(new AuthResponse(
                 token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining(), hasLessorProfile

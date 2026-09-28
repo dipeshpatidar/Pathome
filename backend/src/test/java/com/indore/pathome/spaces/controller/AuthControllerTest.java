@@ -37,12 +37,15 @@ class AuthControllerTest {
     @Mock
     private JwtUtils jwtUtils;
 
+    @Mock
+    private LessorProfileRepository lessorProfileRepository;
+
     private AuthController authController;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        authController = new AuthController(userRepository, passwordEncoder, jwtUtils);
+        authController = new AuthController(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository);
     }
 
     @Test
@@ -108,6 +111,8 @@ class AuthControllerTest {
         assertEquals("mock-jwt-token", authResponse.getToken());
         assertEquals("new@example.com", authResponse.getEmail());
         assertEquals("ROLE_TENANT", authResponse.getRole());
+        assertFalse(authResponse.isHasLessorProfile());
+        verifyNoInteractions(lessorProfileRepository);
     }
 
     @Test
@@ -203,14 +208,12 @@ class AuthControllerTest {
         AuthResponse authResponse = (AuthResponse) response.getBody();
         assertEquals("valid-jwt", authResponse.getToken());
         assertFalse(authResponse.isHasLessorProfile());
+        verify(lessorProfileRepository).existsByLinkedUserId(5L);
     }
 
     @Test
     @DisplayName("Login with linked lessor profile returns hasLessorProfile true")
     void loginWithLinkedLessorProfileReturnsHasLessorProfileTrue() {
-        LessorProfileRepository profileRepo = mock(LessorProfileRepository.class);
-        AuthController controller = new AuthController(userRepository, passwordEncoder, jwtUtils, profileRepo);
-
         User user = new User();
         user.setId(7L);
         user.setEmail("lessor@example.com");
@@ -222,16 +225,36 @@ class AuthControllerTest {
         when(userRepository.findByEmail("lessor@example.com")).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("Password123", "hashed-pw")).thenReturn(true);
         when(jwtUtils.generateToken(7L, "lessor@example.com", "ROLE_TENANT")).thenReturn("lessor-jwt");
-        when(profileRepo.findByLinkedUserId(7L)).thenReturn(Optional.of(new com.indore.pathome.spaces.entity.LessorProfile()));
+        when(lessorProfileRepository.existsByLinkedUserId(7L)).thenReturn(true);
 
         LoginRequest request = new LoginRequest();
         request.setEmail("lessor@example.com");
         request.setPassword("Password123");
 
-        ResponseEntity<?> response = controller.loginUser(request);
+        ResponseEntity<?> response = authController.loginUser(request);
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertTrue(response.getBody() instanceof AuthResponse);
         AuthResponse authResponse = (AuthResponse) response.getBody();
         assertTrue(authResponse.isHasLessorProfile());
+        verify(lessorProfileRepository).existsByLinkedUserId(7L);
+    }
+
+    @Test
+    void landlordRoleWithoutLinkedProfileDoesNotClaimProfile() {
+        User user = new User();
+        user.setId(8L);
+        user.setEmail("landlord@example.com");
+        user.setPasswordHash("hashed-pw");
+        user.setRole(Role.ROLE_LANDLORD);
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("Password123", "hashed-pw")).thenReturn(true);
+        LoginRequest request = new LoginRequest();
+        request.setEmail(user.getEmail());
+        request.setPassword("Password123");
+
+        AuthResponse response = (AuthResponse) authController.loginUser(request).getBody();
+        assertNotNull(response);
+        assertFalse(response.isHasLessorProfile());
+        verify(lessorProfileRepository).existsByLinkedUserId(8L);
     }
 }

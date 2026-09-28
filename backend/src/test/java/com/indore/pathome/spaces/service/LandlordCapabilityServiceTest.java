@@ -18,12 +18,14 @@ import static org.mockito.Mockito.*;
 
 class LandlordCapabilityServiceTest {
     private UserRepository users;
+    private LessorProfileRepository profileRepo;
     private LandlordCapabilityService service;
 
     @BeforeEach
     void setUp() {
         users = mock(UserRepository.class);
-        service = new LandlordCapabilityService(users);
+        profileRepo = mock(LessorProfileRepository.class);
+        service = new LandlordCapabilityService(users, profileRepo);
     }
 
     @Test
@@ -75,14 +77,11 @@ class LandlordCapabilityServiceTest {
 
     @Test
     void tenantWithoutLessorProfileReturnsFalseForHasLessorProfile() {
-        LessorProfileRepository profileRepo = mock(LessorProfileRepository.class);
-        LandlordCapabilityService capService = new LandlordCapabilityService(users, profileRepo);
-
         User tenant = user(22L, Role.ROLE_TENANT);
         when(users.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
-        when(profileRepo.findByLinkedUserId(22L)).thenReturn(Optional.empty());
+        when(profileRepo.existsByLinkedUserId(22L)).thenReturn(false);
 
-        var capability = capService.getCapability("tenant@example.com");
+        var capability = service.getCapability("tenant@example.com");
         assertEquals(22L, capability.userId());
         assertFalse(capability.hasLessorProfile());
         assertFalse(capability.enabled());
@@ -90,31 +89,27 @@ class LandlordCapabilityServiceTest {
 
     @Test
     void tenantWithLinkedLessorProfileReturnsTrueForHasLessorProfile() {
-        LessorProfileRepository profileRepo = mock(LessorProfileRepository.class);
-        LandlordCapabilityService capService = new LandlordCapabilityService(users, profileRepo);
-
         User tenant = user(23L, Role.ROLE_TENANT);
         when(users.findByEmail("lessor@example.com")).thenReturn(Optional.of(tenant));
-        when(profileRepo.findByLinkedUserId(23L)).thenReturn(Optional.of(new com.indore.pathome.spaces.entity.LessorProfile()));
+        when(profileRepo.existsByLinkedUserId(23L)).thenReturn(true);
 
-        var capability = capService.getCapability("lessor@example.com");
+        var capability = service.getCapability("lessor@example.com");
         assertEquals(23L, capability.userId());
         assertTrue(capability.hasLessorProfile());
         assertTrue(capability.enabled());
+        assertEquals(23L, service.requireLandlordUserId("lessor@example.com"));
     }
 
     @Test
-    void landlordRoleAlwaysReturnsTrueForHasLessorProfile() {
-        LessorProfileRepository profileRepo = mock(LessorProfileRepository.class);
-        LandlordCapabilityService capService = new LandlordCapabilityService(users, profileRepo);
-
+    void landlordRoleWithoutProfileDoesNotFabricateLessorCapability() {
         User landlord = user(24L, Role.ROLE_LANDLORD);
         when(users.findByEmail("landlord@example.com")).thenReturn(Optional.of(landlord));
 
-        var capability = capService.getCapability("landlord@example.com");
+        var capability = service.getCapability("landlord@example.com");
         assertEquals(24L, capability.userId());
-        assertTrue(capability.hasLessorProfile());
-        assertTrue(capability.enabled());
+        assertFalse(capability.hasLessorProfile());
+        assertFalse(capability.enabled());
+        assertThrows(AccessDeniedException.class, () -> service.requireLandlordUserId("landlord@example.com"));
     }
 
     private static User user(Long id, Role role) {

@@ -23,6 +23,7 @@ import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { CompactSearchContext } from './CompactSearchContext';
 import { propertyService } from '../services/propertyService';
 import { lessorCapabilityService } from '../services/lessorCapabilityService';
+import { LessorCapabilityTracker, readLessorSessionIdentity } from '../utils/lessorCapabilityState';
 import { useNotification } from '../context/NotificationContext';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters } from '../utils/rentalSearch';
 
@@ -718,9 +719,12 @@ export const Home: React.FC = () => {
   const initialSession = getInitialSession();
   const [role, setRole] = useState<UserRole>(initialSession.role);
   const [user, setUser] = useState<UserProfile | null>(initialSession.user);
-  const [hasLessorCapability, setHasLessorCapability] = useState<boolean>(() => {
-    return Boolean(initialSession.user?.hasLessorProfile);
-  });
+  const [hasLessorCapability, setHasLessorCapability] = useState(false);
+  const capabilityTrackerRef = useRef<LessorCapabilityTracker | null>(null);
+  if (!capabilityTrackerRef.current) {
+    capabilityTrackerRef.current = new LessorCapabilityTracker(setHasLessorCapability);
+  }
+  const capabilityTracker = capabilityTrackerRef.current;
   const [properties, setProperties] = useState<Property[]>([]);
   const [discoveryState, setDiscoveryState] = useState<'LOADING' | 'READY' | 'ERROR'>('LOADING');
   const [loadedDiscoveryKey, setLoadedDiscoveryKey] = useState<string | null>(null);
@@ -1019,7 +1023,7 @@ export const Home: React.FC = () => {
           // LOGOUT IN ANOTHER WINDOW/TAB DETECTED!
           setUser(null);
           setRole('GUEST');
-          setHasLessorCapability(false);
+          capabilityTracker.clear();
           navigate('/', { replace: true });
           setShowAuthModal(true);
         } else {
@@ -1028,7 +1032,7 @@ export const Home: React.FC = () => {
             const parsedUser = JSON.parse(storedUser);
             setUser(parsedUser);
             setRole(storedRole as UserRole);
-            setHasLessorCapability(Boolean(parsedUser.hasLessorProfile));
+            capabilityTracker.clear();
           } catch (err) {
             console.error('Cross-tab session sync error', err);
           }
@@ -1038,7 +1042,7 @@ export const Home: React.FC = () => {
 
     window.addEventListener('storage', handleCrossTabSync);
     return () => window.removeEventListener('storage', handleCrossTabSync);
-  }, [navigate]);
+  }, [navigate, capabilityTracker]);
 
   // 1b. SESSION EXPIRATION LISTENER (Triggered by 401 / expired token)
   useEffect(() => {
@@ -1048,7 +1052,7 @@ export const Home: React.FC = () => {
       }
       setRole('GUEST');
       setUser(null);
-      setHasLessorCapability(false);
+      capabilityTracker.clear();
       localStorage.removeItem('pathome_role');
       localStorage.removeItem('pathome_user');
       localStorage.removeItem('pathome_auth_token');
@@ -1059,49 +1063,29 @@ export const Home: React.FC = () => {
 
     window.addEventListener('pathome_session_expired', handleSessionExpired);
     return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, capabilityTracker]);
 
   // 1c. AUTHORITATIVE LESSOR CAPABILITY SYNCHRONIZATION
   useEffect(() => {
-    let live = true;
     const syncCapability = () => {
-      if (!user || user.role !== 'TENANT') {
-        setHasLessorCapability(false);
+      const identity = readLessorSessionIdentity();
+      const eligibleRole = ['TENANT', 'LANDLORD', 'ROLE_LANDLORD'].includes(role);
+      if (!user || !eligibleRole || !identity || identity.userId !== user.id) {
+        capabilityTracker.clear();
         return;
       }
-      const token = localStorage.getItem('pathome_auth_token');
-      if (!token) {
-        setHasLessorCapability(false);
-        return;
-      }
-      lessorCapabilityService
-        .get()
-        .then(cap => {
-          if (!live) return;
-          const hasProfile = Boolean(cap.hasLessorProfile);
-          setHasLessorCapability(hasProfile);
-          if (user.hasLessorProfile !== hasProfile) {
-            const updated = { ...user, hasLessorProfile: hasProfile };
-            setUser(updated);
-            try {
-              localStorage.setItem('pathome_user', JSON.stringify(updated));
-            } catch (_) {}
-          }
-        })
-        .catch(() => {
-          if (live) {
-            setHasLessorCapability(Boolean(user.hasLessorProfile));
-          }
-        });
+      void capabilityTracker.refresh(identity, () => lessorCapabilityService.get());
     };
 
     syncCapability();
     window.addEventListener('pathome_auth_changed', syncCapability);
+    window.addEventListener('storage', syncCapability);
     return () => {
-      live = false;
+      capabilityTracker.cancel();
       window.removeEventListener('pathome_auth_changed', syncCapability);
+      window.removeEventListener('storage', syncCapability);
     };
-  }, [user?.id, role]);
+  }, [user?.id, role, capabilityTracker]);
 
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
@@ -1118,6 +1102,7 @@ export const Home: React.FC = () => {
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
         setRole('GUEST');
         setUser(null);
+        capabilityTracker.clear();
         localStorage.removeItem('pathome_role');
         localStorage.removeItem('pathome_user');
         localStorage.removeItem('pathome_auth_token');
@@ -1241,7 +1226,7 @@ export const Home: React.FC = () => {
     localStorage.setItem('pathome_user', JSON.stringify(userProfile));
     setUser(userProfile);
     setRole(userProfile.role);
-    setHasLessorCapability(Boolean(userProfile.hasLessorProfile));
+    capabilityTracker.clear();
     window.dispatchEvent(new Event('pathome_auth_changed'));
     setShowAuthModal(false);
     setLessorAuthContext(null);
@@ -1270,7 +1255,7 @@ export const Home: React.FC = () => {
     localStorage.removeItem('pathome_active_admin_tab');
     setUser(null);
     setRole('GUEST');
-    setHasLessorCapability(false);
+    capabilityTracker.clear();
     window.dispatchEvent(new Event('pathome_auth_changed'));
     navigate('/');
   };

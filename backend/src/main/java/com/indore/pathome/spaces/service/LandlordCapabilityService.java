@@ -15,10 +15,6 @@ public class LandlordCapabilityService {
     private final UserRepository users;
     private final LessorProfileRepository lessorProfiles;
 
-    public LandlordCapabilityService(UserRepository users) {
-        this(users, null);
-    }
-
     public LandlordCapabilityService(UserRepository users, LessorProfileRepository lessorProfiles) {
         this.users = users;
         this.lessorProfiles = lessorProfiles;
@@ -43,7 +39,7 @@ public class LandlordCapabilityService {
     @Transactional(readOnly = true)
     public Long requireLandlordUserId(String authenticatedEmail) {
         User user = requireEligibleUser(authenticatedEmail);
-        if (user.getLandlordActivatedAt() == null && user.getRole() != Role.ROLE_LANDLORD) {
+        if (user.getLandlordActivatedAt() == null && !lessorProfiles.existsByLinkedUserId(user.getId())) {
             throw new AccessDeniedException("Landlord capability required");
         }
         return user.getId();
@@ -62,9 +58,8 @@ public class LandlordCapabilityService {
     }
 
     private Capability toCapability(User user) {
-        boolean hasProfile = (lessorProfiles != null && lessorProfiles.findByLinkedUserId(user.getId()).isPresent())
-                || user.getRole() == Role.ROLE_LANDLORD;
-        boolean enabled = user.getLandlordActivatedAt() != null || user.getRole() == Role.ROLE_LANDLORD || hasProfile;
+        boolean hasProfile = lessorProfiles.existsByLinkedUserId(user.getId());
+        boolean enabled = user.getLandlordActivatedAt() != null || hasProfile;
         return new Capability(
                 user.getId(),
                 enabled,
@@ -73,9 +68,5 @@ public class LandlordCapabilityService {
         );
     }
 
-    public record Capability(Long userId, boolean enabled, boolean hasLessorProfile, LocalDateTime activatedAt) {
-        public Capability(boolean enabled, LocalDateTime activatedAt) {
-            this(null, enabled, enabled, activatedAt);
-        }
-    }
+    public record Capability(Long userId, boolean enabled, boolean hasLessorProfile, LocalDateTime activatedAt) {}
 }

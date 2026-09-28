@@ -34,7 +34,7 @@ interface NavbarProps {
   activeAdminTab?: string;
   setActiveAdminTab?: (tab: string) => void;
   isLandingHero?: boolean;
-  hasLessorCapability?: boolean;
+  hasLessorCapability: boolean;
 }
 
 /**
@@ -162,8 +162,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const workspaceContext = resolveWorkspaceContext(location.pathname, role);
   const logoDestination = resolveLogoDestination(workspaceContext);
 
-  const showMyProperties = shouldShowMyProperties(role, hasLessorCapability ?? user?.hasLessorProfile);
-  const showListProperty = shouldShowListYourProperty(role, hasLessorCapability ?? user?.hasLessorProfile);
+  const showMyProperties = shouldShowMyProperties(role, hasLessorCapability);
+  const showListProperty = shouldShowListYourProperty(role, hasLessorCapability);
 
   // Track scroll position to transition from transparent Hero overlay to solid sticky header
   useEffect(() => {
