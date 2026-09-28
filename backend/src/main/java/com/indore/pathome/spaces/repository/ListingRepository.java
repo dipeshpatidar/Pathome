@@ -4,6 +4,7 @@ import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.ListingType;
 import com.indore.pathome.spaces.entity.PropertyType;
+import com.indore.pathome.spaces.entity.RentalDetails;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,6 +19,9 @@ import java.util.Optional;
 @Repository
 public interface ListingRepository extends JpaRepository<Listing, Long> {
     Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
+
+    @Query("select r from RentalDetails r where r.ownerUserId = :ownerId order by r.updatedAt desc, r.id desc")
+    Slice<RentalDetails> findLandlordRentals(@Param("ownerId") Long ownerId, Pageable pageable);
 
     interface LocalitySuggestionRow {
         String getCity();

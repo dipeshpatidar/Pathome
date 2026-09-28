@@ -1685,3 +1685,13 @@ Changed: Listing.java and V22__optional_owner_phone_for_landlord.sql allow a lan
 Verification: focused Maven LandlordSubmissionServiceTest and ListingWorkflowServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Database migration, full browser path, and Cloudinary-backed submission still require environment QA.
 
 Commit: pending Slice 6 checkpoint. Push: NO.
+
+## 2026-09-28 10:57:49 IST — Phase 1B Slice 7 owner property portfolio
+
+Why: Give landlords a truthful, paginated My Properties view for multiple drafts and submitted rentals, with owner-only listing preview.
+
+Changed: ListingRepository.java and LandlordPortfolioService/Controller plus lessor DTOs add owner-scoped, 20-at-a-time rental listing summaries, batched cover lookup, and public-safe detail preview. PropertyDraftMediaRepository.java, LandlordDraftService.java, and LandlordDraftSummary.java add batched draft covers and summary fields. LessorPortfolio.tsx, LessorListingView.tsx, LessorWorkspace.tsx, and related service types add separate incremental draft/listing loading, empty/skeleton/error states, status, pricing, dates, Continue/Preview, and Add property. LandlordPortfolioServiceTest.java checks owner scoping, pagination shape, batched media, and private-field redaction. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordPortfolioServiceTest and LandlordDraftServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Browser layout and live database repository query remain for manual QA.
+
+Commit: pending Slice 7 checkpoint. Push: NO.

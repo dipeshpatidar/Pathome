@@ -28,11 +28,11 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
     boolean existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
             String draftId, Long landlordUserId, String uploadStatus, String contentTypePrefix);
 
-    @Query("SELECT DISTINCT m.draftId FROM PropertyDraftMedia m WHERE m.draftId IN :draftIds " +
+    @Query("SELECT m FROM PropertyDraftMedia m WHERE m.draftId IN :draftIds " +
             "AND m.landlordUserId = :ownerId AND m.uploadStatus = 'UPLOADED' " +
             "AND m.isCover = true AND m.contentType LIKE 'image/%'")
-    List<String> findUploadedCoverDraftIds(@Param("draftIds") List<String> draftIds,
-                                           @Param("ownerId") Long ownerId);
+    List<PropertyDraftMedia> findUploadedCoversForDraftIds(@Param("draftIds") List<String> draftIds,
+                                                            @Param("ownerId") Long ownerId);
 
     @Modifying
     @Query("UPDATE PropertyDraftMedia m SET m.isCover = false WHERE m.draftId = :draftId AND m.adminId = :adminId")

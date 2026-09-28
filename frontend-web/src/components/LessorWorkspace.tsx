@@ -1,15 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Building2, Check, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Building2, Check, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { API_ROOT_URL } from '../config/endpoints';
 import { createApiRequestError, getErrorMessage } from '../services/apiError';
 import { LessorAutosave, LessorSaveStatus } from '../services/lessorAutosave';
-import { LessorBasics, LessorDetails, LessorDraft, LessorDraftSummary, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
+import { LessorBasics, LessorDetails, LessorDraft, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
 import { LessorLocalityOption, lessorLocationService } from '../services/lessorLocationService';
 import { LessorMediaStep } from './LessorMediaStep';
 import { LessorDetailsStep } from './LessorDetailsStep';
 import { LessorPreviewStep } from './LessorPreviewStep';
+import { LessorPortfolio } from './LessorPortfolio';
+import { LessorListingView } from './LessorListingView';
 import { bhkChoice, exactBhk, pricingReady } from '../utils/lessorConfiguration';
 
 const TYPES: { value: ResidentialType; label: string }[] = [
@@ -38,9 +40,8 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedType, setSelectedType] = useState<ResidentialType | null>(null);
-  const [drafts, setDrafts] = useState<LessorDraftSummary[]>([]);
-  const [loadingDrafts, setLoadingDrafts] = useState(false);
   const draftId = /^\/lessor\/drafts\/([^/]+)$/.exec(location.pathname)?.[1];
+  const listingId = /^\/lessor\/listings\/(\d+)$/.exec(location.pathname)?.[1];
   const isNew = location.pathname === '/lessor/new';
 
   useEffect(() => {
@@ -50,17 +51,6 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       .catch(cause => { if (live) { setError(getErrorMessage(cause, 'Unable to open your property workspace.')); setCapabilityState('error'); } });
     return () => { live = false; };
   }, [user.id]);
-
-  useEffect(() => {
-    if (capabilityState !== 'active' || isNew || draftId) return;
-    let live = true;
-    setLoadingDrafts(true);
-    lessorDraftService.list().then(page => {
-      if (live) setDrafts(page.items);
-    }).catch(cause => { if (live) setError(getErrorMessage(cause, 'Unable to load your drafts.')); })
-      .finally(() => { if (live) setLoadingDrafts(false); });
-    return () => { live = false; };
-  }, [capabilityState, isNew, draftId]);
 
   const activate = async () => {
     setBusy(true); setError('');
@@ -90,6 +80,7 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       <button type="button" disabled={busy} onClick={activate} className={`${BUTTON} mt-7`}>{busy ? 'Opening…' : 'Get started'}<ArrowRight className="h-4 w-4"/></button>
     </section>}
     {capabilityState === 'active' && draftId && <LessorEditor key={draftId} userId={user.id} draftId={decodeURIComponent(draftId)} onBack={() => navigate('/lessor')}/>}
+    {capabilityState === 'active' && listingId && <LessorListingView key={listingId} listingId={Number(listingId)} onBack={() => navigate('/lessor')}/>}
     {capabilityState === 'active' && isNew && <section className="mx-auto max-w-2xl">
       <button type="button" className={SECONDARY} onClick={() => navigate('/lessor')}><ArrowLeft className="h-4 w-4"/>My properties</button>
       <p className="mt-8 text-xs font-bold uppercase tracking-widest text-emerald-700">Step 1 of 6</p>
@@ -101,11 +92,11 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       {error && <p role="alert" className="mt-5 text-sm text-rose-700">{error}</p>}
       <button type="button" disabled={!selectedType || busy} onClick={create} className={`${BUTTON} mt-7 w-full sm:w-auto`}>{busy ? 'Starting…' : 'Continue'}<ArrowRight className="h-4 w-4"/></button>
     </section>}
-    {capabilityState === 'active' && !draftId && !isNew && <section>
-      <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your workspace</p><h1 className="mt-1 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">My Properties</h1></div><button className={BUTTON} onClick={() => navigate('/lessor/new')}><Plus className="h-4 w-4"/>Add property</button></div>
-      {error && <div role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}<button className="ml-3 underline" onClick={() => window.location.reload()}>Retry</button></div>}
-      {loadingDrafts ? <div className="mt-8 grid gap-4 sm:grid-cols-2">{[1,2].map(i => <div key={i} className="h-40 animate-pulse rounded-2xl bg-slate-200"/>)}</div> : drafts.length === 0 && !error ? <div className="mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-7"><Building2 className="mb-4 h-7 w-7 text-emerald-700"/><h2 className="text-xl font-semibold text-slate-950">Your first property starts here</h2><p className="mt-2 text-sm text-slate-600">Add the basics now. You can return to finish later.</p><button className={`${BUTTON} mt-5`} onClick={() => navigate('/lessor/new')}>Add property</button></div> : <div className="mt-8 grid gap-4 sm:grid-cols-2">{drafts.map(draft => <article key={draft.draftId} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Draft · {draft.completionPercent}% complete</p><h2 className="mt-2 break-words text-lg font-semibold text-slate-950">{draft.title}</h2><p className="mt-1 text-sm text-slate-500">Updated {new Date(draft.updatedAt).toLocaleDateString('en-IN')}</p><button className={`${SECONDARY} mt-5`} onClick={() => navigate(`/lessor/drafts/${encodeURIComponent(draft.draftId)}`)}>Continue<ArrowRight className="h-4 w-4"/></button></article>)}</div>}
-    </section>}
+    {capabilityState === 'active' && !draftId && !listingId && !isNew && <LessorPortfolio
+      onAdd={() => navigate('/lessor/new')}
+      onOpenDraft={id => navigate(`/lessor/drafts/${encodeURIComponent(id)}`)}
+      onOpenListing={id => navigate(`/lessor/listings/${id}`)}
+    />}
   </main>;
 }
 

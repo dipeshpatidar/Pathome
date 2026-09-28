@@ -8,6 +8,7 @@ import com.indore.pathome.spaces.dto.lessor.LandlordDraftResponse;
 import com.indore.pathome.spaces.dto.lessor.LandlordDraftSummary;
 import com.indore.pathome.spaces.entity.PropertyType;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
+import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.RentalMode;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
@@ -78,12 +79,20 @@ public class LandlordDraftService {
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         Slice<PropertyUploadDraft> slice = drafts.findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
                 ownerId, "DRAFT", PageRequest.of(page, PAGE_SIZE));
-        java.util.Set<String> covers = slice.isEmpty() ? java.util.Set.of() : new java.util.HashSet<>(
-                media.findUploadedCoverDraftIds(slice.getContent().stream().map(PropertyUploadDraft::getDraftId).toList(), ownerId));
+        java.util.Map<String, PropertyDraftMedia> covers = slice.isEmpty() ? java.util.Map.of() :
+                media.findUploadedCoversForDraftIds(slice.getContent().stream().map(PropertyUploadDraft::getDraftId).toList(), ownerId)
+                        .stream().collect(java.util.stream.Collectors.toMap(PropertyDraftMedia::getDraftId,
+                                cover -> cover, (first, ignored) -> first));
         return new LandlordDraftPage(slice.getContent().stream().map(draft -> {
             LandlordDraftData data = readData(draft);
             return new LandlordDraftSummary(draft.getDraftId(), draft.getTitleSummary(), draft.getStatus(),
-                    completionPercent(data, covers.contains(draft.getDraftId())), draft.getUpdatedAt());
+                    completionPercent(data, covers.containsKey(draft.getDraftId())), draft.getUpdatedAt(),
+                    data.basics() == null ? null : data.basics().propertyType(),
+                    data.basics() == null ? null : data.basics().bhkCount(),
+                    data.location() == null ? null : data.location().city(),
+                    data.location() == null || data.location().canonicalLocalityId() == null ? null : data.location().localityInput(),
+                    data.pricing() == null ? null : data.pricing().monthlyRent(),
+                    covers.containsKey(draft.getDraftId()) ? covers.get(draft.getDraftId()).getCloudinaryUrl() : null);
         }).toList(), page, slice.hasNext());
     }
 

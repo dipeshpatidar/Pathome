@@ -8,7 +8,9 @@ export interface LessorLocation { city: string; canonicalLocalityId: number | nu
 export interface LessorDetails { availableFrom: string | null; furnishingStatus: string; totalAreaSqFt: number | null; floorNumber: number | null; totalFloors: number | null; amenities: string; description: string }
 export interface LessorDraftData { basics: LessorBasics; pricing: LessorPricing | null; location: LessorLocation | null; details: LessorDetails | null }
 export interface LessorDraft { draftId: string; status: string; version: number; completionPercent: number; data: LessorDraftData; createdAt: string; updatedAt: string }
-export interface LessorDraftSummary { draftId: string; title: string; status: string; completionPercent: number; updatedAt: string }
+export interface LessorDraftSummary { draftId: string; title: string; status: string; completionPercent: number; updatedAt: string;
+  propertyType: ResidentialType | null; bhkCount: string | null; city: string | null; locality: string | null;
+  monthlyRent: number | null; coverUrl: string | null }
 export interface LessorDraftPage { items: LessorDraftSummary[]; page: number; hasMore: boolean }
 export type DraftSection = 'basics' | 'pricing' | 'location' | 'details';
 export type DraftSectionValue = LessorBasics | LessorPricing | LessorLocation | LessorDetails;
