@@ -5,7 +5,6 @@ import com.indore.pathome.spaces.entity.LessorSourceType;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import jakarta.persistence.EntityNotFoundException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +30,10 @@ public class LessorProfileService {
     /**
      * Resolves the canonical LessorProfile for a self-service User, initializing from User contact if needed.
      * Subsequent contact updates mutate LessorProfile exclusively, stopping continuous two-way sync.
+     *
+     * <p>Concurrency: uses native DB insert-if-absent (ON CONFLICT DO NOTHING) so concurrent creations
+     * never trigger a unique constraint violation or mark the caller's transaction rollback-only.
+     * Both callers safely resolve the winner's row from the subsequent select.</p>
      */
     @Transactional
     public LessorProfile getOrCreateProfileForUser(User user) {
@@ -38,36 +41,42 @@ public class LessorProfileService {
             throw new IllegalArgumentException("User and user ID must not be null");
         }
 
+        // Fast path: profile already exists.
         Optional<LessorProfile> existing = lessorProfiles.findByLinkedUserId(user.getId());
         if (existing.isPresent()) {
             return existing.get();
         }
 
+        // Seed contact truthfully: null when the User has no usable value.
         String displayName = LandlordContactService.isUsableName(user.getFullName())
                 ? user.getFullName().trim()
-                : (user.getFullName() != null && !user.getFullName().isBlank() ? user.getFullName().trim() : "");
+                : null;
 
         String mobileNumber = LandlordContactService.isUsablePhone(user.getPhoneNumber())
                 ? LandlordContactService.normalizePhone(user.getPhoneNumber())
                 : null;
 
-        LessorProfile profile = new LessorProfile();
-        profile.setLinkedUserId(user.getId());
-        profile.setDisplayName(displayName);
-        profile.setMobileNumber(mobileNumber);
-        profile.setEmail(user.getEmail());
-        profile.setSourceType(LessorSourceType.SELF_SERVICE);
-        profile.setCreatedAt(LocalDateTime.now());
-        profile.setUpdatedAt(LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
 
-        try {
-            return lessorProfiles.saveAndFlush(profile);
-        } catch (DataIntegrityViolationException ex) {
-            // Concurrent creation race condition: re-query the winner
-            return lessorProfiles.findByLinkedUserId(user.getId())
-                    .orElseThrow(() -> ex);
-        }
+        // Native insert-if-absent guarantees exactly one profile is created concurrently
+        // without throwing exceptions or marking the transaction rollback-only.
+        lessorProfiles.insertIfNotExists(
+                user.getId(),
+                displayName,
+                mobileNumber,
+                user.getEmail(),
+                LessorSourceType.SELF_SERVICE.name(),
+                now,
+                now
+        );
+
+        // Re-read authoritatively — resolves both the winner of a concurrent race
+        // and the normal successful-insert case.
+        return lessorProfiles.findByLinkedUserId(user.getId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "LessorProfile missing after insert for user " + user.getId()));
     }
+
 
     /**
      * Authoritatively updates lessor contact on the LessorProfile.
@@ -95,7 +104,9 @@ public class LessorProfileService {
         if (sourceType == null || sourceType == LessorSourceType.SELF_SERVICE) {
             throw new IllegalArgumentException("Internal profiles must use a non-self-service source type");
         }
-        String cleanName = LandlordContactService.sanitizeName(displayName);
+        String cleanName = (displayName != null && !displayName.isBlank())
+                ? LandlordContactService.sanitizeName(displayName)
+                : null;
         String cleanPhone = (mobileNumber != null && !mobileNumber.isBlank())
                 ? LandlordContactService.normalizePhone(mobileNumber)
                 : null;

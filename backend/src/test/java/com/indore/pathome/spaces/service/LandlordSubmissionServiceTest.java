@@ -105,7 +105,8 @@ class LandlordSubmissionServiceTest {
         var listing = (RentalDetails) captured.getValue();
         assertEquals(ListingStatus.PENDING, listing.getStatus());
         assertEquals("10 Private Road", listing.getAddress());
-        assertEquals("+91 98260 12345", listing.getOwnerPhoneNumber());
+        assertNull(listing.getOwnerPhoneNumber(),
+            "New LessorProfile-backed listing must not duplicate contact into legacy field");
         assertEquals(5L, listing.getOwnerUserId());
         assertEquals(50L, listing.getLessorProfileId());
         when(listings.findByOriginDraftId("d1")).thenReturn(Optional.of(listing));

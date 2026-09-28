@@ -33,6 +33,21 @@ class LandlordContactServiceTest {
             }
             return p;
         });
+        when(lessorProfileRepo.insertIfNotExists(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            Long userId = inv.getArgument(0);
+            if (userId != null && !profileByUser.containsKey(userId)) {
+                LessorProfile p = new LessorProfile();
+                p.setId(userId + 1000L);
+                p.setLinkedUserId(userId);
+                p.setDisplayName(inv.getArgument(1));
+                p.setMobileNumber(inv.getArgument(2));
+                p.setEmail(inv.getArgument(3));
+                p.setSourceType(com.indore.pathome.spaces.entity.LessorSourceType.SELF_SERVICE);
+                profileByUser.put(userId, p);
+                return 1;
+            }
+            return 0;
+        });
         lessorProfileService = new LessorProfileService(lessorProfileRepo);
         service = new LandlordContactService(users, lessorProfileService);
     }

@@ -26,7 +26,7 @@ public class LessorProfile {
     @Column(name = "linked_user_id")
     private Long linkedUserId;
 
-    @Column(name = "display_name", nullable = false, length = 150)
+    @Column(name = "display_name", length = 150)
     private String displayName;
 
     @Column(name = "mobile_number", length = 30)

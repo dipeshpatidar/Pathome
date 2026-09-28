@@ -170,8 +170,6 @@ public class LandlordSubmissionService {
         listing.setTotalAreaSqFt(data.details().totalAreaSqFt());
         listing.setFloorNumber(data.details().floorNumber());
         listing.setTotalFloors(data.details().totalFloors());
-        listing.setOwnerName(profile.getDisplayName());
-        listing.setOwnerPhoneNumber(profile.getMobileNumber());
         listing.setLessorProfileId(profile.getId());
         listing.setMonthlyRent(data.pricing().monthlyRent());
         listing.setSecurityDeposit(data.pricing().securityDeposit());

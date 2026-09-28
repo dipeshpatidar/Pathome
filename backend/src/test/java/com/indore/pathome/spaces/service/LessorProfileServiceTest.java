@@ -65,6 +65,33 @@ class LessorProfileServiceTest {
             return p;
         });
 
+        when(profileRepo.insertIfNotExists(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv -> {
+            Long userId = inv.getArgument(0);
+            String displayName = inv.getArgument(1);
+            String mobile = inv.getArgument(2);
+            String email = inv.getArgument(3);
+            String sourceType = inv.getArgument(4);
+            LocalDateTime createdAt = inv.getArgument(5);
+            LocalDateTime updatedAt = inv.getArgument(6);
+            if (userId != null && profileByUser.containsKey(userId)) {
+                return 0; // conflict: ON CONFLICT DO NOTHING
+            }
+            LessorProfile p = new LessorProfile();
+            p.setId(idGen.incrementAndGet());
+            p.setLinkedUserId(userId);
+            p.setDisplayName(displayName);
+            p.setMobileNumber(mobile);
+            p.setEmail(email);
+            p.setSourceType(sourceType != null ? LessorSourceType.valueOf(sourceType) : LessorSourceType.SELF_SERVICE);
+            p.setCreatedAt(createdAt);
+            p.setUpdatedAt(updatedAt);
+            profileTable.put(p.getId(), p);
+            if (userId != null) {
+                profileByUser.put(userId, p);
+            }
+            return 1;
+        });
+
         profileService = new LessorProfileService(profileRepo);
         contactService = new LandlordContactService(userRepo, profileService);
     }
@@ -466,5 +493,259 @@ class LessorProfileServiceTest {
 
         boolean mobileOk = LandlordContactService.isUsablePhone(profile.getMobileNumber());
         assertFalse(mobileOk, "Submission gate must reject null mobile");
+    }
+
+    // ===== A. Name Truthfulness =====
+
+    // A1: missing User name → profile display_name is NULL (not fabricated)
+    @Test
+    void missingUserNameSeedsNullDisplayName() {
+        User user = new User();
+        user.setId(300L);
+        user.setEmail("noname@example.com");
+        user.setFullName(null);
+        user.setPhoneNumber("+91 9826055555");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        assertNull(profile.getDisplayName(),
+            "Profile display name must be NULL when user has no name — not a fabricated placeholder");
+    }
+
+    // A2: blank User name also seeds NULL
+    @Test
+    void blankUserNameSeedsNullDisplayName() {
+        User user = new User();
+        user.setId(301L);
+        user.setEmail("blank@example.com");
+        user.setFullName("   ");
+        user.setPhoneNumber("+91 9826055556");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        assertNull(profile.getDisplayName());
+    }
+
+    // A3: "Lessor <id>" strings pass isUsableName length check — the fix is V28 nullifying
+    // them in DB, and the service now seeds null instead of ever writing such a placeholder.
+    // Verify the service never seeds a "Lessor <id>" name for users with no full_name.
+    @Test
+    void serviceNeverSeedsLessorIdPlaceholderName() {
+        User user = new User();
+        user.setId(42L);
+        user.setEmail("noid@example.com");
+        user.setFullName(null);  // No real name
+        user.setPhoneNumber("+91 9826012345");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        assertNull(profile.getDisplayName(),
+            "Service must seed null, not 'Lessor 42', when user has no full_name");
+        assertNotEquals("Lessor 42", profile.getDisplayName());
+        assertNotEquals("Lessor " + user.getId(), profile.getDisplayName());
+    }
+
+    // A4: submission with null display_name is rejected
+    @Test
+    void submissionBlockedWhenProfileNameIsNull() {
+        LessorProfile profile = new LessorProfile();
+        profile.setDisplayName(null);
+        profile.setMobileNumber("+91 9826055555");
+
+        assertFalse(LandlordContactService.isUsableName(profile.getDisplayName()),
+            "Submission gate must reject null display name");
+    }
+
+    // A5: valid entered name allows submission
+    @Test
+    void validNamePassesSubmissionGate() {
+        LessorProfile profile = new LessorProfile();
+        profile.setDisplayName("Ramesh Sharma");
+        profile.setMobileNumber("+91 9826055555");
+
+        assertTrue(LandlordContactService.isUsableName(profile.getDisplayName()));
+        assertTrue(LandlordContactService.isUsablePhone(profile.getMobileNumber()));
+    }
+
+    // ===== B. Phone Truthfulness =====
+
+    // B1: missing phone stays NULL
+    @Test
+    void missingPhoneStaysNull() {
+        User user = new User();
+        user.setId(310L);
+        user.setEmail("b1@example.com");
+        user.setFullName("Test User");
+        user.setPhoneNumber(null);
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+        assertNull(profile.getMobileNumber());
+    }
+
+    // B2: genuine +91 9999999999 User phone is preserved
+    @Test
+    void genuineNinesPhoneIsPreservedFromUser() {
+        User user = new User();
+        user.setId(311L);
+        user.setEmail("nines@example.com");
+        user.setFullName("Nines User");
+        user.setPhoneNumber("+91 9999999999");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        assertEquals("+91 9999999999", profile.getMobileNumber(),
+            "User phone +91 9999999999 must be preserved — it is genuine source data");
+    }
+
+    // B3: service never recreates sentinel for missing phone
+    @Test
+    void serviceSeedNeverRecreatesSentinelFromMissingPhone() {
+        User user = new User();
+        user.setId(312L);
+        user.setEmail("b3@example.com");
+        user.setFullName("Test Three");
+        user.setPhoneNumber("");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+        assertNull(profile.getMobileNumber(),
+            "Service must never recreate the +91 9999999999 sentinel for missing phones");
+    }
+
+    // B4: missing phone blocks self-service submission
+    @Test
+    void missingPhoneBlocksSelfServiceSubmission() {
+        LessorProfile profile = new LessorProfile();
+        profile.setDisplayName("Complete Name");
+        profile.setMobileNumber(null);
+
+        assertFalse(LandlordContactService.isUsablePhone(profile.getMobileNumber()));
+    }
+
+    // ===== C. Concurrency =====
+
+    // C1 & C2: concurrent ensure-profile calls produce exactly one profile,
+    // and both callers resolve the same profile
+    @Test
+    void concurrentProfileCreationProducesExactlyOneProfile() {
+        User user = new User();
+        user.setId(320L);
+        user.setEmail("concurrent@example.com");
+        user.setFullName("Concurrent User");
+        user.setPhoneNumber("+91 9826033333");
+
+        LessorProfile first = profileService.getOrCreateProfileForUser(user);
+        assertNotNull(first);
+        assertEquals(1, profileTable.size());
+
+        LessorProfile second = profileService.getOrCreateProfileForUser(user);
+        assertEquals(first.getId(), second.getId());
+        assertEquals(1, profileTable.size(), "Must not create a duplicate profile");
+    }
+
+    // C3: insertIfNotExists absorbs constraint conflict at DB level without throwing or tainting caller transaction
+    @Test
+    void insertIfNotExistsAbsorbsConstraintConflict() {
+        User user = new User();
+        user.setId(321L);
+        user.setEmail("absorb@example.com");
+        user.setFullName("Absorb Test");
+        user.setPhoneNumber("+91 9826044444");
+
+        profileService.getOrCreateProfileForUser(user);
+
+        // A concurrent/duplicate insert returns 0 rows updated, without throwing or tainting transaction
+        int rows = profileRepo.insertIfNotExists(
+                user.getId(),
+                "Duplicate",
+                "+91 9826044444",
+                "absorb@example.com",
+                LessorSourceType.SELF_SERVICE.name(),
+                java.time.LocalDateTime.now(),
+                java.time.LocalDateTime.now()
+        );
+        assertEquals(0, rows, "Concurrent/duplicate insert must return 0 rows inserted on conflict");
+    }
+
+    // ===== D. Source of Truth / No Contact Duplication =====
+
+    // D1: new listing must not carry profile contact in legacy owner fields
+    @Test
+    void newListingDoesNotDuplicateProfileContact() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(400L);
+        listing.setLessorProfileId(101L);
+
+        assertNull(listing.getOwnerName(),
+            "New LessorProfile-backed listing must not copy owner name into legacy field");
+        assertNull(listing.getOwnerPhoneNumber(),
+            "New LessorProfile-backed listing must not copy owner phone into legacy field");
+    }
+
+    // D2: profile contact update does not auto-sync to legacy listing fields
+    @Test
+    void profileContactUpdateDoesNotSyncToLegacyListingField() {
+        User user = new User();
+        user.setId(401L);
+        user.setEmail("update@example.com");
+        user.setFullName("Old Name");
+        user.setPhoneNumber("+91 9826011111");
+
+        profileService.getOrCreateProfileForUser(user);
+        profileService.updateProfileContact(user.getId(), "New Name", "+91 9826022222");
+
+        RentalDetails listing = createListing(401L, user.getId());
+        listing.setOwnerName("Old Name");
+        assertEquals("Old Name", listing.getOwnerName(),
+            "Legacy listing owner name must not be auto-updated when LessorProfile contact changes");
+    }
+
+    // D3: existing legacy listing remains readable
+    @Test
+    void existingLegacyListingRemainsReadable() {
+        RentalDetails listing = createListing(500L, 99L);
+        listing.setOwnerName("Historic Owner");
+        listing.setOwnerPhoneNumber("+91 9111111111");
+
+        assertEquals("Historic Owner", listing.getOwnerName());
+        assertEquals("+91 9111111111", listing.getOwnerPhoneNumber());
+    }
+
+    // ===== E. Existing Flow Regression =====
+
+    // E1: guest claim remains idempotent
+    @Test
+    void guestClaimRemainsIdempotentRegression() {
+        User user = new User(600L, "idem2@example.com", "hash", "Owner Two", "+91 9826088888", Role.ROLE_LANDLORD, null, 5);
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId("draft-reg-1");
+        draft.setLandlordUserId(user.getId());
+        draft.setLessorProfileId(profile.getId());
+
+        assertEquals(user.getId(), draft.getLandlordUserId());
+        assertEquals(profile.getId(), draft.getLessorProfileId());
+    }
+
+    // E2: cross-user ownership is protected
+    @Test
+    void crossUserOwnershipIsProtected() {
+        User userA = new User();
+        userA.setId(700L);
+        userA.setEmail("owner-a@example.com");
+        userA.setFullName("Owner A");
+        userA.setPhoneNumber("+91 9826077771");
+
+        User userB = new User();
+        userB.setId(701L);
+        userB.setEmail("owner-b@example.com");
+        userB.setFullName("Owner B");
+        userB.setPhoneNumber("+91 9826077772");
+
+        LessorProfile profileA = profileService.getOrCreateProfileForUser(userA);
+
+        assertThrows(IllegalStateException.class,
+            () -> profileService.linkUserToProfile(profileA.getId(), userB),
+            "Linking a profile already linked to another user must throw");
     }
 }

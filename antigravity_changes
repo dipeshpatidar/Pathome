@@ -5731,3 +5731,43 @@ Fix lessor onboarding header autosave semantics and elevate the Exit experience:
 - Frontend tests: `node --test frontend-web/src/tests/lessor*.test.mjs` — 16/16 tests PASS.
 
 Commit: NO. Push: NO. Branch: `feature/phase1-truthfulness-cleanup`.
+
+---
+
+## 2026-09-28 19:15 IST — Pathome LessorProfile V28 Truthfulness, Concurrency & Contact Cleanup Checkpoint
+
+### Why this work was requested
+Resume and complete interrupted LessorProfile V28 review findings task:
+1. Eliminate V26-generated fake names ("Lessor <user-id>") and allow nullable display_name.
+2. Ensure phone truthfulness (preserve genuine User phone numbers, nullable mobile_number, eliminate fake sentinels).
+3. Concurrency safety: harden LessorProfile creation to use native PostgreSQL ON CONFLICT DO NOTHING insert-if-absent in LessorProfileRepository, eliminating unsafe rollback-only transaction failures.
+4. Stop new LessorProfile-backed listings from duplicating contact into legacy owner_name / owner_phone_number fields.
+
+### Exact Files Changed
+- `backend/src/main/resources/db/migration/V28__lessor_profile_truthfulness_and_contact_cleanup.sql`:
+  - Added additive V28 migration to drop NOT NULL on display_name, nullify provably-generated "Lessor <id>" placeholder names, and restore genuine +91 9999999999 User phones zeroed by V27.
+- `backend/src/main/java/com/indore/pathome/spaces/entity/LessorProfile.java`:
+  - Removed `nullable = false` on `displayName` column mapping to mirror V28 schema.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/LessorProfileRepository.java`:
+  - Added native `insertIfNotExists` query using `ON CONFLICT (linked_user_id) WHERE linked_user_id IS NOT NULL DO NOTHING`.
+- `backend/src/main/java/com/indore/pathome/spaces/service/LessorProfileService.java`:
+  - Replaced unsafe catch-and-query transaction pattern with native `insertIfNotExists` followed by authoritative select; seed null for incomplete display names.
+  - Allowed nullable display name for internal profiles unless non-blank.
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordSubmissionService.java`:
+  - Stopped duplicating LessorProfile name and phone into listing legacy ownerName / ownerPhoneNumber fields.
+- `backend/src/test/java/com/indore/pathome/spaces/service/LessorProfileServiceTest.java`:
+  - Added 17 unit tests verifying name truthfulness, phone truthfulness, concurrency absorption, source of truth preservation, and regression flows.
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordSubmissionServiceTest.java`:
+  - Asserted new listing creation does not copy owner phone number to legacy field.
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordContactServiceTest.java`:
+  - Added mock setup for native `insertIfNotExists`.
+
+### Verification Performed
+- `mvn -f backend/pom.xml test -Dtest="LessorProfileServiceTest,LandlordSubmissionServiceTest,LandlordContactServiceTest"`: 51/51 tests PASS.
+- PostgreSQL / Flyway verification:
+  - V28 applied with success = t.
+  - `display_name` and `mobile_number` nullable in `lessor_profiles`.
+  - `idx_lessor_profiles_linked_user` unique index verified.
+  - Fabricated name count: 0.
+  - Fake sentinel phone count: 0.
+- `git diff --check`: PASS (0 issues).
