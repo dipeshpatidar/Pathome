@@ -5771,3 +5771,32 @@ Resume and complete interrupted LessorProfile V28 review findings task:
   - Fabricated name count: 0.
   - Fake sentinel phone count: 0.
 - `git diff --check`: PASS (0 issues).
+
+---
+
+## 2026-09-28 19:33 IST — Pathome Fix Bugbot V28 Migration & Provenance Findings
+
+### Why this work was requested
+Address Bugbot review findings against commit 487e6b0:
+1. P1: V28 name cleanup previously relied on mutable `users.full_name`, risking erasing genuine names or leaving mutated placeholders. Removed destructive DB rewrite; instead enforce application validation rejecting legacy "Lessor <digits>" placeholder names from bypassing submission, preserving DB rows while requiring real names for self-service review submission.
+2. P2: V28 phone restoration did not reproduce V26's original TRIM behavior. Updated V28 migration to use `TRIM(u.phone_number) = '+91 9999999999'` and `SET mobile_number = TRIM(u.phone_number)`.
+
+### Exact Files Changed
+- `backend/src/main/resources/db/migration/V28__lessor_profile_truthfulness_and_contact_cleanup.sql`:
+  - Removed destructive `display_name` UPDATE that depended on mutable `users.full_name`.
+  - Updated phone restoration query to use `TRIM(u.phone_number)` matching and assignment.
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordContactService.java`:
+  - Added `LEGACY_LESSOR_PLACEHOLDER` pattern (`^Lessor\s+\d+$`).
+  - Updated `isUsableName` and `sanitizeName` to reject legacy generated placeholders.
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordSubmissionServiceTest.java`:
+  - Added `legacyPlaceholderNameRejectsSubmission` test.
+- `backend/src/test/java/com/indore/pathome/spaces/service/LessorProfileServiceTest.java`:
+  - Added tests for `legacyPlaceholderNameRejectedByIsUsableName`, `subsequentUserNameChangeDoesNotMutateLessorProfileName`, `genuineLessorIdProfileNameIsNotErasedFromDb`, and `whitespaceSurroundedGenuineNinesPhoneIsPreserved`.
+
+### Verification Performed
+- `mvn -f backend/pom.xml org.flywaydb:flyway-maven-plugin:10.13.0:repair`: Repaired V28 checksum in local database schema history.
+- `mvn -f backend/pom.xml org.flywaydb:flyway-maven-plugin:10.13.0:validate`: 28 migrations validated successfully.
+- `mvn -f backend/pom.xml org.flywaydb:flyway-maven-plugin:10.13.0:info`: V28 confirmed Success.
+- PostgreSQL EXPLAIN check on V28 UPDATE query: valid query plan.
+- Focused backend tests: `mvn -f backend/pom.xml test -Dtest="LessorProfileServiceTest,LandlordSubmissionServiceTest,LandlordContactServiceTest"` — 56/56 tests PASS.
+- `git diff --check`: PASS (0 issues).

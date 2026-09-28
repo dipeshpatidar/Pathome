@@ -140,6 +140,20 @@ class LandlordSubmissionServiceTest {
     }
 
     @Test
+    void legacyPlaceholderNameRejectsSubmission() {
+        User placeholderOwner = new User();
+        placeholderOwner.setId(5L);
+        placeholderOwner.setFullName("Lessor 5");
+        placeholderOwner.setPhoneNumber("+91 98260 12345");
+        when(users.findById(5L)).thenReturn(Optional.of(placeholderOwner));
+        LessorProfile placeholderProfile = new LessorProfile(52L, 5L, "Lessor 5", "+91 98260 12345", "owner@example.com", LessorSourceType.SELF_SERVICE);
+        when(lessorProfiles.getOrCreateProfileForUser(placeholderOwner)).thenReturn(placeholderProfile);
+
+        var ex = assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
+        assertTrue(ex.getMessage().contains("contact details"));
+    }
+
+    @Test
     void manualLocalityCanSubmitButRemainsPrivateAndDoesNotCreateCanonicalData() {
         var original = validData();
         when(draftData.readData(draft)).thenReturn(new LandlordDraftData(original.basics(), original.pricing(),

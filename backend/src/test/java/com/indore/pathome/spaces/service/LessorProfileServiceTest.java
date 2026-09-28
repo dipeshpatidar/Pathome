@@ -526,9 +526,7 @@ class LessorProfileServiceTest {
         assertNull(profile.getDisplayName());
     }
 
-    // A3: "Lessor <id>" strings pass isUsableName length check — the fix is V28 nullifying
-    // them in DB, and the service now seeds null instead of ever writing such a placeholder.
-    // Verify the service never seeds a "Lessor <id>" name for users with no full_name.
+    // A3: service never seeds "Lessor <id>" placeholder name, and isUsableName rejects it
     @Test
     void serviceNeverSeedsLessorIdPlaceholderName() {
         User user = new User();
@@ -543,6 +541,58 @@ class LessorProfileServiceTest {
             "Service must seed null, not 'Lessor 42', when user has no full_name");
         assertNotEquals("Lessor 42", profile.getDisplayName());
         assertNotEquals("Lessor " + user.getId(), profile.getDisplayName());
+    }
+
+    // A3b: legacy generated placeholder names are rejected by isUsableName
+    @Test
+    void legacyPlaceholderNameRejectedByIsUsableName() {
+        assertFalse(LandlordContactService.isUsableName("Lessor 42"));
+        assertFalse(LandlordContactService.isUsableName("Lessor 10"));
+        assertFalse(LandlordContactService.isUsableName("lessor 99"));
+        assertFalse(LandlordContactService.isUsableName("Lessor   123"));
+        assertTrue(LandlordContactService.isLegacyPlaceholderName("Lessor 42"));
+        assertTrue(LandlordContactService.isLegacyPlaceholderName("lessor 99"));
+        assertFalse(LandlordContactService.isLegacyPlaceholderName("Ramesh Sharma"));
+    }
+
+    // A3c: User full_name change after profile creation does not mutate or destructively alter profile name
+    @Test
+    void subsequentUserNameChangeDoesNotMutateLessorProfileName() {
+        User user = new User();
+        user.setId(305L);
+        user.setEmail("mutable@example.com");
+        user.setFullName("Original Name");
+        user.setPhoneNumber("+91 9826011111");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+        assertEquals("Original Name", profile.getDisplayName());
+
+        // User full_name changes later in users table
+        user.setFullName("Changed Name");
+
+        // Profile display name is decoupled and remains unmutated
+        LessorProfile reloaded = profileService.getOrCreateProfileForUser(user);
+        assertEquals("Original Name", reloaded.getDisplayName());
+    }
+
+    // A3d: genuine profile name equal to "Lessor <id>" is not erased from DB
+    @Test
+    void genuineLessorIdProfileNameIsNotErasedFromDb() {
+        LessorProfile profile = new LessorProfile();
+        profile.setId(105L);
+        profile.setLinkedUserId(306L);
+        profile.setDisplayName("Lessor 42");
+        profileTable.put(profile.getId(), profile);
+        profileByUser.put(profile.getLinkedUserId(), profile);
+
+        User user = new User();
+        user.setId(306L);
+        user.setEmail("genuine@example.com");
+        user.setFullName("New User FullName");
+
+        LessorProfile resolved = profileService.getOrCreateProfileForUser(user);
+        assertEquals("Lessor 42", resolved.getDisplayName(),
+            "Genuine profile name matching 'Lessor <id>' must not be erased from DB");
     }
 
     // A4: submission with null display_name is rejected
@@ -595,6 +645,20 @@ class LessorProfileServiceTest {
 
         assertEquals("+91 9999999999", profile.getMobileNumber(),
             "User phone +91 9999999999 must be preserved — it is genuine source data");
+    }
+
+    // B2b: whitespace-surrounded genuine +91 9999999999 is normalized and preserved
+    @Test
+    void whitespaceSurroundedGenuineNinesPhoneIsPreserved() {
+        User user = new User();
+        user.setId(315L);
+        user.setEmail("whitespace@example.com");
+        user.setFullName("Whitespace User");
+        user.setPhoneNumber("  +91 9999999999  ");
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+        assertEquals("+91 9999999999", profile.getMobileNumber(),
+            "Whitespace-padded +91 9999999999 must be normalized and preserved");
     }
 
     // B3: service never recreates sentinel for missing phone

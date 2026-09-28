@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 @Service
 public class LandlordContactService {
     private static final Pattern COMPACT_INDIAN_MOBILE = Pattern.compile("^(?:\\+?91)?([6-9]\\d{9})$");
+    private static final Pattern LEGACY_LESSOR_PLACEHOLDER = Pattern.compile("^Lessor\\s+\\d+$", Pattern.CASE_INSENSITIVE);
     private final UserRepository users;
     private final LessorProfileService lessorProfiles;
 
@@ -47,8 +48,19 @@ public class LandlordContactService {
         return new LandlordContactDto(profile.getDisplayName(), profile.getMobileNumber(), true);
     }
 
+    public static boolean isLegacyPlaceholderName(String name) {
+        return name != null && LEGACY_LESSOR_PLACEHOLDER.matcher(name.trim()).matches();
+    }
+
     public static boolean isUsableName(String name) {
-        return name != null && name.trim().length() >= 2 && name.trim().length() <= 100;
+        if (name == null) {
+            return false;
+        }
+        String trimmed = name.trim();
+        if (trimmed.length() < 2 || trimmed.length() > 100) {
+            return false;
+        }
+        return !LEGACY_LESSOR_PLACEHOLDER.matcher(trimmed).matches();
     }
 
     public static boolean isUsablePhone(String phone) {
@@ -59,6 +71,9 @@ public class LandlordContactService {
 
     public static String sanitizeName(String name) {
         if (!isUsableName(name)) {
+            if (isLegacyPlaceholderName(name)) {
+                throw new IllegalArgumentException("Enter a genuine full name instead of a placeholder");
+            }
             throw new IllegalArgumentException("Enter a full name between 2 and 100 characters");
         }
         return name.trim();
