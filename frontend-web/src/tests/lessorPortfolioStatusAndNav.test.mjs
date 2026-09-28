@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WORKFLOW_STATUS_CONFIG } from '../utils/lessorWorkflow.ts';
+import {
+  getListingActionLabel,
+  getRevisionNotice,
+  WORKFLOW_STATUS_CONFIG
+} from '../utils/lessorWorkflow.ts';
+import {
+  DUPLICATE_EMAIL_CODE,
+  DUPLICATE_EMAIL_MESSAGE,
+  getDuplicateEmailRecoveryState,
+  isDuplicateEmailResponse
+} from '../utils/authRecovery.ts';
 import { resolveWorkspaceContext, resolveLogoDestination } from '../utils/navigationPolicy.ts';
 
 test('WORKFLOW_STATUS_CONFIG maps every backend workflow state truthfully', () => {
@@ -45,36 +55,36 @@ test('WORKFLOW_STATUS_CONFIG maps every backend workflow state truthfully', () =
   assert.equal(WORKFLOW_STATUS_CONFIG.ARCHIVED.guidance, 'This property has been archived.');
 });
 
-test('Published property with pending revision preserves both live and revision states', () => {
-  const listing = {
-    listingId: 101,
-    status: 'PUBLISHED',
-    openRevisionStatus: 'REVIEW'
-  };
+test('Published property with pending revision preserves truthful live copy', () => {
+  assert.deepEqual(getRevisionNotice('PUBLISHED', 'REVIEW'), {
+    title: 'Changes under review',
+    message: 'Our team is reviewing recent edits. Your live listing remains visible.'
+  });
+});
 
-  const primaryStatus = WORKFLOW_STATUS_CONFIG[listing.status];
-  assert.equal(primaryStatus.label, 'Published');
-  assert.equal(primaryStatus.guidance, 'Your property is live.');
+test('Paused property with pending revision says it remains paused', () => {
+  const notice = getRevisionNotice('PAUSED', 'REVIEW');
+  assert.deepEqual(notice, {
+    title: 'Changes under review',
+    message: 'Our team is reviewing recent edits. This property remains paused.'
+  });
+  assert.doesNotMatch(notice.message, /live|active|visible/i);
+});
 
-  const isLivePublished = listing.status === 'PUBLISHED';
-  const hasRevisionUnderReview = listing.openRevisionStatus === 'REVIEW';
-
-  assert.equal(isLivePublished, true);
-  assert.equal(hasRevisionUnderReview, true);
+test('Archived and other non-live states never receive a live-listing claim', () => {
+  for (const status of ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'CHANGES_REQUIRED', 'ARCHIVED']) {
+    const notice = getRevisionNotice(status, 'REVIEW');
+    assert.ok(notice);
+    assert.doesNotMatch(notice.message, /live|active|visible/i, `${status} received live copy`);
+  }
 });
 
 test('Changes required status specifies Review changes action button', () => {
-  const getActionLabel = (status, openRevisionStatus) => {
-    return status === 'CHANGES_REQUIRED' || openRevisionStatus === 'CHANGES_REQUIRED'
-      ? 'Review changes'
-      : 'Preview property';
-  };
-
-  assert.equal(getActionLabel('CHANGES_REQUIRED', null), 'Review changes');
-  assert.equal(getActionLabel('PUBLISHED', 'CHANGES_REQUIRED'), 'Review changes');
-  assert.equal(getActionLabel('PUBLISHED', null), 'Preview property');
-  assert.equal(getActionLabel('UNDER_REVIEW', null), 'Preview property');
-  assert.equal(getActionLabel('SUBMITTED', null), 'Preview property');
+  assert.equal(getListingActionLabel('CHANGES_REQUIRED', null), 'Review changes');
+  assert.equal(getListingActionLabel('PUBLISHED', 'CHANGES_REQUIRED'), 'Review changes');
+  assert.equal(getListingActionLabel('PUBLISHED', null), 'Preview property');
+  assert.equal(getListingActionLabel('UNDER_REVIEW', null), 'Preview property');
+  assert.equal(getListingActionLabel('SUBMITTED', null), 'Preview property');
 });
 
 test('Navigation routes distinguish My Properties (/lessor) from Add property (/lessor/new)', () => {
@@ -94,17 +104,29 @@ test('Navigation routes distinguish My Properties (/lessor) from Add property (/
 
 test('Duplicate email registration response safely categorized without leaking user info', () => {
   const backendErrorBody = {
-    error: 'EMAIL_ALREADY_REGISTERED',
-    message: 'An account with this email already exists.'
+    error: DUPLICATE_EMAIL_CODE,
+    message: DUPLICATE_EMAIL_MESSAGE
   };
 
-  const isDuplicateEmail =
-    backendErrorBody.error === 'EMAIL_ALREADY_REGISTERED' ||
-    /email is already registered/i.test(backendErrorBody.message);
-
-  assert.equal(isDuplicateEmail, true);
-  assert.equal(backendErrorBody.message, 'An account with this email already exists.');
+  assert.equal(isDuplicateEmailResponse(backendErrorBody, JSON.stringify(backendErrorBody)), true);
+  assert.equal(backendErrorBody.message, DUPLICATE_EMAIL_MESSAGE);
   assert.equal('fullName' in backendErrorBody, false);
   assert.equal('phoneNumber' in backendErrorBody, false);
   assert.equal('username' in backendErrorBody, false);
+});
+
+test('Duplicate-email recovery retains only email and clears registration secrets', () => {
+  assert.deepEqual(getDuplicateEmailRecoveryState('lessor@example.com'), {
+    authMode: 'LOGIN',
+    email: 'lessor@example.com',
+    password: '',
+    fullName: '',
+    errorMessage: '',
+    duplicateEmailError: false
+  });
+});
+
+test('Unrelated backend failures are not treated as duplicate email', () => {
+  const body = { error: 'PERSISTENCE_FAILURE', message: 'Unable to create account.' };
+  assert.equal(isDuplicateEmailResponse(body, JSON.stringify(body)), false);
 });

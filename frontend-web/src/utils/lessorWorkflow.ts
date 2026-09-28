@@ -5,6 +5,59 @@ export interface WorkflowStatusDetails {
   dotClass: string;
 }
 
+export interface RevisionNotice {
+  title: string;
+  message: string;
+}
+
+export const getRevisionNotice = (
+  listingStatus: string,
+  openRevisionStatus?: string | null
+): RevisionNotice | null => {
+  if (!openRevisionStatus) return null;
+
+  if (openRevisionStatus === 'REVIEW') {
+    if (listingStatus === 'PUBLISHED') {
+      return {
+        title: 'Changes under review',
+        message: 'Our team is reviewing recent edits. Your live listing remains visible.'
+      };
+    }
+
+    if (listingStatus === 'PAUSED') {
+      return {
+        title: 'Changes under review',
+        message: 'Our team is reviewing recent edits. This property remains paused.'
+      };
+    }
+
+    return {
+      title: 'Changes under review',
+      message: 'Our team is reviewing recent edits.'
+    };
+  }
+
+  if (openRevisionStatus === 'CHANGES_REQUIRED') {
+    return {
+      title: 'Revision changes requested',
+      message: 'Review requested edits to update your listing.'
+    };
+  }
+
+  return {
+    title: 'Revision draft in progress',
+    message: 'You have unfinished edits for this property.'
+  };
+};
+
+export const getListingActionLabel = (
+  listingStatus: string,
+  openRevisionStatus?: string | null
+): 'Review changes' | 'Preview property' =>
+  listingStatus === 'CHANGES_REQUIRED' || openRevisionStatus === 'CHANGES_REQUIRED'
+    ? 'Review changes'
+    : 'Preview property';
+
 export const WORKFLOW_STATUS_CONFIG: Record<string, WorkflowStatusDetails> = {
   DRAFT: {
     label: 'Draft',

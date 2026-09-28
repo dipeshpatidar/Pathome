@@ -12,6 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -106,6 +107,61 @@ class AuthControllerTest {
         assertEquals("mock-jwt-token", authResponse.getToken());
         assertEquals("new@example.com", authResponse.getEmail());
         assertEquals("ROLE_TENANT", authResponse.getRole());
+    }
+
+    @Test
+    @DisplayName("Concurrent duplicate registration returns the same safe duplicate-email contract")
+    void concurrentDuplicateRegistrationReturnsSafeCategorizedError() {
+        User winner = new User();
+        winner.setId(20L);
+        winner.setEmail("race@example.com");
+
+        when(userRepository.findByEmail("race@example.com"))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(winner));
+        when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
+        when(userRepository.save(any(User.class)))
+                .thenThrow(new DataIntegrityViolationException("unique constraint"));
+
+        RegisterRequest request = new RegisterRequest();
+        request.setEmail("race@example.com");
+        request.setPassword("Password123!");
+        request.setFullName("Concurrent User");
+
+        ResponseEntity<?> response = authController.registerUser(request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertTrue(response.getBody() instanceof Map);
+        @SuppressWarnings("unchecked")
+        Map<String, String> body = (Map<String, String>) response.getBody();
+        assertEquals("EMAIL_ALREADY_REGISTERED", body.get("error"));
+        assertEquals("An account with this email already exists.", body.get("message"));
+        assertEquals(2, body.size());
+        verify(userRepository, times(2)).findByEmail("race@example.com");
+    }
+
+    @Test
+    @DisplayName("Unrelated persistence failure is not mislabeled as duplicate email")
+    void unrelatedPersistenceFailureIsRethrown() {
+        when(userRepository.findByEmail("failure@example.com"))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.empty());
+        when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
+        DataIntegrityViolationException failure = new DataIntegrityViolationException("unrelated constraint");
+        when(userRepository.save(any(User.class))).thenThrow(failure);
+
+        RegisterRequest request = new RegisterRequest();
+        request.setEmail("failure@example.com");
+        request.setPassword("Password123!");
+        request.setFullName("Persistence Failure");
+
+        DataIntegrityViolationException thrown = assertThrows(
+                DataIntegrityViolationException.class,
+                () -> authController.registerUser(request)
+        );
+
+        assertSame(failure, thrown);
+        verify(userRepository, times(2)).findByEmail("failure@example.com");
     }
 
     @Test

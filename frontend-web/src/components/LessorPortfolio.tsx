@@ -9,7 +9,7 @@ import { LastUpdatedMeta } from './LastUpdatedMeta';
 const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:border-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-import { WORKFLOW_STATUS_CONFIG } from '../utils/lessorWorkflow';
+import { getListingActionLabel, getRevisionNotice, WORKFLOW_STATUS_CONFIG } from '../utils/lessorWorkflow';
 
 export function LessorPortfolio({ onAdd, onOpenDraft, onOpenListing }: {
   onAdd: () => void; onOpenDraft: (id: string) => void; onOpenListing: (id: number) => void;
@@ -108,6 +108,7 @@ export function LessorPortfolio({ onAdd, onOpenDraft, onOpenListing }: {
           badgeClass: 'bg-slate-100 text-slate-800 border-slate-200',
           dotClass: 'bg-slate-400'
         };
+        const revisionNotice = getRevisionNotice(listing.status, listing.openRevisionStatus);
 
         return (
           <article key={listing.listingId} className="flex flex-col min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
@@ -130,22 +131,14 @@ export function LessorPortfolio({ onAdd, onOpenDraft, onOpenListing }: {
                 </div>
                 <p className="mt-1 text-xs text-slate-500">{statusInfo.guidance}</p>
 
-                {listing.openRevisionStatus && (
+                {revisionNotice && (
                   <div className="mt-2.5 rounded-xl border border-amber-200/90 bg-amber-50/80 p-2.5 text-xs text-amber-950">
                     <p className="font-semibold flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-600" aria-hidden="true" />
-                      {listing.openRevisionStatus === 'REVIEW'
-                        ? 'Changes under review'
-                        : listing.openRevisionStatus === 'CHANGES_REQUIRED'
-                        ? 'Revision changes requested'
-                        : 'Revision draft in progress'}
+                      {revisionNotice.title}
                     </p>
                     <p className="mt-0.5 text-[11px] text-amber-800">
-                      {listing.openRevisionStatus === 'REVIEW'
-                        ? 'Your live listing remains active while changes are reviewed.'
-                        : listing.openRevisionStatus === 'CHANGES_REQUIRED'
-                        ? 'Review requested edits to update your listing.'
-                        : 'You have unfinished edits for this property.'}
+                      {revisionNotice.message}
                     </p>
                   </div>
                 )}
@@ -162,9 +155,7 @@ export function LessorPortfolio({ onAdd, onOpenDraft, onOpenListing }: {
                   className="w-full inline-flex min-h-11 items-center justify-between rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-2xs transition-all hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
                 >
                   <span>
-                    {listing.status === 'CHANGES_REQUIRED' || listing.openRevisionStatus === 'CHANGES_REQUIRED'
-                      ? 'Review changes'
-                      : 'Preview property'}
+                    {getListingActionLabel(listing.status, listing.openRevisionStatus)}
                   </span>
                   <ArrowRight className="h-4 w-4 text-slate-400" />
                 </button>

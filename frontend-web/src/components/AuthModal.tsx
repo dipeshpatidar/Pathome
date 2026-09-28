@@ -3,6 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { UserProfile, UserRole } from '../types';
 import { X, Mail, Lock, User, AlertCircle } from 'lucide-react';
 import { API_ROOT_URL, GOOGLE_OAUTH_URL } from '../config/endpoints';
+import {
+  DUPLICATE_EMAIL_MESSAGE,
+  getDuplicateEmailRecoveryState,
+  isDuplicateEmailResponse
+} from '../utils/authRecovery';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -99,14 +104,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           // non-JSON response
         }
 
-        const isDuplicateEmail =
-          errorData?.error === 'EMAIL_ALREADY_REGISTERED' ||
-          /email is already registered/i.test(text) ||
-          /already exists/i.test(text);
+        const isDuplicateEmail = isDuplicateEmailResponse(errorData, text);
 
         if (authMode === 'REGISTER' && isDuplicateEmail) {
           setDuplicateEmailError(true);
-          setErrorMessage('An account with this email already exists.');
+          setErrorMessage(DUPLICATE_EMAIL_MESSAGE);
         } else if (authMode === 'REGISTER') {
           setDuplicateEmailError(false);
           setErrorMessage('Unable to register with those details. Please check them and try again.');
@@ -179,9 +181,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   <button
                     type="button"
                     onClick={() => {
-                      setAuthMode('LOGIN');
-                      setErrorMessage('');
-                      setDuplicateEmailError(false);
+                      const recovery = getDuplicateEmailRecoveryState(email);
+                      setAuthMode(recovery.authMode);
+                      setEmail(recovery.email);
+                      setPassword(recovery.password);
+                      setFullName(recovery.fullName);
+                      setErrorMessage(recovery.errorMessage);
+                      setDuplicateEmailError(recovery.duplicateEmailError);
                       setTimeout(() => passwordRef.current?.focus(), 50);
                     }}
                     className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
@@ -301,12 +307,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
           <div className="mt-5 text-center">
             <button
+              type="button"
+              disabled={busy}
               onClick={() => {
                 setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN');
                 setErrorMessage('');
                 setDuplicateEmailError(false);
               }}
-              className="min-h-11 inline-flex items-center justify-center text-xs font-semibold text-emerald-600 hover:underline transition-all cursor-pointer"
+              className="min-h-11 inline-flex items-center justify-center text-xs font-semibold text-emerald-600 hover:underline transition-all disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
             >
               {authMode === 'LOGIN' ? "Don't have an account? Register" : "Already registered? Sign In"}
             </button>

@@ -1771,3 +1771,11 @@ Changed: LandlordDraftService and GuestDraftService now lock and mark owned draf
 Verification: focused Maven DiscardedDraftCleanupServiceTest, LandlordDraftServiceTest, GuestDraftServiceTest, and LandlordMediaServiceTest PASS; focused frontend Node tests PASS 11/11; frontend TypeScript no-emit PASS; final diff review and git diff --check PASS. Live storage and browser flow not run locally.
 
 Commit: NOT CREATED because the sandbox denied .git/index.lock and automatic approval review failed with a 403 model access error. Push: NOT ATTEMPTED.
+
+## 2026-09-28 21:58 IST — Final lessor review P2 fixes
+
+Why: Correct four final review findings covering truthful pending-revision copy, concurrent duplicate-email registration, registration-secret recovery, and tests that had duplicated production decisions.
+
+Changed: LessorPortfolio.tsx now renders revision copy from production helpers in lessorWorkflow.ts, distinguishing published listings that remain visible from paused and other non-live listings. AuthController.java maps a database-constraint race to the existing safe EMAIL_ALREADY_REGISTERED response only when a follow-up lookup confirms that submitted email, while unrelated persistence failures continue to propagate. AuthModal.tsx uses authRecovery.ts to preserve email but clear password, full name, stale errors, and duplicate state before switching to login and focusing the empty password field; mode switching is disabled while a request is in flight. AuthControllerTest.java and lessorPortfolioStatusAndNav.test.mjs cover both duplicate paths, unrelated persistence failure, truthful published/paused/non-live copy, production action helpers, and secret-clearing recovery. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven AuthControllerTest PASS 6/6; focused frontend Node lessorPortfolioStatusAndNav.test.mjs PASS 9/9; frontend production build PASS; git diff --check PASS before the final log update. Browser focus behavior and a live concurrent PostgreSQL registration race were not run. Commit and push: pending the authorized final checkpoint at entry time.

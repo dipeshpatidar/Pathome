@@ -9,6 +9,7 @@ import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
@@ -35,10 +36,7 @@ public class AuthController {
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@RequestBody RegisterRequest request) {
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                    "error", "EMAIL_ALREADY_REGISTERED",
-                    "message", "An account with this email already exists."
-            ));
+            return duplicateEmailResponse();
         }
 
         User user = new User();
@@ -51,12 +49,26 @@ public class AuthController {
         user.setRole(Role.ROLE_TENANT);
         user.setFreeVisitsRemaining(5);
 
-        user = userRepository.save(user);
+        try {
+            user = userRepository.save(user);
+        } catch (DataIntegrityViolationException persistenceFailure) {
+            if (userRepository.findByEmail(request.getEmail()).isPresent()) {
+                return duplicateEmailResponse();
+            }
+            throw persistenceFailure;
+        }
 
         String token = jwtUtils.generateToken(user.getId(), user.getEmail(), user.getRole().name());
 
         return ResponseEntity.ok(new AuthResponse(
                 token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining()
+        ));
+    }
+
+    private ResponseEntity<Map<String, String>> duplicateEmailResponse() {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                "error", "EMAIL_ALREADY_REGISTERED",
+                "message", "An account with this email already exists."
         ));
     }
 
