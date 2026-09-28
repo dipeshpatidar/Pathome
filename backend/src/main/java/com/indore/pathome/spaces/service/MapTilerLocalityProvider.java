@@ -1,5 +1,6 @@
 package com.indore.pathome.spaces.service;
 
+import com.indore.pathome.spaces.service.ExternalLocalityProvider.Result;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
