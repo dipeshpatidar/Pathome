@@ -1655,3 +1655,13 @@ Changed: frontend-web/src/components/Home.tsx and Navbar.tsx route tenant accoun
 Verification: focused Maven LandlordDraftServiceTest PASS; Node lessorConfiguration and lessorAutosave tests PASS 5/5; frontend TypeScript no-emit PASS; git diff --check PASS. Browser layout/interaction review and location/media/submit steps follow in later slices.
 
 Commit: pending Slice 3 checkpoint. Push: NO.
+
+## 2026-09-28 10:39:12 IST — Phase 1B Slice 4 canonical landlord location
+
+Why: Require an explicitly confirmed PostgreSQL locality in a supported city while retaining unmatched typed text safely in the draft.
+
+Changed: LocalityRepository.java adds bounded city-scoped canonical/fuzzy suggestions and cross-city exact alternatives; LandlordLocationService.java and LandlordLocationController.java expose supported cities and read-only locality choices, reusing approved alias resolution. LandlordDraftService.java checks that any confirmed locality ID belongs to the selected supported city. LessorWorkspace.tsx and lessorLocationService.ts add city, locality suggestion, private address, and optional landmark fields, with honest unknown/conflict messaging. Focused tests in LandlordLocationServiceTest.java and LandlordDraftServiceTest.java cover alias-to-canonical resolution, unknown text, city conflicts, and no canonical writes. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordLocationServiceTest and LandlordDraftServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Native suggestion query and UI visual behavior still need environment/browser verification. Media and submission follow in later slices.
+
+Commit: pending Slice 4 checkpoint. Push: NO.

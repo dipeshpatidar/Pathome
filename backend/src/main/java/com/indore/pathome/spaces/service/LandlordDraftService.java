@@ -36,12 +36,15 @@ public class LandlordDraftService {
     private final PropertyUploadDraftRepository drafts;
     private final LandlordCapabilityService capabilities;
     private final ObjectMapper mapper;
+    private final LandlordLocationService locations;
 
     public LandlordDraftService(PropertyUploadDraftRepository drafts,
-                                LandlordCapabilityService capabilities, ObjectMapper mapper) {
+                                LandlordCapabilityService capabilities, ObjectMapper mapper,
+                                LandlordLocationService locations) {
         this.drafts = drafts;
         this.capabilities = capabilities;
         this.mapper = mapper;
+        this.locations = locations;
     }
 
     @Transactional
@@ -105,6 +108,9 @@ public class LandlordDraftService {
                 || tooLong(location.address(), 500) || tooLong(location.landmark(), 200)
                 || location.canonicalLocalityId() != null && location.canonicalLocalityId() <= 0) {
             throw new IllegalArgumentException("Location contains an invalid value");
+        }
+        if (location.canonicalLocalityId() != null) {
+            locations.requireMatchingLocality(location.city(), location.canonicalLocalityId());
         }
         return update(email, draftId, expectedVersion,
                 data -> new LandlordDraftData(data.basics(), data.pricing(), location, data.details()));

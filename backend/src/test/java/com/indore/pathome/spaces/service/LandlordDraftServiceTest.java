@@ -23,6 +23,7 @@ import static org.mockito.Mockito.*;
 class LandlordDraftServiceTest {
     private PropertyUploadDraftRepository drafts;
     private LandlordCapabilityService capabilities;
+    private LandlordLocationService locations;
     private LandlordDraftService service;
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
@@ -30,7 +31,8 @@ class LandlordDraftServiceTest {
     void setUp() {
         drafts = mock(PropertyUploadDraftRepository.class);
         capabilities = mock(LandlordCapabilityService.class);
-        service = new LandlordDraftService(drafts, capabilities, mapper);
+        locations = mock(LandlordLocationService.class);
+        service = new LandlordDraftService(drafts, capabilities, mapper, locations);
         when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
     }
 
@@ -88,6 +90,27 @@ class LandlordDraftServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.create("owner@example.com",
                 new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.SHORT_STAY, "2BHK")));
         verify(drafts, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void unknownLocalityTextRemainsDraftOnlyAndConfirmedIdMustMatchCity() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        var unknown = new LandlordDraftData.Location("Indore", null, "Unknown place",
+                "10 Example Road", "");
+        var saved = service.updateLocation("owner@example.com", "draft-one", 1, unknown);
+        assertEquals("Unknown place", saved.data().location().localityInput());
+        verify(locations, never()).requireMatchingLocality(anyString(), anyLong());
+
+        var selected = new LandlordDraftData.Location("Indore", 20L, "Baner",
+                "10 Example Road", "");
+        doThrow(new IllegalArgumentException("City mismatch"))
+                .when(locations).requireMatchingLocality("Indore", 20L);
+        assertThrows(IllegalArgumentException.class,
+                () -> service.updateLocation("owner@example.com", "draft-one", 1, selected));
+        verify(drafts, times(1)).saveAndFlush(any());
     }
 
     private PropertyUploadDraft storedDraft(Long ownerId) throws Exception {
