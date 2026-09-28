@@ -23,6 +23,12 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
 
     Optional<PropertyDraftMedia> findByMediaId(String mediaId);
 
+    boolean existsByCloudinaryPublicIdAndIdNot(String publicId, Long id);
+
+    boolean existsByCloudinaryUrlAndIdNot(String url, Long id);
+
+    boolean existsByStagingObjectKeyAndIdNot(String stagingObjectKey, Long id);
+
     List<PropertyDraftMedia> findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(String draftId);
 
     Optional<PropertyDraftMedia> findByMediaIdAndDraftIdAndGuestOwnedTrue(String mediaId, String draftId);

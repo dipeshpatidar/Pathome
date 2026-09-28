@@ -43,6 +43,11 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
 
     Optional<PropertyUploadDraft> findByDraftId(String draftId);
 
+    @Query("SELECT d FROM PropertyUploadDraft d WHERE d.status = 'DISCARDED' AND d.id > :lastId " +
+           "AND (d.landlordUserId IS NOT NULL OR d.guestTokenHash IS NOT NULL) " +
+           "AND EXISTS (SELECT m.id FROM PropertyDraftMedia m WHERE m.draftId = d.draftId) ORDER BY d.id ASC")
+    List<PropertyUploadDraft> findDiscardedLessorAfterId(@Param("lastId") Long lastId, Pageable pageable);
+
     Optional<PropertyUploadDraft> findByGuestTokenHashAndStatus(String guestTokenHash, String status);
 
     List<PropertyUploadDraft> findByGuestTokenHashIsNotNullAndGuestExpiresAtBeforeAndIdGreaterThanOrderByIdAsc(

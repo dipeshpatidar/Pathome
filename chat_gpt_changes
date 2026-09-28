@@ -1729,3 +1729,13 @@ Verification: 51 focused backend tests across 11 suites passed, plus the final p
 Why: The discard endpoint worked after the local server was restarted; the user requested a visible discard control and a success notification without returning guests to the landing page. Changed: LessorOnboardingHeader.tsx shows a labeled Discard button, keeps the confirmation dialog keyboard-reachable, and shows a safe retry message; LessorWorkspace.tsx navigates to the lessor workspace, names the discarded property in an existing success toast, and clears local resume state only after the delete succeeds. No backend, media, or locality production code changed. The two untracked AGENTS review files were untouched.
 
 Verification: focused backend discard/security and locality tests passed; 17 focused frontend tests passed; TypeScript no-emit, frontend production build, and git diff --check passed. Browser QA was blocked by automatic approval review, so responsive, keyboard, and end-to-end discard checks remain manual. Commit and push: pending at entry time.
+
+## 2026-09-28 17:19:35 IST — Commit-safe lessor draft discard
+
+Why: Owner and guest draft discard could remove remote media before a database rollback, race with autosave, and report repeated DELETE as a failure.
+
+Changed: LandlordDraftService and GuestDraftService now lock and mark owned drafts DISCARDED, clear draft payload, and register remote cleanup after commit. DiscardedDraftCleanupService and focused repository lookups retain media rows until verified B2 or Cloudinary removal, protect live/shared references, and retry unresolved cleanup on the existing daily cleanup schedule. LandlordMediaService and LandlordMediaStore no longer expose the unsafe discard cleanup path. LessorWorkspace and lessorAutosave pause saving at discard start, ignore late responses, and preserve local edits if DELETE fails. Focused service and frontend tests cover rollback/commit dispatch, retry metadata, live references, idempotency, authorization, and autosave timing. AGENTS review files were untouched.
+
+Verification: focused Maven DiscardedDraftCleanupServiceTest, LandlordDraftServiceTest, GuestDraftServiceTest, and LandlordMediaServiceTest PASS; focused frontend Node tests PASS 11/11; frontend TypeScript no-emit PASS; final diff review and git diff --check PASS. Live storage and browser flow not run locally.
+
+Commit: NOT CREATED because the sandbox denied .git/index.lock and automatic approval review failed with a 403 model access error. Push: NOT ATTEMPTED.

@@ -11,6 +11,7 @@ export class LessorAutosave {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private inFlight: Promise<boolean> | null = null;
   private blocked = false;
+  private discarding = false;
   private status: LessorSaveStatus = 'saved';
   private version: number;
   private persistedBaseVersion: number;
@@ -57,6 +58,7 @@ export class LessorAutosave {
   getStatus(): LessorSaveStatus { return this.status; }
 
   change(section: DraftSection, value: DraftSectionValue): void {
+    if (this.discarding) return;
     this.pending[section] = value;
     this.persist();
     if (this.blocked) return;
@@ -67,8 +69,8 @@ export class LessorAutosave {
 
   async flush(): Promise<boolean> {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    if (this.blocked) return false;
-    if (this.inFlight) { await this.inFlight; if (this.blocked) return false; }
+    if (this.blocked || this.discarding) return false;
+    if (this.inFlight) { await this.inFlight; if (this.blocked || this.discarding) return false; }
     if (!Object.keys(this.pending).length) return true;
     this.inFlight = this.drain();
     try { return await this.inFlight; } finally { this.inFlight = null; }
@@ -81,14 +83,14 @@ export class LessorAutosave {
       if (!value) continue;
       try {
         const draft = await this.save(this.draftId, section, this.version, value);
-        if (this.blocked) return false;
+        if (this.blocked || this.discarding) return false;
         this.version = draft.version;
         this.persistedBaseVersion = this.version;
         if (this.pending[section] === value) delete this.pending[section];
         this.persist();
         this.onSaved(draft);
       } catch (error) {
-        if (this.blocked) return false;
+        if (this.blocked || this.discarding) return false;
         if (error && typeof error === 'object' && 'status' in error && error.status === 409) {
           this.blocked = true;
           this.setStatus('conflict');
@@ -123,12 +125,24 @@ export class LessorAutosave {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.blocked = true;
+    this.discarding = true;
     this.pending = {};
     if (this.persistLocally) {
       try {
         localStorage.removeItem(this.storageKey);
       } catch {}
     }
+  }
+
+  beginDiscard(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.discarding = true;
+  }
+
+  resumeAfterDiscardFailure(): void {
+    this.discarding = false;
+    if (Object.keys(this.pending).length) this.setStatus('error');
   }
 
   dispose(): void {

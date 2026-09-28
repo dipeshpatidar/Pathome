@@ -932,7 +932,13 @@ function LessorEditor({
   };
 
   const handleDiscard = async () => {
-    await lessorDraftService.discard(draftId, guest);
+    queue.current?.beginDiscard();
+    try {
+      await lessorDraftService.discard(draftId, guest);
+    } catch (cause) {
+      queue.current?.resumeAfterDiscardFailure();
+      throw cause;
+    }
     queue.current?.abandon();
     localStorage.removeItem(`pathome_lessor_unsynced_${userId ?? 0}_${draftId}`);
     localStorage.removeItem(`pathome_guest_step_${draftId}`);

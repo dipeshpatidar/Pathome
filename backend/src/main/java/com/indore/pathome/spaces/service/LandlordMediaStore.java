@@ -193,6 +193,7 @@ public class LandlordMediaStore {
 
     private void requireOwned(Long ownerId, String draftId) {
         drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
+                .filter(draft -> !"DISCARDED".equals(draft.getStatus()))
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
     }
 
@@ -214,10 +215,4 @@ public class LandlordMediaStore {
         return media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
     }
 
-    @Transactional
-    public void deleteAllForDraft(Long ownerId, String draftId) {
-        List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-        media.deleteAll(items);
-        media.flush();
-    }
 }

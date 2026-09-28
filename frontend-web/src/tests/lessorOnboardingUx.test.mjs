@@ -238,3 +238,31 @@ test('autosave abandon cancels in-flight/pending requests and prevents delayed r
   assert.equal(result, false);
   assert.equal(saveCalls, 0);
 });
+
+test('discard pauses an in-flight save, cancels debounce, and preserves edits if DELETE fails', async () => {
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key)
+  };
+  let finishSave;
+  let savedCallbacks = 0;
+  let saveCalls = 0;
+  const saver = new LessorAutosave(10, 'draft-race', 1, () => {}, () => { savedCallbacks++; },
+    () => { saveCalls++; return new Promise(resolve => { finishSave = resolve; }); });
+  saver.change('basics', { propertyType: 'HOUSE', rentalMode: 'LONG_TERM_RENTAL', bhkCount: '3BHK' });
+  const inFlight = saver.flush();
+  saver.change('pricing', { monthlyRent: 20000, securityDeposit: 0 });
+  saver.beginDiscard();
+  finishSave({ draftId: 'draft-race', version: 2 });
+  assert.equal(await inFlight, false);
+  assert.equal(savedCallbacks, 0);
+  assert.equal(saveCalls, 1);
+  assert.equal(Object.keys(saver.getPending()).length, 2);
+  assert.ok(values.has('pathome_lessor_unsynced_10_draft-race'));
+  saver.resumeAfterDiscardFailure();
+  assert.equal(saver.getStatus(), 'error');
+  saver.abandon();
+  assert.equal(values.has('pathome_lessor_unsynced_10_draft-race'), false);
+});

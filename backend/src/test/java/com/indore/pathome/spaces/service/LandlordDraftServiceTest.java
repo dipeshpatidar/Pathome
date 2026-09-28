@@ -27,6 +27,7 @@ class LandlordDraftServiceTest {
     private LandlordCapabilityService capabilities;
     private LandlordLocationService locations;
     private LandlordDraftService service;
+    private DiscardedDraftCleanupService cleanup;
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
     @BeforeEach
@@ -34,8 +35,9 @@ class LandlordDraftServiceTest {
         drafts = mock(PropertyUploadDraftRepository.class);
         capabilities = mock(LandlordCapabilityService.class);
         locations = mock(LandlordLocationService.class);
+        cleanup = mock(DiscardedDraftCleanupService.class);
         service = new LandlordDraftService(drafts, capabilities, mapper, locations,
-                mock(PropertyDraftMediaRepository.class));
+                mock(PropertyDraftMediaRepository.class), cleanup);
         when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
     }
 
@@ -144,44 +146,62 @@ class LandlordDraftServiceTest {
     @Test
     void landlordCanDiscardOwnDraft() throws Exception {
         PropertyUploadDraft draft = storedDraft(5L);
-        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.findLandlordDraftForUpdate("draft-one", 5L)).thenReturn(Optional.of(draft));
 
         service.discard("owner@example.com", "draft-one");
 
-        verify(drafts).delete(draft);
+        assertEquals("DISCARDED", draft.getStatus());
+        verify(drafts).saveAndFlush(draft);
+        verify(cleanup).afterCommit("draft-one");
+    }
+
+    @Test
+    void repeatedDiscardIsNoOpAndLateSaveCannotEditTombstone() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        when(drafts.findLandlordDraftForUpdate("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+
+        service.discard("owner@example.com", "draft-one");
+        service.discard("owner@example.com", "draft-one");
+
+        verify(drafts, times(1)).saveAndFlush(draft);
+        verify(cleanup, times(1)).afterCommit("draft-one");
+        assertThrows(EntityNotFoundException.class, () -> service.updatePricing("owner@example.com", "draft-one", 1,
+                new LandlordDraftData.Pricing(new BigDecimal("20000"), BigDecimal.ZERO)));
     }
 
     @Test
     void landlordCannotDiscardAnotherLandlordsDraft() {
-        when(drafts.findByDraftIdAndLandlordUserId("draft-other", 5L)).thenReturn(Optional.empty());
+        when(drafts.findLandlordDraftForUpdate("draft-other", 5L)).thenReturn(Optional.empty());
 
         assertThrows(EntityNotFoundException.class,
                 () -> service.discard("owner@example.com", "draft-other"));
 
-        verify(drafts, never()).delete(any());
+        verify(drafts, never()).saveAndFlush(any());
     }
 
     @Test
     void landlordCannotDiscardSubmittedDraft() throws Exception {
         PropertyUploadDraft draft = storedDraft(5L);
         draft.setStatus("SUBMITTED");
-        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.findLandlordDraftForUpdate("draft-one", 5L)).thenReturn(Optional.of(draft));
 
         assertThrows(DraftConflictException.class,
                 () -> service.discard("owner@example.com", "draft-one"));
 
-        verify(drafts, never()).delete(any());
+        verify(drafts, never()).saveAndFlush(any());
     }
 
     @Test
     void discardingRevisionDraftLeavesPublishedListingUntouched() throws Exception {
         PropertyUploadDraft revisionDraft = storedDraft(5L);
         revisionDraft.setPublishedPropertyId(42L);
-        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(revisionDraft));
+        when(drafts.findLandlordDraftForUpdate("draft-one", 5L)).thenReturn(Optional.of(revisionDraft));
 
         service.discard("owner@example.com", "draft-one");
 
-        verify(drafts).delete(revisionDraft);
+        verify(drafts).saveAndFlush(revisionDraft);
+        assertEquals("DISCARDED", revisionDraft.getStatus());
         assertEquals(42L, revisionDraft.getPublishedPropertyId());
     }
 

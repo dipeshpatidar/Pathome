@@ -10,6 +10,9 @@ import java.util.Optional;
 
 @Repository
 public interface PropertyMediaAssetRepository extends JpaRepository<PropertyMediaAsset, Long> {
+    boolean existsByCloudinaryPublicId(String publicId);
+
+    boolean existsByMediaUrl(String url);
     @org.springframework.data.jpa.repository.Query("select m from PropertyMediaAsset m where m.listingId = :listingId " +
             "order by coalesce(m.sortOrder, 2147483647) asc, m.uploadedAt desc, m.id desc")
     List<PropertyMediaAsset> findByListingIdOrderByUploadedAtDesc(@org.springframework.data.repository.query.Param("listingId") Long listingId);

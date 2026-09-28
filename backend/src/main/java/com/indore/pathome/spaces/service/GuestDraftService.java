@@ -38,6 +38,7 @@ public class GuestDraftService {
     private final LandlordDraftService landlordDrafts;
     private final LandlordCapabilityService capabilities;
     private final MediaStagingService staging;
+    private final DiscardedDraftCleanupService discardCleanup;
     private final int retentionDays;
     private final int maxActiveDrafts;
     private final int maxCreatesPerHour;
@@ -50,9 +51,11 @@ public class GuestDraftService {
                              @Qualifier("draftMediaStagingService") MediaStagingService staging,
                              @Value("${pathome.guest.retention-days:15}") int retentionDays,
                              @Value("${pathome.guest.max-active-drafts-per-session:1}") int maxActiveDrafts,
-                             @Value("${pathome.guest.max-drafts-per-ip-hour:5}") int maxCreatesPerHour) {
+                             @Value("${pathome.guest.max-drafts-per-ip-hour:5}") int maxCreatesPerHour,
+                             DiscardedDraftCleanupService discardCleanup) {
         this.drafts = drafts; this.media = media; this.landlordDrafts = landlordDrafts;
         this.capabilities = capabilities; this.staging = staging;
+        this.discardCleanup = discardCleanup;
         this.retentionDays = Math.max(1, Math.min(retentionDays, 30));
         if (maxActiveDrafts < 0 || maxActiveDrafts > 1)
             throw new IllegalArgumentException("This guest cookie model supports at most one active draft per session");
@@ -123,24 +126,17 @@ public class GuestDraftService {
     public void discard(String draftId, String credential) {
         PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
-        if (!authorized(draft, credential)) throw new EntityNotFoundException("Draft unavailable");
+        if (!authorizedForDiscard(draft, credential)) throw new EntityNotFoundException("Draft unavailable");
+        if ("DISCARDED".equals(draft.getStatus())) return;
         if (!"DRAFT".equals(draft.getStatus())) {
             throw new com.indore.pathome.spaces.exception.DraftConflictException(draftId,
                     draft.getVersion() == null ? 0 : draft.getVersion(),
                     "Only in-progress drafts can be discarded");
         }
-        List<PropertyDraftMedia> rows = media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(draftId);
-        for (PropertyDraftMedia row : rows) {
-            if (row.getStagingObjectKey() != null) {
-                try {
-                    staging.delete(row.getStagingObjectKey());
-                } catch (RuntimeException ex) {
-                    log.warn("Could not delete staging media {} during discard: {}", row.getStagingObjectKey(), ex.getMessage());
-                }
-            }
-        }
-        media.deleteAll(rows);
-        drafts.delete(draft);
+        draft.setStatus("DISCARDED");
+        draft.setPayload("{}");
+        drafts.saveAndFlush(draft);
+        discardCleanup.afterCommit(draftId);
     }
 
     @Transactional
@@ -191,6 +187,10 @@ public class GuestDraftService {
             if (draft == null || draft.getGuestTokenHash() == null || draft.getLandlordUserId() != null
                     || !draft.getGuestExpiresAt().isBefore(LocalDateTime.now())) continue;
             List<PropertyDraftMedia> rows = media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(draft.getDraftId());
+            if ("DISCARDED".equals(draft.getStatus())) {
+                if (rows.isEmpty()) { drafts.delete(draft); count++; }
+                continue;
+            }
             boolean storageRemoved = true;
             for (PropertyDraftMedia row : rows) if (row.getStagingObjectKey() != null) {
                 try {
@@ -218,6 +218,15 @@ public class GuestDraftService {
                 || draft.getAdminId() != null || draft.getLandlordUserId() != null
                 || !"DRAFT".equals(draft.getStatus()) || draft.getGuestExpiresAt() == null
                 || !draft.getGuestExpiresAt().isAfter(LocalDateTime.now())) return false;
+        return MessageDigest.isEqual(draft.getGuestTokenHash().getBytes(StandardCharsets.US_ASCII),
+                hash(credential).getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private boolean authorizedForDiscard(PropertyUploadDraft draft, String credential) {
+        if (!"DISCARDED".equals(draft.getStatus())) return authorized(draft, credential);
+        if (credential == null || credential.length() != 43 || draft.getGuestTokenHash() == null
+                || draft.getAdminId() != null || draft.getLandlordUserId() != null
+                || draft.getGuestExpiresAt() == null || !draft.getGuestExpiresAt().isAfter(LocalDateTime.now())) return false;
         return MessageDigest.isEqual(draft.getGuestTokenHash().getBytes(StandardCharsets.US_ASCII),
                 hash(credential).getBytes(StandardCharsets.US_ASCII));
     }

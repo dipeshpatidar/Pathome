@@ -26,6 +26,7 @@ class GuestDraftServiceTest {
     private LandlordCapabilityService capabilities;
     private MediaStagingService staging;
     private GuestDraftService service;
+    private DiscardedDraftCleanupService cleanup;
     private ObjectMapper mapper;
     private final LandlordDraftData.Basics basics =
             new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK");
@@ -36,11 +37,12 @@ class GuestDraftServiceTest {
         media = mock(PropertyDraftMediaRepository.class);
         capabilities = mock(LandlordCapabilityService.class);
         staging = mock(MediaStagingService.class);
+        cleanup = mock(DiscardedDraftCleanupService.class);
         mapper = new ObjectMapper().findAndRegisterModules();
         LandlordDraftService existing = new LandlordDraftService(drafts, capabilities, mapper,
-                mock(LandlordLocationService.class), media);
+                mock(LandlordLocationService.class), media, cleanup);
         service = new GuestDraftService(drafts, media, existing, capabilities,
-                staging, 15, 1, 5);
+                staging, 15, 1, 5, cleanup);
         when(drafts.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
         when(media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(any())).thenReturn(List.of());
     }
@@ -138,7 +140,7 @@ class GuestDraftServiceTest {
     }
 
     @Test
-    void guestCanDiscardOwnDraftAndDeletesStagedMedia() {
+    void guestCanDiscardOwnDraftAndDefersStagedMediaCleanup() {
         var created = service.create(basics, null, "127.0.0.1");
         PropertyUploadDraft draft = draftFor(created);
         PropertyDraftMedia stagedMedia = new PropertyDraftMedia();
@@ -152,9 +154,26 @@ class GuestDraftServiceTest {
 
         service.discard(draft.getDraftId(), created.credential());
 
-        verify(staging).delete("drafts/guest/photo1.jpg");
-        verify(media).deleteAll(List.of(stagedMedia));
-        verify(drafts).delete(draft);
+        assertEquals("DISCARDED", draft.getStatus());
+        verify(drafts, atLeastOnce()).saveAndFlush(draft);
+        verify(cleanup).afterCommit(draft.getDraftId());
+        verifyNoInteractions(staging);
+    }
+
+    @Test
+    void repeatedGuestDiscardNeedsTheSameProof() {
+        var created = service.create(basics, null, "127.0.0.1");
+        PropertyUploadDraft draft = draftFor(created);
+        when(drafts.findByDraftIdForUpdate(draft.getDraftId())).thenReturn(Optional.of(draft));
+
+        service.discard(draft.getDraftId(), created.credential());
+        service.discard(draft.getDraftId(), created.credential());
+
+        verify(cleanup, times(1)).afterCommit(draft.getDraftId());
+        assertThrows(EntityNotFoundException.class,
+                () -> service.discard(draft.getDraftId(), "x".repeat(43)));
+        assertThrows(EntityNotFoundException.class,
+                () -> service.require(draft.getDraftId(), created.credential()));
     }
 
     @Test
