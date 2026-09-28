@@ -4,8 +4,25 @@ import { getErrorMessage } from '../services/apiError';
 import { LessorListingDetail, lessorPortfolioService } from '../services/lessorPortfolioService';
 
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
+const LABELS: Record<string, string> = {
+  SUBMITTED: 'Submitted for review',
+  UNDER_REVIEW: 'Under review',
+  CHANGES_REQUIRED: 'Changes required',
+  PUBLISHED: 'Published',
+  PAUSED: 'Paused',
+  ARCHIVED: 'Archived'
+};
+
+const STATUS_GUIDANCE: Record<string, string> = {
+  SUBMITTED: 'Pathome has received your property for review.',
+  UNDER_REVIEW: 'Our team is reviewing your property.',
+  CHANGES_REQUIRED: 'Updates are needed before this property can be published.',
+  PUBLISHED: 'Your property is live.',
+  PAUSED: 'This property is currently not visible to renters.',
+  ARCHIVED: 'This property has been archived.'
+};
+
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-const LABELS: Record<string, string> = { SUBMITTED: 'Submitted for review', UNDER_REVIEW: 'Under review', CHANGES_REQUIRED: 'Changes requested', PUBLISHED: 'Published', PAUSED: 'Paused', ARCHIVED: 'Archived' };
 
 export function LessorListingView({ listingId, onBack, onOpenDraft }: { listingId: number; onBack: () => void; onOpenDraft: (id: string) => void }) {
   const [detail, setDetail] = useState<LessorListingDetail | null>(null);
@@ -42,7 +59,13 @@ export function LessorListingView({ listingId, onBack, onOpenDraft }: { listingI
   const cover = property.media.find(item => item.cover && item.contentType.startsWith('image/')) || property.media.find(item => item.contentType.startsWith('image/'));
   return <section className="mx-auto max-w-3xl">
     <button className={SECONDARY} onClick={onBack}><ArrowLeft className="h-4 w-4"/>My Properties</button>
-    <div className="mt-8 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your property</p><p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{LABELS[detail.status] || 'Status unavailable'}</p></div>
+    <div className="mt-8 flex flex-wrap items-center justify-between gap-2">
+      <p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your property</p>
+      <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{LABELS[detail.status] || 'Status unavailable'}</p>
+    </div>
+    {STATUS_GUIDANCE[detail.status] && (
+      <p className="mt-1 text-xs text-slate-500">{STATUS_GUIDANCE[detail.status]}</p>
+    )}
     <h1 className="mt-2 break-words font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">{property.title}</h1>
     <p className="mt-2 text-sm text-slate-600">{[property.locality, property.city].filter(Boolean).join(', ')}</p>
     <p className="mt-3 text-sm text-slate-600">This preview leaves out your private address and contact details.</p>
@@ -54,7 +77,7 @@ export function LessorListingView({ listingId, onBack, onOpenDraft }: { listingI
       {detail.openRevisionStatus === 'DRAFT' && detail.openRevisionDraftId && <button className={SECONDARY} onClick={() => onOpenDraft(detail.openRevisionDraftId!)}>Continue revision</button>}
       {detail.openRevisionStatus === 'CHANGES_REQUIRED' && <button disabled={busy} className={SECONDARY} onClick={() => { void startRevision(); }}>{busy ? 'Opening…' : 'Review requested changes'}</button>}
       {detail.openRevisionStatus === 'REVIEW' && <p role="status" className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">Your revised details have been submitted for review. The approved listing remains unchanged until approval.</p>}
-      {!detail.openRevisionDraftId && ['PUBLISHED', 'PAUSED', 'CHANGES_REQUIRED'].includes(detail.status) && <button disabled={busy} className={SECONDARY} onClick={() => { void startRevision(); }}>{busy ? 'Opening…' : detail.status === 'CHANGES_REQUIRED' ? 'Review and edit changes' : 'Edit details for review'}</button>}
+      {!detail.openRevisionDraftId && ['PUBLISHED', 'PAUSED', 'CHANGES_REQUIRED'].includes(detail.status) && <button disabled={busy} className={SECONDARY} onClick={() => { void startRevision(); }}>{busy ? 'Opening…' : detail.status === 'CHANGES_REQUIRED' ? 'Review changes' : 'Edit details for review'}</button>}
       {detail.status === 'PUBLISHED' && <button disabled={busy} className={SECONDARY} onClick={() => { void updateStatus('pause'); }}>Pause listing</button>}
       {detail.status === 'PAUSED' && <button disabled={busy} className={SECONDARY} onClick={() => { void updateStatus('resume-review'); }}>Request review to resume</button>}
       {['PUBLISHED', 'PAUSED'].includes(detail.status) && !confirmArchive && <button disabled={busy} className={SECONDARY} onClick={() => setConfirmArchive(true)}>Archive listing</button>}

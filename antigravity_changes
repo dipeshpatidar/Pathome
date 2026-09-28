@@ -2,7 +2,56 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 21:40 IST — Mobile Lessor UX Polish, Approval Status, Navigation & Duplicate Email Feedback
+
+### Why this work was requested
+Physical mobile testing exposed several UX and functional issues in Pathome's lessor/self-service experience:
+1. Mobile Property Card Preview CTA: The preview button competed visually with the freshness metadata (`Updated today · 9:06 PM`) and looked like an unadapted desktop button squeezed into the mobile footer.
+2. Available From Date Affordance: The "Available from" field looked like plain text rather than an interactive calendar picker control.
+3. My Properties Navigation: Tapping "My Properties" from the account/profile menu on public marketplace took authenticated users into property-upload onboarding (`/lessor/new`) instead of their canonical property portfolio (`/lessor`).
+4. Duplicate Email Registration: Registering with an existing email did not provide safe, actionable error feedback or a direct sign-in transition, risking account information leakage or confusing users.
+5. Truthful Property Approval & Workflow Status: Lessors needed clear, truthful visibility into what is happening with their property based on backend `ListingWorkflowStatus` enum, including separate communication for published live properties with edits under review, actionable "Review changes" for `CHANGES_REQUIRED`, and contextual "what happens next" guidance.
+6. Permanent Failure-Feedback Rule: Eliminated silent failures and ensured all actions communicate what happened, why, and what to do next without exposing database or internal diagnostics.
+
+### Implementation Details
+1. **Backend Auth Error Categorization (`AuthController.java`)**:
+   - Replaced generic registration conflict message with structured HTTP 400 Bad Request: `{"error": "EMAIL_ALREADY_REGISTERED", "message": "An account with this email already exists."}`.
+   - Enforced zero leakage of user-identifying attributes (no full name, username, phone number, or internal exception traces).
+2. **Frontend Auth Feedback (`AuthModal.tsx`)**:
+   - Parsed `EMAIL_ALREADY_REGISTERED` error code.
+   - Displayed exact safe message: *"An account with this email already exists."* along with *"Sign in to continue."* and an explicit **Sign in** CTA button.
+   - Preserved email and automatically focused password input upon switching to `LOGIN` mode.
+3. **Canonical Route Alignment (`Navbar.tsx`)**:
+   - In profile dropdown, bound "My Properties" directly to `navigate('/lessor')` (the canonical portfolio route) while preserving "List your property" / "Add property" routing to onboarding (`/lessor/new`).
+4. **Mobile Property Card Footer Hierarchy (`LessorPortfolio.tsx`)**:
+   - Re-architected mobile property card footer: `LastUpdatedMeta` freshness metadata positioned above a subtle dividing border, followed by a dedicated full-width secondary action row (`Preview property` / `Review changes` / `Continue draft` + right arrow).
+   - Ensured minimum 44px touch target (`min-h-11`) without clipping or horizontal overflow.
+5. **Truthful Workflow Status System (`lessorWorkflow.ts`, `LessorPortfolio.tsx`, `LessorListingView.tsx`)**:
+   - Created centralized `WORKFLOW_STATUS_CONFIG` mapping all 7 backend states (`DRAFT`, `SUBMITTED`, `UNDER_REVIEW`, `CHANGES_REQUIRED`, `PUBLISHED`, `PAUSED`, `ARCHIVED`) to human-readable labels and contextual next-step guidance.
+   - Implemented truthful handling for published listings with revisions awaiting review: preserves "Published" live status badge while displaying an informative "Changes under review" banner.
+   - Wired `CHANGES_REQUIRED` cards with prominent "Review changes" action linking back to edit flow.
+6. **Date Picker Affordance (`LessorDetailsStep.tsx`)**:
+   - Wrapped date input in an interactive container with visible `Calendar` icon and `ChevronRight` affordance.
+   - Added container click handler invoking native `.showPicker()` with fallback to input focus, >=44px touch target, and visible focus-within ring.
+7. **Automated Verification Coverage**:
+   - `AuthControllerTest.java`: 4 unit tests covering duplicate email response structure, safe non-leakage, successful registration, and login.
+   - `lessorPortfolioStatusAndNav.test.mjs`: 5 unit tests covering workflow status mapping, published + pending revision representation, action label resolution, navigation route mappings, and duplicate email privacy protection.
+
+### Verification Performed
+- Backend tests: `mvn -f backend/pom.xml test -Dtest="AuthControllerTest,LandlordMediaServiceTest,GuestMediaServiceTest,GuestRequestGuardTest,GuestOriginSecurityIntegrationTest"`: **78/78 passed (0 failures)**.
+- Frontend tests: `node --test frontend-web/src/tests/lessorPortfolioStatusAndNav.test.mjs frontend-web/src/tests/lessorMedia.test.mjs frontend-web/src/tests/lessorLastUpdated.test.mjs frontend-web/src/tests/navigationAndPublicUpdated.test.mjs`: **48/48 passed (0 failures)**.
+- Frontend build: `npm run build` in `frontend-web`: **0 errors, build successful**.
+- Git whitespace check: `git diff --check`: **PASS (0 whitespace errors)**.
+
+### Outstanding Checks
+- Physical phone manual acceptance for full mobile tactile feedback.
+
+### Commit / Push Status
+- Commit: Pending (staged in this cohesive change)
+- Push: Pending
+
 ## 2026-09-28 20:58 IST — Harden Mobile Media Upload Feedback and Exit Flow
+
 
 ### Why this work was requested
 Two approved issues in the landlord/lessor property onboarding flow:

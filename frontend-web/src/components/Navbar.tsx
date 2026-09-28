@@ -437,8 +437,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
                       <div className="p-1">
                         {role === 'TENANT' && <button
-                          onClick={() => { setProfileDropdownOpen(false); onOpenPostProperty(); }}
-                          className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                          onClick={() => { setProfileDropdownOpen(false); navigate('/lessor'); }}
+                          className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
                         ><Building2 className="h-4 w-4"/>My Properties</button>}
                         <button
                           onClick={() => { setProfileDropdownOpen(false); onLogout(); }}

@@ -27,8 +27,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [duplicateEmailError, setDuplicateEmailError] = useState(false);
   const [busy, setBusy] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = busy ? () => {} : onClose;
@@ -59,6 +61,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     if (busy) return;
     setBusy(true);
     setErrorMessage('');
+    setDuplicateEmailError(false);
 
     try {
       const endpoint = `${API_ROOT_URL}/auth/${authMode === 'LOGIN' ? 'login' : 'register'}`;
@@ -88,9 +91,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           walletBalance: 0
         });
       } else {
-        setErrorMessage('Unable to sign in with those credentials. Please check them and try again.');
+        const text = await res.text();
+        let errorData: { error?: string; message?: string } | null = null;
+        try {
+          errorData = JSON.parse(text);
+        } catch {
+          // non-JSON response
+        }
+
+        const isDuplicateEmail =
+          errorData?.error === 'EMAIL_ALREADY_REGISTERED' ||
+          /email is already registered/i.test(text) ||
+          /already exists/i.test(text);
+
+        if (authMode === 'REGISTER' && isDuplicateEmail) {
+          setDuplicateEmailError(true);
+          setErrorMessage('An account with this email already exists.');
+        } else if (authMode === 'REGISTER') {
+          setDuplicateEmailError(false);
+          setErrorMessage('Unable to register with those details. Please check them and try again.');
+        } else {
+          setDuplicateEmailError(false);
+          setErrorMessage('Unable to sign in with those credentials. Please check them and try again.');
+        }
       }
-    } catch (err) {
+    } catch {
+      setDuplicateEmailError(false);
       setErrorMessage('The authentication service is unavailable. Please try again when the server is running.');
     } finally { setBusy(false); }
   };
@@ -140,10 +166,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             <motion.div
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mb-4 bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-xl flex items-center gap-2"
+              role="alert"
+              className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-800"
             >
-              <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
-              <span>{errorMessage}</span>
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                <span className="font-semibold">{errorMessage}</span>
+              </div>
+              {duplicateEmailError && (
+                <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-rose-200/80 pt-2.5">
+                  <span className="text-[11px] font-medium text-rose-700">Sign in to continue.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('LOGIN');
+                      setErrorMessage('');
+                      setDuplicateEmailError(false);
+                      setTimeout(() => passwordRef.current?.focus(), 50);
+                    }}
+                    className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+                  >
+                    Sign in
+                  </button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -230,6 +276,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   id="pathome-auth-password"
+                  ref={passwordRef}
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -254,8 +301,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
           <div className="mt-5 text-center">
             <button
-              onClick={() => { setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN'); setErrorMessage(''); }}
-              className="text-xs font-semibold text-emerald-600 hover:underline transition-all"
+              onClick={() => {
+                setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN');
+                setErrorMessage('');
+                setDuplicateEmailError(false);
+              }}
+              className="min-h-11 inline-flex items-center justify-center text-xs font-semibold text-emerald-600 hover:underline transition-all cursor-pointer"
             >
               {authMode === 'LOGIN' ? "Don't have an account? Register" : "Already registered? Sign In"}
             </button>
