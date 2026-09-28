@@ -2,6 +2,42 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 16:32 IST — Lessor My Properties Last Updated Metadata
+
+### Why this work was requested
+On the lessor "My Properties" listing/cards, show clean, subtle last-updated date/time metadata without altering existing data models or redesigning the portfolio.
+
+### Implementation Details
+1. **Timestamp Reuse**:
+   - Reused existing authoritative backend timestamps: `draft.updatedAt` (`PropertyUploadDraft.updated_at`) and `listing.updatedAt` (`RentalDetails.updated_at`), which are already populated by persisted entity updates and sent in the existing DTOs (`LandlordDraftSummary` and `LandlordListingSummary`).
+   - No backend entity, migration, or DTO change was required.
+2. **Formatting Helper (`frontend-web/src/utils/lessorFormatting.ts`)**:
+   - Created `formatLastUpdated(rawDate, now = new Date())`.
+   - "Updated today · 10:30 AM" for same local calendar day.
+   - "Updated yesterday · 6:15 PM" for previous local calendar day.
+   - "Updated 21 Oct 2026 · 10:40 PM" for older dates.
+   - 12-hour format with AM/PM, no seconds, month formatted as short name (`Jan`..`Dec`).
+   - Missing/invalid/unparseable timestamps return `null` and do not render fake metadata.
+3. **Card UI (`frontend-web/src/components/LessorPortfolio.tsx`)**:
+   - Displays subtle metadata below rent and above primary action button (`<p className="mt-2 text-xs text-slate-500">`).
+   - Not a badge/chip, low emphasis, responsive on mobile.
+
+### Files Changed / Added
+- `frontend-web/src/utils/lessorFormatting.ts` (added)
+- `frontend-web/src/components/LessorPortfolio.tsx` (updated)
+- `frontend-web/src/tests/lessorLastUpdated.test.mjs` (added)
+- `antigravity_changes` (this file)
+
+### Verification
+- 5 focused unit tests in `lessorLastUpdated.test.mjs` passed.
+- All 35 lessor frontend tests passed (`node --test frontend-web/src/tests/lessor*.test.mjs`).
+- TypeScript no-emit passed (`tsc -p tsconfig.json --noEmit`).
+- `git diff --check` passed cleanly.
+- ONE commit: `feat(lessor): show property last updated time`.
+- ONE normal push to `feature/phase1-truthfulness-cleanup`.
+
+---
+
 ## 2026-09-28 16:25 IST — Lessor Contact Verification & Discard Checkpoint
 
 ### Why this work was requested
