@@ -1625,3 +1625,13 @@ Changed: backend/src/main/java/com/indore/pathome/spaces/entity/User.java and re
 Verification: focused Maven tests LandlordCapabilityServiceTest and LandlordCapabilitySecurityTest PASS 7/7 after correcting one test mock that initially returned stale pre-activation data; git diff --check PASS. Migration was reviewed but not applied against a live database in this slice. No frontend or browser verification applies yet.
 
 Commit: pending Slice 0 checkpoint. Push: NO.
+
+## 2026-09-28 10:25:18 IST — Phase 1B Slice 1 listing ownership and workflow foundation
+
+Why: Establish owner-scoped landlord listings and a review lifecycle without replacing existing public ACTIVE/PENDING/CLOSED behavior.
+
+Changed: Listing.java gains nullable owner, rental mode, workflow status, optimistic version, canonical locality reference, and submission/publication timestamps; ListingRepository.java gains an owner-scoped lookup; RentalMode.java and ListingWorkflowStatus.java define the domain vocabulary; ListingWorkflowService.java enforces legal actor transitions and private submission; OwnedListingAccess.java resolves ownership from the authenticated server-side capability; V19__landlord_listing_foundation.sql adds columns, checks, and owner pagination index, backfilling only deterministically ACTIVE listings. ListingWorkflowServiceTest.java and OwnedListingAccessTest.java cover transitions, legacy safety, short-stay publication rejection, and IDOR scoping. chat_gpt_changes contains this entry.
+
+Verification: focused Maven ListingWorkflowServiceTest and OwnedListingAccessTest PASS 7/7; git diff --check PASS. The additive migration was reviewed but not applied against a live database; no public query or UI was changed in this slice.
+
+Commit: pending Slice 1 checkpoint. Push: NO.

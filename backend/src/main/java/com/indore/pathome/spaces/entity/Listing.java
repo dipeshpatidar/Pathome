@@ -37,6 +37,30 @@ public abstract class Listing {
     @Column(nullable = false)
     private ListingStatus status = ListingStatus.ACTIVE;
 
+    @Column(name = "owner_user_id")
+    private Long ownerUserId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "rental_mode")
+    private RentalMode rentalMode;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "workflow_status")
+    private ListingWorkflowStatus workflowStatus;
+
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version = 0L;
+
+    @Column(name = "canonical_locality_id")
+    private Long canonicalLocalityId;
+
+    @Column(name = "submitted_at")
+    private LocalDateTime submittedAt;
+
+    @Column(name = "published_at")
+    private LocalDateTime publishedAt;
+
     @Column
     private Double latitude;
 
@@ -128,6 +152,27 @@ public abstract class Listing {
 
     public ListingStatus getStatus() { return status; }
     public void setStatus(ListingStatus status) { this.status = status; }
+
+    public Long getOwnerUserId() { return ownerUserId; }
+    public void setOwnerUserId(Long ownerUserId) { this.ownerUserId = ownerUserId; }
+
+    public RentalMode getRentalMode() { return rentalMode; }
+    public void setRentalMode(RentalMode rentalMode) { this.rentalMode = rentalMode; }
+
+    public ListingWorkflowStatus getWorkflowStatus() { return workflowStatus; }
+    public void setWorkflowStatus(ListingWorkflowStatus workflowStatus) { this.workflowStatus = workflowStatus; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
+
+    public Long getCanonicalLocalityId() { return canonicalLocalityId; }
+    public void setCanonicalLocalityId(Long canonicalLocalityId) { this.canonicalLocalityId = canonicalLocalityId; }
+
+    public LocalDateTime getSubmittedAt() { return submittedAt; }
+    public void setSubmittedAt(LocalDateTime submittedAt) { this.submittedAt = submittedAt; }
+
+    public LocalDateTime getPublishedAt() { return publishedAt; }
+    public void setPublishedAt(LocalDateTime publishedAt) { this.publishedAt = publishedAt; }
 
     public Double getLatitude() { return latitude; }
     public void setLatitude(Double latitude) { this.latitude = latitude; }

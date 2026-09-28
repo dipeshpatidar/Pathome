@@ -13,9 +13,12 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.math.BigDecimal;
+import java.util.Optional;
 
 @Repository
 public interface ListingRepository extends JpaRepository<Listing, Long> {
+    Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
+
     interface LocalitySuggestionRow {
         String getCity();
         String getLocality();
