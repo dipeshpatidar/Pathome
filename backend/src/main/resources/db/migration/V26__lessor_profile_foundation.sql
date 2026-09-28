@@ -5,7 +5,7 @@ CREATE TABLE lessor_profiles (
     id BIGSERIAL PRIMARY KEY,
     linked_user_id BIGINT REFERENCES users(id),
     display_name VARCHAR(150) NOT NULL,
-    mobile_number VARCHAR(30) NOT NULL,
+    mobile_number VARCHAR(30),
     email VARCHAR(255),
     source_type VARCHAR(50) NOT NULL DEFAULT 'SELF_SERVICE',
     source_reference VARCHAR(255),
@@ -23,7 +23,8 @@ CREATE UNIQUE INDEX idx_lessor_profiles_linked_user
     WHERE linked_user_id IS NOT NULL;
 
 CREATE INDEX idx_lessor_profiles_mobile
-    ON lessor_profiles (mobile_number);
+    ON lessor_profiles (mobile_number)
+    WHERE mobile_number IS NOT NULL;
 
 CREATE INDEX idx_lessor_profiles_source
     ON lessor_profiles (source_type);
@@ -42,11 +43,12 @@ CREATE INDEX idx_pud_lessor_profile_id
     ON property_upload_drafts (lessor_profile_id)
     WHERE lessor_profile_id IS NOT NULL;
 
--- Backfill: one distinct existing owner user -> one LessorProfile
+-- Backfill: one distinct existing owner user -> one LessorProfile.
+-- mobile_number may be NULL for users without a phone on record.
 INSERT INTO lessor_profiles (linked_user_id, display_name, mobile_number, email, source_type, created_at, updated_at)
 SELECT u.id,
        COALESCE(NULLIF(TRIM(u.full_name), ''), 'Lessor ' || u.id),
-       COALESCE(NULLIF(TRIM(u.phone_number), ''), '+91 9999999999'),
+       NULLIF(TRIM(u.phone_number), ''),
        u.email,
        'SELF_SERVICE',
        CURRENT_TIMESTAMP,
@@ -55,7 +57,7 @@ FROM users u
 WHERE (u.role = 'ROLE_LANDLORD'
        OR u.landlord_activated_at IS NOT NULL
        OR u.id IN (SELECT DISTINCT owner_user_id FROM listings WHERE owner_user_id IS NOT NULL))
-ON CONFLICT (linked_user_id) DO NOTHING;
+ON CONFLICT (linked_user_id) WHERE linked_user_id IS NOT NULL DO NOTHING;
 
 -- Backfill listings to reference the canonical profile of their owner user
 UPDATE listings l

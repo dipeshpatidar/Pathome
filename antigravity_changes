@@ -2,7 +2,56 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 18:45 IST — LessorProfile P2 Cleanup: Remove Fabricated Phone Sentinel + Fix V26 ON CONFLICT
+
+### Why this work was requested
+GPT staff review of commit 8c5cbd2 identified a P2 finding: V26 backfill used `'+91 9999999999'` as a fabricated phone sentinel for landlord users without a recorded phone, violating truthfulness requirements. The startup verification also revealed V26 had a blocking PostgreSQL error: `ON CONFLICT (linked_user_id)` failed because the target is a **partial unique index** requiring the `WHERE` predicate in the conflict clause. Spring Boot failed to start.
+
+### Implementation Details
+
+1. **V26 fixes (migration never applied — fixed in-place)**:
+   - `mobile_number VARCHAR(30)` — removed `NOT NULL`; column is nullable from creation.
+   - `idx_lessor_profiles_mobile` — changed to a partial index `WHERE mobile_number IS NOT NULL`.
+   - Backfill `INSERT`: replaced `COALESCE(..., '+91 9999999999')` with `NULLIF(TRIM(u.phone_number), '')` — users without phone get NULL, not a fake number.
+   - `ON CONFLICT (linked_user_id) WHERE linked_user_id IS NOT NULL DO NOTHING` — added the partial index predicate to satisfy PostgreSQL's constraint matching requirement.
+
+2. **V27 migration (`V27__lessor_profile_nullable_mobile.sql`)**:
+   - Sentinel cleanup: `UPDATE lessor_profiles SET mobile_number = NULL WHERE mobile_number = '+91 9999999999'` — safe/idempotent on all environments.
+
+3. **`LessorProfile.java`**: `@Column(name = "mobile_number")` — removed `nullable = false`.
+
+4. **`LessorProfileService.java`**:
+   - `getOrCreateProfileForUser`: mobileNumber seed fallback changed to `null` (no empty string, no sentinel).
+   - `createInternalProfile`: `normalizePhone` only called when mobileNumber is non-null/non-blank; otherwise `null`.
+
+5. **`LandlordContactServiceTest.java`**: Updated assertion: user with null phone now expects `null` phone in DTO, not `""`.
+
+6. **`LessorProfileServiceTest.java`**: Added 5 focused P2-coverage tests:
+   - `profileWithNullMobileIsValid`
+   - `selfServiceUserWithNoPhoneGetsNullMobileNotSentinel`
+   - `internalProfileWithNullPhoneIsValid`
+   - `contactCompletionSavesRealMobileToProfile`
+   - `submissionBlockedWhenProfileMobileIsNull`
+
+### Verification Performed
+- `mvn test -Dtest=LessorProfileServiceTest,LandlordContactServiceTest,LandlordSubmissionServiceTest`: **passed (all tests)**
+- Spring Boot startup: **PASS** (V26+V27 applied, `success=t` in flyway_schema_history, DB at V27)
+- `mobile_number IS YES` (nullable confirmed in information_schema)
+- Sentinel count in DB: **0**
+- `git diff --check`: **PASS**
+
+### Outstanding Checks
+- Full regression suite not run (focused only per AGENTS.md §11 tiered verification rules)
+- Frontend visual testing: not applicable to this change
+
+### Commit/Push Status
+- Commit: Pending (this entry)
+- Push: Pending
+
+---
+
 ## 2026-09-28 18:20 IST — Canonical Lessor Profile Foundation & Contact Decoupling
+
 
 ### Why this work was requested
 Eliminate the supply-side contact duplication problem:

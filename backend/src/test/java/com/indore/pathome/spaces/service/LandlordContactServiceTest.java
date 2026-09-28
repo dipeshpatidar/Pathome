@@ -48,7 +48,7 @@ class LandlordContactServiceTest {
 
         LandlordContactDto result = service.getContact("owner@example.com");
         assertEquals("John Doe", result.fullName());
-        assertEquals("", result.phoneNumber());
+        assertNull(result.phoneNumber());
         assertFalse(result.complete());
 
         User userWithoutName = new User();

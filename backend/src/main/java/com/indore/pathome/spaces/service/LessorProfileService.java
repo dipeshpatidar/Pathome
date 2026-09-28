@@ -49,7 +49,7 @@ public class LessorProfileService {
 
         String mobileNumber = LandlordContactService.isUsablePhone(user.getPhoneNumber())
                 ? LandlordContactService.normalizePhone(user.getPhoneNumber())
-                : (user.getPhoneNumber() != null ? user.getPhoneNumber().trim() : "");
+                : null;
 
         LessorProfile profile = new LessorProfile();
         profile.setLinkedUserId(user.getId());
@@ -96,7 +96,9 @@ public class LessorProfileService {
             throw new IllegalArgumentException("Internal profiles must use a non-self-service source type");
         }
         String cleanName = LandlordContactService.sanitizeName(displayName);
-        String cleanPhone = LandlordContactService.normalizePhone(mobileNumber);
+        String cleanPhone = (mobileNumber != null && !mobileNumber.isBlank())
+                ? LandlordContactService.normalizePhone(mobileNumber)
+                : null;
 
         LessorProfile profile = new LessorProfile();
         profile.setLinkedUserId(null);

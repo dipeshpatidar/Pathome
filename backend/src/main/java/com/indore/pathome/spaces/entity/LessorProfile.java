@@ -29,7 +29,7 @@ public class LessorProfile {
     @Column(name = "display_name", nullable = false, length = 150)
     private String displayName;
 
-    @Column(name = "mobile_number", nullable = false, length = 30)
+    @Column(name = "mobile_number", length = 30)
     private String mobileNumber;
 
     @Column(name = "email", length = 255)

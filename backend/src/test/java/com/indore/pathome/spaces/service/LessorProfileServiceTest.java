@@ -394,4 +394,77 @@ class LessorProfileServiceTest {
         r.setStatus(ListingStatus.ACTIVE);
         return r;
     }
+
+    // P2 fix — nullable mobile: profile with null mobile is valid at domain level
+    @Test
+    void profileWithNullMobileIsValid() {
+        LessorProfile profile = new LessorProfile();
+        profile.setId(200L);
+        profile.setLinkedUserId(200L);
+        profile.setDisplayName("Lessor Name");
+        profile.setMobileNumber(null);
+        profile.setSourceType(LessorSourceType.SELF_SERVICE);
+
+        assertNull(profile.getMobileNumber());
+        // isUsablePhone must return false for null — contact completion UX should trigger
+        assertFalse(LandlordContactService.isUsablePhone(profile.getMobileNumber()));
+    }
+
+    // P2 fix — self-service user with no phone seeds NULL (not fabricated sentinel)
+    @Test
+    void selfServiceUserWithNoPhoneGetsNullMobileNotSentinel() {
+        User user = new User();
+        user.setId(201L);
+        user.setEmail("nophone@example.com");
+        user.setFullName("No Phone User");
+        user.setPhoneNumber(null);
+
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+
+        assertNull(profile.getMobileNumber(),
+            "Profile mobile must be null when user has no phone — not a fabricated sentinel");
+        assertNotEquals("+91 9999999999", profile.getMobileNumber());
+    }
+
+    // P2 fix — internal profile without phone is valid
+    @Test
+    void internalProfileWithNullPhoneIsValid() {
+        LessorProfile profile = profileService.createInternalProfile(
+            "Field Agent", null, "agent@internal.com",
+            LessorSourceType.FIELD_TEAM, "REF-001", 1L);
+
+        assertNull(profile.getMobileNumber(),
+            "Internally sourced profile with no phone must have null mobile");
+        assertEquals(LessorSourceType.FIELD_TEAM, profile.getSourceType());
+    }
+
+    // P2 fix — contact completion saves real mobile to LessorProfile
+    @Test
+    void contactCompletionSavesRealMobileToProfile() {
+        User user = new User();
+        user.setId(202L);
+        user.setEmail("complete@example.com");
+        user.setFullName("Complete User");
+        user.setPhoneNumber(null);
+
+        // Seed profile with null mobile
+        LessorProfile profile = profileService.getOrCreateProfileForUser(user);
+        assertNull(profile.getMobileNumber());
+
+        // Contact completion provides a real mobile
+        LessorProfile updated = profileService.updateProfileContact(user.getId(), "Complete User", "+91 9826099999");
+        assertEquals("+91 9826099999", updated.getMobileNumber());
+        assertTrue(LandlordContactService.isUsablePhone(updated.getMobileNumber()));
+    }
+
+    // P2 fix — submission with null profile mobile is still blocked
+    @Test
+    void submissionBlockedWhenProfileMobileIsNull() {
+        LessorProfile profile = new LessorProfile();
+        profile.setDisplayName("Valid Name");
+        profile.setMobileNumber(null);
+
+        boolean mobileOk = LandlordContactService.isUsablePhone(profile.getMobileNumber());
+        assertFalse(mobileOk, "Submission gate must reject null mobile");
+    }
 }
