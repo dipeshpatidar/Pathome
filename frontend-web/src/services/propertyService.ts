@@ -121,7 +121,8 @@ const mapPublicProperty = (item: any): Property => {
     bachelorAllowed: typeof item.bachelorAllowed === 'boolean' ? item.bachelorAllowed : undefined,
     floor: typeof item.floorNumber === 'number' ? item.floorNumber : (typeof item.floor === 'number' ? item.floor : null),
     totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
-    preferredTenant: item.preferredTenant || null
+    preferredTenant: item.preferredTenant || null,
+    updatedAt: item.updatedAt ? String(item.updatedAt) : null
   };
 };
 
@@ -159,6 +160,7 @@ const mapDiscoveryProperty = (item: any): Property => ({
   // Carry mediaCount and hasVideo for badge display in the card
   _mediaCount: typeof item.mediaCount === 'number' ? item.mediaCount : undefined,
   _hasVideo: typeof item.hasVideo === 'boolean' ? item.hasVideo : false,
+  updatedAt: item.updatedAt ? String(item.updatedAt) : null
 } as any);
 
 export const createStableUploadRequestId = (

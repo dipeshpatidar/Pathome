@@ -312,7 +312,7 @@ export function LessorWorkspace({
             navigate(user ? '/lessor' : '/');
             return true;
           }}
-          onExitToLanding={() => navigate('/')}
+          onExitToLanding={() => navigate(user ? '/lessor' : '/')}
           currentStepLabel="Property Type"
         />
       )}

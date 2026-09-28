@@ -150,7 +150,8 @@ public class PropertyControllerTest {
                 .map(component -> component.getName().toLowerCase(Locale.ROOT))
                 .anyMatch(name -> name.contains("owner") || name.contains("address")
                         || name.contains("latitude") || name.contains("longitude")));
-        String serialized = new ObjectMapper().writeValueAsString(property);
+        String serialized = new ObjectMapper().findAndRegisterModules().writeValueAsString(property);
+        assertNotNull(property.updatedAt());
         assertFalse(serialized.contains("ownerPhoneNumber"));
         assertFalse(serialized.contains("Private address"));
         assertFalse(serialized.contains("Ramesh Sharma"));

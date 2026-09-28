@@ -114,4 +114,5 @@ export interface Property {
   preferredTenant?: string | null;
   _mediaCount?: number;
   _hasVideo?: boolean;
+  updatedAt?: string | null;
 }

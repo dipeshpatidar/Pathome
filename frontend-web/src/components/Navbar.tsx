@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   motion,
   AnimatePresence,
   useReducedMotion
 } from 'framer-motion';
 import { UserRole, UserProfile } from '../types';
+import { resolveWorkspaceContext, resolveLogoDestination } from '../utils/navigationPolicy';
 import {
   Building2,
   Sparkles,
@@ -149,9 +151,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isScrolled, setIsScrolled] = useState(() => (typeof window !== 'undefined' ? window.scrollY > 40 : false));
   const { unreadCount, isDrawerOpen, setIsDrawerOpen } = useNotification();
   const prefersReducedMotion = useReducedMotion();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const visitsUsed = user?.freeVisitsUsed || 0;
   const isAdminRole = role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN';
+  const workspaceContext = resolveWorkspaceContext(location.pathname, role);
+  const logoDestination = resolveLogoDestination(workspaceContext);
 
   // Track scroll position to transition from transparent Hero overlay to solid sticky header
   useEffect(() => {
@@ -205,10 +211,14 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* BRANDING LOGO */}
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8">
-            <motion.div
+            <motion.button
+              type="button"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              className="flex min-w-0 items-center gap-2.5 cursor-pointer"
+              onClick={() => navigate(logoDestination.path)}
+              aria-label={logoDestination.label}
+              title={logoDestination.label}
+              className="flex min-w-0 items-center gap-2.5 cursor-pointer text-left rounded-xl p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 bg-transparent border-none"
             >
               <div
                 className={`flex w-9 h-9 sm:w-10 sm:h-10 rounded-xl items-center justify-center font-bold shrink-0 shadow-sm transition-colors ${
@@ -220,14 +230,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Building2 className="w-5 h-5" />
               </div>
               <div className="min-w-0">
-                <a
-                  href="#"
+                <span
                   className={`font-['Outfit',sans-serif] text-base sm:text-xl font-black tracking-tight inline-flex items-center transition-colors ${
                     isAdminRole || isHeroTop ? 'text-white' : 'text-slate-900'
                   }`}
                 >
                   Path<span className="text-emerald-400">ome</span>
-                </a>
+                </span>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span
                     className={`pathome-tagline ${role === 'GUEST' ? 'hidden sm:inline-flex' : 'inline-flex'} whitespace-nowrap text-[10px] leading-4 sm:text-[11px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full border items-center transition-colors ${
@@ -247,7 +256,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   )}
                 </div>
               </div>
-            </motion.div>
+            </motion.button>
 
             {/* Desktop Nav Links (1024px+): Spacious, deliberate layout without cramped tablet squeeze */}
             {role === 'GUEST' && (

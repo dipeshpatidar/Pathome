@@ -2,6 +2,58 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 16:55 IST — Navigation Alignment, Supported City Registry & Public Last Updated Metadata
+
+### Why this work was requested
+1. Fix City Selector pollution: The city selector incorrectly contained non-city, project, and locality values ("Areea", "Prestige", "Vijay"). Trace root cause at source and ensure only authoritative supported cities from the Pathome Supported City Registry are included.
+2. Establish centralized navigation / logo policy and onboarding exit semantics: Predictable workspace-aware logo routing (Guest/Public -> `/`, Tenant browsing -> `/`, Lessor workspace -> `/lessor`, Admin workspace -> `/admin`, OE/GE reported as not present). Onboarding Exit preserves draft without discarding (Guest -> `/`, Authenticated lessor -> `/lessor`).
+3. Add subtle Last Updated metadata to public property discovery cards using the authoritative live published timestamp (`RentalDetails.updatedAt`), reusing the existing formatter without badge/chip styling.
+
+### Root Cause Analysis & Implementation Details
+1. **City Selector Pollution Root Cause**:
+   - Traced to `backend/src/main/java/com/indore/pathome/spaces/service/CityRegistry.java`.
+   - `syncFromDatabase(localityRepository, listingRepository)` was dynamically querying `localityRepository.findDistinctCities()` and calling `registerSupportedCity(city)`.
+   - Historical parser or untrusted import records with malformed locality city fields ("Areea", "Prestige", "Vijay") were automatically promoted into supported cities.
+   - Fix: Removed dynamic promotion from `localityRepository` and `listingRepository` in `CityRegistry.syncFromDatabase`. The supported city registry is strictly authoritative (`indore`, `bhopal`, `pune`).
+2. **Centralized Navigation Policy Helper (`frontend-web/src/utils/navigationPolicy.ts`)**:
+   - Implemented `resolveWorkspaceContext(pathname, role)`: Current workspace context takes precedence over user capability (multi-role user browsing rental homes has tenant context; inside lessor workspace has lessor context).
+   - Implemented `resolveLogoDestination(context)`: Maps to authoritative destination (`/`, `/lessor`, `/admin`) and reports OE/GE as `isAvailable: false`.
+   - Implemented `resolveOnboardingExitDestination(guest)`: Returns `/` for guests and `/lessor` for authenticated lessors while preserving drafts.
+   - Updated `Navbar.tsx` to use `resolveWorkspaceContext` and `resolveLogoDestination` with a keyboard-accessible, focusable button navigating via React Router without page reloads.
+   - Updated `LessorWorkspace.tsx` onboarding header routing to route guests to `/` and authenticated lessors to `/lessor`.
+3. **Public Property Discovery Card Last Updated Metadata**:
+   - Backend: Added `LocalDateTime updatedAt` to `PublicDiscoveryResponse` record mapped from live `listing.getUpdatedAt()`. Exposes only the live published listing timestamp without leaking drafts, pending revisions, private addresses, or contact information.
+   - Frontend: Mapped `updatedAt` in `mapDiscoveryProperty` and `mapPublicProperty` in `propertyService.ts` and added to `Property` interface.
+   - UI: Integrated `formatLastUpdated(prop.updatedAt)` into `PropertyShowcase.tsx` rendered right below Rent/Deposit and above footer information. Muted text, clean spacing, no badge/chip.
+4. **Focused Unit Tests**:
+   - Added `backend/src/test/java/com/indore/pathome/spaces/service/CityRegistryTest.java` verifying supported cities remain authoritative and DB locality distinct values cannot pollute the registry.
+   - Added `frontend-web/src/tests/navigationAndPublicUpdated.test.mjs` verifying workspace-context routing, logo destinations, onboarding exits, and public last-updated formatting.
+   - Verified `PropertyControllerTest` checks published `updatedAt` and serialization safety.
+
+### Files Changed / Added
+- `backend/src/main/java/com/indore/pathome/spaces/service/CityRegistry.java` (fixed at source)
+- `backend/src/main/java/com/indore/pathome/spaces/dto/PublicDiscoveryResponse.java` (added updatedAt)
+- `backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java` (mapped published updatedAt)
+- `backend/src/test/java/com/indore/pathome/spaces/service/CityRegistryTest.java` (added)
+- `backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java` (updated)
+- `frontend-web/src/utils/navigationPolicy.ts` (added centralized navigation policy)
+- `frontend-web/src/components/Navbar.tsx` (updated logo navigation to use policy)
+- `frontend-web/src/components/LessorWorkspace.tsx` (aligned exit destination)
+- `frontend-web/src/components/PropertyShowcase.tsx` (added last updated metadata)
+- `frontend-web/src/services/propertyService.ts` (mapped updatedAt)
+- `frontend-web/src/types/index.ts` (added updatedAt to Property interface)
+- `frontend-web/src/tests/navigationAndPublicUpdated.test.mjs` (added)
+- `antigravity_changes` (this file)
+
+### Verification
+- Focused backend tests: 64/64 passed (`CityRegistryTest`, `LandlordLocationServiceTest`, `MapTilerLocalityProviderTest`, `PropertyControllerTest`).
+- Focused frontend tests: 9/9 passed (`navigationAndPublicUpdated.test.mjs`, `lessorLastUpdated.test.mjs`).
+- All lessor tests: 35/35 passed (`frontend-web/src/tests/lessor*.test.mjs`).
+- TypeScript: `tsc -p tsconfig.json --noEmit` passed with 0 errors.
+- Git: `git diff --check` passed cleanly.
+
+---
+
 ## 2026-09-28 16:32 IST — Lessor My Properties Last Updated Metadata
 
 ### Why this work was requested

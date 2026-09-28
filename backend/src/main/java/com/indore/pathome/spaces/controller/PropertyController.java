@@ -1940,7 +1940,8 @@ public class PropertyController {
                 coverRoomTag,
                 totalMedia,
                 hasVideo,
-                hasMore);
+                hasMore,
+                listing.getUpdatedAt());
     }
 
     /**

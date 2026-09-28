@@ -50,20 +50,12 @@ public final class CityRegistry {
     }
 
     /**
-     * Synchronizes supported cities from PostgreSQL repositories at startup or runtime.
+     * Supported cities are strictly authoritative and defined by Pathome's supported city registry.
+     * They must never be dynamically derived from locality records, property addresses, or unvalidated database strings.
      */
     public static void syncFromDatabase(LocalityRepository localityRepository, ListingRepository listingRepository) {
-        if (localityRepository != null) {
-            try {
-                for (String city : localityRepository.findDistinctCities()) {
-                    if (city != null && !city.isBlank()) {
-                        registerSupportedCity(city);
-                    }
-                }
-            } catch (Exception ex) {
-                log.warn("Failed to sync cities from localityRepository: {}", ex.getMessage());
-            }
-        }
+        // Supported cities are strictly defined by Pathome's canonical registry.
+        // We never derive supported cities from locality records, property listings, or search terms.
     }
 
     public static boolean isCitySupported(String cityName) {

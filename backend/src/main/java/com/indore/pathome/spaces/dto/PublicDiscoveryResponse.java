@@ -42,5 +42,7 @@ public record PublicDiscoveryResponse(
         /** True when at least one VIDEO_WALKTHROUGH exists for this listing. */
         boolean hasVideo,
         /** True when there is a subsequent page — client should show "Show More". */
-        boolean hasMore
+        boolean hasMore,
+        /** Authoritative last-updated timestamp of the live published listing. */
+        LocalDateTime updatedAt
 ) {}
