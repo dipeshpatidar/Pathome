@@ -2,6 +2,43 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 18:20 IST — Canonical Lessor Profile Foundation & Contact Decoupling
+
+### Why this work was requested
+Eliminate the supply-side contact duplication problem:
+1. Lessor contact previously lived on User/account and was repeatedly copied into individual listings upon creation, causing stale/duplicated contact data.
+2. Introduce a first-class `LessorProfile` entity so Pathome can authoritatively represent a lessor independently of a login User account, supporting future lessors sourced from field teams, admin, CRM, partners, and bulk imports without fabricating fake User accounts.
+
+### Implementation Details
+1. **Schema & Migration (`V26__lessor_profile_foundation.sql`)**:
+   - Created `lessor_profiles` table with `id`, `linked_user_id` (nullable, with partial unique index for non-null values), `display_name`, `mobile_number`, `email`, `source_type` (CHECK constraint: `SELF_SERVICE`, `FIELD_TEAM`, `ADMIN`, `CRM`, `PARTNER`, `IMPORT`), `source_reference`, `created_by_user_id`, `claimed_at`, `created_at`, `updated_at`.
+   - Added additive `lessor_profile_id` column to `listings` with index.
+   - Added additive `lessor_profile_id` column to `property_upload_drafts` with index.
+   - Backfilled existing distinct landlord users into `lessor_profiles` (`source_type = 'SELF_SERVICE'`).
+   - Backfilled `listings.lessor_profile_id` and `property_upload_drafts.lessor_profile_id` to reference the canonical profile of their owner user.
+2. **Domain Model (`LessorProfile.java`, `LessorSourceType.java`, `LessorProfileRepository.java`)**:
+   - Represented `LessorProfile` JPA entity with strict source type enum.
+   - Updated `Listing.java` and `PropertyUploadDraft.java` with `lessorProfileId` getter/setter while preserving `ownerUserId` and existing listing contact fields for legacy compatibility.
+3. **Canonical Profile Service (`LessorProfileService.java`)**:
+   - `getOrCreateProfileForUser`: Resolves the canonical profile for a self-service User, seeding initial values from User contact on first activation.
+   - `updateProfileContact`: Mutates `LessorProfile` directly, ending continuous two-way sync with User record.
+   - `createInternalProfile`: Creates profiles with `linkedUserId = null` for field team, CRM, etc.
+   - `linkUserToProfile`: Supports future claiming; preserves immutable origin `sourceType` (provenance invariant) while recording `claimedAt`.
+4. **Supply Contact & Submission Integration**:
+   - `LandlordContactService.java`: Evolved `getContact` and `updateContact` to read and update `LessorProfile` authoritatively.
+   - `LandlordSubmissionService.java`: Validates contact against `LessorProfile` and attaches `lessorProfileId` to newly created listings and drafts.
+   - `GuestDraftService.java`: Attaches `lessorProfileId` to draft upon guest claim.
+5. **Focused Verification (`LessorProfileServiceTest.java`)**:
+   - Covered all 15 focused requirements: one profile per user, idempotency, multi-property ownership, backfill simulation, guest claim linkage, internal profile validity without user, provenance preservation, cross-user isolation, client parameter immutability, contact single-source-of-truth, redundant prompt avoidance, second property reuse, and privacy protection on public DTOs.
+
+### Verification
+- Focused backend tests: 40/40 passed (`LessorProfileServiceTest`, `LandlordContactServiceTest`, `LandlordSubmissionServiceTest`, `GuestDraftServiceTest`).
+- Regression check: `PropertyControllerTest` (50/50 passed).
+- Frontend tests: 15/15 passed (`lastUpdatedActivityDot.test.mjs`, `lessorLastUpdated.test.mjs`, `navigationAndPublicUpdated.test.mjs`).
+- Whitespace & format check: `git diff --check` passed cleanly.
+
+---
+
 ## 2026-09-28 18:05 IST — Timezone Semantics for Last Updated & Navigation Policy Cleanup
 
 ### Why this work was requested

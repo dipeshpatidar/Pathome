@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordContactDto;
+import com.indore.pathome.spaces.entity.LessorProfile;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.UserRepository;
 import org.springframework.security.access.AccessDeniedException;
@@ -14,17 +15,20 @@ import java.util.regex.Pattern;
 public class LandlordContactService {
     private static final Pattern COMPACT_INDIAN_MOBILE = Pattern.compile("^(?:\\+?91)?([6-9]\\d{9})$");
     private final UserRepository users;
+    private final LessorProfileService lessorProfiles;
 
-    public LandlordContactService(UserRepository users) {
+    public LandlordContactService(UserRepository users, LessorProfileService lessorProfiles) {
         this.users = users;
+        this.lessorProfiles = lessorProfiles;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public LandlordContactDto getContact(String email) {
         User user = users.findByEmail(email)
                 .orElseThrow(() -> new AccessDeniedException("Account unavailable"));
-        boolean complete = isUsableName(user.getFullName()) && isUsablePhone(user.getPhoneNumber());
-        return new LandlordContactDto(user.getFullName(), user.getPhoneNumber(), complete);
+        LessorProfile profile = lessorProfiles.getOrCreateProfileForUser(user);
+        boolean complete = isUsableName(profile.getDisplayName()) && isUsablePhone(profile.getMobileNumber());
+        return new LandlordContactDto(profile.getDisplayName(), profile.getMobileNumber(), complete);
     }
 
     @Transactional
@@ -37,11 +41,10 @@ public class LandlordContactService {
 
         User user = users.findByEmail(email)
                 .orElseThrow(() -> new AccessDeniedException("Account unavailable"));
-        user.setFullName(cleanName);
-        user.setPhoneNumber(cleanPhone);
-        users.saveAndFlush(user);
+        lessorProfiles.getOrCreateProfileForUser(user);
+        LessorProfile profile = lessorProfiles.updateProfileContact(user.getId(), cleanName, cleanPhone);
 
-        return new LandlordContactDto(cleanName, cleanPhone, true);
+        return new LandlordContactDto(profile.getDisplayName(), profile.getMobileNumber(), true);
     }
 
     public static boolean isUsableName(String name) {

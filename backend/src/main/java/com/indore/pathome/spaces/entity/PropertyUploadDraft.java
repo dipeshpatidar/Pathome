@@ -28,6 +28,9 @@ public class PropertyUploadDraft {
     @Column(name = "landlord_user_id")
     private Long landlordUserId;
 
+    @Column(name = "lessor_profile_id")
+    private Long lessorProfileId;
+
     @Column(name = "guest_token_hash", length = 64)
     private String guestTokenHash;
 
@@ -81,6 +84,9 @@ public class PropertyUploadDraft {
 
     public Long getLandlordUserId() { return landlordUserId; }
     public void setLandlordUserId(Long landlordUserId) { this.landlordUserId = landlordUserId; }
+
+    public Long getLessorProfileId() { return lessorProfileId; }
+    public void setLessorProfileId(Long lessorProfileId) { this.lessorProfileId = lessorProfileId; }
 
     public String getGuestTokenHash() { return guestTokenHash; }
     public void setGuestTokenHash(String guestTokenHash) { this.guestTokenHash = guestTokenHash; }

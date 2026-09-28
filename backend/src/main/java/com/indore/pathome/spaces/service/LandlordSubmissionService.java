@@ -34,12 +34,14 @@ public class LandlordSubmissionService {
     private final PropertyMediaAssetRepository assets;
     private final UserRepository users;
     private final ListingWorkflowService workflow;
+    private final LessorProfileService lessorProfiles;
 
     public LandlordSubmissionService(LandlordCapabilityService capabilities, LandlordDraftService draftData,
                                      LandlordLocationService locations, PropertyUploadDraftRepository drafts,
                                      PropertyDraftMediaRepository media, ListingRepository listings,
                                      PropertyMediaAssetRepository assets, UserRepository users,
-                                     ListingWorkflowService workflow) {
+                                     ListingWorkflowService workflow,
+                                     LessorProfileService lessorProfiles) {
         this.capabilities = capabilities;
         this.draftData = draftData;
         this.locations = locations;
@@ -49,6 +51,7 @@ public class LandlordSubmissionService {
         this.assets = assets;
         this.users = users;
         this.workflow = workflow;
+        this.lessorProfiles = lessorProfiles;
     }
 
     @Transactional(readOnly = true)
@@ -113,9 +116,11 @@ public class LandlordSubmissionService {
             throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
         }
         User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
-        if (!LandlordContactService.isUsableName(owner.getFullName()) || !LandlordContactService.isUsablePhone(owner.getPhoneNumber())) {
+        LessorProfile profile = lessorProfiles.getOrCreateProfileForUser(owner);
+        if (!LandlordContactService.isUsableName(profile.getDisplayName()) || !LandlordContactService.isUsablePhone(profile.getMobileNumber())) {
             throw new IllegalArgumentException("Complete your contact details (full name and mobile number) before submitting for review");
         }
+        draft.setLessorProfileId(profile.getId());
         Locality locality = data.location().canonicalLocalityId() == null ? null :
                 locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
         String selectedName = locality == null ? data.location().localityInput().trim() : locality.getSectorName();
@@ -165,8 +170,9 @@ public class LandlordSubmissionService {
         listing.setTotalAreaSqFt(data.details().totalAreaSqFt());
         listing.setFloorNumber(data.details().floorNumber());
         listing.setTotalFloors(data.details().totalFloors());
-        listing.setOwnerName(owner.getFullName());
-        listing.setOwnerPhoneNumber(owner.getPhoneNumber());
+        listing.setOwnerName(profile.getDisplayName());
+        listing.setOwnerPhoneNumber(profile.getMobileNumber());
+        listing.setLessorProfileId(profile.getId());
         listing.setMonthlyRent(data.pricing().monthlyRent());
         listing.setSecurityDeposit(data.pricing().securityDeposit());
         listing.setAvailableFrom(data.details().availableFrom().atStartOfDay());

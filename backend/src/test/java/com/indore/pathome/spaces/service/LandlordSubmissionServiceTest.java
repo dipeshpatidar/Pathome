@@ -27,6 +27,7 @@ class LandlordSubmissionServiceTest {
     private ListingRepository listings;
     private PropertyMediaAssetRepository assets;
     private UserRepository users;
+    private LessorProfileService lessorProfiles;
     private LandlordSubmissionService service;
     private PropertyUploadDraft draft;
     private List<PropertyDraftMedia> rows;
@@ -41,8 +42,9 @@ class LandlordSubmissionServiceTest {
         listings = mock(ListingRepository.class);
         assets = mock(PropertyMediaAssetRepository.class);
         users = mock(UserRepository.class);
+        lessorProfiles = mock(LessorProfileService.class);
         service = new LandlordSubmissionService(capabilities, draftData, locations, drafts, media, listings,
-                assets, users, new ListingWorkflowService());
+                assets, users, new ListingWorkflowService(), lessorProfiles);
         when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
         draft = new PropertyUploadDraft();
         draft.setDraftId("d1");
@@ -71,6 +73,8 @@ class LandlordSubmissionServiceTest {
         owner.setFullName("Owner");
         owner.setPhoneNumber("+91 98260 12345");
         when(users.findById(5L)).thenReturn(Optional.of(owner));
+        LessorProfile profile = new LessorProfile(50L, 5L, "Owner", "+91 98260 12345", "owner@example.com", LessorSourceType.SELF_SERVICE);
+        when(lessorProfiles.getOrCreateProfileForUser(owner)).thenReturn(profile);
         when(listings.saveAndFlush(any())).thenAnswer(invocation -> {
             Listing saved = invocation.getArgument(0);
             saved.setId(42L);
@@ -103,6 +107,7 @@ class LandlordSubmissionServiceTest {
         assertEquals("10 Private Road", listing.getAddress());
         assertEquals("+91 98260 12345", listing.getOwnerPhoneNumber());
         assertEquals(5L, listing.getOwnerUserId());
+        assertEquals(50L, listing.getLessorProfileId());
         when(listings.findByOriginDraftId("d1")).thenReturn(Optional.of(listing));
         var second = service.submit("owner@example.com", "d1");
         assertEquals(first.listingId(), second.listingId());
@@ -126,6 +131,8 @@ class LandlordSubmissionServiceTest {
         incompleteOwner.setFullName("Owner");
         incompleteOwner.setPhoneNumber(null);
         when(users.findById(5L)).thenReturn(Optional.of(incompleteOwner));
+        LessorProfile incompleteProfile = new LessorProfile(51L, 5L, "Owner", "", "owner@example.com", LessorSourceType.SELF_SERVICE);
+        when(lessorProfiles.getOrCreateProfileForUser(incompleteOwner)).thenReturn(incompleteProfile);
 
         var ex = assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
         assertTrue(ex.getMessage().contains("contact details"));

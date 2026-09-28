@@ -40,6 +40,9 @@ public abstract class Listing {
     @Column(name = "owner_user_id")
     private Long ownerUserId;
 
+    @Column(name = "lessor_profile_id")
+    private Long lessorProfileId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "rental_mode")
     private RentalMode rentalMode;
@@ -168,6 +171,9 @@ public abstract class Listing {
 
     public Long getOwnerUserId() { return ownerUserId; }
     public void setOwnerUserId(Long ownerUserId) { this.ownerUserId = ownerUserId; }
+
+    public Long getLessorProfileId() { return lessorProfileId; }
+    public void setLessorProfileId(Long lessorProfileId) { this.lessorProfileId = lessorProfileId; }
 
     public RentalMode getRentalMode() { return rentalMode; }
     public void setRentalMode(RentalMode rentalMode) { this.rentalMode = rentalMode; }

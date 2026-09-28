@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordContactDto;
+import com.indore.pathome.spaces.entity.LessorProfile;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,17 +15,32 @@ import static org.mockito.Mockito.*;
 
 class LandlordContactServiceTest {
     private UserRepository users;
+    private com.indore.pathome.spaces.repository.LessorProfileRepository lessorProfileRepo;
+    private LessorProfileService lessorProfileService;
     private LandlordContactService service;
 
     @BeforeEach
     void setUp() {
         users = mock(UserRepository.class);
-        service = new LandlordContactService(users);
+        lessorProfileRepo = mock(com.indore.pathome.spaces.repository.LessorProfileRepository.class);
+        java.util.Map<Long, LessorProfile> profileByUser = new java.util.HashMap<>();
+        when(lessorProfileRepo.findByLinkedUserId(any())).thenAnswer(inv ->
+                java.util.Optional.ofNullable(profileByUser.get(inv.getArgument(0))));
+        when(lessorProfileRepo.saveAndFlush(any())).thenAnswer(invocation -> {
+            LessorProfile p = invocation.getArgument(0);
+            if (p.getLinkedUserId() != null) {
+                profileByUser.put(p.getLinkedUserId(), p);
+            }
+            return p;
+        });
+        lessorProfileService = new LessorProfileService(lessorProfileRepo);
+        service = new LandlordContactService(users, lessorProfileService);
     }
 
     @Test
     void getContactReportsIncompleteWhenNameOrPhoneMissing() {
         User userWithoutPhone = new User();
+        userWithoutPhone.setId(1L);
         userWithoutPhone.setEmail("owner@example.com");
         userWithoutPhone.setFullName("John Doe");
         userWithoutPhone.setPhoneNumber(null);
@@ -32,10 +48,11 @@ class LandlordContactServiceTest {
 
         LandlordContactDto result = service.getContact("owner@example.com");
         assertEquals("John Doe", result.fullName());
-        assertNull(result.phoneNumber());
+        assertEquals("", result.phoneNumber());
         assertFalse(result.complete());
 
         User userWithoutName = new User();
+        userWithoutName.setId(2L);
         userWithoutName.setEmail("noname@example.com");
         userWithoutName.setFullName("");
         userWithoutName.setPhoneNumber("+91 9826012345");
@@ -48,6 +65,7 @@ class LandlordContactServiceTest {
     @Test
     void getContactReportsCompleteWhenBothNameAndValidPhoneExist() {
         User completeUser = new User();
+        completeUser.setId(3L);
         completeUser.setEmail("owner@example.com");
         completeUser.setFullName("Ramesh Sharma");
         completeUser.setPhoneNumber("+91 9826012345");
@@ -60,10 +78,12 @@ class LandlordContactServiceTest {
     }
 
     @Test
-    void updateContactNormalizesAndSavesValidContact() {
+    void updateContactNormalizesAndSavesToLessorProfileWithoutOverwritingUser() {
         User user = new User();
+        user.setId(4L);
         user.setEmail("owner@example.com");
         user.setFullName("Initial Name");
+        user.setPhoneNumber(null);
         when(users.findByEmail("owner@example.com")).thenReturn(Optional.of(user));
 
         LandlordContactDto dto = new LandlordContactDto("Ramesh Sharma", "9826012345", false);
@@ -72,9 +92,11 @@ class LandlordContactServiceTest {
         assertTrue(updated.complete());
         assertEquals("Ramesh Sharma", updated.fullName());
         assertEquals("+91 9826012345", updated.phoneNumber());
-        assertEquals("Ramesh Sharma", user.getFullName());
-        assertEquals("+91 9826012345", user.getPhoneNumber());
-        verify(users).saveAndFlush(user);
+        // Verify User record was NOT continuously modified (LessorProfile is supply-side truth)
+        assertEquals("Initial Name", user.getFullName());
+        assertNull(user.getPhoneNumber());
+        verify(users, never()).saveAndFlush(user);
+        verify(lessorProfileRepo, atLeastOnce()).saveAndFlush(any());
     }
 
     @Test

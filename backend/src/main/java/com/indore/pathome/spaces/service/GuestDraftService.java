@@ -39,6 +39,8 @@ public class GuestDraftService {
     private final LandlordCapabilityService capabilities;
     private final MediaStagingService staging;
     private final DiscardedDraftCleanupService discardCleanup;
+    private final com.indore.pathome.spaces.repository.UserRepository users;
+    private final LessorProfileService lessorProfiles;
     private final int retentionDays;
     private final int maxActiveDrafts;
     private final int maxCreatesPerHour;
@@ -52,10 +54,14 @@ public class GuestDraftService {
                              @Value("${pathome.guest.retention-days:15}") int retentionDays,
                              @Value("${pathome.guest.max-active-drafts-per-session:1}") int maxActiveDrafts,
                              @Value("${pathome.guest.max-drafts-per-ip-hour:5}") int maxCreatesPerHour,
-                             DiscardedDraftCleanupService discardCleanup) {
+                             DiscardedDraftCleanupService discardCleanup,
+                             com.indore.pathome.spaces.repository.UserRepository users,
+                             LessorProfileService lessorProfiles) {
         this.drafts = drafts; this.media = media; this.landlordDrafts = landlordDrafts;
         this.capabilities = capabilities; this.staging = staging;
         this.discardCleanup = discardCleanup;
+        this.users = users;
+        this.lessorProfiles = lessorProfiles;
         this.retentionDays = Math.max(1, Math.min(retentionDays, 30));
         if (maxActiveDrafts < 0 || maxActiveDrafts > 1)
             throw new IllegalArgumentException("This guest cookie model supports at most one active draft per session");
@@ -160,6 +166,9 @@ public class GuestDraftService {
                     "Wait for media uploads or removals to finish before signing in");
         capabilities.activate(email);
         Long owner = capabilities.requireLandlordUserId(email);
+        com.indore.pathome.spaces.entity.LessorProfile profile = users.findById(owner)
+                .map(lessorProfiles::getOrCreateProfileForUser)
+                .orElse(null);
         // Capability activation clears the persistence context; reacquire the locked row.
         draft = drafts.findByDraftIdForUpdate(draftId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
@@ -170,6 +179,9 @@ public class GuestDraftService {
         }
         draft.setGuestTokenHash(null); draft.setGuestExpiresAt(null);
         draft.setLandlordUserId(owner);
+        if (profile != null) {
+            draft.setLessorProfileId(profile.getId());
+        }
         drafts.saveAndFlush(draft);
         return landlordDrafts.toResponse(draft, landlordDrafts.readData(draft));
     }
