@@ -102,6 +102,10 @@
     letter-spacing: 0.015em;
     text-wrap: balance;
   }
+
+  .activity-dot-halo {
+    animation: activityHalo 2.8s ease-in-out infinite;
+  }
 }
 
 @keyframes scanline {
@@ -296,4 +300,22 @@
 
 .animate-scan-beam {
   animation: scanBeamHorizontal 3s ease-in-out infinite;
+}
+
+@keyframes activityHalo {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot-halo {
+    animation: none !important;
+    display: none !important;
+  }
 }

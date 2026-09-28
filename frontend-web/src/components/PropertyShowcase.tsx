@@ -13,7 +13,7 @@ import {
 import { Property } from '../types';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
-import { formatLastUpdated } from '../utils/lessorFormatting';
+import { LastUpdatedMeta } from './LastUpdatedMeta';
 import { propertyService } from '../services/propertyService';
 import { landingEntrance, landingHeadingMask } from '../utils/landingMotion';
 
@@ -320,8 +320,6 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
     </AnimatePresence>
   );
 
-  const lastUpdated = formatLastUpdated(prop.updatedAt);
-
   return (
     <article
       id={`property-card-${prop.id}`}
@@ -476,11 +474,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
               </div>
             )}
           </div>
-          {lastUpdated && (
-            <p className="mt-2 text-xs text-slate-500 tabular-nums">
-              {lastUpdated}
-            </p>
-          )}
+          <LastUpdatedMeta updatedAt={prop.updatedAt} className="mt-2" />
 
           <div className="mt-2.5 flex min-w-0 items-center justify-between gap-2">
             <p className="min-w-0 text-[11px] leading-4 text-slate-500">

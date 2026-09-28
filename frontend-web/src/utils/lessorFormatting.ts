@@ -49,3 +49,23 @@ export function formatLastUpdated(
 
   return `Updated ${day} ${month} ${year} · ${timeStr}`;
 }
+
+export interface LastUpdatedInfo {
+  formatted: string;
+  isToday: boolean;
+}
+
+/**
+ * Returns the formatted timestamp and whether the timestamp belongs to the current calendar day.
+ */
+export function getLastUpdatedInfo(
+  rawDate: string | number | Date | null | undefined,
+  now: Date = new Date()
+): LastUpdatedInfo | null {
+  const formatted = formatLastUpdated(rawDate, now);
+  if (!formatted) return null;
+  return {
+    formatted,
+    isToday: formatted.startsWith('Updated today')
+  };
+}

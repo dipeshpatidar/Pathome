@@ -2,6 +2,43 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 17:03 IST — Last Updated Visibility Polish (Green Activity Dot)
+
+### Why this work was requested
+Increase visibility of existing "Updated..." metadata with a subtle, premium Pathome-green activity dot placed before the text on public discovery cards and lessor portfolio cards.
+
+### Implementation Details
+1. **Activity Dot Design & Component (`frontend-web/src/components/LastUpdatedMeta.tsx`)**:
+   - 6px core Pathome-green dot (`bg-emerald-600`) vertically centered with the metadata text.
+   - For listings updated TODAY: renders an elegant breathing halo (`activity-dot-halo`) pulsing every 2.8s between scale 0.95 and 1.4 without aggressive blinking or disappearing.
+   - For YESTERDAY or OLDER: renders the same small green dot as strictly static (no halo/pulse), visually distinguishing fresh activity from past updates.
+   - For null/invalid timestamps: cleanly omitted (renders null).
+   - Accessibility: dot container has `aria-hidden="true"`; text remains the accessible info; halo is hidden under `prefers-reduced-motion: reduce`.
+2. **Animation & CSS (`frontend-web/src/index.css`)**:
+   - Added `.activity-dot-halo` utility with 2.8s breathing cycle and `@keyframes activityHalo`.
+   - Added `@media (prefers-reduced-motion: reduce)` disabling animation and hiding the pulse halo.
+3. **Helper (`frontend-web/src/utils/lessorFormatting.ts`)**:
+   - Added `getLastUpdatedInfo` returning `{ formatted, isToday }` while preserving `formatLastUpdated` contracts.
+4. **Integration**:
+   - Integrated `LastUpdatedMeta` in `PropertyShowcase.tsx` (public discovery card) and `LessorPortfolio.tsx` (My Properties drafts and listings).
+
+### Files Changed / Added
+- `frontend-web/src/utils/lessorFormatting.ts` (added getLastUpdatedInfo)
+- `frontend-web/src/components/LastUpdatedMeta.tsx` (created reusable activity dot component)
+- `frontend-web/src/index.css` (added keyframes and reduced-motion rules)
+- `frontend-web/src/components/PropertyShowcase.tsx` (integrated LastUpdatedMeta)
+- `frontend-web/src/components/LessorPortfolio.tsx` (integrated LastUpdatedMeta)
+- `frontend-web/src/tests/lastUpdatedActivityDot.test.mjs` (added unit tests)
+- `antigravity_changes` (this file)
+
+### Verification
+- Focused frontend tests: 15/15 passed (`lastUpdatedActivityDot.test.mjs`, `lessorLastUpdated.test.mjs`, `navigationAndPublicUpdated.test.mjs`).
+- All lessor tests: 35/35 passed (`lessor*.test.mjs`).
+- TypeScript: `tsc -p tsconfig.json --noEmit` passed with 0 errors.
+- Git: `git diff --check` passed cleanly.
+
+---
+
 ## 2026-09-28 16:55 IST — Navigation Alignment, Supported City Registry & Public Last Updated Metadata
 
 ### Why this work was requested
