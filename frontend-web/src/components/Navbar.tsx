@@ -427,6 +427,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
 
                       <div className="p-1">
+                        {role === 'TENANT' && <button
+                          onClick={() => { setProfileDropdownOpen(false); onOpenPostProperty(); }}
+                          className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                        ><Building2 className="h-4 w-4"/>My Properties</button>}
                         <button
                           onClick={() => { setProfileDropdownOpen(false); onLogout(); }}
                           className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 flex items-center gap-2.5 transition-colors"

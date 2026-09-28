@@ -1645,3 +1645,13 @@ Changed: PropertyUploadDraft.java and PropertyUploadDraftRepository.java add sep
 Verification: focused Maven LandlordDraftServiceTest and LandlordDraftSecurityTest PASS 7/7; Node lessorAutosave.test.mjs PASS 3/3; frontend TypeScript no-emit PASS; git diff --check PASS. Migration has not been applied against a live database. UI integration and browser QA follow in later slices.
 
 Commit: pending Slice 2 checkpoint. Push: NO.
+
+## 2026-09-28 10:36:26 IST — Phase 1B Slice 3 landlord basics and pricing journey
+
+Why: Give eligible existing accounts a direct landlord pathway and a small-screen first guided flow rather than a single long form.
+
+Changed: frontend-web/src/components/Home.tsx and Navbar.tsx route tenant accounts to /lessor, preserve the intended landlord route through sign-in/session renewal, and offer My Properties from the profile menu. LessorWorkspace.tsx adds capability activation, property-type selection, draft creation/resume, quiet save feedback, supported configuration choices, exact 4+ bedroom input, explicit rent/deposit inputs, and step navigation. lessorConfiguration.ts centralizes exact BHK and pricing rules; focused Node tests cover them. LandlordDraftService.java gives new drafts a readable title. The two untracked AGENTS review files remain untouched.
+
+Verification: focused Maven LandlordDraftServiceTest PASS; Node lessorConfiguration and lessorAutosave tests PASS 5/5; frontend TypeScript no-emit PASS; git diff --check PASS. Browser layout/interaction review and location/media/submit steps follow in later slices.
+
+Commit: pending Slice 3 checkpoint. Push: NO.

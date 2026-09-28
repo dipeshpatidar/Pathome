@@ -15,6 +15,7 @@ import { TenantDashboard } from './TenantDashboard';
 import { CreditCard, ArrowUp, ChevronDown, LoaderCircle, MapPin } from 'lucide-react';
 import { PublicPropertyDetail } from './PublicPropertyDetail';
 import { VisitRequestModal } from './VisitRequestModal';
+import { LessorWorkspace } from './LessorWorkspace';
 
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
@@ -758,7 +759,13 @@ export const Home: React.FC = () => {
   const activeDiscoveryKey = discoverySearchKey(activeSearchFilters);
   const [refineSearchRequest, setRefineSearchRequest] = useState(0);
   const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
-  const openPostProperty = useCallback(() => setShowPostPropertyModal(true), []);
+  const openPostProperty = useCallback(() => {
+    if (role === 'TENANT') navigate('/lessor');
+    else {
+      try { sessionStorage.setItem('pathome_pending_after_auth', '/lessor'); } catch (_) {}
+      setShowAuthModal(true);
+    }
+  }, [navigate, role]);
   const closePostProperty = useCallback(() => setShowPostPropertyModal(false), []);
   const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
   const discoveryRequestRef = useRef(0);
@@ -766,6 +773,7 @@ export const Home: React.FC = () => {
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
   const isPropertyRoute = location.pathname.startsWith('/property/');
+  const isLessorRoute = location.pathname === '/lessor' || location.pathname.startsWith('/lessor/');
   const isPublicPropertyRoute = /^\/property\/\d+$/.test(location.pathname);
   const publicPropertyId = isPublicPropertyRoute ? Number(location.pathname.split('/').pop()) : null;
 
@@ -964,7 +972,7 @@ export const Home: React.FC = () => {
   }, [isPropertyRoute, location.search]);
 
   useEffect(() => {
-    if (isPropertyRoute) return;
+    if (isPropertyRoute || isLessorRoute) return;
 
     // Restore preserved discovery context when returning from property detail
     try {
@@ -991,7 +999,7 @@ export const Home: React.FC = () => {
       window.removeEventListener('pathome_property_published', handlePropertyPublished);
       discoveryAbortRef.current?.abort();
     };
-  }, [location.search, isPropertyRoute]);
+  }, [location.search, isPropertyRoute, isLessorRoute]);
 
   // 1. MULTI-TAB & MULTI-WINDOW CROSS-TAB SESSION SYNCHRONIZATION
   useEffect(() => {
@@ -1026,6 +1034,9 @@ export const Home: React.FC = () => {
   // 1b. SESSION EXPIRATION LISTENER (Triggered by 401 / expired token)
   useEffect(() => {
     const handleSessionExpired = () => {
+      if (location.pathname.startsWith('/lessor')) {
+        try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
+      }
       setRole('GUEST');
       setUser(null);
       localStorage.removeItem('pathome_role');
@@ -1037,17 +1048,20 @@ export const Home: React.FC = () => {
 
     window.addEventListener('pathome_session_expired', handleSessionExpired);
     return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
     const path = location.pathname.toLowerCase();
-    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm';
+    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm' || path === '/lessor' || path.startsWith('/lessor/');
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
     // GUARD CHECK 1: If user is logged out or lacks auth token on protected route
     if (!user || role === 'GUEST' || (isProtectedRoute && !hasToken)) {
       if (isProtectedRoute) {
+        if (path.startsWith('/lessor')) {
+          try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
+        }
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
         setRole('GUEST');
         setUser(null);
@@ -1066,7 +1080,7 @@ export const Home: React.FC = () => {
       localStorage.setItem('pathome_user', JSON.stringify(user));
 
       if (isPropertyRoute) return;
-      if (role === 'TENANT' && path !== '/tenant') {
+      if (role === 'TENANT' && path !== '/tenant' && !path.startsWith('/lessor')) {
         navigate('/tenant', { replace: true });
       } else if (role === 'EMPLOYEE' && path !== '/crm') {
         navigate('/crm', { replace: true });
@@ -1171,6 +1185,12 @@ export const Home: React.FC = () => {
   const handleLoginSuccess = (userProfile: UserProfile) => {
     setUser(userProfile);
     setRole(userProfile.role);
+    const pendingLessor = sessionStorage.getItem('pathome_pending_after_auth');
+    if (pendingLessor?.startsWith('/lessor') && userProfile.role === 'TENANT') {
+      sessionStorage.removeItem('pathome_pending_after_auth');
+      navigate(pendingLessor);
+      return;
+    }
     if (pendingVisitProperty && userProfile.role === 'TENANT') {
       navigate(`/property/${pendingVisitProperty.id}`);
       return;
@@ -1206,12 +1226,14 @@ export const Home: React.FC = () => {
         onClosePostProperty={closePostProperty}
         activeAdminTab={activeAdminTab}
         setActiveAdminTab={setActiveAdminTab}
-        isLandingHero={!isPropertyRoute && role === 'GUEST'}
+        isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
       />
 
       {isPropertyRoute && (
         <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />
       )}
+
+      {isLessorRoute && role === 'TENANT' && user && <LessorWorkspace user={user} />}
 
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
       <AnimatePresence mode="wait">
@@ -1245,7 +1267,7 @@ export const Home: React.FC = () => {
 
       {/* LOGGED IN TENANT DASHBOARD VIEW vs GUEST HOMEPAGE VIEW */}
       <AnimatePresence mode="wait">
-        {!isPropertyRoute && role === 'TENANT' && user ? (
+        {!isPropertyRoute && !isLessorRoute && role === 'TENANT' && user ? (
           <motion.div
             key="tenant-dashboard"
             initial={{ opacity: 0, y: 16 }}
@@ -1260,7 +1282,7 @@ export const Home: React.FC = () => {
               onOpenLeaseUpload={() => setShowLeaseModal(true)}
             />
           </motion.div>
-        ) : !isPropertyRoute && role === 'GUEST' && (
+        ) : !isPropertyRoute && !isLessorRoute && role === 'GUEST' && (
           <motion.div
             key="guest-homepage"
             initial={reduceMotion ? false : { opacity: 0, y: 16 }}

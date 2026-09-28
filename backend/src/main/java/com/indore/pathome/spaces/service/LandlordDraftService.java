@@ -53,7 +53,7 @@ public class LandlordDraftService {
         draft.setLandlordUserId(ownerId);
         draft.setDraftType("SINGLE");
         draft.setStatus("DRAFT");
-        draft.setTitleSummary(validated.propertyType().name() + " draft");
+        draft.setTitleSummary(titleFor(validated));
         draft.setItemCount(1);
         LandlordDraftData data = new LandlordDraftData(validated, null, null, null);
         draft.setPayload(writeData(data));
@@ -167,7 +167,7 @@ public class LandlordDraftService {
         LandlordDraftData data = change.apply(readData(draft));
         draft.setPayload(writeData(data));
         draft.setUpdatedAt(LocalDateTime.now());
-        if (data.basics() != null) draft.setTitleSummary(data.basics().propertyType().name() + " draft");
+        if (data.basics() != null) draft.setTitleSummary(titleFor(data.basics()));
         try {
             return toResponse(drafts.saveAndFlush(draft), data);
         } catch (OptimisticLockingFailureException ex) {
@@ -202,4 +202,9 @@ public class LandlordDraftService {
 
     private static boolean present(String value) { return value != null && !value.isBlank(); }
     private static boolean tooLong(String value, int max) { return value != null && value.length() > max; }
+    private static String titleFor(LandlordDraftData.Basics basics) {
+        String type = basics.propertyType().name().toLowerCase().replace('_', ' ');
+        String label = Character.toUpperCase(type.charAt(0)) + type.substring(1);
+        return basics.bhkCount() == null ? label + " draft" : label + " · " + basics.bhkCount();
+    }
 }
