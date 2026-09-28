@@ -120,6 +120,41 @@ class LandlordSubmissionServiceTest {
     }
 
     @Test
+    void manualLocalityCanSubmitButRemainsPrivateAndDoesNotCreateCanonicalData() {
+        var original = validData();
+        when(draftData.readData(draft)).thenReturn(new LandlordDraftData(original.basics(), original.pricing(),
+                new LandlordDraftData.Location("Indore", null, "Rani Pura", "10 Private Road", "",
+                        LocationResolution.MANUAL_PENDING, null, null, null), original.details()));
+        var result = service.submit("owner@example.com", "d1");
+        assertEquals(ListingWorkflowStatus.SUBMITTED, result.status());
+        ArgumentCaptor<Listing> captured = ArgumentCaptor.forClass(Listing.class);
+        verify(listings).saveAndFlush(captured.capture());
+        assertEquals("Rani Pura", captured.getValue().getSector());
+        assertNull(captured.getValue().getCanonicalLocalityId());
+        assertEquals(LocationResolution.MANUAL_PENDING, captured.getValue().getLocationResolution());
+        assertEquals(ListingStatus.PENDING, captured.getValue().getStatus());
+        verify(locations, never()).requireMatchingLocality(anyString(), anyLong());
+    }
+
+    @Test
+    void externalSelectionPersistsProviderReferenceWithoutPublishing() {
+        var original = validData();
+        var location = new LandlordDraftData.Location("Indore", null, "Rani Pura", "10 Private Road", "",
+                LocationResolution.EXTERNAL_RESOLVED, "MAPTILER", "locality.1", "signed-token");
+        when(draftData.readData(draft)).thenReturn(new LandlordDraftData(original.basics(), original.pricing(),
+                location, original.details()));
+        when(locations.validExternalSelection("Indore", "Rani Pura", "MAPTILER", "locality.1", "signed-token"))
+                .thenReturn(true);
+        service.submit("owner@example.com", "d1");
+        ArgumentCaptor<Listing> captured = ArgumentCaptor.forClass(Listing.class);
+        verify(listings).saveAndFlush(captured.capture());
+        assertEquals("MAPTILER", captured.getValue().getLocationProvider());
+        assertEquals("locality.1", captured.getValue().getLocationProviderPlaceId());
+        assertNull(captured.getValue().getCanonicalLocalityId());
+        assertEquals(ListingStatus.PENDING, captured.getValue().getStatus());
+    }
+
+    @Test
     void publishedRevisionSubmitsForReviewWithoutChangingLiveListing() {
         RentalDetails live = new RentalDetails();
         live.setId(88L);

@@ -49,6 +49,14 @@ public class GlobalExceptionHandlerTest {
     }
 
     @Test
+    public void locationLookupLimitReturnsStructured429() {
+        var response = exceptionHandler.handleLocationLookupLimit(new LocationLookupRateLimitException(), request);
+        assertEquals(429, response.getStatusCode().value());
+        assertEquals("Too Many Requests", response.getBody().getError());
+        assertEquals("/api/v1/test", response.getBody().getPath());
+    }
+
+    @Test
     public void testHandleGenericException_Returns500() {
         RuntimeException ex = new RuntimeException("Database connection timeout");
         ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleGenericException(ex, request);

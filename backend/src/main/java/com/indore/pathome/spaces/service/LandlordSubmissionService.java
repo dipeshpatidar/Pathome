@@ -66,11 +66,11 @@ public class LandlordSubmissionService {
 
     private LandlordPreview buildPreview(PropertyUploadDraft draft, List<PropertyDraftMedia> rows) {
         LandlordDraftData data = draftData.readData(draft);
-        String canonical = canonicalName(data.location());
-        return new LandlordPreview(title(data, canonical),
+        String localityName = locationName(data.location());
+        return new LandlordPreview(title(data, localityName),
                 data.basics() == null ? null : data.basics().propertyType(),
                 data.basics() == null ? null : data.basics().bhkCount(),
-                data.location() == null ? null : data.location().city(), canonical,
+                data.location() == null ? null : data.location().city(), localityName,
                 data.pricing() == null ? null : data.pricing().monthlyRent(),
                 data.pricing() == null ? null : data.pricing().securityDeposit(),
                 data.details() == null ? null : data.details().availableFrom(),
@@ -84,7 +84,7 @@ public class LandlordSubmissionService {
                                             ? "/api/v1/lessor/properties/drafts/" + draft.getDraftId() + "/media/" + row.getMediaId() + "/content"
                                             : row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
                                 row.getSortOrder() == null ? 0 : row.getSortOrder())).toList(),
-                missing(data, rows, canonical != null));
+                missing(data, rows, localityName != null));
     }
 
     @Transactional
@@ -107,12 +107,15 @@ public class LandlordSubmissionService {
         }
         LandlordDraftData data = draftData.readData(draft);
         List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-        List<String> missing = missing(data, rows, canonicalName(data.location()) != null);
+        List<String> missing = missing(data, rows, locationName(data.location()) != null);
         if (!missing.isEmpty()) throw new IllegalArgumentException("Complete before submitting: " + String.join(", ", missing));
         if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
             throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
         }
-        Locality locality = locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
+        Locality locality = data.location().canonicalLocalityId() == null ? null :
+                locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
+        String selectedName = locality == null ? data.location().localityInput().trim() : locality.getSectorName();
+        String selectedCity = locality == null ? CityRegistry.canonicalCityName(data.location().city()) : locality.getCity();
         if (draft.getPublishedPropertyId() != null) {
             listings.lockOwnedId(draft.getPublishedPropertyId(), ownerId)
                     .orElseThrow(() -> new EntityNotFoundException("Property not found"));
@@ -141,16 +144,17 @@ public class LandlordSubmissionService {
             draft.setReviewNote(null);
             draft.setUpdatedAt(LocalDateTime.now());
             drafts.save(draft);
-            return new LandlordSubmission(target.getId(), draftId, title(data, locality.getSectorName()),
+            return new LandlordSubmission(target.getId(), draftId, title(data, selectedName),
                     ListingWorkflowStatus.SUBMITTED, draft.getUpdatedAt());
         }
         User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
         RentalDetails listing = new RentalDetails();
-        listing.setTitle(title(data, locality.getSectorName()));
+        listing.setTitle(title(data, selectedName));
         listing.setPropertyType(data.basics().propertyType());
         listing.setBhkCount(data.basics().bhkCount());
-        listing.setCity(locality.getCity());
-        listing.setSector(locality.getSectorName());
+        listing.setCity(selectedCity);
+        listing.setSector(selectedName);
+        setResolution(listing, data.location());
         listing.setAddress(data.location().address().trim());
         listing.setLandmark(data.location().landmark());
         listing.setDescription(data.details().description());
@@ -164,7 +168,7 @@ public class LandlordSubmissionService {
         listing.setSecurityDeposit(data.pricing().securityDeposit());
         listing.setAvailableFrom(data.details().availableFrom().atStartOfDay());
         listing.setOriginDraftId(draftId);
-        workflow.prepareSubmitted(listing, ownerId, locality.getId());
+        workflow.prepareSubmitted(listing, ownerId, locality == null ? null : locality.getId());
         Listing saved = listings.saveAndFlush(listing);
         List<PropertyMediaAsset> permanent = new ArrayList<>();
         int sortOrder = 0;
@@ -178,8 +182,8 @@ public class LandlordSubmissionService {
             asset.setUploadRequestId(row.getMediaId());
             asset.setIsPrimaryCover(Boolean.TRUE.equals(row.getIsCover()) && !video);
             asset.setSortOrder(sortOrder++);
-            asset.setSector(locality.getSectorName());
-            asset.setCity(locality.getCity());
+            asset.setSector(selectedName);
+            asset.setCity(selectedCity);
             asset.setPriceTag("₹" + data.pricing().monthlyRent().toPlainString() + " / month");
             permanent.add(asset);
         }
@@ -190,7 +194,7 @@ public class LandlordSubmissionService {
     }
 
     void requireCompleteRevision(LandlordDraftData data, List<PropertyDraftMedia> rows) {
-        List<String> missing = missing(data, rows, canonicalName(data.location()) != null);
+        List<String> missing = missing(data, rows, locationName(data.location()) != null);
         if (!missing.isEmpty()) throw new IllegalArgumentException("Revision is incomplete: " + String.join(", ", missing));
         if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
             throw new IllegalArgumentException("Revision media is still changing");
@@ -200,12 +204,15 @@ public class LandlordSubmissionService {
     /** Called only after a validated, owner-scoped revision enters review. */
     void applyRevision(RentalDetails listing, LandlordDraftData data,
                        List<PropertyDraftMedia> rows, Locality locality) {
-        listing.setTitle(title(data, locality.getSectorName()));
+        String selectedName = locality == null ? data.location().localityInput().trim() : locality.getSectorName();
+        String selectedCity = locality == null ? CityRegistry.canonicalCityName(data.location().city()) : locality.getCity();
+        listing.setTitle(title(data, selectedName));
         listing.setPropertyType(data.basics().propertyType());
         listing.setBhkCount(data.basics().bhkCount());
-        listing.setCity(locality.getCity());
-        listing.setSector(locality.getSectorName());
-        listing.setCanonicalLocalityId(locality.getId());
+        listing.setCity(selectedCity);
+        listing.setSector(selectedName);
+        listing.setCanonicalLocalityId(locality == null ? null : locality.getId());
+        setResolution(listing, data.location());
         listing.setAddress(data.location().address().trim());
         listing.setLandmark(data.location().landmark());
         listing.setDescription(data.details().description());
@@ -232,8 +239,8 @@ public class LandlordSubmissionService {
             asset.setUploadRequestId(row.getMediaId());
             asset.setIsPrimaryCover(Boolean.TRUE.equals(row.getIsCover()) && !video);
             asset.setSortOrder(sortOrder++);
-            asset.setCity(locality.getCity());
-            asset.setSector(locality.getSectorName());
+            asset.setCity(selectedCity);
+            asset.setSector(selectedName);
             asset.setPriceTag("₹" + data.pricing().monthlyRent().toPlainString() + " / month");
             replacement.add(asset);
         }
@@ -266,10 +273,24 @@ public class LandlordSubmissionService {
         return missing;
     }
 
-    private String canonicalName(LandlordDraftData.Location location) {
-        if (location == null || location.canonicalLocalityId() == null) return null;
-        try { return locations.requireMatchingLocality(location.city(), location.canonicalLocalityId()).getSectorName(); }
-        catch (IllegalArgumentException ex) { return null; }
+    private String locationName(LandlordDraftData.Location location) {
+        if (location == null || !CityRegistry.isCitySupported(location.city())) return null;
+        if (location.canonicalLocalityId() != null) {
+            try { return locations.requireMatchingLocality(location.city(), location.canonicalLocalityId()).getSectorName(); }
+            catch (IllegalArgumentException ex) { return null; }
+        }
+        if (location.localityInput() == null || location.localityInput().isBlank()) return null;
+        if (location.resolutionType() == LocationResolution.MANUAL_PENDING) return location.localityInput().trim();
+        if (location.resolutionType() == LocationResolution.EXTERNAL_RESOLVED
+                && locations.validExternalSelection(location.city(), location.localityInput(), location.provider(),
+                        location.providerPlaceId(), location.selectionToken())) return location.localityInput().trim();
+        return null;
+    }
+
+    private void setResolution(Listing listing, LandlordDraftData.Location location) {
+        listing.setLocationResolution(location.canonicalLocalityId() == null ? location.resolutionType() : LocationResolution.CANONICAL);
+        listing.setLocationProvider(location.canonicalLocalityId() == null ? location.provider() : null);
+        listing.setLocationProviderPlaceId(location.canonicalLocalityId() == null ? location.providerPlaceId() : null);
     }
 
     private String title(LandlordDraftData data, String locality) {

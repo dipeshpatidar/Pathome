@@ -55,6 +55,16 @@ public abstract class Listing {
     @Column(name = "canonical_locality_id")
     private Long canonicalLocalityId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "location_resolution")
+    private LocationResolution locationResolution;
+
+    @Column(name = "location_provider", length = 40)
+    private String locationProvider;
+
+    @Column(name = "location_provider_place_id", length = 160)
+    private String locationProviderPlaceId;
+
     @Column(name = "submitted_at")
     private LocalDateTime submittedAt;
 
@@ -170,6 +180,12 @@ public abstract class Listing {
 
     public Long getCanonicalLocalityId() { return canonicalLocalityId; }
     public void setCanonicalLocalityId(Long canonicalLocalityId) { this.canonicalLocalityId = canonicalLocalityId; }
+    public LocationResolution getLocationResolution() { return locationResolution; }
+    public void setLocationResolution(LocationResolution value) { this.locationResolution = value; }
+    public String getLocationProvider() { return locationProvider; }
+    public void setLocationProvider(String value) { this.locationProvider = value; }
+    public String getLocationProviderPlaceId() { return locationProviderPlaceId; }
+    public void setLocationProviderPlaceId(String value) { this.locationProviderPlaceId = value; }
 
     public LocalDateTime getSubmittedAt() { return submittedAt; }
     public void setSubmittedAt(LocalDateTime submittedAt) { this.submittedAt = submittedAt; }

@@ -13,8 +13,8 @@ public class ListingWorkflowService {
     public enum Actor { LANDLORD, ADMIN }
 
     public void prepareSubmitted(Listing listing, Long ownerUserId, Long canonicalLocalityId) {
-        if (ownerUserId == null || ownerUserId <= 0 || canonicalLocalityId == null || canonicalLocalityId <= 0) {
-            throw new IllegalArgumentException("Landlord and canonical locality are required");
+        if (ownerUserId == null || ownerUserId <= 0 || canonicalLocalityId != null && canonicalLocalityId <= 0) {
+            throw new IllegalArgumentException("Landlord or canonical locality is invalid");
         }
         if (listing.getWorkflowStatus() != null || listing.getOwnerUserId() != null) {
             throw new IllegalStateException("Listing has already entered a workflow");
@@ -35,6 +35,10 @@ public class ListingWorkflowService {
         if (target == ListingWorkflowStatus.PUBLISHED && listing.getOwnerUserId() != null
                 && listing.getRentalMode() != RentalMode.LONG_TERM_RENTAL) {
             throw new IllegalStateException("Only long-term rentals may be published in this workflow");
+        }
+        if (target == ListingWorkflowStatus.PUBLISHED && listing.getOwnerUserId() != null
+                && listing.getCanonicalLocalityId() == null) {
+            throw new IllegalStateException("Resolve the locality before publishing");
         }
         listing.setWorkflowStatus(target);
         listing.setStatus(target == ListingWorkflowStatus.PUBLISHED ? ListingStatus.ACTIVE

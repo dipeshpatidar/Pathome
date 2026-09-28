@@ -75,7 +75,8 @@ public class LandlordReviewService {
                         listing.getRentalMode(), listing.getBhkCount()),
                 new LandlordDraftData.Pricing(listing.getMonthlyRent(), listing.getSecurityDeposit()),
                 new LandlordDraftData.Location(listing.getCity(),
-                        listing.getCanonicalLocalityId(), listing.getSector(), listing.getAddress(), listing.getLandmark()),
+                        listing.getCanonicalLocalityId(), listing.getSector(), listing.getAddress(), listing.getLandmark(),
+                        listing.getLocationResolution(), listing.getLocationProvider(), listing.getLocationProviderPlaceId(), null),
                 new LandlordDraftData.Details(
                         listing.getAvailableFrom() == null ? null : listing.getAvailableFrom().toLocalDate(),
                         listing.getFurnishingStatus(), listing.getTotalAreaSqFt(), listing.getFloorNumber(),
@@ -110,11 +111,48 @@ public class LandlordReviewService {
         Listing listing = listings.findById(listingId)
                 .orElseThrow(() -> new EntityNotFoundException("Property not found"));
         String reviewNote = target == ListingWorkflowStatus.CHANGES_REQUIRED ? requireNote(note) : null;
+        if (target == ListingWorkflowStatus.PUBLISHED && listing.getOwnerUserId() != null) {
+            if (listing.getCanonicalLocalityId() == null) throw new IllegalStateException("Resolve the locality before publishing");
+            locations.requireMatchingLocality(listing.getCity(), listing.getCanonicalLocalityId());
+        }
         try { workflow.transition(listing, target, ListingWorkflowService.Actor.ADMIN); }
         catch (IllegalStateException ex) {
             throw new DraftConflictException(String.valueOf(listingId), 0, "Property status changed. Reload the review queue.");
         }
         listing.setReviewNote(reviewNote);
+        Listing saved = listings.saveAndFlush(listing);
+        return new LandlordListingAction(saved.getId(), saved.getWorkflowStatus(), saved.getVersion());
+    }
+
+    /** Admin confirmation links a submitted location to a pre-existing canonical locality. */
+    @Transactional
+    public LandlordListingAction linkLocality(Long listingId, Long localityId) {
+        listings.lockLandlordReviewId(listingId)
+                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        Listing listing = listings.findById(listingId)
+                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        if (listing.getOwnerUserId() == null || !List.of(ListingWorkflowStatus.SUBMITTED,
+                ListingWorkflowStatus.UNDER_REVIEW, ListingWorkflowStatus.CHANGES_REQUIRED).contains(listing.getWorkflowStatus())) {
+            throw new IllegalStateException("Location can only be linked during landlord review");
+        }
+        Locality locality = locations.requireMatchingLocality(listing.getCity(), localityId);
+        String previousName = listing.getSector();
+        listing.setCanonicalLocalityId(locality.getId());
+        listing.setSector(locality.getSectorName());
+        if (listing.getTitle() != null && previousName != null
+                && listing.getTitle().endsWith(" in " + previousName)) {
+            listing.setTitle(listing.getTitle().substring(0, listing.getTitle().length() - previousName.length())
+                    + locality.getSectorName());
+        }
+        listing.setLocationResolution(LocationResolution.CANONICAL);
+        listing.setLocationProvider(null);
+        listing.setLocationProviderPlaceId(null);
+        var listingMedia = assets.findByListingIdOrderByUploadedAtDesc(listingId);
+        listingMedia.forEach(asset -> {
+            asset.setCity(locality.getCity());
+            asset.setSector(locality.getSectorName());
+        });
+        assets.saveAll(listingMedia);
         Listing saved = listings.saveAndFlush(listing);
         return new LandlordListingAction(saved.getId(), saved.getWorkflowStatus(), saved.getVersion());
     }

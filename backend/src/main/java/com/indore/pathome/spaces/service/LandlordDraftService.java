@@ -10,6 +10,7 @@ import com.indore.pathome.spaces.entity.PropertyType;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.RentalMode;
+import com.indore.pathome.spaces.entity.LocationResolution;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
@@ -90,7 +91,7 @@ public class LandlordDraftService {
                     data.basics() == null ? null : data.basics().propertyType(),
                     data.basics() == null ? null : data.basics().bhkCount(),
                     data.location() == null ? null : data.location().city(),
-                    data.location() == null || data.location().canonicalLocalityId() == null ? null : data.location().localityInput(),
+                    data.location() == null ? null : data.location().localityInput(),
                     data.pricing() == null ? null : data.pricing().monthlyRent(),
                     covers.containsKey(draft.getDraftId()) ? covers.get(draft.getDraftId()).getCloudinaryUrl() : null);
         }).toList(), page, slice.hasNext());
@@ -130,11 +131,31 @@ public class LandlordDraftService {
     private void validateLocation(LandlordDraftData.Location location) {
         if (location == null || tooLong(location.city(), 120) || tooLong(location.localityInput(), 120)
                 || tooLong(location.address(), 500) || tooLong(location.landmark(), 200)
+                || tooLong(location.provider(), 40) || tooLong(location.providerPlaceId(), 160)
+                || tooLong(location.selectionToken(), 100)
                 || location.canonicalLocalityId() != null && location.canonicalLocalityId() <= 0) {
             throw new IllegalArgumentException("Location contains an invalid value");
         }
+        if (location.city() != null && !location.city().isBlank() && !CityRegistry.isCitySupported(location.city())) {
+            throw new IllegalArgumentException("Choose a city currently supported by Pathome");
+        }
         if (location.canonicalLocalityId() != null) {
-            locations.requireMatchingLocality(location.city(), location.canonicalLocalityId());
+            var canonical = locations.requireMatchingLocality(location.city(), location.canonicalLocalityId());
+            if (location.resolutionType() != null && location.resolutionType() != LocationResolution.CANONICAL
+                    || location.provider() != null || location.providerPlaceId() != null || location.selectionToken() != null
+                    || location.localityInput() == null
+                    || !canonical.getSectorName().equalsIgnoreCase(location.localityInput().trim()))
+                throw new IllegalArgumentException("Choose a matching canonical locality");
+        } else if (location.resolutionType() == LocationResolution.EXTERNAL_RESOLVED) {
+            if (!locations.validExternalSelection(location.city(), location.localityInput(), location.provider(),
+                    location.providerPlaceId(), location.selectionToken()))
+                throw new IllegalArgumentException("Choose a locality from the suggestions again");
+        } else if (location.resolutionType() == LocationResolution.MANUAL_PENDING) {
+            if (location.localityInput() == null || location.localityInput().isBlank()
+                    || location.provider() != null || location.providerPlaceId() != null || location.selectionToken() != null)
+                throw new IllegalArgumentException("Enter a locality for review");
+        } else if (location.provider() != null || location.providerPlaceId() != null || location.selectionToken() != null) {
+            throw new IllegalArgumentException("Location contains an invalid selection");
         }
     }
 
@@ -208,7 +229,9 @@ public class LandlordDraftService {
         if (data.pricing() != null && data.pricing().monthlyRent() != null) complete++;
         if (data.pricing() != null && data.pricing().securityDeposit() != null) complete++;
         if (data.location() != null && present(data.location().city())) complete++;
-        if (data.location() != null && data.location().canonicalLocalityId() != null) complete++;
+        if (data.location() != null && (data.location().canonicalLocalityId() != null
+                || data.location().resolutionType() == LocationResolution.EXTERNAL_RESOLVED
+                || data.location().resolutionType() == LocationResolution.MANUAL_PENDING)) complete++;
         if (data.location() != null && present(data.location().address())) complete++;
         if (data.details() != null && data.details().availableFrom() != null) complete++;
         if (hasCover) complete++;

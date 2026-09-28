@@ -79,7 +79,7 @@ export const LessorProgressBar: React.FC<LessorProgressBarProps> = ({ currentSte
       <div className="md:hidden">
         <div className="flex items-center justify-between text-xs">
           <span className="font-bold uppercase tracking-wider text-emerald-800">
-            {activeMeta.stepNumber <= 6 ? `Step ${activeMeta.stepNumber} of 6` : 'Review & Submit'}
+            {`Step ${activeMeta.stepNumber} of ${STEPS.length}`}
           </span>
           <span className="font-medium text-slate-500">{activeMeta.shortLabel}</span>
         </div>

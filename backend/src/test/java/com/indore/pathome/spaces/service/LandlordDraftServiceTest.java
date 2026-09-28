@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.dto.lessor.LandlordDraftData;
 import com.indore.pathome.spaces.entity.PropertyType;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.RentalMode;
+import com.indore.pathome.spaces.entity.LocationResolution;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
@@ -113,6 +114,20 @@ class LandlordDraftServiceTest {
         assertThrows(IllegalArgumentException.class,
                 () -> service.updateLocation("owner@example.com", "draft-one", 1, selected));
         verify(drafts, times(1)).saveAndFlush(any());
+    }
+
+    @Test
+    void sharedGuestValidatorAcceptsManualAndRejectsForgedExternalChoice() throws Exception {
+        PropertyUploadDraft draft = storedDraft(null);
+        when(drafts.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        var manual = new LandlordDraftData.Location("Indore", null, "Rani Pura", "10 Road", "",
+                LocationResolution.MANUAL_PENDING, null, null, null);
+        var saved = service.updateGuestLocation(draft, 1, manual);
+        assertEquals(LocationResolution.MANUAL_PENDING, saved.data().location().resolutionType());
+        var forged = new LandlordDraftData.Location("Indore", null, "Rani Pura", "10 Road", "",
+                LocationResolution.EXTERNAL_RESOLVED, "MAPTILER", "place.1", "forged");
+        assertThrows(IllegalArgumentException.class, () -> service.updateGuestLocation(draft, 1, forged));
+        verify(locations).validExternalSelection("Indore", "Rani Pura", "MAPTILER", "place.1", "forged");
     }
 
     @Test

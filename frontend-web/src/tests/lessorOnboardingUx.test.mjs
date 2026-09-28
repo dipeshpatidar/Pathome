@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LessorAutosave } from '../services/lessorAutosave.ts';
 
-test('lessor progress flow covers all 6 steps plus review in exact sequence', () => {
+test('lessor progress flow covers all 7 stages in exact sequence', () => {
   const steps = ['type', 'basics', 'pricing', 'location', 'media', 'details', 'preview'];
   assert.equal(steps.length, 7);
   assert.equal(steps[0], 'type');

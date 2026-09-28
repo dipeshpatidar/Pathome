@@ -38,6 +38,8 @@ import { LessorOnboardingHeader } from './LessorOnboardingHeader';
 import { LessorProgressBar, OnboardingStepKey } from './LessorProgressBar';
 import { LessorLivePreview } from './LessorLivePreview';
 import { bhkChoice, exactBhk, pricingReady } from '../utils/lessorConfiguration';
+import { changeLocationCity, changeLocalityText, chooseLocalityOption, locationValidationError,
+  useLocalityForReview } from '../utils/lessorLocationState';
 
 interface PropertyTypeOption {
   value: ResidentialType;
@@ -348,7 +350,7 @@ export function LessorWorkspace({
                       Back
                     </button>
                     <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Step 1 of 6
+                      Step 1 of 7
                     </span>
                   </div>
 
@@ -608,6 +610,9 @@ function LessorEditor({
   const [cities, setCities] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<LessorLocalityOption[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  const [locationFieldError, setLocationFieldError] = useState<'city' | 'locality' | 'address' | null>(null);
   const [showExactBhk, setShowExactBhk] = useState(false);
   const [step, setStep] = useState<'basics' | 'pricing' | 'location' | 'media' | 'details' | 'preview'>(() => {
     if (sessionStorage.getItem('pathome_guest_submit_draft') === draftId) return 'preview';
@@ -621,6 +626,7 @@ function LessorEditor({
   const [error, setError] = useState('');
   const [expired, setExpired] = useState(false);
   const queue = useRef<LessorAutosave | null>(null);
+  const localityInputRef = useRef<HTMLInputElement>(null);
   const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
@@ -711,17 +717,20 @@ function LessorEditor({
       step !== 'location' ||
       !propertyLocation.city ||
       propertyLocation.localityInput.trim().length < 2 ||
-      propertyLocation.canonicalLocalityId
+      propertyLocation.resolutionType || propertyLocation.canonicalLocalityId || suggestionDismissed
     ) {
       setSuggestions([]);
       setSuggestionState('idle');
       return;
     }
     let live = true;
+    const controller = new AbortController();
+    setSuggestionState('loading');
+    setSuggestions([]);
+    setActiveSuggestion(-1);
     const timer = window.setTimeout(() => {
-      setSuggestionState('loading');
       lessorLocationService
-        .suggestions(propertyLocation.city, propertyLocation.localityInput.trim(), guest)
+        .suggestions(propertyLocation.city, propertyLocation.localityInput.trim(), guest, controller.signal)
         .then(value => {
           if (live) {
             setSuggestions(value);
@@ -738,8 +747,25 @@ function LessorEditor({
     return () => {
       live = false;
       window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [step, propertyLocation.city, propertyLocation.localityInput, propertyLocation.canonicalLocalityId, guest]);
+  }, [step, propertyLocation.city, propertyLocation.localityInput, propertyLocation.canonicalLocalityId,
+      propertyLocation.resolutionType, guest, suggestionDismissed]);
+
+  const chooseLocality = (option: LessorLocalityOption) => {
+    const selected = chooseLocalityOption(propertyLocation, option);
+    if (!selected) {
+      setError(option.city !== propertyLocation.city
+        ? `${option.name} is in ${option.city}. Change city to select it.`
+        : 'This suggestion is unavailable. Continue with this locality for review.');
+      return;
+    }
+    setError('');
+    setLocationFieldError(null);
+    updateLocation(selected);
+    setSuggestions([]);
+    localityInputRef.current?.focus();
+  };
 
   const updateBasics = (value: LessorBasics) => {
     setBasics(value);
@@ -768,6 +794,7 @@ function LessorEditor({
 
   const next = async () => {
     setError('');
+    setLocationFieldError(null);
     if (step === 'basics' && !basics?.bhkCount) {
       setError('Choose the exact configuration.');
       return;
@@ -776,14 +803,14 @@ function LessorEditor({
       setError('Add monthly rent and a deposit amount, including ₹0 if none.');
       return;
     }
-    if (
-      step === 'location' &&
-      (!cities.includes(propertyLocation.city) ||
-        !propertyLocation.canonicalLocalityId ||
-        !propertyLocation.address.trim())
-    ) {
-      setError('Choose a supported city and confirmed locality, then add the private address.');
-      return;
+    if (step === 'location') {
+      const locationError = locationValidationError(propertyLocation, cities);
+      if (locationError) {
+        setError(locationError);
+        setLocationFieldError(locationError.includes('city') ? 'city'
+          : locationError.includes('street address') ? 'address' : 'locality');
+        return;
+      }
     }
     if (step === 'details' && !details.availableFrom) {
       setError('Add the availability date to continue.');
@@ -958,7 +985,7 @@ function LessorEditor({
                 {step === 'basics' && (
                   <>
                     <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Step 2 of 6 · Configuration
+                      Step 2 of 7 · Configuration
                     </span>
                     <h1 className="mt-2 font-['Outfit',sans-serif] text-2xl sm:text-3xl font-bold tracking-tight text-slate-950">
                       Tell us about the home
@@ -1041,7 +1068,7 @@ function LessorEditor({
                 {step === 'pricing' && (
                   <>
                     <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Step 3 of 6 · Pricing
+                      Step 3 of 7 · Pricing
                     </span>
                     <h1 className="mt-2 font-['Outfit',sans-serif] text-2xl sm:text-3xl font-bold tracking-tight text-slate-950">
                       Set your rent
@@ -1109,7 +1136,7 @@ function LessorEditor({
                 {step === 'location' && (
                   <>
                     <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Step 4 of 6 · Location
+                      Step 4 of 7 · Location
                     </span>
                     <h1 className="mt-2 font-['Outfit',sans-serif] text-2xl sm:text-3xl font-bold tracking-tight text-slate-950">
                       Where is the home?
@@ -1125,16 +1152,15 @@ function LessorEditor({
                         </label>
                         <select
                           id="lessor-city"
+                          aria-invalid={locationFieldError === 'city'}
+                          aria-describedby={locationFieldError === 'city' ? 'lessor-step-error' : undefined}
                           className={`${FIELD} mt-2`}
                           value={propertyLocation.city}
-                          onChange={event =>
-                            updateLocation({
-                              ...propertyLocation,
-                              city: event.target.value,
-                              canonicalLocalityId: null,
-                              localityInput: ''
-                            })
-                          }
+                          onChange={event => {
+                            setSuggestionDismissed(false);
+                            setLocationFieldError(null);
+                            updateLocation(changeLocationCity(propertyLocation, event.target.value));
+                          }}
                           onBlur={() => {
                             void queue.current?.flush();
                           }}
@@ -1154,68 +1180,85 @@ function LessorEditor({
                         </label>
                         <input
                           id="lessor-locality"
+                          ref={localityInputRef}
+                          aria-invalid={locationFieldError === 'locality'}
+                          aria-describedby={locationFieldError === 'locality' ? 'lessor-step-error' : undefined}
                           type="search"
                           autoComplete="off"
                           className={`${FIELD} mt-2`}
                           value={propertyLocation.localityInput}
                           disabled={!propertyLocation.city}
-                          onChange={event =>
-                            updateLocation({
-                              ...propertyLocation,
-                              localityInput: event.target.value,
-                              canonicalLocalityId: null
-                            })
-                          }
+                          maxLength={120}
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-expanded={suggestions.length > 0 && !suggestionDismissed}
+                          aria-controls={suggestions.length > 0 ? 'lessor-locality-options' : undefined}
+                          aria-activedescendant={activeSuggestion >= 0 && suggestions[activeSuggestion] && !suggestionDismissed
+                            ? `lessor-locality-option-${activeSuggestion}` : undefined}
+                          onKeyDown={event => {
+                            if (event.key === 'Escape') { setSuggestionDismissed(true); setSuggestions([]); return; }
+                            if (event.key === 'ArrowDown' && suggestions.length) {
+                              event.preventDefault(); setActiveSuggestion(value => Math.min(value + 1, suggestions.length - 1));
+                            } else if (event.key === 'ArrowUp' && suggestions.length) {
+                              event.preventDefault(); setActiveSuggestion(value => Math.max(value - 1, 0));
+                            } else if (event.key === 'Enter' && activeSuggestion >= 0 && suggestions[activeSuggestion]) {
+                              event.preventDefault(); chooseLocality(suggestions[activeSuggestion]);
+                            }
+                          }}
+                          onChange={event => {
+                            setSuggestionDismissed(false);
+                            setLocationFieldError(null);
+                            updateLocation(changeLocalityText(propertyLocation, event.target.value));
+                          }}
                           onBlur={() => {
                             void queue.current?.flush();
                           }}
                           placeholder="Start typing your locality (e.g. Vijay Nagar)"
                         />
-                        {propertyLocation.canonicalLocalityId ? (
-                          <div className="mt-2.5 flex items-center gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50 px-3.5 py-2 text-sm font-semibold text-emerald-950">
+                        {propertyLocation.resolutionType || propertyLocation.canonicalLocalityId ? (
+                          <div role="status" className="mt-2.5 flex min-w-0 items-center gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50 px-3.5 py-2 text-sm font-semibold text-emerald-950">
                             <Check className="h-4 w-4 text-emerald-700 stroke-[3]" />
-                            <span>
-                              Location confirmed: {propertyLocation.localityInput}, {propertyLocation.city}
+                            <span className="min-w-0 break-words">
+                              {propertyLocation.localityInput}, {propertyLocation.city}
+                              {propertyLocation.resolutionType === 'MANUAL_PENDING' || propertyLocation.resolutionType === 'EXTERNAL_RESOLVED'
+                                ? ' · We’ll verify this locality during review.' : ' · Locality selected'}
                             </span>
                           </div>
                         ) : (
-                          propertyLocation.localityInput.trim().length >= 2 && (
-                            <div role="status" className="mt-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+                          propertyLocation.localityInput.trim().length >= 1 && !suggestionDismissed && (
+                            <div className="mt-2 h-36 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm"
+                              onKeyDown={event => {
+                                if (event.key === 'Escape') {
+                                  setSuggestionDismissed(true); setSuggestions([]); localityInputRef.current?.focus();
+                                }
+                              }}>
                               {suggestionState === 'loading' && (
-                                <p className="px-2 py-2 text-sm text-slate-500">Finding localities…</p>
+                                <p role="status" className="px-2 py-2 text-sm text-slate-500">Finding localities…</p>
                               )}
                               {suggestionState === 'error' && (
-                                <p className="px-2 py-2 text-sm text-rose-700">
-                                  Could not search. Edit the text to retry.
+                                <p role="status" className="px-2 py-2 text-sm text-slate-600">
+                                  Suggestions are unavailable right now. You can continue with this locality for review.
                                 </p>
                               )}
                               {suggestionState === 'ready' && suggestions.length === 0 && (
-                                <p className="px-2 py-2 text-sm text-slate-600">
-                                  No supported locality found. Your text is saved, but a confirmed locality is needed before submission.
+                                <p role="status" className="px-2 py-2 text-sm text-slate-600">
+                                  Couldn’t find an exact match.
                                 </p>
                               )}
-                              {suggestions.map(option => (
+                              {suggestions.length > 0 && <div id="lessor-locality-options" role="listbox" aria-label="Locality suggestions">{suggestions.map((option, index) => (
                                 <button
-                                  key={`${option.city}-${option.id}`}
+                                  key={`${option.city}-${option.id ?? option.providerPlaceId}`}
+                                  id={`lessor-locality-option-${index}`}
+                                  role="option"
+                                  aria-selected={activeSuggestion === index}
                                   type="button"
-                                  className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-3 text-left text-sm text-slate-800 hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+                                  className={`flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-3 text-left text-sm text-slate-800 hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${activeSuggestion === index ? 'bg-emerald-50' : ''}`}
                                   onMouseDown={event => event.preventDefault()}
-                                  onClick={() => {
-                                    if (option.city !== propertyLocation.city) {
-                                      setError(`${option.name} is in ${option.city}. Change city to select it.`);
-                                      return;
-                                    }
-                                    setError('');
-                                    updateLocation({
-                                      ...propertyLocation,
-                                      canonicalLocalityId: option.id,
-                                      localityInput: option.name
-                                    });
-                                    setSuggestions([]);
-                                  }}
+                                  onClick={() => chooseLocality(option)}
                                 >
-                                  <span>
-                                    {option.name}, {option.city}
+                                  <span className="min-w-0 break-words">
+                                    <span className="block font-medium">{option.name}</span>
+                                    <span className="block text-xs text-slate-500">{option.city}, India</span>
                                   </span>
                                   {option.match === 'different_city' && (
                                     <span className="shrink-0 text-xs font-semibold text-amber-700">
@@ -1223,7 +1266,13 @@ function LessorEditor({
                                     </span>
                                   )}
                                 </button>
-                              ))}
+                              ))}</div>}
+                              <button type="button" className="mt-1 flex min-h-11 w-full min-w-0 items-center break-words rounded-lg px-3 text-left text-sm font-semibold text-emerald-800 hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
+                                updateLocation(useLocalityForReview(propertyLocation));
+                                setSuggestions([]); setError(''); setLocationFieldError(null);
+                                localityInputRef.current?.focus();
+                              }}>Use “{propertyLocation.localityInput.trim()}”</button>
+                              <p className="px-3 pb-1 text-xs text-slate-500">We’ll verify this locality during property review.</p>
                             </div>
                           )
                         )}
@@ -1235,12 +1284,15 @@ function LessorEditor({
                         </label>
                         <input
                           id="lessor-address"
+                          aria-invalid={locationFieldError === 'address'}
+                          aria-describedby={locationFieldError === 'address' ? 'lessor-step-error' : undefined}
                           className={`${FIELD} mt-2`}
                           maxLength={500}
                           value={propertyLocation.address}
-                          onChange={event =>
-                            updateLocation({ ...propertyLocation, address: event.target.value })
-                          }
+                          onChange={event => {
+                            setLocationFieldError(null);
+                            updateLocation({ ...propertyLocation, address: event.target.value });
+                          }}
                           onBlur={() => {
                             void queue.current?.flush();
                           }}
@@ -1320,7 +1372,7 @@ function LessorEditor({
               </motion.div>
             </AnimatePresence>
 
-            {error && <p role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
+            {error && <p id="lessor-step-error" role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
 
             {status === 'error' && (
               <button

@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.security.GuestRequestGuard;
+import com.indore.pathome.spaces.security.LocationSuggestionThrottle;
 import com.indore.pathome.spaces.service.LandlordLocationService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,9 +17,11 @@ import java.util.List;
 public class GuestLocationController {
     private final LandlordLocationService locations;
     private final GuestRequestGuard guard;
+    private final LocationSuggestionThrottle throttle;
 
-    public GuestLocationController(LandlordLocationService locations, GuestRequestGuard guard) {
-        this.locations = locations; this.guard = guard;
+    public GuestLocationController(LandlordLocationService locations, GuestRequestGuard guard,
+                                   LocationSuggestionThrottle throttle) {
+        this.locations = locations; this.guard = guard; this.throttle = throttle;
     }
 
     @GetMapping("/cities")
@@ -31,6 +34,7 @@ public class GuestLocationController {
     public List<LandlordLocationService.Option> suggest(HttpServletRequest request,
             @RequestParam String city, @RequestParam String q) {
         guard.check(request);
+        throttle.check("guest:" + request.getRemoteAddr());
         return locations.suggest(city, q);
     }
 }

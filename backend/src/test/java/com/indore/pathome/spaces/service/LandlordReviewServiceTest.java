@@ -81,4 +81,39 @@ class LandlordReviewServiceTest {
         assertEquals("CHANGES_REQUIRED", changed.status());
         assertEquals("Please clarify the available date.", draft.getReviewNote());
     }
+
+    @Test
+    void adminMustLinkSameCityCanonicalLocalityBeforePublishing() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(55L);
+        listing.setOwnerUserId(5L);
+        listing.setCity("Indore");
+        listing.setSector("Rani Pura");
+        listing.setTitle("2BHK flat in Rani Pura");
+        listing.setWorkflowStatus(ListingWorkflowStatus.UNDER_REVIEW);
+        listing.setStatus(ListingStatus.PENDING);
+        listing.setLocationResolution(LocationResolution.MANUAL_PENDING);
+        listing.setRentalMode(RentalMode.LONG_TERM_RENTAL);
+        when(listings.lockLandlordReviewId(55L)).thenReturn(Optional.of(55L));
+        when(listings.findById(55L)).thenReturn(Optional.of(listing));
+        when(listings.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+        assertThrows(IllegalStateException.class,
+                () -> service.decideListing(55L, ListingWorkflowStatus.PUBLISHED, null));
+        assertEquals(ListingStatus.PENDING, listing.getStatus());
+        when(locations.requireMatchingLocality("Indore", 90L))
+                .thenThrow(new IllegalArgumentException("City mismatch"));
+        assertThrows(IllegalArgumentException.class, () -> service.linkLocality(55L, 90L));
+        assertNull(listing.getCanonicalLocalityId());
+        Locality canonical = new Locality();
+        canonical.setId(91L);
+        canonical.setCity("Indore");
+        canonical.setSectorName("Ranipura");
+        when(locations.requireMatchingLocality("Indore", 91L)).thenReturn(canonical);
+        service.linkLocality(55L, 91L);
+        assertEquals(91L, listing.getCanonicalLocalityId());
+        assertEquals(LocationResolution.CANONICAL, listing.getLocationResolution());
+        assertEquals("Ranipura", listing.getSector());
+        service.decideListing(55L, ListingWorkflowStatus.PUBLISHED, null);
+        assertEquals(ListingStatus.ACTIVE, listing.getStatus());
+    }
 }

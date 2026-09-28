@@ -71,4 +71,17 @@ class ListingWorkflowServiceTest {
                 legacy, ListingWorkflowStatus.PAUSED, ListingWorkflowService.Actor.LANDLORD));
         assertEquals(ListingStatus.ACTIVE, legacy.getStatus());
     }
+
+    @Test
+    void unresolvedSubmissionStaysPrivateUntilCanonicalLocalityIsLinked() {
+        RentalDetails listing = new RentalDetails();
+        workflows.prepareSubmitted(listing, 4L, null);
+        workflows.transition(listing, ListingWorkflowStatus.UNDER_REVIEW, ListingWorkflowService.Actor.ADMIN);
+        assertThrows(IllegalStateException.class, () -> workflows.transition(
+                listing, ListingWorkflowStatus.PUBLISHED, ListingWorkflowService.Actor.ADMIN));
+        assertEquals(ListingStatus.PENDING, listing.getStatus());
+        listing.setCanonicalLocalityId(8L);
+        workflows.transition(listing, ListingWorkflowStatus.PUBLISHED, ListingWorkflowService.Actor.ADMIN);
+        assertEquals(ListingStatus.ACTIVE, listing.getStatus());
+    }
 }

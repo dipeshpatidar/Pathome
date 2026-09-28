@@ -45,6 +45,11 @@ public class LandlordReviewController {
         return reviews.decideListing(listingId, ListingWorkflowStatus.PUBLISHED, null);
     }
 
+    @PostMapping("/listings/{listingId}/link-locality")
+    public LandlordListingAction linkLocality(@PathVariable Long listingId, @RequestBody LocalityLinkRequest request) {
+        return reviews.linkLocality(listingId, request.canonicalLocalityId());
+    }
+
     @PostMapping("/listings/{listingId}/request-changes")
     public LandlordListingAction requestChanges(@PathVariable Long listingId, @RequestBody ReviewNoteRequest request) {
         return reviews.decideListing(listingId, ListingWorkflowStatus.CHANGES_REQUIRED, request.note());
@@ -62,4 +67,5 @@ public class LandlordReviewController {
     }
 
     public record ReviewNoteRequest(String note) {}
+    public record LocalityLinkRequest(Long canonicalLocalityId) {}
 }

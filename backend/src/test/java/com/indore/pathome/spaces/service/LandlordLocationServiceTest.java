@@ -61,6 +61,57 @@ class LandlordLocationServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.requireMatchingLocality("Mumbai", 20L));
     }
 
+    @Test
+    void externalFallbackOnlyReturnsSelectedCityAndSignedSelectionCannotBeChanged() {
+        ExternalLocalityProvider provider = (city, query) -> List.of(
+                new ExternalLocalityProvider.Result("Rani Pura", "Indore", "MAPTILER", "locality.1"),
+                new ExternalLocalityProvider.Result("Baner", "Pune", "MAPTILER", "locality.2"));
+        var resolver = new LandlordLocationService(localities, aliases, provider, "test-secret");
+        var choices = resolver.suggest("Indore", "rani pura");
+        assertEquals(1, choices.size());
+        assertEquals("external", choices.get(0).match());
+        var choice = choices.get(0);
+        assertTrue(resolver.validExternalSelection("Indore", choice.name(), "MAPTILER",
+                choice.providerPlaceId(), choice.selectionToken()));
+        assertFalse(resolver.validExternalSelection("Pune", choice.name(), "MAPTILER",
+                choice.providerPlaceId(), choice.selectionToken()));
+        assertFalse(resolver.validExternalSelection("Indore", "Invented", "MAPTILER",
+                choice.providerPlaceId(), choice.selectionToken()));
+        verify(localities, never()).save(any());
+    }
+
+    @Test
+    void providerIsSkippedForInternalMatchAndUnavailableProviderLeavesManualPath() {
+        var canonical = locality(3L, "Indore", "Vijay Nagar");
+        when(localities.findOnboardingSuggestions(eq("Indore"), eq("vijay"), any(Pageable.class)))
+                .thenReturn(List.of(canonical));
+        ExternalLocalityProvider provider = mock(ExternalLocalityProvider.class);
+        var resolver = new LandlordLocationService(localities, aliases, provider, "test-secret");
+        assertEquals("canonical", resolver.suggest("Indore", "vijay").get(0).match());
+        verifyNoInteractions(provider);
+        assertTrue(resolver.suggest("Indore", "unknown locality").isEmpty());
+    }
+
+    @Test
+    void fuzzyAndExternalSpellingsDeduplicateWithCanonicalFirst() {
+        when(localities.findOnboardingSuggestions(eq("Indore"), eq("rani pura"), any(Pageable.class)))
+                .thenReturn(List.of(locality(4L, "Indore", "Ranipura")));
+        ExternalLocalityProvider provider = (city, query) -> List.of(
+                new ExternalLocalityProvider.Result("Rani Pura", "Indore", "MAPTILER", "place.4"));
+        var resolver = new LandlordLocationService(localities, aliases, provider, "test-secret");
+        var suggestions = resolver.suggest("Indore", "rani pura");
+        assertEquals(1, suggestions.size());
+        assertEquals(4L, suggestions.get(0).id());
+    }
+
+    @Test
+    void providerExceptionDoesNotBreakInternalOrManualChoices() {
+        ExternalLocalityProvider provider = (city, query) -> { throw new IllegalStateException("unavailable"); };
+        var resolver = new LandlordLocationService(localities, aliases, provider, "test-secret");
+        assertTrue(resolver.suggest("Indore", "rani pura").isEmpty());
+        verify(localities, never()).save(any());
+    }
+
     private Locality locality(Long id, String city, String name) {
         Locality locality = new Locality();
         locality.setId(id);
