@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Building2, Check, LoaderCircle, RefreshCw, LogIn, AlertCircle } from 'lucide-react';
+import { Building2, Check, LoaderCircle, RefreshCw, LogIn, AlertCircle, ArrowUpRight } from 'lucide-react';
 import type { LessorSaveStatus } from '../services/lessorAutosave';
 
 export interface LessorOnboardingHeaderProps {
-  status?: LessorSaveStatus;
+  status?: LessorSaveStatus | null;
   guest?: boolean;
-  onSaveAndExit: () => Promise<boolean | void> | boolean | void;
+  onExit: () => Promise<boolean | void> | boolean | void;
   onExitToLanding: () => void;
   onRetrySave?: () => void;
   onRequestAuth?: () => void;
@@ -13,9 +13,9 @@ export interface LessorOnboardingHeaderProps {
 }
 
 export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
-  status = 'saved',
+  status,
   guest = false,
-  onSaveAndExit,
+  onExit,
   onExitToLanding,
   onRetrySave,
   onRequestAuth,
@@ -26,6 +26,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   const [isFlushing, setIsFlushing] = useState(false);
 
   const handleAction = async (action: 'exit' | 'landing') => {
+    // If status is already in error or conflict, show recovery dialog directly
     if (status === 'error' || status === 'conflict') {
       setPendingExitAction(action);
       setShowExitConfirm(true);
@@ -34,7 +35,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
 
     setIsFlushing(true);
     try {
-      const ok = await onSaveAndExit();
+      const ok = await onExit();
       if (ok === false) {
         setPendingExitAction(action);
         setShowExitConfirm(true);
@@ -56,8 +57,25 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
     if (pendingExitAction === 'landing') {
       onExitToLanding();
     } else {
-      // Exit to previous screen / portfolio
       onExitToLanding();
+    }
+  };
+
+  const handleRetryAndExit = async () => {
+    setIsFlushing(true);
+    try {
+      if (onRetrySave) {
+        onRetrySave();
+      }
+      const ok = await onExit();
+      if (ok !== false) {
+        setShowExitConfirm(false);
+        if (pendingExitAction === 'landing') {
+          onExitToLanding();
+        }
+      }
+    } finally {
+      setIsFlushing(false);
     }
   };
 
@@ -69,7 +87,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
           <button
             type="button"
             onClick={() => void handleAction('landing')}
-            className="flex items-center gap-2.5 rounded-xl transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            className="flex items-center gap-2.5 rounded-xl transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
             title="Return to Pathome home"
             aria-label="Return to Pathome home"
           >
@@ -94,35 +112,36 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
             </div>
           )}
 
-          {/* RIGHT ACTIONS: AUTOSAVE STATUS, GUEST SIGN-IN, SAVE & EXIT */}
+          {/* RIGHT ACTIONS: AUTOSAVE STATUS, GUEST SIGN-IN, EXIT */}
           <div className="flex items-center gap-2 sm:gap-4">
-            {/* AUTOSAVE MICRO-UX */}
-            <div className="flex items-center text-xs" aria-live="polite">
+            {/* AUTOSAVE MICRO-UX — Strictly truthful status */}
+            <div className="flex items-center text-xs min-h-6 min-w-0" aria-live="polite">
               {isFlushing || status === 'saving' ? (
-                <span className="flex items-center gap-1.5 font-medium text-slate-500">
+                <span className="flex items-center gap-1.5 font-medium text-slate-500 transition-opacity duration-150">
                   <LoaderCircle className="h-3.5 w-3.5 animate-spin text-slate-400" />
                   <span className="hidden min-[400px]:inline">Saving…</span>
                 </span>
               ) : status === 'saved' ? (
-                <span className="flex items-center gap-1 font-semibold text-emerald-700">
+                <span className="flex items-center gap-1 font-medium text-emerald-700 transition-opacity duration-150">
                   <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-                  <span>Saved ✓</span>
+                  <span>Saved</span>
                 </span>
               ) : status === 'error' ? (
                 <button
                   type="button"
                   onClick={onRetrySave}
-                  className="flex items-center gap-1 font-semibold text-rose-700 hover:text-rose-800"
+                  className="flex items-center gap-1 font-semibold text-rose-700 hover:text-rose-800 transition-colors cursor-pointer"
                   title="Couldn't save changes to server. Tap to retry."
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  <span className="hidden min-[480px]:inline">Couldn't save — Retry</span>
+                  <span className="hidden min-[480px]:inline">Couldn't save · Retry</span>
                   <span className="min-[480px]:hidden">Retry</span>
                 </button>
               ) : status === 'conflict' ? (
                 <span className="flex items-center gap-1 font-semibold text-amber-700" title="Sync conflict from another session">
                   <AlertCircle className="h-3.5 w-3.5" />
-                  <span className="hidden min-[480px]:inline">Sync conflict</span>
+                  <span className="hidden min-[480px]:inline">Needs attention</span>
+                  <span className="min-[480px]:hidden">Conflict</span>
                 </span>
               ) : null}
             </div>
@@ -132,7 +151,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               <button
                 type="button"
                 onClick={onRequestAuth}
-                className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
                 title="Sign in to save across devices"
               >
                 <LogIn className="h-3.5 w-3.5 text-slate-500" />
@@ -143,14 +162,15 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               </button>
             )}
 
-            {/* SAVE & EXIT BUTTON */}
+            {/* SECONDARY EXIT CONTROL */}
             <button
               type="button"
               disabled={isFlushing}
               onClick={() => void handleAction('exit')}
-              className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 sm:px-4 text-xs sm:text-sm font-semibold text-slate-700 shadow-xs transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 sm:px-3.5 text-xs sm:text-sm font-semibold text-slate-700 shadow-2xs transition-all duration-150 motion-reduce:transition-none hover:border-slate-400 hover:bg-slate-50 active:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-50 cursor-pointer"
             >
-              Save & exit
+              <span>Exit</span>
+              <ArrowUpRight className="hidden sm:inline h-3.5 w-3.5 text-slate-500" />
             </button>
           </div>
         </div>
@@ -169,38 +189,33 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               <AlertCircle className="h-6 w-6" />
             </div>
             <h2 id="confirm-exit-title" className="mt-4 font-['Outfit',sans-serif] text-xl font-bold text-slate-950">
-              Unsaved Changes
+              We couldn't save your latest changes.
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Your latest property details are saved safely on this device, but have not finished syncing to the server. You can retry syncing or exit now.
+              Your edits are safely preserved on this device, but could not be synced to the server. You can retry syncing or keep editing.
             </p>
             <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button
                 type="button"
                 onClick={() => setShowExitConfirm(false)}
-                className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
               >
                 Keep editing
               </button>
               <button
                 type="button"
                 onClick={handleConfirmExit}
-                className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-amber-50 px-4 text-sm font-semibold text-amber-900 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-3 text-xs font-medium text-slate-600 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
               >
                 Exit anyway
               </button>
-              {onRetrySave && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowExitConfirm(false);
-                    onRetrySave();
-                  }}
-                  className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-                >
-                  Retry sync
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => void handleRetryAndExit()}
+                className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
+              >
+                Retry & exit
+              </button>
             </div>
           </div>
         </div>

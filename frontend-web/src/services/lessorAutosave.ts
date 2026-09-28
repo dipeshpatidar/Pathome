@@ -60,6 +60,7 @@ export class LessorAutosave {
     this.pending[section] = value;
     this.persist();
     if (this.blocked) return;
+    this.setStatus('saving');
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => { void this.flush(); }, DEBOUNCE_MS);
   }

@@ -255,9 +255,12 @@ export function LessorWorkspace({
       {/* ONBOARDING HEADER FOR /lessor/new */}
       {isNew && (
         <LessorOnboardingHeader
-          status="saved"
+          status={null}
           guest={!user}
-          onSaveAndExit={() => navigate(user ? '/lessor' : '/')}
+          onExit={() => {
+            navigate(user ? '/lessor' : '/');
+            return true;
+          }}
           onExitToLanding={() => navigate('/')}
           currentStepLabel="Property Type"
         />
@@ -614,7 +617,7 @@ function LessorEditor({
       : 'basics';
   });
   const [direction, setDirection] = useState<number>(1);
-  const [status, setStatus] = useState<LessorSaveStatus>('saved');
+  const [status, setStatus] = useState<LessorSaveStatus | null>(null);
   const [error, setError] = useState('');
   const [expired, setExpired] = useState(false);
   const queue = useRef<LessorAutosave | null>(null);
@@ -828,12 +831,13 @@ function LessorEditor({
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
-  const handleSaveAndExit = async () => {
+  const handleExit = async () => {
     const ok = await queue.current?.flush();
     if (ok) {
       onBack();
+      return true;
     }
-    return Boolean(ok);
+    return false;
   };
 
   if (error && !draft)
@@ -889,7 +893,7 @@ function LessorEditor({
       <LessorOnboardingHeader
         status={status}
         guest={guest}
-        onSaveAndExit={handleSaveAndExit}
+        onExit={handleExit}
         onExitToLanding={onBack}
         onRetrySave={() => {
           void queue.current?.flush();

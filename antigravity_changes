@@ -5306,3 +5306,35 @@ Improve the landlord/lessor property onboarding experience so it feels premium, 
 - Backend tests: `mvn -f backend/pom.xml test -Dtest=NotificationServiceTest` — 6/6 tests PASS.
 
 Commit: NO. Push: NO. Branch: `feature/phase1-truthfulness-cleanup`.
+
+---
+
+## 2026-09-28 13:20 IST — Pathome Fix Lessor Autosave Header + Exit UX
+
+### Why this work was requested
+Fix lessor onboarding header autosave semantics and elevate the Exit experience:
+1. Eliminate duplicate checkmark (`✓ Saved ✓` -> `[check icon] Saved`).
+2. Strictly truthful save-state semantics: no "Saved" status before successful server hydration/confirmation, no save status on new property step (`/lessor/new`), immediate `Saving…` upon dirty changes, `Couldn't save · Retry` on failure, and `Needs attention` on conflict.
+3. Replace "Save & exit" with "Exit" (with `ArrowUpRight` on desktop, clean label on mobile). Clean/synced state exits directly; dirty/in-flight flushes and exits on success; failure triggers recovery dialog ("We couldn't save your latest changes." with `[Retry & exit]`, `[Keep editing]`, `[Exit anyway]`).
+
+### Exact Files Changed
+- `frontend-web/src/components/LessorOnboardingHeader.tsx`:
+  - Removed duplicate checkmark (now single check icon + text `Saved`).
+  - Render no status when `status` is null/undefined.
+  - Replaced "Save & exit" with compact, secondary "Exit" action (`ArrowUpRight` on desktop, text on mobile).
+  - Recovery modal displays "We couldn't save your latest changes." with `Keep editing`, `Retry & exit`, and `Exit anyway`.
+- `frontend-web/src/components/LessorWorkspace.tsx`:
+  - Passed `status={null}` on `/lessor/new` so no false save status is rendered before server draft exists.
+  - Initialized `status` to `null` in `LessorEditor`, only updating to `saver.getStatus()` after server hydration and pending check complete.
+  - Renamed `handleSaveAndExit` to `handleExit`, returning boolean flush result.
+- `frontend-web/src/services/lessorAutosave.ts`:
+  - Trigger `this.setStatus('saving')` immediately in `change()` so dirty state transitions to `Saving…` during debounce.
+- `frontend-web/src/tests/lessorOnboardingUx.test.mjs`:
+  - Added tests for autosave transitions (`saving` on dirty change, `saved` on flush) and exit behavior (clean direct exit vs dirty flush failure preventing silent exit).
+
+### Verification Performed
+- `git diff --check`: PASS (0 whitespace / formatting issues).
+- TypeScript: `npm --prefix frontend-web exec -- tsc -p frontend-web/tsconfig.json --noEmit` exited code 0 with 0 errors.
+- Frontend tests: `node --test frontend-web/src/tests/lessor*.test.mjs` — 16/16 tests PASS.
+
+Commit: NO. Push: NO. Branch: `feature/phase1-truthfulness-cleanup`.
