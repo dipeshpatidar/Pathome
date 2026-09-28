@@ -36,6 +36,13 @@ public class LandlordSubmissionService {
     private final ListingWorkflowService workflow;
     private final LessorProfileService lessorProfiles;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private LessorWorkflowNotificationService workflowNotifications;
+
+    public void setWorkflowNotifications(LessorWorkflowNotificationService workflowNotifications) {
+        this.workflowNotifications = workflowNotifications;
+    }
+
     public LandlordSubmissionService(LandlordCapabilityService capabilities, LandlordDraftService draftData,
                                      LandlordLocationService locations, PropertyUploadDraftRepository drafts,
                                      PropertyDraftMediaRepository media, ListingRepository listings,
@@ -146,9 +153,15 @@ public class LandlordSubmissionService {
                 rental.setReviewNote(null);
                 listings.saveAndFlush(rental);
                 draft.setStatus("SUBMITTED");
+                if (workflowNotifications != null) {
+                    workflowNotifications.notifyPropertySubmitted(rental);
+                }
             } else {
                 // Approved live content is unchanged until an administrator applies this revision.
                 draft.setStatus("REVIEW");
+                if (workflowNotifications != null) {
+                    workflowNotifications.notifyRevisionSubmitted(target, draftId);
+                }
             }
             draft.setReviewNote(null);
             draft.setUpdatedAt(LocalDateTime.now());
@@ -197,6 +210,9 @@ public class LandlordSubmissionService {
         assets.saveAll(permanent);
         draft.setStatus("SUBMITTED");
         drafts.save(draft);
+        if (workflowNotifications != null) {
+            workflowNotifications.notifyPropertySubmitted(saved);
+        }
         return response(saved, draftId);
     }
 

@@ -23,6 +23,16 @@ public interface SystemNotificationRepository extends JpaRepository<SystemNotifi
 
     long countByTargetRoleInAndIsReadFalse(Collection<TargetRole> targetRoles);
 
+    List<SystemNotification> findByRecipientUserIdOrderByCreatedAtDesc(String recipientUserId);
+
+    long countByRecipientUserIdAndIsReadFalse(String recipientUserId);
+
+    java.util.Optional<SystemNotification> findByIdAndRecipientUserId(Long id, String recipientUserId);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("UPDATE SystemNotification n SET n.isRead = true, n.readAt = :readAt WHERE n.recipientUserId = :recipientUserId AND n.isRead = false")
+    int markAllReadForUser(@Param("recipientUserId") String recipientUserId, @Param("readAt") java.time.LocalDateTime readAt);
+
     java.util.Optional<SystemNotification> findByEventKey(String eventKey);
 
     boolean existsByEventKey(String eventKey);

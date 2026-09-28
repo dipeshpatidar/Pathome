@@ -2,7 +2,69 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 22:20 IST — Lessor Property Workflow Notifications
+
+### Why this work was requested
+When a meaningful review or operational action happens to a property uploaded by a lessor, notify that lessor clearly and truthfully in-app.
+1. Notifications must explain: WHAT happened, WHAT it means, and WHAT the lessor should do next if action is required.
+2. Notifications must originate strictly from authoritative backend workflow transitions, never inferred from frontend state.
+3. Notification recipients must be resolved strictly using canonical ownership: Listing -> LessorProfile -> linked User. Unlinked profiles must be handled safely without fabricating recipients or failing the workflow.
+4. Idempotency: Retries and duplicate events must not create duplicate notifications, guaranteed by a unique event dedupe key.
+5. Cross-user isolation: Authenticated users can access only their own notifications.
+6. Header notification bell: Fake/static badge replaced with real backend unread count.
+7. Mobile & accessibility: Full drawer/sheet UX with >=44px touch targets, deep-links, ESC close, and truthful empty/error states.
+
+### Implementation Details
+1. **Flyway Migration (`V29__lessor_workflow_notifications.sql`)**:
+   - Added `listing_id`, `revision_id`, `action_type`, `action_target`, and `read_at` columns to `system_notifications` with `idx_notif_recipient_read` and `idx_notif_listing` indexes.
+2. **Data Model & Entity (`SystemNotification.java`)**:
+   - Added `listingId`, `revisionId`, `actionType`, `actionTarget`, `readAt` with automated timestamping in `setRead(boolean)`.
+3. **Repository Layer (`SystemNotificationRepository.java`)**:
+   - Added user-scoped queries: `findByRecipientUserIdOrderByCreatedAtDesc`, `countByRecipientUserIdAndIsReadFalse`, `findByIdAndRecipientUserId`, and bulk updating `markAllReadForUser`.
+4. **Workflow Notification Service (`LessorWorkflowNotificationService.java`)**:
+   - Implemented canonical recipient resolution (`resolveRecipientUserId`) strictly following `listing.getLessorProfileId() -> LessorProfile.getLinkedUserId()` with safe null handling.
+   - Built idempotent notification dispatcher with stable dedupe keys (`EVENT_TYPE:listingId:extra`).
+   - Covered all workflow events with exact required titles and messages:
+     - `PROPERTY_SUBMITTED`: "Property submitted" / "<property> was submitted for review."
+     - `REVIEW_STARTED`: "Review started" / "Our team has started reviewing <property>."
+     - `CHANGES_REQUIRED`: "Updates needed" / "Updates are needed before <property> can be published." ("Review changes" action)
+     - `PROPERTY_PUBLISHED`: "Your property is live" / "<property> has been approved and is now visible to renters."
+     - `REVISION_SUBMITTED`: Truthfully distinguishes published ("Your live listing remains visible.") vs paused base listings.
+     - `REVISION_UNDER_REVIEW`: Preserves live visibility truthfulness.
+     - `REVISION_CHANGES_REQUIRED`: "Changes need attention" / "Updates are needed before your recent changes to <property> can be published."
+     - `REVISION_PUBLISHED`: "Changes published" / "Your approved changes to <property> are now live."
+     - `PROPERTY_PAUSED_BY_OPERATIONS`: "Property paused" / "<property> is currently not visible to renters."
+     - `PROPERTY_ARCHIVED_BY_OPERATIONS`: "Property archived" / "<property> has been archived."
+5. **Workflow Triggers Integration**:
+   - Integrated into `LandlordSubmissionService.java` for property and revision submissions.
+   - Integrated into `LandlordReviewService.java` for review starts, listing decisions, revision changes requested, and revision approvals.
+6. **Controller & Authorization Security (`NotificationController.java`)**:
+   - Enforced strict user scoping on `GET /api/v1/notifications`, `GET /api/v1/notifications/unread-count`, `PUT /api/v1/notifications/{id}/read`, and `PUT /api/v1/notifications/read-all`.
+   - Unauthorized access to another user's notification throws `AccessDeniedException` (403 Forbidden).
+7. **Frontend State & Drawer UX (`NotificationContext.tsx`, `NotificationCenterDrawer.tsx`, `Navbar.tsx`, `notificationPolicy.ts`)**:
+   - Attached JWT Bearer token to notification fetch/sync requests.
+   - Removed fake badge/static count; displays real unread count with accessible `aria-label`.
+   - Implemented exact empty state: "You're all caught up." / "Updates about your properties will appear here."
+   - Implemented loading skeleton and truthful error state: "We couldn't load your notifications." with Retry button.
+   - Implemented mark-read failure rollback with actionable feedback: "We couldn't update this notification. Try again."
+   - Deep links route directly to property status view (`/lessor/listings/:listingId`) with "Review changes →" or "View property →" actions.
+   - Touch targets >= 44px, Esc key close handler, focus management, and reduced-motion support.
+
+### Verification Performed
+- Backend unit & integration tests: `mvn test -Dtest="LessorWorkflowNotificationServiceTest,NotificationControllerAuthTest,NotificationServiceTest,PropertyPublishNotificationTest,LandlordSubmissionServiceTest,LandlordReviewServiceTest,AuthControllerTest,LandlordMediaServiceTest,GuestMediaServiceTest,GuestRequestGuardTest,GuestOriginSecurityIntegrationTest"`: **126/126 passed (0 failures)**.
+- Frontend unit tests: `node --test frontend-web/src/tests/lessorWorkflowNotifications.test.mjs frontend-web/src/tests/lessorPortfolioStatusAndNav.test.mjs frontend-web/src/tests/lessorMedia.test.mjs`: **24/24 passed (0 failures)**.
+- Frontend build: `npm --prefix frontend-web run build`: **0 TypeScript errors, build successful**.
+- Git whitespace check: `git diff --check`: **PASS (0 whitespace errors)**.
+
+### Outstanding Checks
+- Physical phone manual QA.
+
+### Commit / Push Status
+- Commit: STOPPED before Git writes per prompt rule (READY FOR GIT: YES).
+- Push: STOPPED before Git writes per prompt rule.
+
 ## 2026-09-28 21:40 IST — Mobile Lessor UX Polish, Approval Status, Navigation & Duplicate Email Feedback
+
 
 ### Why this work was requested
 Physical mobile testing exposed several UX and functional issues in Pathome's lessor/self-service experience:

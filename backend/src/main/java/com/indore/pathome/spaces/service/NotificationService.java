@@ -134,11 +134,53 @@ public class NotificationService {
         if (notifOpt.isPresent()) {
             SystemNotification notif = notifOpt.get();
             notif.setRead(true);
+            notif.setReadAt(java.time.LocalDateTime.now());
             repository.save(notif);
             refreshCache();
             return true;
         }
         return false;
+    }
+
+    public List<SystemNotification> getNotificationsForUser(String recipientUserId) {
+        if (recipientUserId == null || recipientUserId.isBlank()) {
+            return Collections.emptyList();
+        }
+        return repository.findByRecipientUserIdOrderByCreatedAtDesc(recipientUserId);
+    }
+
+    public long getUnreadCountForUser(String recipientUserId) {
+        if (recipientUserId == null || recipientUserId.isBlank()) {
+            return 0L;
+        }
+        return repository.countByRecipientUserIdAndIsReadFalse(recipientUserId);
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public boolean markAsReadForUser(Long id, String recipientUserId) {
+        if (id == null || recipientUserId == null || recipientUserId.isBlank()) {
+            return false;
+        }
+        Optional<SystemNotification> notifOpt = repository.findById(id);
+        if (notifOpt.isEmpty()) {
+            return false;
+        }
+        SystemNotification notif = notifOpt.get();
+        if (notif.getRecipientUserId() != null && !recipientUserId.equals(notif.getRecipientUserId())) {
+            throw new org.springframework.security.access.AccessDeniedException("Cannot access another user's notification");
+        }
+        notif.setRead(true);
+        notif.setReadAt(java.time.LocalDateTime.now());
+        repository.save(notif);
+        return true;
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public int markAllAsReadForUser(String recipientUserId) {
+        if (recipientUserId == null || recipientUserId.isBlank()) {
+            return 0;
+        }
+        return repository.markAllReadForUser(recipientUserId, java.time.LocalDateTime.now());
     }
 
     private void seedDefaultNotifications() {

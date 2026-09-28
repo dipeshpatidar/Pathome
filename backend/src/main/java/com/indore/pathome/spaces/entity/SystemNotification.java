@@ -43,6 +43,21 @@ public class SystemNotification {
     @Column(name = "is_read", nullable = false)
     private boolean isRead = false;
 
+    @Column(name = "read_at")
+    private LocalDateTime readAt;
+
+    @Column(name = "listing_id")
+    private Long listingId;
+
+    @Column(name = "revision_id", length = 120)
+    private String revisionId;
+
+    @Column(name = "action_type", length = 64)
+    private String actionType;
+
+    @Column(name = "action_target", length = 255)
+    private String actionTarget;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -88,7 +103,29 @@ public class SystemNotification {
     public void setType(String type) { this.type = type; }
 
     public boolean isRead() { return isRead; }
-    public void setRead(boolean read) { isRead = read; }
+    public void setRead(boolean read) {
+        this.isRead = read;
+        if (read && this.readAt == null) {
+            this.readAt = LocalDateTime.now();
+        } else if (!read) {
+            this.readAt = null;
+        }
+    }
+
+    public LocalDateTime getReadAt() { return readAt; }
+    public void setReadAt(LocalDateTime readAt) { this.readAt = readAt; }
+
+    public Long getListingId() { return listingId; }
+    public void setListingId(Long listingId) { this.listingId = listingId; }
+
+    public String getRevisionId() { return revisionId; }
+    public void setRevisionId(String revisionId) { this.revisionId = revisionId; }
+
+    public String getActionType() { return actionType; }
+    public void setActionType(String actionType) { this.actionType = actionType; }
+
+    public String getActionTarget() { return actionTarget; }
+    public void setActionTarget(String actionTarget) { this.actionTarget = actionTarget; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

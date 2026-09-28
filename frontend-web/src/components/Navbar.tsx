@@ -362,20 +362,23 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* CENTRALIZED NOTIFICATION BELL — RENDERED ONLY FOR AUTHENTICATED USERS */}
             {role !== 'GUEST' && (
               <motion.button
-                whileHover={{ scale: 1.08 }}
-                whileTap={{ scale: 0.94 }}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
                 onClick={() => setIsDrawerOpen(!isDrawerOpen)}
-                className={`relative flex h-10 w-10 items-center justify-center rounded-2xl border transition-all cursor-pointer shadow-md sm:h-11 sm:w-11 ${
+                className={`relative flex min-h-11 min-w-11 items-center justify-center rounded-2xl border transition-all cursor-pointer shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                   isAdminRole
                     ? 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:border-emerald-500/50 hover:bg-slate-800'
                     : 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:bg-slate-800'
                 }`}
-                title="Open Portal Notification Center"
-                aria-label="Open Portal Notification Center"
+                title={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
+                aria-label={unreadCount > 0 ? `Open notifications, ${unreadCount} unread` : 'Open notifications'}
               >
-                <Bell className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <Bell className="w-4 h-4 sm:w-4.5 sm:h-4.5" aria-hidden="true" />
                 {unreadCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-mono font-black text-[10px] flex items-center justify-center border-2 border-slate-950 shadow-lg shadow-emerald-500/50 animate-bounce">
+                  <span
+                    aria-hidden="true"
+                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-mono font-black text-[10px] flex items-center justify-center border-2 border-slate-950 shadow-lg shadow-emerald-500/50"
+                  >
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
                 )}

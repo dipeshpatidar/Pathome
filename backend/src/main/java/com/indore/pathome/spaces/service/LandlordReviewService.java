@@ -30,6 +30,13 @@ public class LandlordReviewService {
     private final ListingWorkflowService workflow;
     private final PropertyMediaAssetRepository assets;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private LessorWorkflowNotificationService workflowNotifications;
+
+    public void setWorkflowNotifications(LessorWorkflowNotificationService workflowNotifications) {
+        this.workflowNotifications = workflowNotifications;
+    }
+
     public LandlordReviewService(ListingRepository listings, PropertyUploadDraftRepository drafts,
                                  PropertyDraftMediaRepository media, LandlordDraftService draftService,
                                  LandlordSubmissionService submissions, LandlordLocationService locations,
@@ -121,6 +128,15 @@ public class LandlordReviewService {
         }
         listing.setReviewNote(reviewNote);
         Listing saved = listings.saveAndFlush(listing);
+        if (workflowNotifications != null) {
+            if (target == ListingWorkflowStatus.UNDER_REVIEW) {
+                workflowNotifications.notifyReviewStarted(saved);
+            } else if (target == ListingWorkflowStatus.CHANGES_REQUIRED) {
+                workflowNotifications.notifyChangesRequired(saved);
+            } else if (target == ListingWorkflowStatus.PUBLISHED) {
+                workflowNotifications.notifyPropertyPublished(saved);
+            }
+        }
         return new LandlordListingAction(saved.getId(), saved.getWorkflowStatus(), saved.getVersion());
     }
 
@@ -184,6 +200,9 @@ public class LandlordReviewService {
         draft.setStatus("APPROVED");
         draft.setReviewNote(null);
         drafts.save(draft);
+        if (workflowNotifications != null) {
+            workflowNotifications.notifyRevisionPublished(saved, draftId);
+        }
         return new LandlordListingAction(saved.getId(), saved.getWorkflowStatus(), saved.getVersion());
     }
 
@@ -197,7 +216,12 @@ public class LandlordReviewService {
         }
         draft.setReviewNote(requireNote(note));
         draft.setStatus("CHANGES_REQUIRED");
-        drafts.saveAndFlush(draft);
+        PropertyUploadDraft savedDraft = drafts.saveAndFlush(draft);
+        if (workflowNotifications != null) {
+            listings.findById(draft.getPublishedPropertyId()).ifPresent(owned -> {
+                workflowNotifications.notifyRevisionChangesRequired(owned, savedDraft);
+            });
+        }
         return new LandlordReviewItem(draftId, draft.getPublishedPropertyId(),
                 draft.getTitleSummary(), draft.getStatus(), draft.getUpdatedAt());
     }
