@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
+import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -12,9 +13,15 @@ import java.time.LocalDateTime;
 @Service
 public class LandlordCapabilityService {
     private final UserRepository users;
+    private final LessorProfileRepository lessorProfiles;
 
     public LandlordCapabilityService(UserRepository users) {
+        this(users, null);
+    }
+
+    public LandlordCapabilityService(UserRepository users, LessorProfileRepository lessorProfiles) {
         this.users = users;
+        this.lessorProfiles = lessorProfiles;
     }
 
     @Transactional(readOnly = true)
@@ -55,9 +62,20 @@ public class LandlordCapabilityService {
     }
 
     private Capability toCapability(User user) {
-        return new Capability(user.getLandlordActivatedAt() != null || user.getRole() == Role.ROLE_LANDLORD,
-                user.getLandlordActivatedAt());
+        boolean hasProfile = (lessorProfiles != null && lessorProfiles.findByLinkedUserId(user.getId()).isPresent())
+                || user.getRole() == Role.ROLE_LANDLORD;
+        boolean enabled = user.getLandlordActivatedAt() != null || user.getRole() == Role.ROLE_LANDLORD || hasProfile;
+        return new Capability(
+                user.getId(),
+                enabled,
+                hasProfile,
+                user.getLandlordActivatedAt()
+        );
     }
 
-    public record Capability(boolean enabled, LocalDateTime activatedAt) {}
+    public record Capability(Long userId, boolean enabled, boolean hasLessorProfile, LocalDateTime activatedAt) {
+        public Capability(boolean enabled, LocalDateTime activatedAt) {
+            this(null, enabled, enabled, activatedAt);
+        }
+    }
 }

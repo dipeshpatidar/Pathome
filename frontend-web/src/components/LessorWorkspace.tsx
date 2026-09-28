@@ -64,7 +64,7 @@ const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-x
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:border-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 const FIELD = 'min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200';
 
-async function capability(method: 'GET' | 'POST'): Promise<{ enabled: boolean }> {
+async function capability(method: 'GET' | 'POST'): Promise<{ enabled: boolean; hasLessorProfile?: boolean }> {
   const token = localStorage.getItem('pathome_auth_token');
   const response = await fetch(`${API_ROOT_URL}/lessor/capability`, {
     method,
@@ -113,6 +113,7 @@ export function LessorWorkspace({
       await lessorSubmissionService.submit(id);
       sessionStorage.removeItem('pathome_guest_submit_draft');
       localStorage.removeItem(`pathome_guest_step_${id}`);
+      window.dispatchEvent(new Event('pathome_auth_changed'));
       setTransition('idle');
       navigate('/lessor', { replace: true });
     } catch (cause) {
@@ -164,6 +165,7 @@ export function LessorWorkspace({
       localStorage.removeItem('pathome_guest_draft_id');
       sessionStorage.removeItem('pathome_guest_save_draft');
       sessionStorage.removeItem('pathome_guest_submit_draft');
+      window.dispatchEvent(new Event('pathome_auth_changed'));
       if (submit) {
         try {
           const contact = await lessorContactService.getContact();
@@ -251,7 +253,17 @@ export function LessorWorkspace({
       .then(async value => {
         if (!live) return;
         if (!value.enabled && (isNew || draftId)) await capability('POST');
-        if (live) setCapabilityState(value.enabled || isNew || !!draftId ? 'active' : 'inactive');
+        if (live) {
+          if (isNew || !!draftId) {
+            setCapabilityState('active');
+          } else if (value.hasLessorProfile) {
+            setCapabilityState('active');
+          } else {
+            // Direct tenant-only visit to /lessor: show self-service entry state ("List your property")
+            // Do not fabricate a profile, do not treat as existing lessor, do not show portfolio.
+            setCapabilityState('inactive');
+          }
+        }
       })
       .catch(cause => {
         if (live) {
@@ -269,7 +281,7 @@ export function LessorWorkspace({
     setError('');
     try {
       await capability('POST');
-      setCapabilityState('active');
+      navigate('/lessor/new');
     } catch (cause) {
       setError(getErrorMessage(cause, 'Unable to enable property management.'));
     } finally {

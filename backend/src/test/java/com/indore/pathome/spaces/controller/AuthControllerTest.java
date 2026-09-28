@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.dto.LoginRequest;
 import com.indore.pathome.spaces.dto.RegisterRequest;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
+import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -201,5 +202,36 @@ class AuthControllerTest {
         assertTrue(response.getBody() instanceof AuthResponse);
         AuthResponse authResponse = (AuthResponse) response.getBody();
         assertEquals("valid-jwt", authResponse.getToken());
+        assertFalse(authResponse.isHasLessorProfile());
+    }
+
+    @Test
+    @DisplayName("Login with linked lessor profile returns hasLessorProfile true")
+    void loginWithLinkedLessorProfileReturnsHasLessorProfileTrue() {
+        LessorProfileRepository profileRepo = mock(LessorProfileRepository.class);
+        AuthController controller = new AuthController(userRepository, passwordEncoder, jwtUtils, profileRepo);
+
+        User user = new User();
+        user.setId(7L);
+        user.setEmail("lessor@example.com");
+        user.setPasswordHash("hashed-pw");
+        user.setRole(Role.ROLE_TENANT);
+        user.setFullName("Lessor User");
+        user.setFreeVisitsRemaining(5);
+
+        when(userRepository.findByEmail("lessor@example.com")).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("Password123", "hashed-pw")).thenReturn(true);
+        when(jwtUtils.generateToken(7L, "lessor@example.com", "ROLE_TENANT")).thenReturn("lessor-jwt");
+        when(profileRepo.findByLinkedUserId(7L)).thenReturn(Optional.of(new com.indore.pathome.spaces.entity.LessorProfile()));
+
+        LoginRequest request = new LoginRequest();
+        request.setEmail("lessor@example.com");
+        request.setPassword("Password123");
+
+        ResponseEntity<?> response = controller.loginUser(request);
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertTrue(response.getBody() instanceof AuthResponse);
+        AuthResponse authResponse = (AuthResponse) response.getBody();
+        assertTrue(authResponse.isHasLessorProfile());
     }
 }

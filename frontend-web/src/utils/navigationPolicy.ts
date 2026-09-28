@@ -63,3 +63,51 @@ export function resolveLogoDestination(context: WorkspaceContext): LogoDestinati
       return { path: '/', label: 'Return to Pathome home', isAvailable: true };
   }
 }
+
+/**
+ * Authoritative capability check for displaying "My Properties" in navigation.
+ * "My Properties" appears ONLY when the authenticated User has an actual
+ * linked LessorProfile or authoritative lessor capability.
+ *
+ * Rules:
+ * - GUEST -> false
+ * - TENANT-ONLY USER (no linked LessorProfile) -> false
+ * - LESSOR USER (has linked LessorProfile) -> true
+ * - TENANT + LESSOR USER -> true
+ * - Auth method independent: NEVER keys on email or password login method.
+ */
+export function shouldShowMyProperties(role?: string | null, hasLessorProfile?: boolean): boolean {
+  if (!role || role === 'GUEST') return false;
+  return Boolean(hasLessorProfile || role === 'LANDLORD' || role === 'ROLE_LANDLORD');
+}
+
+/**
+ * Authoritative capability check for displaying "List your property" conversion action.
+ * Tenant-only users may still see "List your property" as a conversion/onboarding action.
+ */
+export function shouldShowListYourProperty(role?: string | null, hasLessorProfile?: boolean): boolean {
+  if (!role || role === 'GUEST') return true;
+  // If user already has an active lessor capability / profile, "My Properties" is shown instead.
+  return !shouldShowMyProperties(role, hasLessorProfile);
+}
+
+/**
+ * Resolves the primary destination for lessor navigation actions.
+ */
+export function resolveLessorNavigationDestination(hasLessorProfile?: boolean): string {
+  return hasLessorProfile ? '/lessor' : '/lessor/new';
+}
+
+/**
+ * Resolves workspace state when user directly visits `/lessor`.
+ * A tenant-only user visiting `/lessor` directly must see the "List your property"
+ * self-service entry state ('inactive'), NOT another user's portfolio or a fake profile.
+ */
+export function resolveDirectLessorRouteState(
+  isAuthenticated: boolean,
+  hasLessorProfile?: boolean
+): 'guest' | 'inactive' | 'active' {
+  if (!isAuthenticated) return 'guest';
+  if (hasLessorProfile) return 'active';
+  return 'inactive';
+}

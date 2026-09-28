@@ -22,6 +22,7 @@ import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { CompactSearchContext } from './CompactSearchContext';
 import { propertyService } from '../services/propertyService';
+import { lessorCapabilityService } from '../services/lessorCapabilityService';
 import { useNotification } from '../context/NotificationContext';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters } from '../utils/rentalSearch';
 
@@ -717,6 +718,9 @@ export const Home: React.FC = () => {
   const initialSession = getInitialSession();
   const [role, setRole] = useState<UserRole>(initialSession.role);
   const [user, setUser] = useState<UserProfile | null>(initialSession.user);
+  const [hasLessorCapability, setHasLessorCapability] = useState<boolean>(() => {
+    return Boolean(initialSession.user?.hasLessorProfile);
+  });
   const [properties, setProperties] = useState<Property[]>([]);
   const [discoveryState, setDiscoveryState] = useState<'LOADING' | 'READY' | 'ERROR'>('LOADING');
   const [loadedDiscoveryKey, setLoadedDiscoveryKey] = useState<string | null>(null);
@@ -1015,6 +1019,7 @@ export const Home: React.FC = () => {
           // LOGOUT IN ANOTHER WINDOW/TAB DETECTED!
           setUser(null);
           setRole('GUEST');
+          setHasLessorCapability(false);
           navigate('/', { replace: true });
           setShowAuthModal(true);
         } else {
@@ -1023,6 +1028,7 @@ export const Home: React.FC = () => {
             const parsedUser = JSON.parse(storedUser);
             setUser(parsedUser);
             setRole(storedRole as UserRole);
+            setHasLessorCapability(Boolean(parsedUser.hasLessorProfile));
           } catch (err) {
             console.error('Cross-tab session sync error', err);
           }
@@ -1042,6 +1048,7 @@ export const Home: React.FC = () => {
       }
       setRole('GUEST');
       setUser(null);
+      setHasLessorCapability(false);
       localStorage.removeItem('pathome_role');
       localStorage.removeItem('pathome_user');
       localStorage.removeItem('pathome_auth_token');
@@ -1053,6 +1060,48 @@ export const Home: React.FC = () => {
     window.addEventListener('pathome_session_expired', handleSessionExpired);
     return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
   }, [navigate, location.pathname]);
+
+  // 1c. AUTHORITATIVE LESSOR CAPABILITY SYNCHRONIZATION
+  useEffect(() => {
+    let live = true;
+    const syncCapability = () => {
+      if (!user || user.role !== 'TENANT') {
+        setHasLessorCapability(false);
+        return;
+      }
+      const token = localStorage.getItem('pathome_auth_token');
+      if (!token) {
+        setHasLessorCapability(false);
+        return;
+      }
+      lessorCapabilityService
+        .get()
+        .then(cap => {
+          if (!live) return;
+          const hasProfile = Boolean(cap.hasLessorProfile);
+          setHasLessorCapability(hasProfile);
+          if (user.hasLessorProfile !== hasProfile) {
+            const updated = { ...user, hasLessorProfile: hasProfile };
+            setUser(updated);
+            try {
+              localStorage.setItem('pathome_user', JSON.stringify(updated));
+            } catch (_) {}
+          }
+        })
+        .catch(() => {
+          if (live) {
+            setHasLessorCapability(Boolean(user.hasLessorProfile));
+          }
+        });
+    };
+
+    syncCapability();
+    window.addEventListener('pathome_auth_changed', syncCapability);
+    return () => {
+      live = false;
+      window.removeEventListener('pathome_auth_changed', syncCapability);
+    };
+  }, [user?.id, role]);
 
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
@@ -1190,9 +1239,10 @@ export const Home: React.FC = () => {
   const handleLoginSuccess = (userProfile: UserProfile) => {
     localStorage.setItem('pathome_role', userProfile.role);
     localStorage.setItem('pathome_user', JSON.stringify(userProfile));
-    window.dispatchEvent(new Event('pathome_auth_changed'));
     setUser(userProfile);
     setRole(userProfile.role);
+    setHasLessorCapability(Boolean(userProfile.hasLessorProfile));
+    window.dispatchEvent(new Event('pathome_auth_changed'));
     setShowAuthModal(false);
     setLessorAuthContext(null);
     if (userProfile.role === 'TENANT' && location.pathname.startsWith('/lessor/') &&
@@ -1217,10 +1267,11 @@ export const Home: React.FC = () => {
     localStorage.removeItem('pathome_role');
     localStorage.removeItem('pathome_user');
     localStorage.removeItem('pathome_auth_token');
-    window.dispatchEvent(new Event('pathome_auth_changed'));
     localStorage.removeItem('pathome_active_admin_tab');
     setUser(null);
     setRole('GUEST');
+    setHasLessorCapability(false);
+    window.dispatchEvent(new Event('pathome_auth_changed'));
     navigate('/');
   };
 
@@ -1232,6 +1283,7 @@ export const Home: React.FC = () => {
         <Navbar
           user={user}
           role={role}
+          hasLessorCapability={hasLessorCapability}
           onOpenAuthModal={() => setShowAuthModal(true)}
           onOpenLeaseUpload={() => setShowLeaseModal(true)}
           onLogout={handleLogout}

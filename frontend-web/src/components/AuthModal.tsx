@@ -93,7 +93,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           fullName: data.fullName || fullName || 'User',
           role: normalizeRole(data.role),
           freeVisitsUsed: 0,
-          walletBalance: 0
+          walletBalance: 0,
+          hasLessorProfile: Boolean(data.hasLessorProfile)
         });
       } else {
         const text = await res.text();

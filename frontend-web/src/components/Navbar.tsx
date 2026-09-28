@@ -20,6 +20,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
+import { shouldShowMyProperties, shouldShowListYourProperty } from '../utils/navigationPolicy';
 
 interface NavbarProps {
   user: UserProfile | null;
@@ -33,6 +34,7 @@ interface NavbarProps {
   activeAdminTab?: string;
   setActiveAdminTab?: (tab: string) => void;
   isLandingHero?: boolean;
+  hasLessorCapability?: boolean;
 }
 
 /**
@@ -144,7 +146,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onClosePostProperty,
   activeAdminTab = 'overview',
   setActiveAdminTab,
-  isLandingHero = false
+  isLandingHero = false,
+  hasLessorCapability
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -158,6 +161,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isAdminRole = role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN';
   const workspaceContext = resolveWorkspaceContext(location.pathname, role);
   const logoDestination = resolveLogoDestination(workspaceContext);
+
+  const showMyProperties = shouldShowMyProperties(role, hasLessorCapability ?? user?.hasLessorProfile);
+  const showListProperty = shouldShowListYourProperty(role, hasLessorCapability ?? user?.hasLessorProfile);
 
   // Track scroll position to transition from transparent Hero overlay to solid sticky header
   useEffect(() => {
@@ -439,10 +445,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
 
                       <div className="p-1">
-                        {role === 'TENANT' && <button
-                          onClick={() => { setProfileDropdownOpen(false); navigate('/lessor'); }}
-                          className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
-                        ><Building2 className="h-4 w-4"/>My Properties</button>}
+                        {showMyProperties && (
+                          <button
+                            onClick={() => { setProfileDropdownOpen(false); navigate('/lessor'); }}
+                            className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+                          >
+                            <Building2 className="h-4 w-4"/>My Properties
+                          </button>
+                        )}
+                        {showListProperty && role === 'TENANT' && (
+                          <button
+                            onClick={() => { setProfileDropdownOpen(false); navigate('/lessor/new'); }}
+                            className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+                          >
+                            <Building2 className="h-4 w-4"/>List your property
+                          </button>
+                        )}
                         <button
                           onClick={() => { setProfileDropdownOpen(false); onLogout(); }}
                           className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 flex items-center gap-2.5 transition-colors"

@@ -70,6 +70,7 @@ export interface UserProfile {
   avatarUrl?: string;
   department?: string;
   permissions?: string[];
+  hasLessorProfile?: boolean;
 }
 
 export interface BhkConfig {

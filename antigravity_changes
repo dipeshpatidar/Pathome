@@ -2,6 +2,45 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 23:05 IST — Fix Tenant/Lessor Navigation with OTP-Ready Identity
+
+### Why this work was requested
+A tenant-only authenticated user was incorrectly seeing "My Properties" in the navigation account dropdown menu. "My Properties" should appear ONLY when the authenticated User has an actual linked LessorProfile / authoritative lessor capability. The capability and navigation behavior must not be coupled to email/password authentication or login modes, as Pathome will support mobile-number OTP authentication where canonical User identity remains stable.
+
+### Root Cause
+`Navbar.tsx` previously used a coarse `{role === 'TENANT'}` check to unconditionally render the "My Properties" button. Because regular users are registered with `ROLE_TENANT` and self-service lessors also hold `ROLE_TENANT`, any signed-in tenant user saw "My Properties" even if they had never listed a property and had no linked `LessorProfile`.
+
+### Implementation Details
+1. **Authoritative Domain Capability Backend (`LandlordCapabilityService.java`, `AuthResponse.java`, `AuthController.java`)**:
+   - Updated `LandlordCapabilityService` to inspect `lessorProfiles.findByLinkedUserId(user.getId())` alongside `ROLE_LANDLORD` to authoritatively determine `hasLessorProfile`.
+   - Updated `Capability` record and `AuthResponse` DTO to expose `hasLessorProfile` and `userId` based on stable canonical User identity, independent of authentication method.
+   - Updated `AuthController` to return `hasLessorProfile` upon login and registration.
+2. **Navigation Policy & Capability State Frontend (`navigationPolicy.ts`, `lessorCapabilityService.ts`)**:
+   - Added pure navigation policy rules:
+     - `shouldShowMyProperties`: Returns true only if authenticated and has linked LessorProfile or landlord capability; false for guests and tenant-only users.
+     - `shouldShowListYourProperty`: Preserved for guests and tenant-only users as an onboarding conversion CTA.
+     - `resolveLessorNavigationDestination`: Routes to `/lessor` when lessor capability is active, and `/lessor/new` when onboarding is needed.
+     - `resolveDirectLessorRouteState`: Direct visits to `/lessor` by tenant-only users resolve to `inactive` (rendering the self-service "List your property" entry screen with "Get started" CTA) rather than fabricating a profile or showing another user's portfolio.
+   - Created `lessorCapabilityService.ts` to query `GET /api/v1/lessor/capability` authoritatively.
+3. **Session Synchronization & Immediate Cleanup (`Home.tsx`, `Navbar.tsx`, `LessorWorkspace.tsx`)**:
+   - `Home.tsx` synchronizes `hasLessorCapability` from `user.hasLessorProfile` and authoritative backend query on mount, login, and `pathome_auth_changed`.
+   - Immediate cross-account cleanup: On logout, capability state is immediately wiped so no stale menu state leaks between accounts.
+   - `Navbar.tsx` profile dropdown displays "My Properties" only when `hasLessorCapability` is true, and "List your property" for tenant-only users.
+   - In `LessorWorkspace.tsx`, guest claim and submission workflows dispatch `pathome_auth_changed` to immediately promote navigation capability once a LessorProfile is created.
+
+### Verification Performed
+- Backend unit and security tests: `mvn -f backend/pom.xml test -Dtest="LandlordCapabilityServiceTest,LandlordCapabilitySecurityTest,AuthControllerTest,LandlordPortfolioServiceTest,LandlordSubmissionServiceTest,GuestDraftServiceTest"`: **42/42 passed (0 failures)**.
+- Frontend regression tests: `node --test src/tests/lessorCapabilityNavigation.test.mjs src/tests/lessorPortfolioStatusAndNav.test.mjs src/tests/lessorLastUpdated.test.mjs src/tests/lessorAutosave.test.mjs src/tests/notificationSession.test.mjs src/tests/lessorWorkflowNotifications.test.mjs`: **40/40 passed (0 failures)** covering all 10 required regression scenarios.
+- Frontend build: `npm run build` in `frontend-web`: **0 errors, build successful**.
+- Git whitespace check: `git diff --check`: **PASS (0 whitespace errors)**.
+
+### Outstanding Checks
+- None within approved scope.
+
+### Commit / Push Status
+- Commit: STOPPED BEFORE GIT WRITES per prompt instructions.
+- Push: None.
+
 ## 2026-09-28 22:20 IST — Lessor Property Workflow Notifications
 
 ### Why this work was requested
