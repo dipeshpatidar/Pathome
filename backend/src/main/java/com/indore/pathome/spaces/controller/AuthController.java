@@ -39,6 +39,12 @@ public class AuthController {
      */
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@RequestBody RegisterRequest request) {
+        if (request == null || request.getEmail() == null || request.getEmail().isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "error", "EMAIL_REQUIRED",
+                    "message", "Email is required to register with a password."
+            ));
+        }
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
             return duplicateEmailResponse();
         }

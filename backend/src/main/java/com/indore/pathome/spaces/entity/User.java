@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.entity;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 @Entity
 @Table(name = "users", indexes = {
@@ -15,7 +16,7 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true)
+    @Column(unique = true)
     private String email;
 
     @Column
@@ -26,6 +27,13 @@ public class User {
 
     @Column(name = "phone_number")
     private String phoneNumber;
+
+    /** Verified account login identity; legacy phoneNumber remains contact data. */
+    @Column(name = "mobile_number_normalized", length = 16)
+    private String mobileNumberNormalized;
+
+    @Column(name = "mobile_verified_at", columnDefinition = "timestamp with time zone")
+    private OffsetDateTime mobileVerifiedAt;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -74,6 +82,12 @@ public class User {
 
     public String getPhoneNumber() { return phoneNumber; }
     public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
+
+    public String getMobileNumberNormalized() { return mobileNumberNormalized; }
+    public void setMobileNumberNormalized(String mobileNumberNormalized) { this.mobileNumberNormalized = mobileNumberNormalized; }
+
+    public OffsetDateTime getMobileVerifiedAt() { return mobileVerifiedAt; }
+    public void setMobileVerifiedAt(OffsetDateTime mobileVerifiedAt) { this.mobileVerifiedAt = mobileVerifiedAt; }
 
     public Role getRole() { return role; }
     public void setRole(Role role) { this.role = role; }

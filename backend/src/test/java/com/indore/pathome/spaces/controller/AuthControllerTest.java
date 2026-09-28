@@ -83,6 +83,48 @@ class AuthControllerTest {
     }
 
     @Test
+    @DisplayName("Password registration still rejects a missing email after the database column becomes nullable")
+    void registerWithoutEmailIsRejectedBeforePersistence() {
+        for (String email : new String[]{null, "", "  "}) {
+            RegisterRequest request = new RegisterRequest();
+            request.setEmail(email);
+            request.setPassword("Password123!");
+
+            ResponseEntity<?> response = authController.registerUser(request);
+
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(response.getBody() instanceof Map);
+            @SuppressWarnings("unchecked")
+            Map<String, String> body = (Map<String, String>) response.getBody();
+            assertEquals("EMAIL_REQUIRED", body.get("error"));
+        }
+        verifyNoInteractions(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository);
+    }
+
+    @Test
+    @DisplayName("Legacy registration phone is contact data and never creates a verified login mobile")
+    void legacyRegistrationPhoneDoesNotEnrollOtp() {
+        when(userRepository.findByEmail("legacy@example.com")).thenReturn(Optional.empty());
+        when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
+        when(userRepository.save(any(User.class))).thenAnswer(invocation -> {
+            User user = invocation.getArgument(0);
+            assertEquals("+91 9876543210", user.getPhoneNumber());
+            assertNull(user.getMobileNumberNormalized());
+            assertNull(user.getMobileVerifiedAt());
+            user.setId(11L);
+            return user;
+        });
+
+        RegisterRequest request = new RegisterRequest();
+        request.setEmail("legacy@example.com");
+        request.setPassword("Password123!");
+        request.setPhoneNumber("+91 9876543210");
+
+        assertEquals(HttpStatus.OK, authController.registerUser(request).getStatusCode());
+        verify(userRepository).save(any(User.class));
+    }
+
+    @Test
     @DisplayName("Register with new email successfully creates tenant user and returns token")
     void registerWithNewEmailCreatesUser() {
         when(userRepository.findByEmail("new@example.com")).thenReturn(Optional.empty());
