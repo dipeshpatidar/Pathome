@@ -13,6 +13,7 @@ export class LessorAutosave {
   private blocked = false;
   private status: LessorSaveStatus = 'saved';
   private version: number;
+  private persistedBaseVersion: number;
   private readonly storageKey: string;
   private readonly userId: number;
   private readonly draftId: string;
@@ -32,15 +33,19 @@ export class LessorAutosave {
     this.onSaved = onSaved;
     this.save = save;
     this.version = version;
+    this.persistedBaseVersion = version;
     this.storageKey = `pathome_lessor_unsynced_${userId}_${draftId}`;
     try {
       const saved = JSON.parse(localStorage.getItem(this.storageKey) || 'null');
-      if (saved && saved.version === version && saved.pending && typeof saved.pending === 'object') {
+      if (saved && saved.pending && typeof saved.pending === 'object') {
         this.pending = saved.pending;
-        if (Object.keys(this.pending).length) this.setStatus('error');
-      } else if (saved && saved.version !== version) {
-        this.blocked = true;
-        this.setStatus('conflict');
+        if (saved.version === version) {
+          if (Object.keys(this.pending).length) this.setStatus('error');
+        } else {
+          this.persistedBaseVersion = saved.version;
+          this.blocked = true;
+          this.setStatus('conflict');
+        }
       }
     } catch { /* A corrupt local copy cannot overwrite the server. */ }
   }
@@ -49,9 +54,9 @@ export class LessorAutosave {
   getStatus(): LessorSaveStatus { return this.status; }
 
   change(section: DraftSection, value: DraftSectionValue): void {
-    if (this.blocked) return;
     this.pending[section] = value;
     this.persist();
+    if (this.blocked) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => { void this.flush(); }, DEBOUNCE_MS);
   }
@@ -73,6 +78,7 @@ export class LessorAutosave {
       try {
         const draft = await this.save(this.draftId, section, this.version, value);
         this.version = draft.version;
+        this.persistedBaseVersion = this.version;
         if (this.pending[section] === value) delete this.pending[section];
         this.persist();
         this.onSaved(draft);
@@ -93,7 +99,7 @@ export class LessorAutosave {
   private persist(): void {
     try {
       if (Object.keys(this.pending).length) {
-        localStorage.setItem(this.storageKey, JSON.stringify({ version: this.version, pending: this.pending }));
+        localStorage.setItem(this.storageKey, JSON.stringify({ version: this.blocked ? this.persistedBaseVersion : this.version, pending: this.pending }));
       } else {
         localStorage.removeItem(this.storageKey);
       }

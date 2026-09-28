@@ -80,7 +80,7 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       <button type="button" disabled={busy} onClick={activate} className={`${BUTTON} mt-7`}>{busy ? 'Opening…' : 'Get started'}<ArrowRight className="h-4 w-4"/></button>
     </section>}
     {capabilityState === 'active' && draftId && <LessorEditor key={draftId} userId={user.id} draftId={decodeURIComponent(draftId)} onBack={() => navigate('/lessor')}/>}
-    {capabilityState === 'active' && listingId && <LessorListingView key={listingId} listingId={Number(listingId)} onBack={() => navigate('/lessor')}/>}
+    {capabilityState === 'active' && listingId && <LessorListingView key={listingId} listingId={Number(listingId)} onBack={() => navigate('/lessor')} onOpenDraft={id => navigate(`/lessor/drafts/${encodeURIComponent(id)}`)}/>}
     {capabilityState === 'active' && isNew && <section className="mx-auto max-w-2xl">
       <button type="button" className={SECONDARY} onClick={() => navigate('/lessor')}><ArrowLeft className="h-4 w-4"/>My properties</button>
       <p className="mt-8 text-xs font-bold uppercase tracking-widest text-emerald-700">Step 1 of 6</p>
@@ -179,6 +179,8 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
   const currentBhk = showExactBhk ? '4+' : bhkChoice(basics.bhkCount);
   return <section className="mx-auto max-w-2xl">
     <div className="flex flex-wrap items-center justify-between gap-3"><button className={SECONDARY} onClick={async () => { await queue.current?.flush(); onBack(); }}><ArrowLeft className="h-4 w-4"/>My properties</button><span aria-live="polite" className={`text-xs font-semibold ${status === 'error' || status === 'conflict' ? 'text-rose-700' : 'text-slate-500'}`}>{status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'conflict' ? 'Conflict' : "Couldn't save — Retry"}</span></div>
+    {draft.revisionOfListingId && <p className="mt-5 text-sm text-slate-600">You are editing a revision. The approved property stays unchanged until these updates are reviewed.</p>}
+    {draft.reviewNote && <div role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><p className="font-semibold">Reviewer note</p><p className="mt-1 whitespace-pre-wrap">{draft.reviewNote}</p></div>}
     <div className="mt-8 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-emerald-600 transition-[width] motion-reduce:transition-none" style={{ width: step === 'basics' ? '17%' : step === 'pricing' ? '34%' : step === 'location' ? '50%' : step === 'media' ? '67%' : step === 'details' ? '84%' : '100%' }}/></div>
     <p className="mt-5 text-xs font-bold uppercase tracking-widest text-emerald-700">{step === 'basics' ? 'Home details · Step 2 of 6' : step === 'pricing' ? 'Pricing · Step 3 of 6' : step === 'location' ? 'Location · Step 4 of 6' : step === 'media' ? 'Photos · Step 5 of 6' : step === 'details' ? 'Availability · Step 6 of 6' : 'Review'}</p>
     {step === 'basics' && <><h1 className="mt-2 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">Tell us about the home</h1><p className="mt-2 text-sm text-slate-600">You can adjust these details before submitting.</p>

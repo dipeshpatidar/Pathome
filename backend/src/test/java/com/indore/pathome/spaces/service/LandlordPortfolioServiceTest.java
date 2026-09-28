@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.service;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.SliceImpl;
@@ -31,7 +32,10 @@ class LandlordPortfolioServiceTest {
         cover.setIsPrimaryCover(true);
         when(assets.findByListingIdInOrderByUploadedAtDesc(List.of(11L, 12L))).thenReturn(List.of(cover));
 
-        var result = new LandlordPortfolioService(capabilities, listings, assets).list("owner@example.com", 0);
+        PropertyUploadDraftRepository drafts = mock(PropertyUploadDraftRepository.class);
+        when(drafts.findByPublishedPropertyIdInAndLandlordUserIdAndStatusIn(anyList(), eq(5L), anyList()))
+                .thenReturn(List.of());
+        var result = new LandlordPortfolioService(capabilities, listings, assets, drafts).list("owner@example.com", 0);
         assertEquals(2, result.items().size());
         assertTrue(result.hasMore());
         assertEquals("https://example.com/cover.jpg", result.items().get(0).coverUrl());
@@ -55,7 +59,8 @@ class LandlordPortfolioServiceTest {
         owned.setLatitude(22.5);
         when(listings.findByIdAndOwnerUserId(11L, 5L)).thenReturn(java.util.Optional.of(owned));
 
-        var service = new LandlordPortfolioService(capabilities, listings, assets);
+        PropertyUploadDraftRepository drafts = mock(PropertyUploadDraftRepository.class);
+        var service = new LandlordPortfolioService(capabilities, listings, assets, drafts);
         var detail = service.get("owner@example.com", 11L);
         assertEquals("First", detail.preview().title());
         assertFalse(detail.toString().contains("Private street address"));
@@ -63,6 +68,22 @@ class LandlordPortfolioServiceTest {
         assertFalse(detail.toString().contains("22.5"));
         assertThrows(EntityNotFoundException.class, () -> service.get("other@example.com", 11L));
         verify(listings).findByIdAndOwnerUserId(11L, 8L);
+    }
+
+    @Test
+    void laterPageUsesBoundedOwnerQueryWithoutMediaLookupWhenEmpty() {
+        LandlordCapabilityService capabilities = mock(LandlordCapabilityService.class);
+        ListingRepository listings = mock(ListingRepository.class);
+        PropertyMediaAssetRepository assets = mock(PropertyMediaAssetRepository.class);
+        PropertyUploadDraftRepository drafts = mock(PropertyUploadDraftRepository.class);
+        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
+        when(listings.findLandlordRentals(5L, PageRequest.of(2, 20)))
+                .thenReturn(new SliceImpl<>(List.of(), PageRequest.of(2, 20), false));
+        var result = new LandlordPortfolioService(capabilities, listings, assets, drafts).list("owner@example.com", 2);
+        assertEquals(2, result.page());
+        assertTrue(result.items().isEmpty());
+        assertFalse(result.hasMore());
+        verifyNoInteractions(assets, drafts);
     }
 
     private RentalDetails listing(Long id, String title) {

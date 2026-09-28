@@ -66,6 +66,9 @@ public class PropertyDraftMedia {
     @Column(name = "is_cover", nullable = false)
     private Boolean isCover = false;
 
+    @Column(name = "reused_from_listing", nullable = false)
+    private Boolean reusedFromListing = false;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -121,6 +124,9 @@ public class PropertyDraftMedia {
 
     public Boolean getIsCover() { return isCover; }
     public void setIsCover(Boolean isCover) { this.isCover = isCover != null ? isCover : false; }
+
+    public Boolean getReusedFromListing() { return reusedFromListing; }
+    public void setReusedFromListing(Boolean reusedFromListing) { this.reusedFromListing = Boolean.TRUE.equals(reusedFromListing); }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

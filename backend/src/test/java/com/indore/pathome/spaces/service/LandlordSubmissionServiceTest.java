@@ -119,6 +119,78 @@ class LandlordSubmissionServiceTest {
         verify(listings, never()).saveAndFlush(any());
     }
 
+    @Test
+    void publishedRevisionSubmitsForReviewWithoutChangingLiveListing() {
+        RentalDetails live = new RentalDetails();
+        live.setId(88L);
+        live.setOwnerUserId(5L);
+        live.setTitle("Approved property");
+        live.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        live.setStatus(ListingStatus.ACTIVE);
+        live.setVersion(3L);
+        draft.setPublishedPropertyId(88L);
+        draft.setRevisionBaseVersion(3L);
+        when(listings.lockOwnedId(88L, 5L)).thenReturn(Optional.of(88L));
+        when(listings.findByIdAndOwnerUserId(88L, 5L)).thenReturn(Optional.of(live));
+
+        var submitted = service.submit("owner@example.com", "d1");
+        assertEquals(88L, submitted.listingId());
+        assertEquals(ListingWorkflowStatus.SUBMITTED, submitted.status());
+        assertEquals("REVIEW", draft.getStatus());
+        assertEquals("Approved property", live.getTitle());
+        assertEquals(ListingStatus.ACTIVE, live.getStatus());
+        verify(listings, never()).saveAndFlush(any());
+        verify(assets, never()).deleteAll(any());
+        assertEquals(88L, service.submit("owner@example.com", "d1").listingId());
+    }
+
+    @Test
+    void changesRequestedRevisionResubmitsSamePrivateListing() {
+        RentalDetails pending = new RentalDetails();
+        pending.setId(42L);
+        pending.setOwnerUserId(5L);
+        pending.setVersion(3L);
+        pending.setWorkflowStatus(ListingWorkflowStatus.CHANGES_REQUIRED);
+        pending.setStatus(ListingStatus.PENDING);
+        pending.setReviewNote("Please clarify the date.");
+        draft.setPublishedPropertyId(42L);
+        draft.setRevisionBaseVersion(3L);
+        when(listings.lockOwnedId(42L, 5L)).thenReturn(Optional.of(42L));
+        when(listings.findByIdAndOwnerUserId(42L, 5L)).thenReturn(Optional.of(pending));
+        when(assets.findByListingIdOrderByUploadedAtDesc(42L)).thenReturn(List.of());
+
+        var result = service.submit("owner@example.com", "d1");
+        assertEquals(42L, result.listingId());
+        assertEquals("SUBMITTED", draft.getStatus());
+        assertEquals(ListingWorkflowStatus.SUBMITTED, pending.getWorkflowStatus());
+        assertEquals(ListingStatus.PENDING, pending.getStatus());
+        assertNull(pending.getReviewNote());
+        verify(listings).saveAndFlush(pending);
+    }
+
+    @Test
+    void submissionPreservesLandlordMediaOrderOnPermanentAssets() {
+        PropertyDraftMedia cover = rows.get(0);
+        cover.setSortOrder(2);
+        PropertyDraftMedia first = new PropertyDraftMedia();
+        first.setMediaId("photo-first");
+        first.setContentType("image/jpeg");
+        first.setUploadStatus("UPLOADED");
+        first.setCloudinaryUrl("https://example.com/first.jpg");
+        first.setSortOrder(0);
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L))
+                .thenReturn(List.of(cover, first));
+
+        service.submit("owner@example.com", "d1");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<PropertyMediaAsset>> saved = ArgumentCaptor.forClass(List.class);
+        verify(assets).saveAll(saved.capture());
+        assertEquals("https://example.com/first.jpg", saved.getValue().get(0).getMediaUrl());
+        assertEquals(0, saved.getValue().get(0).getSortOrder());
+        assertEquals("https://example.com/photo.jpg", saved.getValue().get(1).getMediaUrl());
+        assertEquals(1, saved.getValue().get(1).getSortOrder());
+    }
+
     private LandlordDraftData validData() {
         return new LandlordDraftData(
                 new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK"),

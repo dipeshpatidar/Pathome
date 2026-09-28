@@ -76,6 +76,11 @@ public class LandlordMediaService {
 
     public void delete(String email, String draftId, String mediaId) {
         PropertyDraftMedia item = store.markDeleting(email, draftId, requireUuid(mediaId));
+        if (Boolean.TRUE.equals(item.getReusedFromListing())) {
+            // The same Cloudinary resource still belongs to the approved live listing.
+            store.finishDeleting(email, draftId, mediaId);
+            return;
+        }
         boolean video = item.getContentType().startsWith("video/");
         String publicId = item.getCloudinaryPublicId();
         if (publicId == null || publicId.isBlank()) {

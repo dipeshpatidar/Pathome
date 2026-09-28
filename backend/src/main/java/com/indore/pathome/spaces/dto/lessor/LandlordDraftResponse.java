@@ -9,5 +9,7 @@ public record LandlordDraftResponse(
         int completionPercent,
         LandlordDraftData data,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        Long revisionOfListingId,
+        String reviewNote
 ) {}

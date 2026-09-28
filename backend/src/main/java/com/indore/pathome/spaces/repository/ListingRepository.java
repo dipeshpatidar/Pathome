@@ -20,8 +20,19 @@ import java.util.Optional;
 public interface ListingRepository extends JpaRepository<Listing, Long> {
     Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
 
+    @Query(value = "select id from listings where id = :id and owner_user_id = :ownerId for update", nativeQuery = true)
+    Optional<Long> lockOwnedId(@Param("id") Long id, @Param("ownerId") Long ownerId);
+
+    @Query(value = "select id from listings where id = :id and owner_user_id is not null for update", nativeQuery = true)
+    Optional<Long> lockLandlordReviewId(@Param("id") Long id);
+
     @Query("select r from RentalDetails r where r.ownerUserId = :ownerId order by r.updatedAt desc, r.id desc")
     Slice<RentalDetails> findLandlordRentals(@Param("ownerId") Long ownerId, Pageable pageable);
+
+    @Query("select r from RentalDetails r where r.ownerUserId is not null and r.workflowStatus in :statuses " +
+            "order by r.updatedAt desc, r.id desc")
+    Slice<RentalDetails> findLandlordReviewQueue(@Param("statuses") List<com.indore.pathome.spaces.entity.ListingWorkflowStatus> statuses,
+                                                  Pageable pageable);
 
     interface LocalitySuggestionRow {
         String getCity();

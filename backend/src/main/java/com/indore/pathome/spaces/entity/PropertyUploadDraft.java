@@ -50,6 +50,12 @@ public class PropertyUploadDraft {
     @Column(name = "published_property_id")
     private Long publishedPropertyId;
 
+    @Column(name = "revision_base_version")
+    private Long revisionBaseVersion;
+
+    @Column(name = "review_note", length = 1000)
+    private String reviewNote;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -90,6 +96,12 @@ public class PropertyUploadDraft {
 
     public Long getPublishedPropertyId() { return publishedPropertyId; }
     public void setPublishedPropertyId(Long publishedPropertyId) { this.publishedPropertyId = publishedPropertyId; }
+
+    public Long getRevisionBaseVersion() { return revisionBaseVersion; }
+    public void setRevisionBaseVersion(Long revisionBaseVersion) { this.revisionBaseVersion = revisionBaseVersion; }
+
+    public String getReviewNote() { return reviewNote; }
+    public void setReviewNote(String reviewNote) { this.reviewNote = reviewNote; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

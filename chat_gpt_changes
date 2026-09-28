@@ -1695,3 +1695,13 @@ Changed: ListingRepository.java and LandlordPortfolioService/Controller plus les
 Verification: focused Maven LandlordPortfolioServiceTest and LandlordDraftServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Browser layout and live database repository query remain for manual QA.
 
 Commit: pending Slice 7 checkpoint. Push: NO.
+
+## 2026-09-28 11:11:00 IST — Phase 1B Slice 8 safe listing management and review revisions
+
+Why: Let landlords manage published rentals without bypassing review or silently replacing approved live content.
+
+Changed: V23__landlord_listing_revisions.sql, listing/draft/media entities, repositories, LandlordManagementService, LandlordReviewService/Controller, LandlordSubmissionService, and lessor DTOs add owner-scoped revision drafts linked to the existing listing, base-version conflict checks, inherited-media safety, admin-only initial/revision review actions, reviewer notes, legal pause/archive/review-resume transitions, and approved revision application. Permanent media now retains draft order for the public gallery; legacy media keeps date ordering. LessorListingView.tsx, LessorPortfolio.tsx, LessorWorkspace.tsx, and service types expose truthful management, status, confirmation, retry, and reviewer-note states. lessorAutosave.ts preserves continued typing after a version conflict without replaying stale edits. Focused Java security/service and Node tests cover owner checks, role checks, live-content isolation, status transitions, media reuse/order, reviewer notes, and conflict recovery. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordReviewSecurityTest, LandlordManagementServiceTest, LandlordReviewServiceTest, LandlordSubmissionServiceTest, LandlordMediaServiceTest, LandlordPortfolioServiceTest, and LandlordDraftServiceTest PASS; focused frontend Node tests PASS 7/7; frontend TypeScript no-emit PASS; git diff --check PASS. V23 migration, Cloudinary-backed revision approval, and browser visual flow still require environment/manual QA. Full frontend build is manual because the previous run took 11m24s, above the per-batch autonomous verification limit.
+
+Commit: pending Slice 8 checkpoint. Push: NO.

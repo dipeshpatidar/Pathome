@@ -62,6 +62,18 @@ class LandlordMediaServiceTest {
         verify(store).finishDeleting("owner@example.com", "d1", MEDIA_ID);
     }
 
+    @Test
+    void removingInheritedRevisionPhotoDoesNotDeleteLiveCloudinaryResource() {
+        PropertyDraftMedia item = new PropertyDraftMedia();
+        item.setMediaId(MEDIA_ID);
+        item.setReusedFromListing(true);
+        item.setCloudinaryPublicId("live-photo");
+        when(store.markDeleting("owner@example.com", "d1", MEDIA_ID)).thenReturn(item);
+        service.delete("owner@example.com", "d1", MEDIA_ID);
+        verifyNoInteractions(cloudinary);
+        verify(store).finishDeleting("owner@example.com", "d1", MEDIA_ID);
+    }
+
     private byte[] jpegBytes() {
         return new byte[] { (byte) 0xff, (byte) 0xd8, (byte) 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
     }

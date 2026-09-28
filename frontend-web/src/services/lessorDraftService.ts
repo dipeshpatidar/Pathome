@@ -7,7 +7,8 @@ export interface LessorPricing { monthlyRent: number | null; securityDeposit: nu
 export interface LessorLocation { city: string; canonicalLocalityId: number | null; localityInput: string; address: string; landmark: string }
 export interface LessorDetails { availableFrom: string | null; furnishingStatus: string; totalAreaSqFt: number | null; floorNumber: number | null; totalFloors: number | null; amenities: string; description: string }
 export interface LessorDraftData { basics: LessorBasics; pricing: LessorPricing | null; location: LessorLocation | null; details: LessorDetails | null }
-export interface LessorDraft { draftId: string; status: string; version: number; completionPercent: number; data: LessorDraftData; createdAt: string; updatedAt: string }
+export interface LessorDraft { draftId: string; status: string; version: number; completionPercent: number; data: LessorDraftData; createdAt: string; updatedAt: string;
+  revisionOfListingId: number | null; reviewNote: string | null }
 export interface LessorDraftSummary { draftId: string; title: string; status: string; completionPercent: number; updatedAt: string;
   propertyType: ResidentialType | null; bhkCount: string | null; city: string | null; locality: string | null;
   monthlyRent: number | null; coverUrl: string | null }

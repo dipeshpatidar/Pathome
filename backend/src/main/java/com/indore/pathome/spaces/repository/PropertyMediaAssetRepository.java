@@ -10,7 +10,9 @@ import java.util.Optional;
 
 @Repository
 public interface PropertyMediaAssetRepository extends JpaRepository<PropertyMediaAsset, Long> {
-    List<PropertyMediaAsset> findByListingIdOrderByUploadedAtDesc(Long listingId);
+    @org.springframework.data.jpa.repository.Query("select m from PropertyMediaAsset m where m.listingId = :listingId " +
+            "order by coalesce(m.sortOrder, 2147483647) asc, m.uploadedAt desc, m.id desc")
+    List<PropertyMediaAsset> findByListingIdOrderByUploadedAtDesc(@org.springframework.data.repository.query.Param("listingId") Long listingId);
     List<PropertyMediaAsset> findByListingIdInOrderByUploadedAtDesc(java.util.Collection<Long> listingIds);
     List<PropertyMediaAsset> findByListingIdAndRoomTag(Long listingId, RoomTag roomTag);
     Optional<PropertyMediaAsset> findByListingIdAndUploadRequestId(Long listingId, String uploadRequestId);

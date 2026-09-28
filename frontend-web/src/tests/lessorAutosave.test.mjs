@@ -72,5 +72,8 @@ test('conflict preserves pending edits without silently replaying them', async (
   assert.equal(await queue.flush(), false);
   assert.equal(calls, 1);
   assert.deepEqual(queue.getPending().pricing, pricing);
+  queue.change('basics', basics);
+  assert.deepEqual(queue.getPending().basics, basics);
+  assert.equal(JSON.parse(localStorage.getItem('pathome_lessor_unsynced_7_d1')).version, 1);
   queue.dispose();
 });

@@ -61,6 +61,9 @@ public abstract class Listing {
     @Column(name = "published_at")
     private LocalDateTime publishedAt;
 
+    @Column(name = "review_note", length = 1000)
+    private String reviewNote;
+
     @Column
     private Double latitude;
 
@@ -173,6 +176,9 @@ public abstract class Listing {
 
     public LocalDateTime getPublishedAt() { return publishedAt; }
     public void setPublishedAt(LocalDateTime publishedAt) { this.publishedAt = publishedAt; }
+
+    public String getReviewNote() { return reviewNote; }
+    public void setReviewNote(String reviewNote) { this.reviewNote = reviewNote; }
 
     public Double getLatitude() { return latitude; }
     public void setLatitude(Double latitude) { this.latitude = latitude; }

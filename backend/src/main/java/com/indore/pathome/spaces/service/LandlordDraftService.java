@@ -213,7 +213,8 @@ public class LandlordDraftService {
         boolean hasCover = media.existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
                 draft.getDraftId(), draft.getLandlordUserId(), "UPLOADED", "image/");
         return new LandlordDraftResponse(draft.getDraftId(), draft.getStatus(), draft.getVersion(),
-                completionPercent(data, hasCover), data, draft.getCreatedAt(), draft.getUpdatedAt());
+                completionPercent(data, hasCover), data, draft.getCreatedAt(), draft.getUpdatedAt(),
+                draft.getPublishedPropertyId(), draft.getReviewNote());
     }
 
     private String writeData(LandlordDraftData data) {

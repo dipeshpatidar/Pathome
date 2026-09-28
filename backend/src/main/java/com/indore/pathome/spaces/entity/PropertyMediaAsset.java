@@ -38,6 +38,9 @@ public class PropertyMediaAsset {
 
     private Boolean isPrimaryCover = false;
 
+    @Column(name = "sort_order")
+    private Integer sortOrder;
+
     private String sector;
 
     private String city;
@@ -136,6 +139,9 @@ public class PropertyMediaAsset {
     public void setIsPrimaryCover(Boolean isPrimaryCover) {
         this.isPrimaryCover = isPrimaryCover;
     }
+
+    public Integer getSortOrder() { return sortOrder; }
+    public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
 
     public String getSector() {
         return sector;

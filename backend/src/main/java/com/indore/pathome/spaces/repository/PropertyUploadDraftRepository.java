@@ -24,6 +24,15 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
 
     Optional<PropertyUploadDraft> findByDraftIdAndLandlordUserId(String draftId, Long landlordUserId);
 
+    Optional<PropertyUploadDraft> findFirstByPublishedPropertyIdAndLandlordUserIdAndStatusInOrderByIdDesc(
+            Long publishedPropertyId, Long landlordUserId, List<String> statuses);
+
+    List<PropertyUploadDraft> findByPublishedPropertyIdInAndLandlordUserIdAndStatusIn(
+            List<Long> listingIds, Long landlordUserId, List<String> statuses);
+
+    Slice<PropertyUploadDraft> findByStatusAndPublishedPropertyIdIsNotNullAndLandlordUserIdIsNotNullOrderByUpdatedAtDescIdDesc(
+            String status, Pageable pageable);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT d FROM PropertyUploadDraft d WHERE d.draftId = :draftId AND d.landlordUserId = :ownerId")
     Optional<PropertyUploadDraft> findLandlordDraftForUpdate(@Param("draftId") String draftId,
