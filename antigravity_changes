@@ -2,6 +2,79 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 20:32 IST — Unify Guest Development Origin Validation (CORS & Guard Policy Alignment)
+
+### Why this work was requested
+Security review of commit `e844e29` identified findings:
+1. `DevOriginPolicy.corsDevPatterns()` previously used wildcard patterns (e.g. `http://10.*.*.*`, `http://192.168.*.*`) which could match string lookalikes (e.g. `http://10.foo.attacker.com`) while `GuestRequestGuard` required numeric private IPs.
+2. `GuestRequestGuard` accepted the full `127.0.0.0/8` loopback range while CORS accepted only `127.0.0.1`.
+3. Clear verification and proof coverage needed to be documented for HTTP origin security integration vs real `GuestDraftService` proof authorization.
+
+### Implementation Details
+1. **`DevOriginPolicy.java`**:
+   - Removed `corsDevPatterns()` completely, eliminating all wildcard private-IP patterns.
+   - Refined `PRIVATE_OR_LOOPBACK_IP` regex to strictly match numeric octets (`\d{1,3}`), rejecting hostname labels like `10.foo.attacker.com`.
+   - Maintained single authoritative dev-origin validation logic shared by CORS and `GuestRequestGuard`.
+2. **`SecurityConfig.java`**:
+   - Updated `corsConfigurationSource()` to dynamically validate the `Origin` header using `DevOriginPolicy.isLegitimateDevOrigin(origin)` in non-production environments.
+   - Allowed origins are echoed back exactly (`config.setAllowedOrigins(List.of(origin))`) rather than using wildcards, safely preserving `allowCredentials(true)`.
+   - Disallowed origins return `null` from `corsConfigurationSource`, triggering standard CORS rejection.
+   - Production behavior is unchanged (only explicitly configured origins are accepted).
+3. **`GuestRequestGuard.java`**:
+   - Fully aligned with `DevOriginPolicy.isLegitimateDevOrigin(origin)` in non-production.
+4. **Tests**:
+   - `GuestRequestGuardTest`: Added test cases for `127.0.0.2`, `127.255.255.254`, and hostname-shaped lookalikes (`10.foo.attacker.com`, `172.16.foo.attacker.com`, `192.168.foo.attacker.com`).
+   - `GuestOriginSecurityIntegrationTest`: Verified CORS reflection for valid LAN origins, rejection of hostname lookalikes, 127.0.0.2 loopback acceptance, and HTTP-layer ownership enforcement.
+   - `GuestDraftServiceTest`: Confirmed real unit coverage for proof generation, hashing, verification, isolation, and expiry.
+
+### Verification Performed
+- Focused backend tests: `mvn -f backend/pom.xml test -Dtest="GuestRequestGuardTest,GuestDraftSecurityTest,GuestOriginSecurityIntegrationTest,GuestDraftServiceTest"`: **74/74 passed** (0 failures).
+- `git diff --check`: PASS (0 whitespace errors).
+
+### Outstanding Checks
+- Physical phone manual QA on local network: MANUAL QA.
+
+### Commit / Push Status
+- Commit: Pending
+- Push: Pending
+
+## 2026-09-28 20:08 IST — Harden Mobile Guest LAN Security Fix (P2 Findings)
+
+### Why this work was requested
+Security review of commit `0bdb278` identified three P2 findings:
+1. `SecurityConfig` CORS used `172.*.*.*` (overly broad — covers public routable space) while `GuestRequestGuard` correctly implemented `172.16.0.0/12`. Loopback/IPv6 handling also differed.
+2. `apiError.ts` `guestAccess && 403` fallback applied to ALL guest 403 responses, not just fresh-draft creation. A genuine 403 on an existing protected draft returned "Couldn't start your property listing" instead of truthful authorization copy.
+3. `GuestDraftSecurityTest` mocked `GuestRequestGuard`, so tests did not prove the real CORS + guard chain agreed on origin decisions.
+
+### Implementation Details
+1. **`DevOriginPolicy.java`** (new — single-source authority):
+   - Centralised all dev-origin recognition into a new `com.indore.pathome.spaces.security.DevOriginPolicy` helper.
+   - `isLegitimateDevOrigin(String origin)`: Accepts `localhost`, `127.x.x.x` (loopback /8), `::1` (IPv6 loopback), `*.local` mDNS hostnames (exact `.local` suffix, not substring), `10.x.x.x`, `192.168.x.x`, and `172.16–31.x.x` only.
+   - Rejects: `172.15.x.x`, `172.32.x.x`, `localhost.attacker.com`, `pathome.local.attacker.com`, arbitrary public IPs.
+   - `corsDevPatterns()`: Returns Spring CORS `allowedOriginPatterns` entries that match exactly the same ranges — enumerates 172.16–172.31 explicitly (no `172.*`).
+2. **`GuestRequestGuard.java`** (simplified): Delegates to `DevOriginPolicy.isLegitimateDevOrigin()`. Removed inline `PRIVATE_OR_LOOPBACK_IP` regex and `LOCAL_HOSTNAME` patterns — these now live in `DevOriginPolicy`.
+3. **`SecurityConfig.java`**: Dev CORS pattern list replaced with `DevOriginPolicy.corsDevPatterns()`. No more `172.*.*.*` wildcard.
+4. **`apiError.ts`**: Removed the broad `guestAccess && 403` path that used the caller-provided fallback. All 403 responses now go through `messageForStatus` and return "You do not have permission to complete this action." The guest 401 path is preserved.
+5. **`lessorDraftService.ts`**: `create()` refactored to own its 403/401 fallback — catches errors from `createApiRequestError` and substitutes the friendly create-specific message only for this operation. `get()`, `save()`, `discard()` continue through `request()` and receive the standard 403 copy unchanged.
+6. **`GuestOriginSecurityIntegrationTest.java`** (new): Uses real `GuestRequestGuard` bean (not mocked) via `@Import({..., GuestRequestGuard.class})`. Covers all required scenarios: dev accept (localhost, 127.x, 10.x, 172.16–31, 192.168.x, *.local), dev rejection (172.15, 172.32, attacker lookalikes), guest ownership enforcement (no proof → 404, invalid proof → 404, claim → 401, no-Origin mutating → 403, new anonymous create → 200).
+7. **`GuestRequestGuardTest.java`**: Extended with: 172.16–31 acceptance, 172.15/172.32 rejection, all production LAN rejection (including localhost and loopback), malicious lookalike rejection (`localhost.attacker.com`, `pathome.local.attacker.com`), `DevOriginPolicy` boundary unit tests.
+8. **`GuestDraftSecurityTest.java`**: Cleaned to two focused HTTP-layer tests (guard mocked); LAN origin test moved to `GuestOriginSecurityIntegrationTest`.
+
+### Verification Performed
+- Focused backend tests: `mvn test -Dtest="GuestRequestGuardTest,GuestDraftSecurityTest,GuestOriginSecurityIntegrationTest,GuestDraftServiceTest"`: **60/60 passed** (0 failures).
+- Frontend compilation: `tsc -p tsconfig.json --noEmit` exited code 0.
+- `git diff --check`: PASS (0 whitespace errors).
+- `git diff --cached --check`: PASS.
+
+### Outstanding Checks
+- Physical phone manual QA (new guest create on LAN): MANUAL QA — not verified by agent.
+- Full regression suite: not run per §11 tiered verification rules.
+
+### Commit / Push Status
+- Commit: `e844e29` — `fix(security): align guest LAN origin handling`
+- Branch: `feature/phase1-truthfulness-cleanup`
+- Push: SUCCESS
+
 ## 2026-09-28 19:52 IST — Fix New Guest Listing 403 on Mobile / LAN Access
 
 ### Why this work was requested

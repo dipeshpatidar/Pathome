@@ -12,7 +12,7 @@ import java.util.regex.Pattern;
  *   <li>Host {@code localhost} (case-insensitive).</li>
  *   <li>IPv6 loopback: {@code ::1} or {@code [::1]}.</li>
  *   <li>IPv4 loopback: {@code 127.x.x.x} (RFC 5735 127.0.0.0/8).</li>
- *   <li>Private RFC 1918 ranges only:
+ *   <li>Private RFC 1918 ranges only (parsed numerically via regex, not wildcard strings):
  *     <ul>
  *       <li>{@code 10.0.0.0/8} — {@code 10.x.x.x}</li>
  *       <li>{@code 172.16.0.0/12} — {@code 172.16.x.x} through {@code 172.31.x.x}</li>
@@ -27,12 +27,24 @@ import java.util.regex.Pattern;
  *   <li>{@code localhost.attacker.com} — not {@code localhost}, contains extra labels.</li>
  *   <li>{@code evil-localhost.com}, {@code pathome.local.attacker.com} — not {@code *.local}.</li>
  *   <li>{@code 172.15.x.x}, {@code 172.32.x.x} — outside 172.16.0.0/12.</li>
+ *   <li>{@code 10.foo.attacker.com}, {@code 172.16.foo.attacker.com} — not numeric IPs.</li>
  *   <li>Any public routable IP or internet hostname.</li>
  * </ul>
+ *
+ * <p><strong>CORS integration note</strong>: This policy is used directly as the CORS
+ * {@link org.springframework.web.cors.CorsConfigurationSource} decision function
+ * (see {@link com.indore.pathome.spaces.config.SecurityConfig}). There are no separate
+ * CORS wildcard pattern strings for private IPs — both CORS and {@link GuestRequestGuard}
+ * call {@link #isLegitimateDevOrigin(String)} on the parsed {@code Origin} header so the
+ * decision is made exactly once and is always consistent.
  */
 public final class DevOriginPolicy {
 
-    /** Matches IPv4 loopback (127.0.0.0/8) and RFC 1918 private ranges only. */
+    /**
+     * Matches only numeric IPv4 addresses in the loopback (127.0.0.0/8) and RFC 1918
+     * private ranges. Uses {@code \d{1,3}} so only numeric octets match — hostname labels
+     * like {@code foo}, {@code attacker}, etc. are never matched.
+     */
     static final Pattern PRIVATE_OR_LOOPBACK_IP = Pattern.compile(
             "^("
             + "127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"                    // 127.0.0.0/8 loopback
@@ -43,7 +55,7 @@ public final class DevOriginPolicy {
             + ")$"
     );
 
-    /** Matches {@code *.local} mDNS hostnames — label must be simple alphanumeric+hyphen+dot chain ending in .local. */
+    /** Matches {@code *.local} mDNS hostnames — the label chain must end with exactly {@code .local}. */
     static final Pattern LOCAL_HOSTNAME = Pattern.compile(
             "^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\\.local$", Pattern.CASE_INSENSITIVE);
 
@@ -53,7 +65,12 @@ public final class DevOriginPolicy {
      * Returns {@code true} if {@code origin} is a legitimate local-development origin
      * as defined by the rules above.
      *
-     * <p>This method must never be called in production context.
+     * <p>Host matching uses parsed URI semantics ({@link URI#getHost()}) — it never does
+     * substring or wildcard string matching on the raw origin value. Private IPv4 ranges
+     * are matched by the {@link #PRIVATE_OR_LOOPBACK_IP} regex which only matches
+     * {@code \d{1,3}}-separated numeric octets, so hostname labels are always rejected.
+     *
+     * <p>This method must never be called in a production context.
      * Callers are responsible for gating on the active environment profile.
      *
      * @param origin the {@code Origin} header value (e.g. {@code http://dipeshs-macbook-air.local:5173})
@@ -86,54 +103,5 @@ public final class DevOriginPolicy {
             return false;
         }
         return false;
-    }
-
-    /**
-     * Returns CORS {@code allowedOriginPatterns} entries for Spring's
-     * {@code CorsConfiguration.setAllowedOriginPatterns()} that cover the
-     * same dev origins recognised by {@link #isLegitimateDevOrigin(String)}.
-     *
-     * <p>These patterns use Spring's restricted wildcard syntax ({@code [*]} for ports,
-     * {@code *} for host segments) and intentionally restrict {@code 172.*} to the
-     * correct private range only.
-     *
-     * @return immutable list of dev CORS origin patterns
-     */
-    public static java.util.List<String> corsDevPatterns() {
-        return java.util.List.of(
-                "http://localhost", "https://localhost",
-                "http://localhost:[*]", "https://localhost:[*]",
-                "http://127.0.0.1", "https://127.0.0.1",
-                "http://127.0.0.1:[*]", "https://127.0.0.1:[*]",
-                // IPv6 loopback — Spring CorsConfiguration treats [::1] as a literal host
-                "http://[::1]", "https://[::1]",
-                "http://[::1]:[*]", "https://[::1]:[*]",
-                // mDNS .local hostnames
-                "http://*.local", "https://*.local",
-                "http://*.local:[*]", "https://*.local:[*]",
-                // RFC 1918 — 10.0.0.0/8
-                "http://10.*.*.*", "https://10.*.*.*",
-                "http://10.*.*.*:[*]", "https://10.*.*.*:[*]",
-                // RFC 1918 — 192.168.0.0/16
-                "http://192.168.*.*", "https://192.168.*.*",
-                "http://192.168.*.*:[*]", "https://192.168.*.*:[*]",
-                // RFC 1918 — 172.16.0.0/12 (16–31 only — NOT 172.* which covers public space)
-                "http://172.16.*.*", "https://172.16.*.*", "http://172.16.*.*:[*]", "https://172.16.*.*:[*]",
-                "http://172.17.*.*", "https://172.17.*.*", "http://172.17.*.*:[*]", "https://172.17.*.*:[*]",
-                "http://172.18.*.*", "https://172.18.*.*", "http://172.18.*.*:[*]", "https://172.18.*.*:[*]",
-                "http://172.19.*.*", "https://172.19.*.*", "http://172.19.*.*:[*]", "https://172.19.*.*:[*]",
-                "http://172.20.*.*", "https://172.20.*.*", "http://172.20.*.*:[*]", "https://172.20.*.*:[*]",
-                "http://172.21.*.*", "https://172.21.*.*", "http://172.21.*.*:[*]", "https://172.21.*.*:[*]",
-                "http://172.22.*.*", "https://172.22.*.*", "http://172.22.*.*:[*]", "https://172.22.*.*:[*]",
-                "http://172.23.*.*", "https://172.23.*.*", "http://172.23.*.*:[*]", "https://172.23.*.*:[*]",
-                "http://172.24.*.*", "https://172.24.*.*", "http://172.24.*.*:[*]", "https://172.24.*.*:[*]",
-                "http://172.25.*.*", "https://172.25.*.*", "http://172.25.*.*:[*]", "https://172.25.*.*:[*]",
-                "http://172.26.*.*", "https://172.26.*.*", "http://172.26.*.*:[*]", "https://172.26.*.*:[*]",
-                "http://172.27.*.*", "https://172.27.*.*", "http://172.27.*.*:[*]", "https://172.27.*.*:[*]",
-                "http://172.28.*.*", "https://172.28.*.*", "http://172.28.*.*:[*]", "https://172.28.*.*:[*]",
-                "http://172.29.*.*", "https://172.29.*.*", "http://172.29.*.*:[*]", "https://172.29.*.*:[*]",
-                "http://172.30.*.*", "https://172.30.*.*", "http://172.30.*.*:[*]", "https://172.30.*.*:[*]",
-                "http://172.31.*.*", "https://172.31.*.*", "http://172.31.*.*:[*]", "https://172.31.*.*:[*]"
-        );
     }
 }

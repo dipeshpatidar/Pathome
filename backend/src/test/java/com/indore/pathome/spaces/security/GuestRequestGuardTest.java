@@ -32,16 +32,17 @@ class GuestRequestGuardTest {
             "http://localhost:5173",
             "https://localhost:5173",
             "http://127.0.0.1:5173",
-            "http://127.0.0.2:8080",
+            "http://127.0.0.2:8080",             // P2-2: loopback /8 includes more than 127.0.0.1
+            "http://127.255.255.254:5173",       // end of loopback /8 range
             "http://dipeshs-macbook-air.local:5173",
             "http://phone.local:5173",
             "http://192.168.1.50:5173",
             "http://192.168.0.1:8080",
             "http://10.0.0.12:5173",
             "http://10.255.255.1:5173",
-            "http://172.16.0.1:5173",       // first address in 172.16.0.0/12
+            "http://172.16.0.1:5173",            // first address in 172.16.0.0/12
             "http://172.20.10.4:5173",
-            "http://172.31.255.255:5173"    // last address in 172.16.0.0/12
+            "http://172.31.255.255:5173"         // last address in 172.16.0.0/12
     })
     void devAcceptsLanAndLoopbackOrigins(String origin) {
         var guard = new GuestRequestGuard(new MockEnvironment(), "");
@@ -55,14 +56,18 @@ class GuestRequestGuardTest {
     @ValueSource(strings = {
             "https://attacker.example",
             "https://evil.com",
-            "http://evil.local.com",              // not a .local hostname — has tld after .local
-            "http://localhost.attacker.com",       // not localhost — contains additional labels
-            "http://pathome.local.attacker.com",   // attacker.com tld, not .local
+            "http://evil.local.com",                 // not a .local hostname — has tld after .local
+            "http://localhost.attacker.com",          // not localhost — contains additional labels
+            "http://pathome.local.attacker.com",      // attacker.com tld, not .local
             "http://evil-localhost.com",
             "http://sub.evil.com",
-            "http://172.15.0.1:5173",             // 172.15 outside 172.16.0.0/12
-            "http://172.32.0.1:5173",             // 172.32 outside 172.16.0.0/12
-            "http://172.0.0.1:5173"               // 172.0 not private (below /12 boundary)
+            // P2-1: hostname-shaped lookalikes for private IP ranges
+            "http://10.foo.attacker.com",             // hostname labels, not 10.x.x.x numeric
+            "http://172.16.foo.attacker.com",         // hostname labels, not 172.16.x.x numeric
+            "http://192.168.foo.attacker.com",        // hostname labels, not 192.168.x.x numeric
+            "http://172.15.0.1:5173",                 // 172.15 outside 172.16.0.0/12
+            "http://172.32.0.1:5173",                 // 172.32 outside 172.16.0.0/12
+            "http://172.0.0.1:5173"                   // 172.0 not private (below /12 boundary)
     })
     void devRejectsUntrustedOrigins(String origin) {
         var guard = new GuestRequestGuard(new MockEnvironment(), "");
@@ -122,10 +127,15 @@ class GuestRequestGuardTest {
 
     @Test
     void devPolicyRejectsMaliciousLookalikes() {
+        // Hostname labels — never accepted as numeric IPs (P2-1 cases)
+        assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://10.foo.attacker.com"));
+        assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://172.16.foo.attacker.com"));
+        assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://192.168.foo.attacker.com"));
+        // localhost lookalikes
         assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://localhost.attacker.com"));
         assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://pathome.local.attacker.com"));
         assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://evil-localhost.com"));
-        // Ensure .local matching is exact suffix, not substring
+        // Ensure .local matching is exact suffix (not substring)
         assertFalse(DevOriginPolicy.isLegitimateDevOrigin("http://evil.local.evil.com"));
     }
 

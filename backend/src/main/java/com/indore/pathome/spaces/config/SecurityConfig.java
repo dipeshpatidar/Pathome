@@ -82,35 +82,48 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * CORS configuration source that delegates origin decisions to
+     * {@link com.indore.pathome.spaces.security.DevOriginPolicy#isLegitimateDevOrigin(String)}
+     * in development, and to the explicit {@code pathome.guest.allowed-origins} list in production.
+     *
+     * <p>The incoming {@code Origin} header is parsed by {@code DevOriginPolicy} which uses
+     * {@link java.net.URI#getHost()} semantics — private IPv4 ranges are matched by a
+     * numeric-only regex, so hostnames like {@code 10.foo.attacker.com} are never accepted.
+     * {@link com.indore.pathome.spaces.security.GuestRequestGuard} uses the same method,
+     * ensuring one shared decision with no drift between CORS and the application guard.
+     */
     @Bean
     public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
-        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
         boolean production = MediaStagingConfig.isProductionEnvironment(env);
-        if (production) {
-            java.util.List<String> explicitOrigins = java.util.Arrays.stream(configuredOrigins.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isBlank())
-                    .toList();
-            configuration.setAllowedOrigins(explicitOrigins);
-        } else {
-            java.util.List<String> devPatterns = new java.util.ArrayList<>();
-            if (!configuredOrigins.isBlank()) {
-                devPatterns.addAll(java.util.Arrays.stream(configuredOrigins.split(","))
-                        .map(String::trim)
-                        .filter(s -> !s.isBlank())
-                        .toList());
+        java.util.Set<String> explicitOrigins = java.util.Arrays.stream(configuredOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+
+        // Base config shared across all allowed origins.
+        org.springframework.web.cors.CorsConfiguration baseConfig = new org.springframework.web.cors.CorsConfiguration();
+        baseConfig.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
+        baseConfig.setAllowedHeaders(java.util.List.of("*"));
+        baseConfig.setAllowCredentials(true);
+
+        return request -> {
+            String origin = request.getHeader("Origin");
+            if (origin == null || origin.isBlank()) {
+                return null; // Not a CORS request.
             }
-            // DevOriginPolicy is the single authoritative source for allowed dev origins.
-            // This keeps CORS patterns consistent with GuestRequestGuard's runtime checks.
-            devPatterns.addAll(com.indore.pathome.spaces.security.DevOriginPolicy.corsDevPatterns());
-            configuration.setAllowedOriginPatterns(devPatterns);
-        }
-        configuration.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
-        configuration.setAllowedHeaders(java.util.List.of("*"));
-        configuration.setAllowCredentials(true);
-        org.springframework.web.cors.UrlBasedCorsConfigurationSource source = new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
+            boolean allowed = explicitOrigins.contains(origin)
+                    || (!production && com.indore.pathome.spaces.security.DevOriginPolicy.isLegitimateDevOrigin(origin));
+            if (!allowed) {
+                return null; // Disallowed origin — Spring CORS filter will respond 403.
+            }
+            // Echo back the exact request Origin (never "*") so credentials can be used
+            // and no additional origins are implicitly permitted.
+            org.springframework.web.cors.CorsConfiguration config =
+                    new org.springframework.web.cors.CorsConfiguration(baseConfig);
+            config.setAllowedOrigins(java.util.List.of(origin));
+            return config;
+        };
     }
 
     @Bean
