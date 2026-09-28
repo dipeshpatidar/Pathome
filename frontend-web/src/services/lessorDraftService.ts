@@ -45,14 +45,27 @@ async function request<T>(
 }
 
 export const lessorDraftService = {
-  create(basics: LessorBasics, guest = false) {
-    return request<LessorDraft>(
-      guest ? GUEST_BASE : BASE,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basics) },
-      guest,
-      false,
-      "Couldn't start your property listing. Please try again."
-    );
+  async create(basics: LessorBasics, guest = false): Promise<LessorDraft> {
+    // Use a dedicated try/catch so the friendly "Couldn't start your property listing"
+    // message is scoped only to fresh-draft creation — not to access errors on existing drafts.
+    const response = await fetch(guest ? GUEST_BASE : BASE, {
+      method: 'POST',
+      credentials: guest ? 'include' : 'same-origin',
+      headers: {
+        ...(guest ? { Accept: 'application/json' } : authHeaders()),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(basics),
+    });
+    if (!response.ok) {
+      const err = await createApiRequestError(response, "Couldn't start your property listing. Please try again.", guest);
+      // For guest create, access/origin errors should show the calm create-specific copy.
+      if (guest && (err.status === 403 || err.status === 401)) {
+        throw new ApiRequestError("Couldn't start your property listing. Please try again.", err.status, err.details);
+      }
+      throw err;
+    }
+    return response.json() as Promise<LessorDraft>;
   },
   resumeGuest: async (): Promise<LessorDraft | null> => {
     const response = await fetch(`${GUEST_BASE}/resume`, { credentials: 'include', headers: { Accept: 'application/json' } });

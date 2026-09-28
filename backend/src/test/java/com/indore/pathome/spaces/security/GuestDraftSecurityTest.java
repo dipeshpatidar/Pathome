@@ -16,6 +16,13 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * HTTP-layer security tests for {@link GuestDraftController}.
+ *
+ * <p>These tests mock {@link GuestRequestGuard} to isolate Spring Security filter-chain
+ * behaviour (auth/authz) from origin-guard logic. For real-guard origin acceptance/rejection
+ * tests see {@link GuestOriginSecurityIntegrationTest}.
+ */
 @WebMvcTest(controllers = GuestDraftController.class)
 @Import({SecurityConfig.class, JwtAuthenticationFilter.class})
 class GuestDraftSecurityTest {
@@ -27,6 +34,7 @@ class GuestDraftSecurityTest {
     @MockBean OAuth2AuthenticationSuccessHandler oauth;
     @MockBean JwtUtils jwt;
 
+    /** Claim requires an authenticated session — anonymous request must be 401. */
     @Test
     void guestCannotClaimWithoutAuthentication() throws Exception {
         mvc.perform(post("/api/v1/lessor/guest/drafts/guest-random/claim")
@@ -35,30 +43,12 @@ class GuestDraftSecurityTest {
         verifyNoInteractions(drafts);
     }
 
+    /** There is no direct submit endpoint for guest drafts — expect 404. */
     @Test
     void guestHasNoDirectSubmitEndpoint() throws Exception {
         mvc.perform(post("/api/v1/lessor/guest/drafts/guest-random/submit")
                         .header("Origin", "http://localhost:5173"))
                 .andExpect(status().isNotFound());
         verifyNoInteractions(submissions);
-    }
-
-    @Test
-    void anonymousUserCanCreateGuestDraftFromLanOrigin() throws Exception {
-        org.mockito.Mockito.when(drafts.create(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(new GuestDraftService.Created(
-                        new com.indore.pathome.spaces.dto.lessor.LandlordDraftResponse("guest-123", "DRAFT", 1, 10,
-                                new com.indore.pathome.spaces.dto.lessor.LandlordDraftData(
-                                        new com.indore.pathome.spaces.dto.lessor.LandlordDraftData.Basics(
-                                                com.indore.pathome.spaces.entity.PropertyType.FLAT, com.indore.pathome.spaces.entity.RentalMode.LONG_TERM_RENTAL, null),
-                                        null, null, null),
-                                java.time.LocalDateTime.now(), java.time.LocalDateTime.now(), null, null),
-                        "fake-credential"));
-
-        mvc.perform(post("/api/v1/lessor/guest/drafts")
-                        .header("Origin", "http://dipeshs-macbook-air.local:5173")
-                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                        .content("{\"propertyType\":\"FLAT\",\"rentalMode\":\"LONG_TERM_RENTAL\",\"bhkCount\":null}"))
-                .andExpect(status().isOk());
     }
 }

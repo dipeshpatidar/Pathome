@@ -100,14 +100,9 @@ public class SecurityConfig {
                         .filter(s -> !s.isBlank())
                         .toList());
             }
-            devPatterns.addAll(java.util.List.of(
-                    "http://localhost:[*]", "https://localhost:[*]", "http://localhost", "https://localhost",
-                    "http://127.0.0.1:[*]", "https://127.0.0.1:[*]", "http://127.0.0.1", "https://127.0.0.1",
-                    "http://*.local:[*]", "https://*.local:[*]", "http://*.local", "https://*.local",
-                    "http://192.168.*.*:[*]", "https://192.168.*.*:[*]", "http://192.168.*.*", "https://192.168.*.*",
-                    "http://10.*.*.*:[*]", "https://10.*.*.*:[*]", "http://10.*.*.*", "https://10.*.*.*",
-                    "http://172.*.*.*:[*]", "https://172.*.*.*:[*]", "http://172.*.*.*", "https://172.*.*.*"
-            ));
+            // DevOriginPolicy is the single authoritative source for allowed dev origins.
+            // This keeps CORS patterns consistent with GuestRequestGuard's runtime checks.
+            devPatterns.addAll(com.indore.pathome.spaces.security.DevOriginPolicy.corsDevPatterns());
             configuration.setAllowedOriginPatterns(devPatterns);
         }
         configuration.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));

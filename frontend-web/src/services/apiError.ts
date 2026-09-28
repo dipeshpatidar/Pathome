@@ -33,6 +33,13 @@ export const notifySessionExpired = (): void => {
   }
 };
 
+/**
+ * Creates an ApiRequestError from a failed Response.
+ *
+ * @param response  The failed fetch Response.
+ * @param fallback  Generic fallback message for status codes not handled by messageForStatus.
+ * @param guestAccess  True when this is an anonymous guest endpoint (401 = session expiry, not sign-in prompt).
+ */
 export const createApiRequestError = async (response: Response, fallback: string, guestAccess = false): Promise<ApiRequestError> => {
   let payload: ApiErrorPayload | null = null;
 
@@ -48,9 +55,7 @@ export const createApiRequestError = async (response: Response, fallback: string
 
   const message = guestAccess && response.status === 401
     ? 'Guest access has expired. Start a new property listing.'
-    : (guestAccess && response.status === 403 && fallback
-        ? fallback
-        : messageForStatus(response.status, payload?.message || fallback));
+    : messageForStatus(response.status, payload?.message || fallback);
   const details = response.status < 500 && payload?.message && payload.message !== message
     ? payload.message
     : undefined;
