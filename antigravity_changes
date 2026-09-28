@@ -2,6 +2,41 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 19:52 IST — Fix New Guest Listing 403 on Mobile / LAN Access
+
+### Why this work was requested
+A user accessing Pathome from a physical phone or LAN host (e.g. `http://dipeshs-macbook-air.local:5173`) could load the frontend, but creating a brand-new guest property (`POST /api/v1/lessor/guest/drafts`) failed with 403 "You do not have permission to complete this action."
+
+### Root Cause
+1. `GuestRequestGuard.java` had hardcoded dev origins `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080`. When a request originated from a local development network hostname (`*.local`) or private RFC 1918 LAN IP, `GuestRequestGuard` rejected the request with 403 `AccessDeniedException("Guest request origin not allowed")`.
+2. Frontend error handling mapped any 403 on guest operations to `"You do not have permission to complete this action."` conflating draft cross-device permission denials with fresh draft creation failures.
+
+### Implementation Details
+1. **`GuestRequestGuard.java`**:
+   - Expanded non-production dev origin verification to recognize legitimate local/LAN dev origins: `localhost`, `127.0.0.1`, `*.local`, and private RFC 1918 IPs (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`) on standard web/dev ports.
+   - Preserved strict explicit origin validation in production: only explicitly configured allowed origins are permitted; wildcard origins with credentials remain forbidden.
+2. **`SecurityConfig.java`**:
+   - Narrowed CORS dev allowed origins to localhost, `*.local`, and private RFC 1918 IPs in dev profile without wildcard `*` with credentials.
+   - Production CORS continues to use explicit configured origins (`app.cors.allowed-origins`).
+3. **Frontend Error UX & Recovery**:
+   - Updated `apiError.ts`: Provided `getGuestDraftErrorMessage(err, isNewDraft)` distinguishing brand-new draft creation failures from cross-device existing draft permission denials.
+   - For new draft creation failure: Displays calm, truthful `"Couldn't start your property listing. Please try again."`
+   - For existing draft cross-device access: Displays `"This draft was started on another device. Sign in to continue it securely."`
+   - Updated `lessorDraftService.ts` and `LessorWorkspace.tsx` to handle stale guest state safely and display truthful copy.
+4. **Focused Tests**:
+   - `GuestRequestGuardTest`: Added test cases verifying dev origins (`.local`, LAN IP) are accepted in dev mode and rejected in production.
+   - `GuestDraftSecurityTest`: Verified anonymous guest can create new draft from LAN origin (`http://dipeshs-macbook-air.local:5173`).
+
+### Verification Performed
+- Focused backend tests: `mvn -f backend/pom.xml test -Dtest="GuestRequestGuardTest,GuestDraftSecurityTest,GuestDraftServiceTest"`: 18/18 tests passed.
+- Frontend compilation & typing: `npx tsc -p tsconfig.json --noEmit` passed with 0 errors.
+- Frontend production build: `npm run build` completed successfully.
+- `git diff --check`: PASS (0 whitespace errors).
+
+### Commit / Push Status
+- Commit: Pending
+- Push: Pending
+
 ## 2026-09-28 18:45 IST — LessorProfile P2 Cleanup: Remove Fabricated Phone Sentinel + Fix V26 ON CONFLICT
 
 ### Why this work was requested

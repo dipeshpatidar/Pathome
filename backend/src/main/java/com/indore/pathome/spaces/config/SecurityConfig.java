@@ -26,13 +26,19 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
     private final boolean googleLoginEnabled;
+    private final org.springframework.core.env.Environment env;
+    private final String configuredOrigins;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler,
-                          @Value("${pathome.google-login.enabled:false}") boolean googleLoginEnabled) {
+                          @Value("${pathome.google-login.enabled:false}") boolean googleLoginEnabled,
+                          org.springframework.core.env.Environment env,
+                          @Value("${pathome.guest.allowed-origins:}") String configuredOrigins) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.oAuth2SuccessHandler = oAuth2SuccessHandler;
         this.googleLoginEnabled = googleLoginEnabled;
+        this.env = env;
+        this.configuredOrigins = configuredOrigins;
     }
 
     @Bean
@@ -79,7 +85,31 @@ public class SecurityConfig {
     @Bean
     public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
         org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
-        configuration.setAllowedOriginPatterns(java.util.List.of("*"));
+        boolean production = MediaStagingConfig.isProductionEnvironment(env);
+        if (production) {
+            java.util.List<String> explicitOrigins = java.util.Arrays.stream(configuredOrigins.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .toList();
+            configuration.setAllowedOrigins(explicitOrigins);
+        } else {
+            java.util.List<String> devPatterns = new java.util.ArrayList<>();
+            if (!configuredOrigins.isBlank()) {
+                devPatterns.addAll(java.util.Arrays.stream(configuredOrigins.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isBlank())
+                        .toList());
+            }
+            devPatterns.addAll(java.util.List.of(
+                    "http://localhost:[*]", "https://localhost:[*]", "http://localhost", "https://localhost",
+                    "http://127.0.0.1:[*]", "https://127.0.0.1:[*]", "http://127.0.0.1", "https://127.0.0.1",
+                    "http://*.local:[*]", "https://*.local:[*]", "http://*.local", "https://*.local",
+                    "http://192.168.*.*:[*]", "https://192.168.*.*:[*]", "http://192.168.*.*", "https://192.168.*.*",
+                    "http://10.*.*.*:[*]", "https://10.*.*.*:[*]", "http://10.*.*.*", "https://10.*.*.*",
+                    "http://172.*.*.*:[*]", "https://172.*.*.*:[*]", "http://172.*.*.*", "https://172.*.*.*"
+            ));
+            configuration.setAllowedOriginPatterns(devPatterns);
+        }
         configuration.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         configuration.setAllowedHeaders(java.util.List.of("*"));
         configuration.setAllowCredentials(true);

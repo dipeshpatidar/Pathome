@@ -238,7 +238,7 @@ export function LessorWorkspace({
           if (!live) return;
           if (pendingSubmit || pendingSave) void claimDraft(draftId, pendingSubmit);
           else {
-            setError(getErrorMessage(cause, 'This property draft is unavailable.'));
+            setError(getErrorMessage(cause, 'This draft was started on another device. Sign in to continue it securely.'));
             setCapabilityState('error');
           }
         });
@@ -289,7 +289,7 @@ export function LessorWorkspace({
       if (!user) localStorage.setItem('pathome_guest_draft_id', draft.draftId);
       navigate(`/lessor/drafts/${encodeURIComponent(draft.draftId)}`);
     } catch (cause) {
-      setError(getErrorMessage(cause, 'Unable to start your draft.'));
+      setError(getErrorMessage(cause, "Couldn't start your property listing. Please try again."));
     } finally {
       setBusy(false);
     }

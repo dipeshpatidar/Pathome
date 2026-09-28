@@ -30,17 +30,29 @@ function authHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/json' };
 }
 
-async function request<T>(url: string, init: RequestInit = {}, guest = false, authenticatedClaim = false): Promise<T> {
+async function request<T>(
+  url: string,
+  init: RequestInit = {},
+  guest = false,
+  authenticatedClaim = false,
+  customFallback?: string
+): Promise<T> {
   const response = await fetch(url, { ...init, credentials: guest ? 'include' : 'same-origin',
     headers: { ...(guest ? { Accept: 'application/json' } : authHeaders()), ...init.headers } });
-  if (!response.ok) throw await createApiRequestError(response, 'Unable to save your property right now.', guest && !authenticatedClaim);
+  if (!response.ok) throw await createApiRequestError(response, customFallback || 'Unable to save your property right now.', guest && !authenticatedClaim);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
 export const lessorDraftService = {
   create(basics: LessorBasics, guest = false) {
-    return request<LessorDraft>(guest ? GUEST_BASE : BASE, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basics) }, guest);
+    return request<LessorDraft>(
+      guest ? GUEST_BASE : BASE,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basics) },
+      guest,
+      false,
+      "Couldn't start your property listing. Please try again."
+    );
   },
   resumeGuest: async (): Promise<LessorDraft | null> => {
     const response = await fetch(`${GUEST_BASE}/resume`, { credentials: 'include', headers: { Accept: 'application/json' } });

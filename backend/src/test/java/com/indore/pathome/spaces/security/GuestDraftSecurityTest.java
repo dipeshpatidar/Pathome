@@ -42,4 +42,23 @@ class GuestDraftSecurityTest {
                 .andExpect(status().isNotFound());
         verifyNoInteractions(submissions);
     }
+
+    @Test
+    void anonymousUserCanCreateGuestDraftFromLanOrigin() throws Exception {
+        org.mockito.Mockito.when(drafts.create(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new GuestDraftService.Created(
+                        new com.indore.pathome.spaces.dto.lessor.LandlordDraftResponse("guest-123", "DRAFT", 1, 10,
+                                new com.indore.pathome.spaces.dto.lessor.LandlordDraftData(
+                                        new com.indore.pathome.spaces.dto.lessor.LandlordDraftData.Basics(
+                                                com.indore.pathome.spaces.entity.PropertyType.FLAT, com.indore.pathome.spaces.entity.RentalMode.LONG_TERM_RENTAL, null),
+                                        null, null, null),
+                                java.time.LocalDateTime.now(), java.time.LocalDateTime.now(), null, null),
+                        "fake-credential"));
+
+        mvc.perform(post("/api/v1/lessor/guest/drafts")
+                        .header("Origin", "http://dipeshs-macbook-air.local:5173")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"propertyType\":\"FLAT\",\"rentalMode\":\"LONG_TERM_RENTAL\",\"bhkCount\":null}"))
+                .andExpect(status().isOk());
+    }
 }
