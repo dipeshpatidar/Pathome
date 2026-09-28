@@ -1,6 +1,7 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Search, UserCheck, Gift, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { landingEntrance, landingHeadingMask } from '../utils/landingMotion';
 
 const steps = [
   {
@@ -33,94 +34,61 @@ const steps = [
 ];
 
 export const HowItWorks: React.FC = () => {
+  const reduceMotion = useReducedMotion();
   return (
-    <section id="how-it-works" className="py-12 bg-white border-b border-slate-200/80 relative overflow-hidden">
-      
-      {/* Decorative Background Pattern */}
-      <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:24px_24px] opacity-40 pointer-events-none" />
+    <section id="how-it-works" className="relative border-b border-slate-200/80 bg-white py-16 sm:py-20 lg:py-24">
+      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="grid gap-10 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] md:gap-12 lg:gap-20">
+          {/* A short desktop editorial anchor while the three existing steps pass beside it. */}
+          <motion.div
+            {...landingEntrance(reduceMotion, 'heading', 0, 'left')}
+            className="max-w-lg self-start lg:sticky lg:top-28 motion-reduce:lg:static"
+          >
+            <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">Simple 3-Step Journey</span>
+            <motion.h2 {...landingHeadingMask(reduceMotion, 0.06)} className="mt-3 font-['Outfit',sans-serif] text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
+              How Pathome Works
+            </motion.h2>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600">
+              Eliminating broker markups and ghost listings with transparent pricing & direct visit requests.
+            </p>
+            <div className="mt-7 h-px w-14 bg-emerald-500" aria-hidden="true" />
+          </motion.div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        
-        {/* Header */}
-        <motion.div 
-          initial={{ opacity: 0, y: 16 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          className="text-center max-w-2xl mx-auto mb-10"
-        >
-          <span className="text-xs font-extrabold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-3.5 py-1.5 rounded-full border border-emerald-200 shadow-2xs">
-            Simple 3-Step Journey
-          </span>
-          <h2 className="text-3xl sm:text-4xl font-extrabold text-slate-900 font-['Outfit',sans-serif] mt-3 tracking-tight">
-            How Pathome Works
-          </h2>
-          <p className="text-slate-600 text-xs sm:text-sm mt-2.5 leading-relaxed">
-            Eliminating broker markups and ghost listings with transparent pricing & direct visit requests.
-          </p>
-        </motion.div>
-
-        {/* 3 Steps Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
-          
-          {steps.map((step, index) => {
-            const Icon = step.icon;
-            return (
-              <motion.div
-                key={step.number}
-                initial={{ opacity: 0, y: 24 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.55, delay: index * 0.15, ease: [0.16, 1, 0.3, 1] }}
-                whileHover={{ y: -4 }}
-                className="bg-slate-50/80 rounded-3xl p-7 border border-slate-200/90 shadow-sm hover:shadow-xl hover:shadow-slate-200/60 transition-all duration-300 flex flex-col justify-between relative group"
-              >
-                <div>
-                  {/* Step Number & Icon Header */}
-                  <div className="flex items-center justify-between mb-6">
-                    <span className="text-4xl font-black font-['Outfit',sans-serif] text-slate-300 group-hover:text-emerald-600 transition-colors">
-                      {step.number}
-                    </span>
-                    <div className="w-12 h-12 rounded-2xl bg-white text-emerald-600 flex items-center justify-center border border-slate-200 shadow-sm group-hover:scale-110 transition-transform">
-                      <Icon className="w-6 h-6 text-emerald-600" />
-                    </div>
+          <div className="border-l border-slate-200 pl-5 sm:pl-8">
+            {steps.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <motion.article
+                  key={step.number}
+                  {...landingEntrance(reduceMotion, 'section', index * 0.06, 'right')}
+                  className="relative border-b border-slate-200 py-8 first:pt-0 last:border-b-0 last:pb-0"
+                >
+                  <span className="absolute -left-[1.55rem] top-9 h-2 w-2 rounded-full bg-emerald-600 ring-4 ring-white first:top-1 sm:-left-[2.3rem]" aria-hidden="true" />
+                  <div className="mb-4 flex items-center justify-between gap-4">
+                    <span className="font-['Outfit',sans-serif] text-3xl font-bold text-emerald-700/50">{step.number}</span>
+                    <Icon className="h-5 w-5 text-emerald-700" aria-hidden="true" />
                   </div>
-
-                  <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md bg-emerald-100/70 text-emerald-800 border border-emerald-200/60 font-mono mb-3 inline-block">
-                    {step.badge}
-                  </span>
-
-                  <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2.5 leading-snug">
-                    {step.title}
-                  </h3>
-
-                  <p className="text-xs text-slate-600 leading-relaxed mb-6">
-                    {step.description}
-                  </p>
-                </div>
-
-                {/* Bullets */}
-                <div className="space-y-2 pt-4 border-t border-slate-200/70">
-                  {step.bullets.map((bullet, idx) => (
-                    <div key={idx} className="flex items-center gap-2 text-xs text-slate-700 font-medium">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>{bullet}</span>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            );
-          })}
-
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">{step.badge}</span>
+                  <h3 className="mt-2 font-['Outfit',sans-serif] text-xl font-bold leading-snug text-slate-900 sm:text-2xl">{step.title}</h3>
+                  <p className="mt-2.5 text-sm leading-relaxed text-slate-600">{step.description}</p>
+                  <div className="mt-5 grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-2">
+                    {step.bullets.map((bullet, idx) => (
+                      <div key={idx} className="flex items-start gap-2 text-xs font-medium leading-relaxed text-slate-700">
+                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden="true" />
+                        <span>{bullet}</span>
+                      </div>
+                    ))}
+                  </div>
+                </motion.article>
+              );
+            })}
+          </div>
         </div>
 
         {/* CTA Banner bottom of how it works */}
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5, delay: 0.3 }}
-          className="mt-14 bg-gradient-to-r from-emerald-900 via-slate-900 to-slate-950 p-6 sm:p-8 rounded-3xl text-white border border-emerald-500/20 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-6"
+          {...landingEntrance(reduceMotion, 'section', 0, 'right')}
+          className="mt-16 flex flex-col items-center justify-between gap-6 rounded-2xl bg-slate-900 p-6 text-white sm:flex-row sm:p-8"
         >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30">

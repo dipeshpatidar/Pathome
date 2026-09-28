@@ -6,6 +6,7 @@ import {
   RentalSuggestion,
   PROPERTY_TYPE_LABELS,
   buildRentalSearchFilters,
+  discoverySearchKey,
   formatCompactSearchContext,
   hasActiveSearchFilters,
   normalizeSearchText,
@@ -47,7 +48,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const suggestionListRef = useRef<HTMLDivElement>(null);
   const suggestionRequestRef = useRef(0);
-  const lastCommittedFiltersRef = useRef(filters);
+  const committedFiltersKey = discoverySearchKey(filters);
+  const lastCommittedFiltersRef = useRef(committedFiltersKey);
   const touchStartYRef = useRef<number | null>(null);
 
   const summary = formatCompactSearchContext(filters);
@@ -55,13 +57,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
 
   // Sync draft text if external committed filters change
   useEffect(() => {
-    if (lastCommittedFiltersRef.current !== filters) {
-      lastCommittedFiltersRef.current = filters;
+    if (lastCommittedFiltersRef.current !== committedFiltersKey) {
+      lastCommittedFiltersRef.current = committedFiltersKey;
       setSearchText(filters.q || summary || '');
       setIsEditing(false);
       setShowSuggestions(false);
     }
-  }, [filters, summary]);
+  }, [committedFiltersKey, filters.q, summary]);
 
   // Click outside to close autocomplete suggestions & exit edit mode
   useEffect(() => {
@@ -201,7 +203,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     setIsEditing(false);
     setShowSuggestions(false);
     setSearchText('');
-    lastCommittedFiltersRef.current = { city: newCity, rentalOnly: true };
+    lastCommittedFiltersRef.current = discoverySearchKey({ city: newCity, rentalOnly: true });
     onManualCityChange(newCity);
   };
 
@@ -210,7 +212,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     setShowSuggestions(false);
     setSuggestions([]);
     setSearchText('');
-    lastCommittedFiltersRef.current = { city, rentalOnly: true };
+    lastCommittedFiltersRef.current = discoverySearchKey({ city, rentalOnly: true });
     onClearAll();
   };
 
@@ -234,7 +236,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
       // Non-blocking telemetry
     }
     const nextFilters = buildRentalSearchFilters(item.city, item.label, item);
-    lastCommittedFiltersRef.current = nextFilters;
+    lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
     setSearchText(item.label);
     onSearch(nextFilters.city, nextFilters.sector, nextFilters);
   };
@@ -250,7 +252,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
       return;
     }
     const nextFilters = buildRentalSearchFilters(city, query, null);
-    lastCommittedFiltersRef.current = nextFilters;
+    lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
     onSearch(nextFilters.city, nextFilters.sector, nextFilters);
   };
 
@@ -343,7 +345,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
         <div
           ref={searchBarRef}
           id="compact-search-bar"
-          className={`w-full rounded-2xl border bg-slate-950/80 backdrop-blur-xl backdrop-saturate-150 p-1.5 shadow-[0_12px_40px_rgb(0,0,0,0.3)] ring-1 ring-white/10 text-white transition-all sm:p-2 ${
+          className={`w-full rounded-xl border bg-slate-950/80 backdrop-blur-md backdrop-saturate-150 p-1 shadow-[0_8px_28px_rgb(0,0,0,0.24)] ring-1 ring-white/10 text-white transition-all sm:rounded-2xl sm:backdrop-blur-xl sm:p-2 sm:shadow-[0_12px_40px_rgb(0,0,0,0.3)] ${
             isEditing ? 'border-emerald-500/50 ring-2 ring-emerald-500/20' : 'border-white/15'
           }`}
         >
@@ -450,7 +452,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   }}
                   placeholder={summary || "Search locality or 2 BHK"}
                   aria-label="Search homes"
-                  className="min-w-0 flex-1 bg-transparent text-sm font-medium text-white outline-none placeholder:text-slate-400"
+                  className="min-w-0 flex-1 bg-transparent text-base font-medium text-white outline-none placeholder:text-slate-400"
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck="false"

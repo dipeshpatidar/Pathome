@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile, UserRole } from '../types';
 import { Navbar } from './Navbar';
 import { HeroSection } from './HeroSection';
@@ -711,6 +711,7 @@ export const Home: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { notifySuccess } = useNotification();
+  const reduceMotion = useReducedMotion();
 
   const initialSession = getInitialSession();
   const [role, setRole] = useState<UserRole>(initialSession.role);
@@ -756,6 +757,9 @@ export const Home: React.FC = () => {
   };
   const activeDiscoveryKey = discoverySearchKey(activeSearchFilters);
   const [refineSearchRequest, setRefineSearchRequest] = useState(0);
+  const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
+  const openPostProperty = useCallback(() => setShowPostPropertyModal(true), []);
+  const closePostProperty = useCallback(() => setShowPostPropertyModal(false), []);
   const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
   const discoveryRequestRef = useRef(0);
   const focusResultsAfterSearch = useRef(false);
@@ -787,11 +791,25 @@ export const Home: React.FC = () => {
     const heroSearchEl = document.getElementById('hero-search-surface');
     if (!heroSearchEl) return undefined;
 
+    const syncCompactSearch = () => {
+      const focusedElement = document.activeElement;
+      if (focusedElement && heroSearchEl.contains(focusedElement)) {
+        setShowCompactSearch(false);
+      } else if (focusedElement && document.getElementById('compact-discovery-context')?.contains(focusedElement)) {
+        setShowCompactSearch(true);
+      } else {
+        setShowCompactSearch(heroSearchEl.getBoundingClientRect().bottom < 75);
+      }
+    };
+    let focusFrame = 0;
+    const handleSearchFocus = (event: FocusEvent) => {
+      const target = event.target as Node;
+      if (!heroSearchEl.contains(target) && !document.getElementById('compact-discovery-context')?.contains(target)) return;
+      window.cancelAnimationFrame(focusFrame);
+      focusFrame = window.requestAnimationFrame(syncCompactSearch);
+    };
     const observer = new IntersectionObserver(
-      ([entry]) => {
-        const isPastHero = !entry.isIntersecting && entry.boundingClientRect.top < 80;
-        setShowCompactSearch(isPastHero);
-      },
+      syncCompactSearch,
       {
         rootMargin: '-75px 0px 0px 0px',
         threshold: 0
@@ -799,7 +817,14 @@ export const Home: React.FC = () => {
     );
 
     observer.observe(heroSearchEl);
-    return () => observer.disconnect();
+    document.addEventListener('focusin', handleSearchFocus);
+    document.addEventListener('focusout', handleSearchFocus);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('focusin', handleSearchFocus);
+      document.removeEventListener('focusout', handleSearchFocus);
+      window.cancelAnimationFrame(focusFrame);
+    };
   }, [isPropertyRoute, role, location.pathname]);
 
   // Fetch live properties — resets to page 0 and discards previous results on every call
@@ -1176,6 +1201,9 @@ export const Home: React.FC = () => {
         onOpenAuthModal={() => setShowAuthModal(true)}
         onOpenLeaseUpload={() => setShowLeaseModal(true)}
         onLogout={handleLogout}
+        onOpenPostProperty={openPostProperty}
+        postPropertyModalOpen={showPostPropertyModal}
+        onClosePostProperty={closePostProperty}
         activeAdminTab={activeAdminTab}
         setActiveAdminTab={setActiveAdminTab}
         isLandingHero={!isPropertyRoute && role === 'GUEST'}
@@ -1235,15 +1263,16 @@ export const Home: React.FC = () => {
         ) : !isPropertyRoute && role === 'GUEST' && (
           <motion.div
             key="guest-homepage"
-            initial={{ opacity: 0, y: 16 }}
+            initial={reduceMotion ? false : { opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
-            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+            exit={reduceMotion ? undefined : { opacity: 0, y: -16 }}
+            transition={{ duration: reduceMotion ? 0 : 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* SECTION 1: HERO SEARCH HUB */}
-            <div id="hero" className="relative z-30 -mt-[74.5px]">
+            <div id="hero" className="relative z-30 focus-within:z-50 -mt-[calc(61px+env(safe-area-inset-top))] sm:-mt-[calc(70.5px+env(safe-area-inset-top))] lg:-mt-[calc(74.5px+env(safe-area-inset-top))]">
               <HeroSection
                 onSearch={handleDiscoverySearch}
+                onOpenPostProperty={openPostProperty}
                 selectedCity={activeDiscoveryCity}
                 selectedSector={filterSector}
                 selectedQuery={activeSearchFilters.q}
@@ -1262,11 +1291,11 @@ export const Home: React.FC = () => {
               {showCompactSearch && (
                 <motion.div
                   key="compact-search-wrapper"
-                  initial={typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? { opacity: 0 } : { opacity: 0, y: -10 }}
+                  initial={reduceMotion ? false : { opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? { opacity: 0 } : { opacity: 0, y: -10 }}
-                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                  className="fixed top-[86px] sm:top-[88px] inset-x-0 z-[90] px-3 sm:px-6 pointer-events-none"
+                  exit={reduceMotion ? undefined : { opacity: 0, y: -10 }}
+                  transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.16, 1, 0.3, 1] }}
+                  className="fixed top-[calc(69px+env(safe-area-inset-top))] sm:top-[calc(80px+env(safe-area-inset-top))] lg:top-[calc(88px+env(safe-area-inset-top))] inset-x-0 z-[90] px-3 sm:px-6 pointer-events-none"
                 >
                   <div className="pointer-events-auto">
                     <CompactSearchContext
@@ -1345,36 +1374,19 @@ export const Home: React.FC = () => {
             </div>
 
             {/* SECTION 4: 3-STEP HOW IT WORKS */}
-            <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-60px" }}
-              transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-            >
+            <div>
               <HowItWorks />
-            </motion.div>
+            </div>
 
             {/* SECTION 5: STRATEGIC USP ACCORDION BAR */}
-            <motion.div
-              id="why-us"
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-60px" }}
-              transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-            >
+            <div id="why-us">
               <ValueBanner />
-            </motion.div>
+            </div>
 
             {/* SECTION 6: PLOTS & LAND EXPANSION BANNER */}
-            <motion.div
-              id="land-plots"
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-60px" }}
-              transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-            >
+            <div id="land-plots">
               <FutureExpansion />
-            </motion.div>
+            </div>
 
             {/* SECTION 7: LANDING PAGE FOOTER */}
             <Footer onSelectSector={handleDiscoverySearch} />
@@ -1383,19 +1395,19 @@ export const Home: React.FC = () => {
             <AnimatePresence>
               {showBackToTop && (
                 <motion.button
-                  initial={{ opacity: 0, scale: 0.8, y: 12 }}
+                  initial={reduceMotion ? false : { opacity: 0, scale: 0.8, y: 12 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.8, y: 12 }}
-                  transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                  exit={reduceMotion ? undefined : { opacity: 0, scale: 0.8, y: 12 }}
+                  transition={{ duration: reduceMotion ? 0 : 0.25, ease: [0.16, 1, 0.3, 1] }}
                   type="button"
                   aria-label="Back to top of listings"
                   title="Back to top"
                   onClick={() => {
                     const listingsEl = document.getElementById('listings');
                     if (listingsEl) {
-                      listingsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      listingsEl.scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'start' });
                     } else {
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                      window.scrollTo({ top: 0, behavior: reduceMotion ? 'instant' : 'smooth' });
                     }
                   }}
                   className="fixed bottom-6 right-4 z-30 hidden h-11 w-11 items-center justify-center rounded-full border border-slate-200/90 bg-white/95 text-slate-700 shadow-xl backdrop-blur-md transition-all hover:border-emerald-500/50 hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 md:bottom-8 md:right-4 md:flex lg:bottom-8 lg:right-4 xl:right-6 min-[1380px]:right-[max(1.5rem,calc((100vw-80rem)/2-3.75rem))]"

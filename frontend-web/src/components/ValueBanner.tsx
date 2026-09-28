@@ -1,38 +1,19 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { ShieldCheck, Gift, Sparkles } from 'lucide-react';
-
-const containerVariants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.12 }
-  }
-};
-
-const cardVariants = {
-  hidden: { opacity: 0, y: 24, scale: 0.98 },
-  visible: { 
-    opacity: 1, 
-    y: 0, 
-    scale: 1,
-    transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const } 
-  }
-};
+import { landingEntrance } from '../utils/landingMotion';
 
 export const ValueBanner: React.FC = () => {
+  const reduceMotion = useReducedMotion();
   return (
-    <section className="py-10 bg-slate-50 border-b border-slate-200/80">
+    <section className="border-b border-emerald-900/10 bg-emerald-50/50 py-16 sm:py-20">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          className="text-center max-w-xl mx-auto mb-8"
+          {...landingEntrance(reduceMotion, 'heading', 0, 'right')}
+          className="mb-10 max-w-2xl"
         >
-          <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-3.5 py-1 rounded-full border border-emerald-200">
+          <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
             Why Pathome?
           </span>
           <h2 className="pathome-tagline text-2xl sm:text-3xl font-extrabold text-slate-900 font-['Outfit',sans-serif] mt-2.5">
@@ -43,22 +24,16 @@ export const ValueBanner: React.FC = () => {
           </p>
         </motion.div>
 
-        {/* 3-COLUMN TRUST ARCHITECTURE */}
-        <motion.div 
-          variants={containerVariants}
-          initial="hidden"
-          whileInView="visible"
-          viewport={{ once: true, margin: "-50px" }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6"
-        >
+        {/* An editorial value row gives the page a quiet interval after the step story. */}
+        <div className="grid border-y border-emerald-900/10 md:grid-cols-3 md:divide-x md:divide-emerald-900/10">
           
           <motion.div
-            variants={cardVariants}
-            whileHover={{ y: -4 }}
-            className="bg-white p-7 rounded-3xl border border-slate-200 shadow-sm hover:shadow-lg hover:shadow-slate-200/60 transition-all duration-300 flex flex-col justify-between"
+            {...landingEntrance(reduceMotion, 'card')}
+            whileHover={reduceMotion ? undefined : { y: -3 }}
+            className="flex flex-col justify-between border-b border-emerald-900/10 px-1 py-7 last:border-b-0 md:border-b-0 md:px-7 md:first:pl-0 md:last:pr-0"
           >
             <div>
-              <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-5 font-bold border border-emerald-200/60 shadow-xs">
+              <div className="mb-5 flex h-9 w-9 items-center justify-center text-emerald-700">
                 <Sparkles className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
@@ -69,19 +44,19 @@ export const ValueBanner: React.FC = () => {
               </p>
             </div>
             <div>
-              <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg inline-block border border-emerald-200">
+              <div className="inline-block text-[11px] font-bold uppercase tracking-wide text-emerald-700">
                 Direct Owner Listings
               </div>
             </div>
           </motion.div>
 
           <motion.div
-            variants={cardVariants}
-            whileHover={{ y: -4 }}
-            className="bg-white p-7 rounded-3xl border border-slate-200 shadow-sm hover:shadow-lg hover:shadow-slate-200/60 transition-all duration-300 flex flex-col justify-between"
+            {...landingEntrance(reduceMotion, 'card', 0.06)}
+            whileHover={reduceMotion ? undefined : { y: -3 }}
+            className="flex flex-col justify-between border-b border-emerald-900/10 px-1 py-7 last:border-b-0 md:border-b-0 md:px-7 md:first:pl-0 md:last:pr-0"
           >
             <div>
-              <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-5 font-bold border border-emerald-200/60 shadow-xs">
+              <div className="mb-5 flex h-9 w-9 items-center justify-center text-emerald-700">
                 <ShieldCheck className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
@@ -92,19 +67,19 @@ export const ValueBanner: React.FC = () => {
               </p>
             </div>
             <div>
-              <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg inline-block border border-emerald-200">
+              <div className="inline-block text-[11px] font-bold uppercase tracking-wide text-emerald-700">
                 Clear Information
               </div>
             </div>
           </motion.div>
 
           <motion.div
-            variants={cardVariants}
-            whileHover={{ y: -4 }}
-            className="bg-white p-7 rounded-3xl border border-slate-200 shadow-sm hover:shadow-lg hover:shadow-slate-200/60 transition-all duration-300 flex flex-col justify-between"
+            {...landingEntrance(reduceMotion, 'card', 0.12)}
+            whileHover={reduceMotion ? undefined : { y: -3 }}
+            className="flex flex-col justify-between border-b border-emerald-900/10 px-1 py-7 last:border-b-0 md:border-b-0 md:px-7 md:first:pl-0 md:last:pr-0"
           >
             <div>
-              <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-5 font-bold border border-emerald-200/60 shadow-xs">
+              <div className="mb-5 flex h-9 w-9 items-center justify-center text-emerald-700">
                 <Gift className="w-5 h-5 text-emerald-600" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 font-['Outfit',sans-serif] mb-2">
@@ -115,13 +90,13 @@ export const ValueBanner: React.FC = () => {
               </p>
             </div>
             <div>
-              <div className="text-[11px] font-bold text-amber-800 bg-amber-50 px-3 py-1 rounded-lg inline-block border border-amber-200 font-mono">
+              <div className="inline-block text-[11px] font-bold uppercase tracking-wide text-emerald-700">
                 Upfront Pricing
               </div>
             </div>
           </motion.div>
 
-        </motion.div>
+        </div>
 
       </div>
     </section>

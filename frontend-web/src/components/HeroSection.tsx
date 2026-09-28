@@ -3,6 +3,8 @@ import {
   AnimatePresence,
   motion,
   useReducedMotion,
+  useScroll,
+  useTransform,
 } from 'framer-motion';
 import { ArrowRight, ChevronDown, MapPin, Search, X } from 'lucide-react';
 import { DiscoveryLocationDialog } from './DiscoveryLocationDialog';
@@ -11,6 +13,7 @@ import { buildRentalSearchFilters, normalizeSearchText, resetFiltersForManualCit
 
 interface HeroSectionProps {
   onSearch: (city?: string, sector?: string, filters?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>) => void;
+  onOpenPostProperty: () => void;
   selectedCity?: string;
   selectedSector?: string;
   selectedQuery?: string;
@@ -28,7 +31,7 @@ const HERO_BANNERS = [
   { id: 'spatial', title: 'Property map', image: '/assets/spatial_gis.jpg' }
 ];
 
-export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity, selectedSector, selectedQuery, selectedBhk, selectedPropertyType, selectedFurnishing, selectedMinRent, selectedMaxRent, refineRequest = 0 }) => {
+export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostProperty, selectedCity, selectedSector, selectedQuery, selectedBhk, selectedPropertyType, selectedFurnishing, selectedMinRent, selectedMaxRent, refineRequest = 0 }) => {
   const [draftCity, setDraftCity] = useState(selectedCity || '');
   const [searchText, setSearchText] = useState(selectedQuery || suggestionFromStructuredFilters(selectedCity, selectedSector, selectedBhk, selectedPropertyType, selectedFurnishing, selectedMinRent, selectedMaxRent)?.label || '');
   const [selection, setSelection] = useState<RentalSuggestion | null>(() => selectedQuery ? null : suggestionFromStructuredFilters(selectedCity, selectedSector, selectedBhk, selectedPropertyType, selectedFurnishing, selectedMinRent, selectedMaxRent));
@@ -40,12 +43,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
   const [activeBannerIdx, setActiveBannerIdx] = useState(0);
   const [locationStep, setLocationStep] = useState<'city' | 'locality'>('city');
   const [isLocationOpen, setIsLocationOpen] = useState(false);
+  const heroRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const previousRefineRequest = useRef(refineRequest);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const suggestionListRef = useRef<HTMLDivElement>(null);
   const suggestionRequestRef = useRef(0);
   const prefersReducedMotion = useReducedMotion();
+  const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
+  const backgroundY = useTransform(scrollYProgress, [0, 1], [0, 48]);
+  const copyY = useTransform(scrollYProgress, [0, 1], [0, -18]);
+  const copyOpacity = useTransform(scrollYProgress, [0, 1], [1, 0.84]);
 
   useEffect(() => {
     setDraftCity(selectedCity || '');
@@ -99,12 +107,12 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
   }, [activeSuggestionIndex]);
 
   useEffect(() => {
-    if (prefersReducedMotion) return undefined;
+    if (prefersReducedMotion || isEditing || suggestionsOpen || isLocationOpen) return undefined;
     const timer = window.setInterval(() => {
       setActiveBannerIdx((previous) => (previous + 1) % HERO_BANNERS.length);
     }, 7000);
     return () => window.clearInterval(timer);
-  }, [prefersReducedMotion]);
+  }, [prefersReducedMotion, isEditing, suggestionsOpen, isLocationOpen]);
 
   const openLocation = (step: 'city' | 'locality', trigger: HTMLElement) => {
     returnFocusRef.current = trigger;
@@ -150,7 +158,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
     setSuggestions([]);
     setSuggestionsOpen(false);
     setActiveSuggestionIndex(-1);
-    setIsEditing(false);
+    setIsEditing(true);
     searchInputRef.current?.focus({ preventScroll: true });
 
     const hasCommittedSearch = Boolean(
@@ -200,35 +208,32 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
 
   return (
     <div className="relative bg-slate-950 font-['Inter',sans-serif]">
-      <section className="relative flex min-h-[540px] w-full flex-col px-4 pb-12 pt-24 sm:min-h-[580px] sm:px-6 sm:pt-28 sm:pb-14 lg:min-h-[620px] lg:px-8 lg:pt-32 lg:pb-16">
+      <section ref={heroRef} className="relative flex min-h-[clamp(660px,85svh,820px)] w-full flex-col px-4 pb-8 pt-24 sm:px-6 sm:pb-10 sm:pt-28 lg:min-h-[clamp(680px,82svh,860px)] lg:px-8 lg:pb-12 lg:pt-32">
         {/* Animated background */}
-        <AnimatePresence mode="wait" initial={!prefersReducedMotion}>
-          <motion.div
-            key={currentBanner.id}
-            initial={prefersReducedMotion ? false : { opacity: 0, scale: 1.04 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={prefersReducedMotion ? undefined : { opacity: 0, scale: 0.98 }}
-            transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-            className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
-          >
-            <motion.img
-              src={currentBanner.image}
-              alt=""
-              animate={prefersReducedMotion ? undefined : { scale: [1, 1.035, 1], x: [0, -8, 0] }}
-              transition={prefersReducedMotion ? undefined : { duration: 16, repeat: Infinity, ease: 'easeInOut' }}
-              className="h-full w-full object-cover"
-            />
-            {/* Top gradient for guaranteed contrast behind overlay navbar */}
-            <div className="absolute inset-0 bg-gradient-to-b from-slate-950/85 via-slate-950/35 to-transparent pointer-events-none" />
-            {/* Bottom gradient */}
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-slate-950/40 pointer-events-none" />
-          </motion.div>
-        </AnimatePresence>
+        <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+          <AnimatePresence mode="wait" initial={!prefersReducedMotion}>
+            <motion.div
+              key={currentBanner.id}
+              initial={prefersReducedMotion ? false : { opacity: 0, scale: 1.04 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0, scale: 0.98 }}
+              transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+              style={prefersReducedMotion ? undefined : { y: backgroundY }}
+              className="absolute -inset-y-12 inset-x-0 overflow-hidden"
+            >
+              <img src={currentBanner.image} alt="" className="h-full w-full object-cover" />
+              {/* Top gradient for guaranteed contrast behind overlay navbar */}
+              <div className="absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-950/20 to-transparent pointer-events-none" />
+              {/* Bottom gradient */}
+              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/50 to-slate-950/15 pointer-events-none" />
+            </motion.div>
+          </AnimatePresence>
+        </div>
 
-        {/* Content: Stable vertical rhythm connecting Headline -> Subtitle -> Search -> Dots */}
-        <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col justify-center py-4 sm:py-6 lg:py-8">
+        {/* Keep the image open above the compact search and place the content near the lower edge. */}
+        <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col justify-end py-3 sm:py-4 lg:py-6">
           {/* Hero copy */}
-          <div className="text-center sm:text-left">
+          <motion.div style={prefersReducedMotion ? undefined : { y: copyY, opacity: copyOpacity }} className="text-center sm:text-left">
             <motion.h1
               initial={prefersReducedMotion ? false : { opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
@@ -253,10 +258,10 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
             >
               Explore rental homes with clear property details and request a visit online.
             </motion.p>
-          </div>
+          </motion.div>
 
           {/* One composed search, shared with the results refinement action. */}
-          <div className="mt-6 sm:mt-8 w-full max-w-[48rem]">
+          <div className="mt-5 w-full max-w-[54rem] sm:mt-6">
             <motion.div
               initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -266,7 +271,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                   : { type: 'spring', stiffness: 280, damping: 24, delay: 0.24 }
               }
               id="hero-search-surface"
-              className="relative z-30 grid min-w-0 grid-cols-1 gap-1.5 rounded-2xl border border-white/20 bg-white p-1.5 shadow-xl shadow-slate-950/25 sm:grid-cols-2 sm:p-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,2fr)_auto] lg:items-stretch"
+              className="relative z-30 grid min-w-0 grid-cols-1 gap-1 rounded-2xl border border-white/30 bg-white p-1.5 shadow-[0_20px_50px_-24px_rgba(2,6,23,0.7)] transition-shadow duration-300 focus-within:shadow-[0_22px_54px_-22px_rgba(2,6,23,0.8)] sm:p-2 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.65fr)_auto] md:items-stretch md:gap-0 motion-reduce:transition-none"
             >
               <button
                 type="button"
@@ -274,17 +279,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                 onClick={(event) => openLocation('city', event.currentTarget)}
                 aria-haspopup="dialog"
                 aria-expanded={isLocationOpen && locationStep === 'city'}
-                className="group flex min-h-14 min-w-0 items-center gap-3 rounded-xl px-4 text-left transition-colors duration-150 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+                className="group flex min-h-11 min-w-0 items-center gap-2.5 rounded-xl px-3 text-left transition-colors duration-150 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 md:min-h-12 md:rounded-r-none md:border-r md:border-slate-200 motion-reduce:transition-none"
               >
-                <MapPin className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
+                <MapPin className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">City</span>
                   <span className="block truncate text-base font-bold text-slate-900">{draftCity || 'Choose city'}</span>
                 </span>
-                <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 group-hover:translate-y-0.5" aria-hidden="true" />
+                <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 group-hover:translate-y-0.5 motion-reduce:group-hover:translate-y-0 motion-reduce:transition-none" aria-hidden="true" />
               </button>
-              <div className="relative z-30 flex min-h-14 min-w-0 items-center gap-2 rounded-xl px-4 focus-within:ring-2 focus-within:ring-emerald-600">
-                <Search className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
+              <div className="relative z-30 flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-3 focus-within:ring-2 focus-within:ring-emerald-600 md:min-h-12 md:rounded-none">
+                <Search className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                 <label htmlFor="hero-smart-search" className="sr-only">Search rental homes by locality or BHK</label>
                 <input
                   ref={searchInputRef}
@@ -324,7 +329,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                     }
                   }}
                   placeholder="Search locality or 2 BHK"
-                  className="min-w-0 flex-1 bg-transparent py-3 text-base font-medium text-slate-900 outline-none placeholder:text-slate-500"
+                  className="min-w-0 flex-1 bg-transparent py-2 text-base font-medium text-slate-900 outline-none placeholder:text-slate-500"
                 />
                 {searchText && (
                   <button
@@ -383,16 +388,33 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                 type="button"
                 id="hero-search-btn"
                 onClick={applySearch}
-                className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-6 text-sm font-bold text-white transition-colors duration-150 hover:bg-emerald-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 sm:col-span-2 lg:col-span-1"
+                className="group inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-bold text-white transition-colors duration-150 hover:bg-emerald-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 md:ml-1 md:min-h-12 motion-reduce:active:scale-100 motion-reduce:transition-none"
               >
                 Show homes
-                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                <ArrowRight className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:group-hover:translate-x-0 motion-reduce:transition-none" aria-hidden="true" />
+              </button>
+            </motion.div>
+
+            <motion.div
+              initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.45, delay: prefersReducedMotion ? 0 : 0.32 }}
+              className="mt-2 flex min-h-11 flex-wrap items-center justify-center gap-x-2 gap-y-0 text-center sm:justify-start sm:text-left lg:hidden"
+            >
+              <span className="text-xs font-medium text-white/70">Own a property?</span>
+              <button
+                type="button"
+                onClick={onOpenPostProperty}
+                className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-emerald-200 underline decoration-emerald-300/40 underline-offset-4 transition-colors hover:text-white hover:decoration-white focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+              >
+                Post your property
+                <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:group-hover:translate-x-0 motion-reduce:transition-none" aria-hidden="true" />
               </button>
             </motion.div>
 
             {/* Banner navigation dots */}
             <div
-              className="mt-4 sm:mt-5 flex justify-center gap-2 sm:justify-start"
+              className="mt-1 flex justify-center gap-0 sm:justify-start"
               role="group"
               aria-label="Banner navigation"
             >
@@ -401,12 +423,14 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, selectedCity
                   key={banner.id}
                   type="button"
                   onClick={() => setActiveBannerIdx(index)}
-                  className={`h-2 rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${
-                    index === activeBannerIdx ? 'w-7 bg-emerald-400' : 'w-2 bg-white/35 hover:bg-white/60'
-                  }`}
+                  className="group flex h-11 w-11 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
                   aria-label={`Show ${banner.title} image`}
                   aria-current={index === activeBannerIdx ? 'true' : undefined}
-                />
+                >
+                  <span className={`h-2 rounded-full transition-[width,background-color] duration-300 motion-reduce:transition-none ${
+                    index === activeBannerIdx ? 'w-7 bg-emerald-400' : 'w-2 bg-white/60 group-hover:bg-white'
+                  }`} />
+                </button>
               ))}
             </div>
           </div>

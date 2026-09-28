@@ -25,6 +25,9 @@ interface NavbarProps {
   onOpenAuthModal: () => void;
   onOpenLeaseUpload: () => void;
   onLogout: () => void;
+  onOpenPostProperty: () => void;
+  postPropertyModalOpen: boolean;
+  onClosePostProperty: () => void;
   activeAdminTab?: string;
   setActiveAdminTab?: (tab: string) => void;
   isLandingHero?: boolean;
@@ -65,7 +68,7 @@ const PostPropertyModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative w-full max-w-lg rounded-3xl border border-white/20 bg-slate-900 p-6 text-white shadow-2xl sm:p-8">
+      <div className="relative max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto overscroll-contain rounded-3xl border border-white/20 bg-slate-900 p-6 text-white shadow-2xl sm:p-8">
         <button
           ref={closeBtnRef}
           type="button"
@@ -134,13 +137,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAuthModal,
   onOpenLeaseUpload,
   onLogout,
+  onOpenPostProperty,
+  postPropertyModalOpen,
+  onClosePostProperty,
   activeAdminTab = 'overview',
   setActiveAdminTab,
   isLandingHero = false
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
   const [isScrolled, setIsScrolled] = useState(() => (typeof window !== 'undefined' ? window.scrollY > 40 : false));
   const { unreadCount, isDrawerOpen, setIsDrawerOpen } = useNotification();
   const prefersReducedMotion = useReducedMotion();
@@ -151,7 +156,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   // Track scroll position to transition from transparent Hero overlay to solid sticky header
   useEffect(() => {
     const handleScroll = () => {
-      setIsScrolled(window.scrollY > 40);
+      setIsScrolled((current) => {
+        const next = window.scrollY > 40;
+        return current === next ? current : next;
+      });
     };
     handleScroll();
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -176,7 +184,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         initial={prefersReducedMotion ? false : { opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: prefersReducedMotion ? 0 : 0.45, ease: [0.16, 1, 0.3, 1] }}
-        className={`sticky top-0 z-[100] w-full transition-colors transition-shadow duration-300 ${
+        className={`sticky top-0 z-[100] w-full pt-[env(safe-area-inset-top)] transition-[background-color,border-color,box-shadow] duration-300 motion-reduce:transition-none ${
           isAdminRole
             ? 'bg-slate-950/95 backdrop-blur-2xl border-b border-emerald-500/30 shadow-2xl'
             : isHeroTop
@@ -184,16 +192,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             : 'bg-white/95 backdrop-blur-xl border-b border-slate-200/90 shadow-xs'
         }`}
       >
-        {/* GLOWING TOP ACCENT BEAM LINE WITH FLOWING GRADIENT */}
+        {/* The mobile toolbar stays quiet; the established accent remains on larger screens. */}
         <div
-          className={`h-[2.5px] w-full transition-opacity duration-300 ${
+          className={`h-0 w-full transition-opacity duration-300 sm:h-[2.5px] ${
             isHeroTop
               ? 'bg-gradient-to-r from-emerald-500/80 via-cyan-400/80 via-indigo-500/80 to-amber-400/80 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
               : 'bg-gradient-to-r from-emerald-500 via-cyan-400 via-indigo-500 to-amber-400 shadow-[0_0_12px_rgba(16,185,129,0.5)]'
           }`}
         />
 
-        <div className="max-w-7xl mx-auto px-3 min-[360px]:px-4 sm:px-6 lg:px-8 h-[72px] flex items-center justify-between gap-2">
+        <div className={`max-w-7xl mx-auto flex items-center justify-between gap-1 px-2.5 min-[360px]:px-3 sm:gap-2 sm:px-6 lg:px-8 ${role === 'GUEST' ? 'h-[60px] sm:h-[68px] lg:h-[72px]' : 'h-[72px]'}`}>
 
           {/* BRANDING LOGO */}
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8">
@@ -203,7 +211,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="flex min-w-0 items-center gap-2.5 cursor-pointer"
             >
               <div
-                className={`w-9 h-9 sm:w-10 sm:h-10 rounded-2xl flex items-center justify-center font-bold shrink-0 shadow-lg transition-colors ${
+                className={`flex w-9 h-9 sm:w-10 sm:h-10 rounded-xl items-center justify-center font-bold shrink-0 shadow-sm transition-colors ${
                   isAdminRole
                     ? 'bg-gradient-to-tr from-emerald-600 via-teal-500 to-emerald-400 text-white shadow-emerald-500/30'
                     : 'bg-emerald-600 text-white shadow-emerald-600/20'
@@ -222,7 +230,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </a>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span
-                    className={`pathome-tagline inline-flex whitespace-nowrap text-[10px] leading-4 sm:text-[11px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full border items-center transition-colors ${
+                    className={`pathome-tagline ${role === 'GUEST' ? 'hidden sm:inline-flex' : 'inline-flex'} whitespace-nowrap text-[10px] leading-4 sm:text-[11px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full border items-center transition-colors ${
                       isAdminRole
                         ? 'text-emerald-300 bg-emerald-950/80 border-emerald-500/30'
                         : isHeroTop
@@ -273,35 +281,36 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* RIGHT ACTIONS & PROFILE MENU */}
-          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
 
             {role === 'GUEST' && (
               <>
-                {/* Post Your Property: Desktop (1024px+) & Tablet (768px+) Entry Point */}
+                {/* The owner action remains in desktop navigation; mobile finds it beside Hero search. */}
                 <button
                   type="button"
-                  onClick={() => setShowPostPropertyModal(true)}
-                  className={`hidden sm:inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-bold transition-all active:scale-[0.98] ${
+                  onClick={onOpenPostProperty}
+                  className={`hidden h-11 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 text-xs font-bold leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:inline-flex ${
                     isHeroTop
-                      ? 'text-emerald-300 hover:text-emerald-200 bg-white/10 hover:bg-white/15 border border-white/20 shadow-sm backdrop-blur-sm'
-                      : 'text-emerald-800 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 shadow-xs'
+                      ? 'border-white/20 bg-white/10 text-emerald-300 hover:bg-white/15'
+                      : 'border-emerald-200/80 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
                   }`}
                 >
-                  <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span className="hidden min-[920px]:inline">Post Your Property</span>
-                  <span className="min-[920px]:hidden">Post Property</span>
+                  <Building2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
+                  <span>Post Your Property</span>
                 </button>
 
                 {/* Sign In / Register CTA */}
                 <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
+                  whileHover={prefersReducedMotion ? undefined : { scale: 1.03 }}
+                  whileTap={prefersReducedMotion ? undefined : { scale: 0.985 }}
                   onClick={onOpenAuthModal}
                   aria-label="Sign in or register"
-                  className="flex h-10 min-w-10 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 text-xs font-extrabold text-white shadow-md shadow-emerald-600/20 transition-all hover:bg-emerald-500 min-[420px]:px-4"
+                  className={`flex h-11 min-w-11 items-center justify-center gap-2 rounded-full border border-transparent px-0 text-xs font-extrabold transition-colors sm:rounded-xl sm:bg-emerald-600 sm:px-3 sm:text-white sm:shadow-md sm:shadow-emerald-600/20 sm:hover:bg-emerald-500 min-[640px]:px-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:border-transparent ${
+                    isHeroTop ? 'text-white/90 hover:bg-white/10' : 'text-slate-700 hover:bg-slate-900/5'
+                  }`}
                 >
                   <User className="w-3.5 h-3.5" />
-                  <span className="hidden min-[420px]:inline">Sign In / Register</span>
+                  <span className="hidden min-[640px]:inline">Sign In / Register</span>
                 </motion.button>
 
                 {/* Tablet & Mobile Menu Toggle (<1024px) */}
@@ -310,10 +319,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={() => setMobileMenuOpen((prev) => !prev)}
                   aria-expanded={mobileMenuOpen}
                   aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
-                  className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors lg:hidden ${
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:hidden ${
                     isHeroTop
-                      ? 'border-white/20 bg-white/10 text-white hover:bg-white/15'
-                      : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      ? 'text-white hover:bg-white/10'
+                      : 'text-slate-700 hover:bg-slate-900/5'
                   }`}
                 >
                   {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
@@ -482,7 +491,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     type="button"
                     onClick={() => {
                       setMobileMenuOpen(false);
-                      setShowPostPropertyModal(true);
+                      onOpenPostProperty();
                     }}
                     className={`w-full text-left flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-bold transition-colors ${
                       isHeroTop
@@ -507,8 +516,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Post Your Property Informational Modal */}
       <PostPropertyModal
-        isOpen={showPostPropertyModal}
-        onClose={() => setShowPostPropertyModal(false)}
+        isOpen={postPropertyModalOpen}
+        onClose={onClosePostProperty}
       />
     </>
   );
