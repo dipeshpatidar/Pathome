@@ -12,16 +12,16 @@ export interface LessorPreview {
 }
 export interface LessorSubmission { listingId: number; draftId: string; title: string; status: string; submittedAt: string }
 
-async function request<T>(draftId: string, action: 'preview' | 'submit', method: 'GET' | 'POST'): Promise<T> {
+async function request<T>(draftId: string, action: 'preview' | 'submit', method: 'GET' | 'POST', guest = false): Promise<T> {
   const token = localStorage.getItem('pathome_auth_token');
-  if (!token) { notifySessionExpired(); throw new ApiRequestError('Sign in to continue.', 401); }
-  const response = await fetch(`${API_ROOT_URL}/lessor/properties/drafts/${encodeURIComponent(draftId)}/${action}`,
-    { method, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-  if (!response.ok) throw await createApiRequestError(response, 'Your property could not be submitted right now.');
+  if (!token && !guest) { notifySessionExpired(); throw new ApiRequestError('Sign in to continue.', 401); }
+  const response = await fetch(`${API_ROOT_URL}/lessor/${guest ? 'guest' : 'properties'}/drafts/${encodeURIComponent(draftId)}/${action}`,
+    { method, credentials: guest ? 'include' : 'same-origin', headers: { ...(guest ? {} : { Authorization: `Bearer ${token}` }), Accept: 'application/json' } });
+  if (!response.ok) throw await createApiRequestError(response, 'Your property could not be submitted right now.', guest);
   return response.json() as Promise<T>;
 }
 
 export const lessorSubmissionService = {
-  preview: (draftId: string) => request<LessorPreview>(draftId, 'preview', 'GET'),
+  preview: (draftId: string, guest = false) => request<LessorPreview>(draftId, 'preview', 'GET', guest),
   submit: (draftId: string) => request<LessorSubmission>(draftId, 'submit', 'POST')
 };

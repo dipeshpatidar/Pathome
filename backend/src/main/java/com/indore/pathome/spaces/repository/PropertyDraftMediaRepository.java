@@ -14,6 +14,8 @@ import java.util.Optional;
 
 @Repository
 public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraftMedia, Long> {
+    boolean existsByDraftIdAndGuestOwnedTrueAndIsCoverTrueAndUploadStatusAndMediaIdNot(
+            String draftId, String uploadStatus, String mediaId);
 
     List<PropertyDraftMedia> findAllByDraftIdAndAdminId(String draftId, String adminId);
 
@@ -21,9 +23,19 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
 
     Optional<PropertyDraftMedia> findByMediaId(String mediaId);
 
+    List<PropertyDraftMedia> findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(String draftId);
+
+    Optional<PropertyDraftMedia> findByMediaIdAndDraftIdAndGuestOwnedTrue(String mediaId, String draftId);
+
     List<PropertyDraftMedia> findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(String draftId, Long landlordUserId);
 
     Optional<PropertyDraftMedia> findByMediaIdAndDraftIdAndLandlordUserId(String mediaId, String draftId, Long landlordUserId);
+
+    @Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE PropertyDraftMedia m SET m.stagingObjectKey = null WHERE m.mediaId = :mediaId " +
+           "AND m.landlordUserId = :ownerId AND m.cloudinaryUrl IS NOT NULL")
+    int clearPromotedStagingKey(@Param("mediaId") String mediaId, @Param("ownerId") Long ownerId);
 
     boolean existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
             String draftId, Long landlordUserId, String uploadStatus, String contentTypePrefix);

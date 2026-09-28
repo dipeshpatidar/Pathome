@@ -28,6 +28,12 @@ public class PropertyUploadDraft {
     @Column(name = "landlord_user_id")
     private Long landlordUserId;
 
+    @Column(name = "guest_token_hash", length = 64)
+    private String guestTokenHash;
+
+    @Column(name = "guest_expires_at")
+    private LocalDateTime guestExpiresAt;
+
     @Column(name = "draft_type", nullable = false, length = 30)
     private String draftType = "SINGLE"; // SINGLE or BATCH
 
@@ -75,6 +81,11 @@ public class PropertyUploadDraft {
 
     public Long getLandlordUserId() { return landlordUserId; }
     public void setLandlordUserId(Long landlordUserId) { this.landlordUserId = landlordUserId; }
+
+    public String getGuestTokenHash() { return guestTokenHash; }
+    public void setGuestTokenHash(String guestTokenHash) { this.guestTokenHash = guestTokenHash; }
+    public LocalDateTime getGuestExpiresAt() { return guestExpiresAt; }
+    public void setGuestExpiresAt(LocalDateTime guestExpiresAt) { this.guestExpiresAt = guestExpiresAt; }
 
     public String getDraftType() { return draftType; }
     public void setDraftType(String draftType) { this.draftType = draftType; }

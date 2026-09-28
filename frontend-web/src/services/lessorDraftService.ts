@@ -17,6 +17,7 @@ export type DraftSection = 'basics' | 'pricing' | 'location' | 'details';
 export type DraftSectionValue = LessorBasics | LessorPricing | LessorLocation | LessorDetails;
 
 const BASE = `${API_ROOT_URL}/lessor/properties/drafts`;
+const GUEST_BASE = `${API_ROOT_URL}/lessor/guest/drafts`;
 
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem('pathome_auth_token');
@@ -27,23 +28,33 @@ function authHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/json' };
 }
 
-async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, { ...init, headers: { ...authHeaders(), ...init.headers } });
-  if (!response.ok) throw await createApiRequestError(response, 'Unable to save your property right now.');
+async function request<T>(url: string, init: RequestInit = {}, guest = false, authenticatedClaim = false): Promise<T> {
+  const response = await fetch(url, { ...init, credentials: guest ? 'include' : 'same-origin',
+    headers: { ...(guest ? { Accept: 'application/json' } : authHeaders()), ...init.headers } });
+  if (!response.ok) throw await createApiRequestError(response, 'Unable to save your property right now.', guest && !authenticatedClaim);
   return response.json() as Promise<T>;
 }
 
 export const lessorDraftService = {
-  create(basics: LessorBasics) {
-    return request<LessorDraft>(BASE, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basics) });
+  create(basics: LessorBasics, guest = false) {
+    return request<LessorDraft>(guest ? GUEST_BASE : BASE, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basics) }, guest);
   },
-  get(draftId: string) { return request<LessorDraft>(`${BASE}/${encodeURIComponent(draftId)}`); },
+  resumeGuest: async (): Promise<LessorDraft | null> => {
+    const response = await fetch(`${GUEST_BASE}/resume`, { credentials: 'include', headers: { Accept: 'application/json' } });
+    if (response.status === 204) return null;
+    if (!response.ok) throw await createApiRequestError(response, 'Could not check your guest draft.', true);
+    return response.json() as Promise<LessorDraft>;
+  },
+  claimGuest(draftId: string) {
+    return request<LessorDraft>(`${GUEST_BASE}/${encodeURIComponent(draftId)}/claim`, { method: 'POST', headers: authHeaders() }, true, true);
+  },
+  get(draftId: string, guest = false) { return request<LessorDraft>(`${guest ? GUEST_BASE : BASE}/${encodeURIComponent(draftId)}`, {}, guest); },
   list(page = 0) { return request<LessorDraftPage>(`${BASE}?page=${page}`); },
-  save(draftId: string, section: DraftSection, version: number, value: DraftSectionValue) {
-    return request<LessorDraft>(`${BASE}/${encodeURIComponent(draftId)}/sections/${section}`, {
+  save(draftId: string, section: DraftSection, version: number, value: DraftSectionValue, guest = false) {
+    return request<LessorDraft>(`${guest ? GUEST_BASE : BASE}/${encodeURIComponent(draftId)}/sections/${section}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'If-Match': String(version) },
       body: JSON.stringify(value)
-    });
+    }, guest);
   }
 };

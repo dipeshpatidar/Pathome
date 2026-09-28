@@ -1,11 +1,15 @@
 export class ApiRequestError extends Error {
+  public readonly status?: number;
+  public readonly details?: string;
   constructor(
     message: string,
-    public readonly status?: number,
-    public readonly details?: string
+    status?: number,
+    details?: string
   ) {
     super(message);
     this.name = 'ApiRequestError';
+    this.status = status;
+    this.details = details;
   }
 }
 
@@ -29,7 +33,7 @@ export const notifySessionExpired = (): void => {
   }
 };
 
-export const createApiRequestError = async (response: Response, fallback: string): Promise<ApiRequestError> => {
+export const createApiRequestError = async (response: Response, fallback: string, guestAccess = false): Promise<ApiRequestError> => {
   let payload: ApiErrorPayload | null = null;
 
   try {
@@ -38,11 +42,13 @@ export const createApiRequestError = async (response: Response, fallback: string
     // Some security and proxy responses do not contain a JSON body.
   }
 
-  if (response.status === 401) {
+  if (response.status === 401 && !guestAccess) {
     notifySessionExpired();
   }
 
-  const message = messageForStatus(response.status, payload?.message || fallback);
+  const message = guestAccess && response.status === 401
+    ? 'Guest access has expired. Start a new property listing.'
+    : messageForStatus(response.status, payload?.message || fallback);
   const details = response.status < 500 && payload?.message && payload.message !== message
     ? payload.message
     : undefined;

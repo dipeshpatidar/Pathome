@@ -40,6 +40,14 @@ cloudinary:
   api-secret: ${CLOUDINARY_API_SECRET}
 
 pathome:
+  guest:
+    allowed-origins: ${PATHOME_GUEST_ALLOWED_ORIGINS:}
+    retention-days: ${PATHOME_GUEST_RETENTION_DAYS:15}
+    max-active-drafts-per-session: ${PATHOME_GUEST_MAX_ACTIVE_DRAFTS_PER_SESSION:1}
+    max-drafts-per-ip-hour: ${PATHOME_GUEST_MAX_DRAFTS_PER_IP_HOUR:5}
+    max-upload-attempts-per-ip-hour: ${PATHOME_GUEST_MAX_UPLOAD_ATTEMPTS_PER_IP_HOUR:30}
+    max-media-files: ${PATHOME_GUEST_MAX_MEDIA_FILES:12}
+    max-media-bytes: ${PATHOME_GUEST_MAX_MEDIA_BYTES:262144000}
   google-login:
     enabled: false
   staging:

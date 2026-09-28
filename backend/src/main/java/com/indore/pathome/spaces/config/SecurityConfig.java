@@ -42,8 +42,10 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.POST, "/api/v1/lessor/guest/drafts/*/claim").authenticated()
                 .requestMatchers(
                     "/api/v1/auth/**",
+                    "/api/v1/lessor/guest/**",
                     "/api/v1/webhooks/**",
                     "/api/v1/notifications/**",
                     "/login/oauth2/**",

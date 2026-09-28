@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasCoverImage, movedMediaIds } from '../utils/lessorMedia.ts';
+import { hasCoverImage, mediaUrl, movedMediaIds } from '../utils/lessorMedia.ts';
 
 const image = (id, cover = false) => ({ mediaId: id, contentType: 'image/jpeg', status: 'UPLOADED', cover });
 
@@ -15,4 +15,18 @@ test('move controls preserve every uploaded media id exactly once', () => {
   assert.deepEqual(movedMediaIds(items, 1, -1), ['b', 'a']);
   assert.equal(movedMediaIds(items, 0, -1), null);
   assert.equal(movedMediaIds(items, 1, 1), null);
+});
+
+test('privately staged guest photo can be the cover and keeps its order', () => {
+  const staged = [{ ...image('a', true), status: 'STAGED' }, { ...image('b'), status: 'STAGED' }];
+  assert.equal(hasCoverImage(staged), true);
+  assert.deepEqual(movedMediaIds(staged, 1, -1), ['b', 'a']);
+  assert.equal(hasCoverImage([{ ...staged[0], contentType: 'video/mp4' }]), false);
+});
+
+test('private guest media uses the configured API host when the frontend is separate', () => {
+  const path = '/api/v1/lessor/guest/drafts/guest-1/media/photo-1/content';
+  assert.equal(mediaUrl(path, 'http://localhost:8081/api/v1'),
+    'http://localhost:8081/api/v1/lessor/guest/drafts/guest-1/media/photo-1/content');
+  assert.equal(mediaUrl(path, '/api/v1'), path);
 });

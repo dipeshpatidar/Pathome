@@ -74,6 +74,22 @@ class LandlordMediaServiceTest {
         verify(store).finishDeleting("owner@example.com", "d1", MEDIA_ID);
     }
 
+    @Test
+    void stagedMediaKeepsItsRecordWhenStorageCannotConfirmDeletion() {
+        MediaStagingService staging = mock(MediaStagingService.class);
+        LandlordMediaService withStaging = new LandlordMediaService(store, cloudinary, staging);
+        PropertyDraftMedia item = new PropertyDraftMedia();
+        item.setMediaId(MEDIA_ID);
+        item.setStagingObjectKey("drafts/guest/example/media");
+        when(store.markDeleting("owner@example.com", "d1", MEDIA_ID)).thenReturn(item);
+        when(staging.existsStrict(item.getStagingObjectKey())).thenThrow(new IllegalStateException("Storage unavailable"));
+
+        assertThrows(IllegalStateException.class, () -> withStaging.delete("owner@example.com", "d1", MEDIA_ID));
+        verify(staging).delete(item.getStagingObjectKey());
+        verify(store, never()).finishDeleting(anyString(), anyString(), anyString());
+        verifyNoInteractions(cloudinary);
+    }
+
     private byte[] jpegBytes() {
         return new byte[] { (byte) 0xff, (byte) 0xd8, (byte) 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
     }

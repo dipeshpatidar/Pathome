@@ -94,6 +94,15 @@ public class FileSystemMediaStagingService implements MediaStagingService {
     }
 
     @Override
+    public boolean existsStrict(String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) return false;
+        Path path = resolveSafePath(objectKey);
+        if (Files.exists(path)) return true;
+        if (Files.notExists(path)) return false;
+        throw new IllegalStateException("Could not verify staged media deletion");
+    }
+
+    @Override
     public void delete(String objectKey) {
         if (objectKey == null || objectKey.isBlank()) return;
         try {

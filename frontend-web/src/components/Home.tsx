@@ -726,6 +726,7 @@ export const Home: React.FC = () => {
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const currentDiscoveryPage = useRef(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [lessorAuthContext, setLessorAuthContext] = useState<'submit' | 'save' | null>(null);
   const [showLeaseModal, setShowLeaseModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [activeAdminTab, setActiveAdminTab] = useState<string>(getInitialAdminTab);
@@ -760,12 +761,13 @@ export const Home: React.FC = () => {
   const [refineSearchRequest, setRefineSearchRequest] = useState(0);
   const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
   const openPostProperty = useCallback(() => {
-    if (role === 'TENANT') navigate('/lessor');
-    else {
-      try { sessionStorage.setItem('pathome_pending_after_auth', '/lessor'); } catch (_) {}
-      setShowAuthModal(true);
-    }
-  }, [navigate, role]);
+    navigate('/lessor/new');
+  }, [navigate]);
+  const requestLessorAuth = useCallback((draftId: string, submit: boolean) => {
+    sessionStorage.setItem(submit ? 'pathome_guest_submit_draft' : 'pathome_guest_save_draft', draftId);
+    setLessorAuthContext(submit ? 'submit' : 'save');
+    setShowAuthModal(true);
+  }, []);
   const closePostProperty = useCallback(() => setShowPostPropertyModal(false), []);
   const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
   const discoveryRequestRef = useRef(0);
@@ -1042,7 +1044,7 @@ export const Home: React.FC = () => {
       localStorage.removeItem('pathome_role');
       localStorage.removeItem('pathome_user');
       localStorage.removeItem('pathome_auth_token');
-      navigate('/', { replace: true });
+      if (!location.pathname.startsWith('/lessor')) navigate('/', { replace: true });
       setShowAuthModal(true);
     };
 
@@ -1053,7 +1055,7 @@ export const Home: React.FC = () => {
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
     const path = location.pathname.toLowerCase();
-    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm' || path === '/lessor' || path.startsWith('/lessor/');
+    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm';
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
     // GUARD CHECK 1: If user is logged out or lacks auth token on protected route
@@ -1185,6 +1187,10 @@ export const Home: React.FC = () => {
   const handleLoginSuccess = (userProfile: UserProfile) => {
     setUser(userProfile);
     setRole(userProfile.role);
+    setShowAuthModal(false);
+    setLessorAuthContext(null);
+    if (userProfile.role === 'TENANT' && location.pathname.startsWith('/lessor/') &&
+        (sessionStorage.getItem('pathome_guest_submit_draft') || sessionStorage.getItem('pathome_guest_save_draft'))) return;
     const pendingLessor = sessionStorage.getItem('pathome_pending_after_auth');
     if (pendingLessor?.startsWith('/lessor') && userProfile.role === 'TENANT') {
       sessionStorage.removeItem('pathome_pending_after_auth');
@@ -1233,7 +1239,7 @@ export const Home: React.FC = () => {
         <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />
       )}
 
-      {isLessorRoute && role === 'TENANT' && user && <LessorWorkspace user={user} />}
+      {isLessorRoute && (role === 'GUEST' || role === 'TENANT') && <LessorWorkspace user={role === 'TENANT' ? user : null} onRequestAuth={requestLessorAuth} />}
 
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
       <AnimatePresence mode="wait">
@@ -1445,8 +1451,9 @@ export const Home: React.FC = () => {
       {/* AUTH MODAL */}
       <AuthModal
         isOpen={showAuthModal}
-        onClose={() => setShowAuthModal(false)}
+        onClose={() => { setShowAuthModal(false); setLessorAuthContext(null); sessionStorage.removeItem('pathome_guest_submit_draft'); sessionStorage.removeItem('pathome_guest_save_draft'); }}
         onSuccess={handleLoginSuccess}
+        lessorContext={lessorAuthContext}
       />
 
       {/* LEASE UPLOAD MODAL */}

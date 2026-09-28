@@ -43,6 +43,11 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
 
     Optional<PropertyUploadDraft> findByDraftId(String draftId);
 
+    Optional<PropertyUploadDraft> findByGuestTokenHashAndStatus(String guestTokenHash, String status);
+
+    List<PropertyUploadDraft> findByGuestTokenHashIsNotNullAndGuestExpiresAtBeforeAndIdGreaterThanOrderByIdAsc(
+            LocalDateTime cutoff, Long lastId, Pageable pageable);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT d FROM PropertyUploadDraft d WHERE d.draftId = :draftId")
     Optional<PropertyUploadDraft> findByDraftIdForUpdate(@Param("draftId") String draftId);
@@ -57,6 +62,9 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
             LocalDateTime cutoff,
             Pageable pageable
     );
+
+    List<PropertyUploadDraft> findAllByAdminIdIsNotNullAndStatusNotInAndUpdatedAtBefore(
+            List<String> statuses, LocalDateTime cutoff, Pageable pageable);
 
     long deleteByDraftIdAndAdminId(String draftId, String adminId);
 }

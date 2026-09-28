@@ -45,6 +45,12 @@ public interface MediaStagingService {
     boolean exists(String objectKey);
 
     /**
+     * Like {@link #exists(String)}, but fails when storage cannot confirm absence.
+     * Cleanup must retain database references if the storage check is unavailable.
+     */
+    default boolean existsStrict(String objectKey) { return exists(objectKey); }
+
+    /**
      * Proactively deletes the staged media object (e.g. on resolution or
      * dismissal).
      * Failure to delete must not undo a successful recovery.

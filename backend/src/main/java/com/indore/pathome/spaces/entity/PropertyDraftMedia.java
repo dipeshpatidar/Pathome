@@ -30,6 +30,9 @@ public class PropertyDraftMedia {
     @Column(name = "landlord_user_id")
     private Long landlordUserId;
 
+    @Column(name = "guest_owned", nullable = false)
+    private Boolean guestOwned = false;
+
     @Column(name = "card_id", length = 64)
     private String cardId;
 
@@ -88,6 +91,9 @@ public class PropertyDraftMedia {
 
     public Long getLandlordUserId() { return landlordUserId; }
     public void setLandlordUserId(Long landlordUserId) { this.landlordUserId = landlordUserId; }
+
+    public Boolean getGuestOwned() { return guestOwned; }
+    public void setGuestOwned(Boolean guestOwned) { this.guestOwned = Boolean.TRUE.equals(guestOwned); }
 
     public String getCardId() { return cardId; }
     public void setCardId(String cardId) { this.cardId = cardId; }

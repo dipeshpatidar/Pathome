@@ -77,3 +77,21 @@ test('conflict preserves pending edits without silently replaying them', async (
   assert.equal(JSON.parse(localStorage.getItem('pathome_lessor_unsynced_7_d1')).version, 1);
   queue.dispose();
 });
+
+test('guest retry keeps pending edits in memory without writing property data to localStorage', async () => {
+  globalThis.localStorage = storage();
+  let fail = true;
+  const queue = new LessorAutosave(0, 'guest-draft', 1, () => {}, () => {},
+    async (_id, _section, version) => {
+      if (fail) throw new Error('offline');
+      return result(version + 1);
+    }, false);
+  queue.change('pricing', pricing);
+  assert.equal(await queue.flush(), false);
+  assert.deepEqual(queue.getPending().pricing, pricing);
+  assert.equal(localStorage.getItem('pathome_lessor_unsynced_0_guest-draft'), null);
+  fail = false;
+  assert.equal(await queue.flush(), true);
+  assert.equal(queue.getStatus(), 'saved');
+  queue.dispose();
+});

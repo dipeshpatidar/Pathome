@@ -10,6 +10,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -84,6 +85,21 @@ class CloudinaryServiceTest {
 
         assertEquals("https://cdn.example/property.webp", url);
         verify(uploader).upload(any(byte[].class), anyMap());
+    }
+
+    @Test
+    void stagedImageUsesBoundedBytesAcceptedByCloudinaryUploader() throws Exception {
+        byte[] staged = new byte[] { (byte) 0x89, 'P', 'N', 'G' };
+        when(uploader.upload(eq(staged), anyMap())).thenReturn(Map.of(
+                "secure_url", "https://cdn.example/staged.webp",
+                "public_id", "pathome/properties/images/req-staged",
+                "resource_type", "image"));
+
+        var result = service.uploadStreamResult(new ByteArrayInputStream(staged), false, "req-staged");
+
+        assertEquals("https://cdn.example/staged.webp", result.secureUrl());
+        verify(uploader).upload(eq(staged), anyMap());
+        verify(uploader, never()).upload(any(InputStream.class), anyMap());
     }
 
     @Test

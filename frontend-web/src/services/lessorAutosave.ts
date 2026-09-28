@@ -21,21 +21,24 @@ export class LessorAutosave {
   private readonly onSaved: (draft: LessorDraft) => void;
   private readonly save: (draftId: string, section: DraftSection, version: number,
                           value: DraftSectionValue) => Promise<LessorDraft>;
+  private readonly persistLocally: boolean;
 
   constructor(userId: number, draftId: string,
               version: number, onStatus: (status: LessorSaveStatus) => void,
               onSaved: (draft: LessorDraft) => void,
               save: (draftId: string, section: DraftSection, version: number,
-                     value: DraftSectionValue) => Promise<LessorDraft>) {
+                     value: DraftSectionValue) => Promise<LessorDraft>, persistLocally = true) {
     this.userId = userId;
     this.draftId = draftId;
     this.onStatus = onStatus;
     this.onSaved = onSaved;
     this.save = save;
+    this.persistLocally = persistLocally;
     this.version = version;
     this.persistedBaseVersion = version;
     this.storageKey = `pathome_lessor_unsynced_${userId}_${draftId}`;
     try {
+      if (!persistLocally) return;
       const saved = JSON.parse(localStorage.getItem(this.storageKey) || 'null');
       if (saved && saved.pending && typeof saved.pending === 'object') {
         this.pending = saved.pending;
@@ -97,6 +100,7 @@ export class LessorAutosave {
   }
 
   private persist(): void {
+    if (!this.persistLocally) return;
     try {
       if (Object.keys(this.pending).length) {
         localStorage.setItem(this.storageKey, JSON.stringify({ version: this.blocked ? this.persistedBaseVersion : this.version, pending: this.pending }));

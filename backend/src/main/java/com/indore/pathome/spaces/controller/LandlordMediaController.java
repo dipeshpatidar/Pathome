@@ -2,7 +2,10 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
 import com.indore.pathome.spaces.service.LandlordMediaService;
+import com.indore.pathome.spaces.service.LandlordMediaPromotionService;
 import org.springframework.http.MediaType;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -25,11 +28,29 @@ import java.util.List;
 public class LandlordMediaController {
     private final LandlordMediaService media;
 
-    public LandlordMediaController(LandlordMediaService media) { this.media = media; }
+    private final LandlordMediaPromotionService promotion;
+
+    public LandlordMediaController(LandlordMediaService media, LandlordMediaPromotionService promotion) {
+        this.media = media; this.promotion = promotion;
+    }
+
+    @PostMapping("/promote")
+    public List<LandlordMediaItem> promote(Authentication auth, @PathVariable String draftId) {
+        return promotion.promote(auth.getName(), draftId);
+    }
 
     @GetMapping
     public List<LandlordMediaItem> list(Authentication auth, @PathVariable String draftId) {
         return media.list(auth.getName(), draftId);
+    }
+
+    @GetMapping("/{mediaId}/content")
+    public ResponseEntity<InputStreamResource> stagedContent(Authentication auth, @PathVariable String draftId,
+                                                               @PathVariable String mediaId) {
+        LandlordMediaPromotionService.Content data = promotion.stagedContent(auth.getName(), draftId, mediaId);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(data.type())).contentLength(data.length())
+                .cacheControl(CacheControl.noStore()).header("X-Content-Type-Options", "nosniff")
+                .body(new InputStreamResource(data.stream()));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

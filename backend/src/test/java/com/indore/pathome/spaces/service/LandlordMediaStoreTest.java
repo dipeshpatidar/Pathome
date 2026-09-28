@@ -78,6 +78,25 @@ class LandlordMediaStoreTest {
         assertTrue(a.getIsCover());
     }
 
+    @Test
+    void claimedStagedImagesKeepOneCoverThroughPromotionAndEditing() {
+        PropertyDraftMedia first = item("first", "image/png", "STAGED", true, 0);
+        PropertyDraftMedia second = item("second", "image/png", "STAGED", false, 1);
+        when(media.findByMediaIdAndDraftIdAndLandlordUserId("first", "d1", 5L)).thenReturn(Optional.of(first));
+        when(media.findByMediaIdAndDraftIdAndLandlordUserId("second", "d1", 5L)).thenReturn(Optional.of(second));
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L))
+                .thenReturn(new ArrayList<>(List.of(first, second)));
+
+        assertEquals("second", store.reorder("owner@example.com", "d1", List.of("second", "first")).get(0).mediaId());
+        store.makeCover("owner@example.com", "d1", "second");
+        assertFalse(first.getIsCover());
+        assertTrue(second.getIsCover());
+
+        var result = new CloudinaryService.CloudinaryUploadResult("https://example.com/image", "i", "image");
+        assertFalse(store.complete("owner@example.com", "d1", "first", result).cover());
+        assertTrue(store.complete("owner@example.com", "d1", "second", result).cover());
+    }
+
     private PropertyDraftMedia item(String id, String contentType, String status, boolean cover, int order) {
         PropertyDraftMedia item = new PropertyDraftMedia();
         item.setMediaId(id);

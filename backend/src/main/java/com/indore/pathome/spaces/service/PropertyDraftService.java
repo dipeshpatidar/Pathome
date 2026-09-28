@@ -1275,7 +1275,7 @@ public class PropertyDraftService {
     public int purgeInactiveDrafts() {
         LocalDateTime cutoff = LocalDateTime.now().minusDays(DEFAULT_INACTIVITY_RETENTION_DAYS);
         // Exclude drafts that are already PUBLISHED (kept as tombstones for idempotency) or DISCARDED
-        List<PropertyUploadDraft> expiredDrafts = draftRepository.findAllByStatusNotInAndUpdatedAtBefore(
+        List<PropertyUploadDraft> expiredDrafts = draftRepository.findAllByAdminIdIsNotNullAndStatusNotInAndUpdatedAtBefore(
                 List.of("PUBLISHED", "DISCARDED"),
                 cutoff,
                 PageRequest.of(0, 50)

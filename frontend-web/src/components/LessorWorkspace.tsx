@@ -3,10 +3,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Building2, Check, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { API_ROOT_URL } from '../config/endpoints';
-import { createApiRequestError, getErrorMessage } from '../services/apiError';
+import { ApiRequestError, createApiRequestError, getErrorMessage } from '../services/apiError';
 import { LessorAutosave, LessorSaveStatus } from '../services/lessorAutosave';
 import { LessorBasics, LessorDetails, LessorDraft, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
 import { LessorLocalityOption, lessorLocationService } from '../services/lessorLocationService';
+import { lessorMediaService } from '../services/lessorMediaService';
+import { lessorSubmissionService } from '../services/lessorSubmissionService';
 import { LessorMediaStep } from './LessorMediaStep';
 import { LessorDetailsStep } from './LessorDetailsStep';
 import { LessorPreviewStep } from './LessorPreviewStep';
@@ -33,24 +35,112 @@ async function capability(method: 'GET' | 'POST'): Promise<{ enabled: boolean }>
   return response.json();
 }
 
-export function LessorWorkspace({ user }: { user: UserProfile }) {
+export function LessorWorkspace({ user, onRequestAuth }: { user: UserProfile | null; onRequestAuth: (draftId: string, submit: boolean) => void }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [capabilityState, setCapabilityState] = useState<'loading' | 'inactive' | 'active' | 'error'>('loading');
+  const [capabilityState, setCapabilityState] = useState<'loading' | 'inactive' | 'active' | 'guest' | 'error'>(user ? 'loading' : 'guest');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedType, setSelectedType] = useState<ResidentialType | null>(null);
+  const [guestResume, setGuestResume] = useState<LessorDraft | null>(null);
+  const [guestExpired, setGuestExpired] = useState(false);
+  const [ownerDraft, setOwnerDraft] = useState(false);
+  const [transition, setTransition] = useState<'idle' | 'claiming' | 'promoting' | 'submitting' | 'failedClaim' | 'failedMedia' | 'failedSubmit'>('idle');
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const claimBusy = useRef(false);
   const draftId = /^\/lessor\/drafts\/([^/]+)$/.exec(location.pathname)?.[1];
   const listingId = /^\/lessor\/listings\/(\d+)$/.exec(location.pathname)?.[1];
   const isNew = location.pathname === '/lessor/new';
 
+  const finishSubmission = async (id: string) => {
+    try {
+      setTransition('promoting');
+      await lessorMediaService.promote(id);
+      setPreviewRevision(value => value + 1);
+      setTransition('submitting');
+      await lessorSubmissionService.submit(id);
+      sessionStorage.removeItem('pathome_guest_submit_draft');
+      localStorage.removeItem(`pathome_guest_step_${id}`);
+      setTransition('idle');
+      navigate('/lessor', { replace: true });
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Submission could not be completed.'));
+      setTransition('failedSubmit');
+    }
+  };
+
+  const promoteOnly = async (id: string) => {
+    try {
+      setTransition('promoting');
+      await lessorMediaService.promote(id);
+      setPreviewRevision(value => value + 1);
+      setTransition('idle');
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Could not prepare your photos.'));
+      setTransition('failedMedia');
+    }
+  };
+
+  const claimDraft = async (id: string, submit: boolean) => {
+    if (claimBusy.current) return;
+    claimBusy.current = true; setError(''); setTransition('claiming');
+    try {
+      await lessorDraftService.claimGuest(id);
+      setOwnerDraft(true);
+      setCapabilityState('active');
+      localStorage.removeItem('pathome_guest_draft_id');
+      sessionStorage.removeItem('pathome_guest_save_draft');
+      sessionStorage.removeItem('pathome_guest_submit_draft');
+      if (submit) await finishSubmission(id);
+      else await promoteOnly(id);
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Could not save this guest draft to your account.'));
+      setTransition('failedClaim');
+    } finally { claimBusy.current = false; }
+  };
+
   useEffect(() => {
     let live = true;
+    if (!user) {
+      setCapabilityState('guest'); setOwnerDraft(false);
+      if (!draftId) lessorDraftService.resumeGuest().then(value => {
+        if (!live) return;
+        setGuestResume(value);
+        setGuestExpired(!value && !!localStorage.getItem('pathome_guest_draft_id'));
+        if (value && isNew) navigate(`/lessor/drafts/${encodeURIComponent(value.draftId)}`, { replace: true });
+      }).catch(cause => { if (live) setError(getErrorMessage(cause, 'Could not check your saved draft.')); });
+      return () => { live = false; };
+    }
+    if (ownerDraft && draftId?.startsWith('guest-')) {
+      setCapabilityState('active');
+      return () => { live = false; };
+    }
+    if (draftId?.startsWith('guest-') && !ownerDraft) {
+      const pendingSubmit = sessionStorage.getItem('pathome_guest_submit_draft') === draftId;
+      const pendingSave = sessionStorage.getItem('pathome_guest_save_draft') === draftId;
+      setCapabilityState('loading');
+      lessorDraftService.get(draftId).then(() => {
+        if (live) {
+          sessionStorage.removeItem('pathome_guest_submit_draft');
+          sessionStorage.removeItem('pathome_guest_save_draft');
+          localStorage.removeItem('pathome_guest_draft_id');
+          setOwnerDraft(true); setCapabilityState('active');
+        }
+      }).catch(cause => {
+        if (!live) return;
+        if (pendingSubmit || pendingSave) void claimDraft(draftId, pendingSubmit);
+        else { setError(getErrorMessage(cause, 'This property draft is unavailable.')); setCapabilityState('error'); }
+      });
+      return () => { live = false; };
+    }
     setCapabilityState('loading');
-    capability('GET').then(value => { if (live) setCapabilityState(value.enabled ? 'active' : 'inactive'); })
-      .catch(cause => { if (live) { setError(getErrorMessage(cause, 'Unable to open your property workspace.')); setCapabilityState('error'); } });
+    capability('GET').then(async value => {
+      if (!live) return;
+      if (!value.enabled && (isNew || draftId)) await capability('POST');
+      if (live) setCapabilityState(value.enabled || isNew || !!draftId ? 'active' : 'inactive');
+    }).catch(cause => { if (live) { setError(getErrorMessage(cause, 'Unable to open your property workspace.')); setCapabilityState('error'); } });
     return () => { live = false; };
-  }, [user.id]);
+  }, [user?.id, draftId, isNew, ownerDraft]);
 
   const activate = async () => {
     setBusy(true); setError('');
@@ -63,7 +153,8 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
     if (!selectedType || busy) return;
     setBusy(true); setError('');
     try {
-      const draft = await lessorDraftService.create({ propertyType: selectedType, rentalMode: 'LONG_TERM_RENTAL', bhkCount: null });
+      const draft = await lessorDraftService.create({ propertyType: selectedType, rentalMode: 'LONG_TERM_RENTAL', bhkCount: null }, !user);
+      if (!user) localStorage.setItem('pathome_guest_draft_id', draft.draftId);
       navigate(`/lessor/drafts/${encodeURIComponent(draft.draftId)}`);
     } catch (cause) { setError(getErrorMessage(cause, 'Unable to start your draft.')); }
     finally { setBusy(false); }
@@ -79,10 +170,10 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       {error && <p role="alert" className="mt-5 text-sm text-rose-700">{error}</p>}
       <button type="button" disabled={busy} onClick={activate} className={`${BUTTON} mt-7`}>{busy ? 'Opening…' : 'Get started'}<ArrowRight className="h-4 w-4"/></button>
     </section>}
-    {capabilityState === 'active' && draftId && <LessorEditor key={draftId} userId={user.id} draftId={decodeURIComponent(draftId)} onBack={() => navigate('/lessor')}/>}
+    {(capabilityState === 'active' || capabilityState === 'guest') && draftId && <LessorEditor key={draftId} userId={user?.id ?? null} guest={!ownerDraft && !user || !ownerDraft && draftId.startsWith('guest-')} draftId={decodeURIComponent(draftId)} onBack={() => navigate('/lessor')} onRequestAuth={onRequestAuth} previewRevision={previewRevision}/>}
     {capabilityState === 'active' && listingId && <LessorListingView key={listingId} listingId={Number(listingId)} onBack={() => navigate('/lessor')} onOpenDraft={id => navigate(`/lessor/drafts/${encodeURIComponent(id)}`)}/>}
-    {capabilityState === 'active' && isNew && <section className="mx-auto max-w-2xl">
-      <button type="button" className={SECONDARY} onClick={() => navigate('/lessor')}><ArrowLeft className="h-4 w-4"/>My properties</button>
+    {(capabilityState === 'active' || capabilityState === 'guest') && isNew && <section className="mx-auto max-w-2xl">
+      <button type="button" className={SECONDARY} onClick={() => navigate('/lessor')}><ArrowLeft className="h-4 w-4"/>{user ? 'My properties' : 'Your listing'}</button>
       <p className="mt-8 text-xs font-bold uppercase tracking-widest text-emerald-700">Step 1 of 6</p>
       <h1 className="mt-2 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">What kind of home is it?</h1>
       <p className="mt-2 text-sm text-slate-600">Choose the closest match. This listing is for a long-term rental.</p>
@@ -92,15 +183,17 @@ export function LessorWorkspace({ user }: { user: UserProfile }) {
       {error && <p role="alert" className="mt-5 text-sm text-rose-700">{error}</p>}
       <button type="button" disabled={!selectedType || busy} onClick={create} className={`${BUTTON} mt-7 w-full sm:w-auto`}>{busy ? 'Starting…' : 'Continue'}<ArrowRight className="h-4 w-4"/></button>
     </section>}
+    {capabilityState === 'guest' && !draftId && !isNew && <section className="mx-auto max-w-xl py-8"><h1 className="font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">List your property</h1><p className="mt-3 text-sm text-slate-600">No account needed to start. Sign in when you're ready to submit.</p>{guestExpired && <p role="status" className="mt-4 text-sm text-amber-800">Your previous guest draft is unavailable or has expired. You can start a new one.</p>}{error && <p role="alert" className="mt-4 text-sm text-rose-700">{error}</p>}{guestResume && <button className={`${BUTTON} mt-6`} onClick={() => navigate(`/lessor/drafts/${encodeURIComponent(guestResume.draftId)}`)}>Continue your property listing<ArrowRight className="h-4 w-4"/></button>}<button className={`${SECONDARY} mt-6 ${guestResume ? 'ml-2' : ''}`} onClick={() => navigate('/lessor/new')}>Start property listing</button></section>}
     {capabilityState === 'active' && !draftId && !listingId && !isNew && <LessorPortfolio
       onAdd={() => navigate('/lessor/new')}
       onOpenDraft={id => navigate(`/lessor/drafts/${encodeURIComponent(id)}`)}
       onOpenListing={id => navigate(`/lessor/listings/${id}`)}
     />}
+    {transition !== 'idle' && <div role="status" aria-live="polite" className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/45 p-4"><div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"><p className="text-base font-semibold text-slate-950">{transition === 'claiming' ? 'Saving your property…' : transition === 'promoting' ? 'Preparing your photos…' : transition === 'submitting' ? 'Submitting for review…' : transition === 'failedSubmit' ? "Your property is saved. We couldn't submit it yet." : transition === 'failedMedia' ? "Your property is saved. We couldn't prepare its photos yet." : 'We could not save this draft to your account.'}</p>{transition.startsWith('failed') && <><p role="alert" className="mt-2 break-words text-sm text-rose-700">{error}</p><div className="mt-5 flex flex-wrap gap-3"><button className={BUTTON} onClick={() => { if (draftId) void (transition === 'failedSubmit' ? finishSubmission(draftId) : transition === 'failedMedia' ? promoteOnly(draftId) : claimDraft(draftId, sessionStorage.getItem('pathome_guest_submit_draft') === draftId)); }}>{transition === 'failedSubmit' ? 'Retry submission' : transition === 'failedMedia' ? 'Retry photos' : 'Retry saving'}</button>{ownerDraft && <button className={SECONDARY} onClick={() => { setTransition('idle'); navigate('/lessor'); }}>My Properties</button>}</div></>}</div></div>}
   </main>;
 }
 
-function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: string; onBack: () => void }) {
+function LessorEditor({ userId, draftId, onBack, guest, onRequestAuth, previewRevision }: { userId: number | null; draftId: string; onBack: () => void; guest: boolean; onRequestAuth: (draftId: string, submit: boolean) => void; previewRevision: number }) {
   const [draft, setDraft] = useState<LessorDraft | null>(null);
   const [basics, setBasics] = useState<LessorBasics | null>(null);
   const [pricing, setPricing] = useState<LessorPricing>({ monthlyRent: null, securityDeposit: null });
@@ -110,20 +203,27 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
   const [suggestions, setSuggestions] = useState<LessorLocalityOption[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
   const [showExactBhk, setShowExactBhk] = useState(false);
-  const [step, setStep] = useState<'basics' | 'pricing' | 'location' | 'media' | 'details' | 'preview'>('basics');
+  const [step, setStep] = useState<'basics' | 'pricing' | 'location' | 'media' | 'details' | 'preview'>(() => {
+    if (sessionStorage.getItem('pathome_guest_submit_draft') === draftId) return 'preview';
+    const saved = localStorage.getItem(`pathome_guest_step_${draftId}`);
+    return saved === 'pricing' || saved === 'location' || saved === 'media' || saved === 'details' || saved === 'preview' ? saved : 'basics';
+  });
   const [status, setStatus] = useState<LessorSaveStatus>('saved');
   const [error, setError] = useState('');
+  const [expired, setExpired] = useState(false);
   const queue = useRef<LessorAutosave | null>(null);
+
+  useEffect(() => { if (guest) localStorage.setItem(`pathome_guest_step_${draftId}`, step); }, [guest, draftId, step]);
 
   useEffect(() => {
     let live = true;
     setError('');
-    lessorDraftService.get(draftId).then(server => {
+    lessorDraftService.get(draftId, guest).then(server => {
       if (!live) return;
       setDraft(server);
-      const saver = new LessorAutosave(userId, draftId, server.version, setStatus,
+      const saver = new LessorAutosave(guest ? 0 : userId ?? 0, draftId, server.version, setStatus,
         updated => { if (live) setDraft(previous => previous ? { ...previous, version: updated.version, completionPercent: updated.completionPercent } : updated); },
-        lessorDraftService.save);
+        (id, section, version, value) => lessorDraftService.save(id, section, version, value, guest), !guest);
       queue.current = saver;
       const pending = saver.getPending();
       setBasics(pending.basics as LessorBasics || server.data.basics);
@@ -133,17 +233,21 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
       setPropertyLocation(pending.location as LessorLocation || server.data.location || { city: '', canonicalLocalityId: null, localityInput: '', address: '', landmark: '' });
       setDetails(pending.details as LessorDetails || server.data.details || { availableFrom: null, furnishingStatus: '', totalAreaSqFt: null, floorNumber: null, totalFloors: null, amenities: '', description: '' });
       setStatus(saver.getStatus());
-    }).catch(cause => { if (live) setError(getErrorMessage(cause, 'Unable to load this draft.')); });
+    }).catch(cause => { if (live) {
+      if (guest && cause instanceof ApiRequestError && cause.status === 404) {
+        setExpired(true); setError('This guest draft is unavailable or has expired. You can start a new listing.');
+      } else setError(getErrorMessage(cause, 'Unable to load this draft.'));
+    } });
     return () => { live = false; queue.current?.dispose(); queue.current = null; };
-  }, [draftId, userId]);
+  }, [draftId, guest, guest ? null : userId]);
 
   useEffect(() => {
     if (step !== 'location') return;
     let live = true;
-    lessorLocationService.cities().then(value => { if (live) setCities(value); })
+    lessorLocationService.cities(guest).then(value => { if (live) setCities(value); })
       .catch(() => { if (live) setError('Supported cities could not be loaded. Retry this step.'); });
     return () => { live = false; };
-  }, [step]);
+  }, [step, guest]);
 
   useEffect(() => {
     if (step !== 'location' || !propertyLocation.city || propertyLocation.localityInput.trim().length < 2 || propertyLocation.canonicalLocalityId) {
@@ -152,33 +256,38 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
     let live = true;
     const timer = window.setTimeout(() => {
       setSuggestionState('loading');
-      lessorLocationService.suggestions(propertyLocation.city, propertyLocation.localityInput.trim())
+      lessorLocationService.suggestions(propertyLocation.city, propertyLocation.localityInput.trim(), guest)
         .then(value => { if (live) { setSuggestions(value); setSuggestionState('ready'); } })
         .catch(() => { if (live) { setSuggestions([]); setSuggestionState('error'); } });
     }, 250);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [step, propertyLocation.city, propertyLocation.localityInput, propertyLocation.canonicalLocalityId]);
+  }, [step, propertyLocation.city, propertyLocation.localityInput, propertyLocation.canonicalLocalityId, guest]);
 
   const updateBasics = (value: LessorBasics) => { setBasics(value); queue.current?.change('basics', value); };
   const updatePricing = (value: LessorPricing) => { setPricing(value); queue.current?.change('pricing', value); };
   const updateLocation = (value: LessorLocation) => { setPropertyLocation(value); queue.current?.change('location', value); };
   const updateDetails = (value: LessorDetails) => { setDetails(value); queue.current?.change('details', value); };
+  const requestAuth = async (submit: boolean) => {
+    if (!await queue.current?.flush()) { setError('Retry saving your changes before signing in.'); return; }
+    onRequestAuth(draftId, submit);
+  };
   const next = async () => {
     setError('');
     if (step === 'basics' && !basics?.bhkCount) { setError('Choose the exact configuration.'); return; }
     if (step === 'pricing' && !pricingReady(pricing.monthlyRent, pricing.securityDeposit)) { setError('Add monthly rent and a deposit amount, including ₹0 if none.'); return; }
     if (step === 'location' && (!cities.includes(propertyLocation.city) || !propertyLocation.canonicalLocalityId || !propertyLocation.address.trim())) { setError('Choose a supported city and confirmed locality, then add the private address.'); return; }
     if (step === 'details' && !details.availableFrom) { setError('Add the availability date to continue.'); return; }
-    if (!await queue.current?.flush()) { setError(status === 'conflict' ? 'A newer version exists. Review your other tab before continuing.' : 'Your changes are saved on this device. Retry the server save to continue.'); return; }
+    if (!await queue.current?.flush()) { setError(status === 'conflict' ? 'A newer version exists. Review your other tab before continuing.' : guest ? 'Your changes are still in this tab. Retry the save before leaving.' : 'Your changes are saved on this device. Retry the server save to continue.'); return; }
     setStep(step === 'basics' ? 'pricing' : step === 'pricing' ? 'location' : step === 'location' ? 'media' : 'preview');
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
-  if (error && !draft) return <div role="alert" className="mx-auto max-w-xl rounded-xl border border-rose-200 bg-rose-50 p-5 text-rose-800">{error}<button className={`${SECONDARY} mt-4`} onClick={() => window.location.reload()}>Retry</button></div>;
+  if (error && !draft) return <div role="alert" className="mx-auto max-w-xl rounded-xl border border-rose-200 bg-rose-50 p-5 text-rose-800">{error}<button className={`${SECONDARY} mt-4`} onClick={expired ? onBack : () => window.location.reload()}>{expired ? 'Back to property start' : 'Retry'}</button></div>;
   if (!draft || !basics) return <div className="flex min-h-48 items-center justify-center gap-3 text-slate-600"><LoaderCircle className="h-5 w-5 animate-spin"/>Opening your draft…</div>;
   const currentBhk = showExactBhk ? '4+' : bhkChoice(basics.bhkCount);
   return <section className="mx-auto max-w-2xl">
-    <div className="flex flex-wrap items-center justify-between gap-3"><button className={SECONDARY} onClick={async () => { await queue.current?.flush(); onBack(); }}><ArrowLeft className="h-4 w-4"/>My properties</button><span aria-live="polite" className={`text-xs font-semibold ${status === 'error' || status === 'conflict' ? 'text-rose-700' : 'text-slate-500'}`}>{status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'conflict' ? 'Conflict' : "Couldn't save — Retry"}</span></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><button className={SECONDARY} onClick={async () => { if (await queue.current?.flush()) onBack(); else setError('Retry saving before leaving this step.'); }}><ArrowLeft className="h-4 w-4"/>{guest ? 'Your listing' : 'My properties'}</button><span aria-live="polite" className={`text-xs font-semibold ${status === 'error' || status === 'conflict' ? 'text-rose-700' : 'text-slate-500'}`}>{status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'conflict' ? 'Conflict' : "Couldn't save — Retry"}</span></div>
+    {guest && <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"><span>No account needed to start. Sign in when you're ready to submit.</span><button type="button" className="min-h-11 font-semibold underline underline-offset-2" onClick={() => { void requestAuth(false); }}>Sign in to save across devices</button></div>}
     {draft.revisionOfListingId && <p className="mt-5 text-sm text-slate-600">You are editing a revision. The approved property stays unchanged until these updates are reviewed.</p>}
     {draft.reviewNote && <div role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><p className="font-semibold">Reviewer note</p><p className="mt-1 whitespace-pre-wrap">{draft.reviewNote}</p></div>}
     <div className="mt-8 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-emerald-600 transition-[width] motion-reduce:transition-none" style={{ width: step === 'basics' ? '17%' : step === 'pricing' ? '34%' : step === 'location' ? '50%' : step === 'media' ? '67%' : step === 'details' ? '84%' : '100%' }}/></div>
@@ -198,12 +307,12 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
       <div><label htmlFor="lessor-address" className="text-sm font-semibold text-slate-800">Street address</label><input id="lessor-address" className={`${FIELD} mt-2`} maxLength={500} value={propertyLocation.address} onChange={event => updateLocation({ ...propertyLocation, address: event.target.value })} onBlur={() => { void queue.current?.flush(); }} placeholder="Building, street and house number"/><p className="mt-1 text-xs text-slate-500">Only Pathome’s review team sees the full address.</p></div>
       <div><label htmlFor="lessor-landmark" className="text-sm font-semibold text-slate-800">Landmark <span className="font-normal text-slate-500">(optional)</span></label><input id="lessor-landmark" className={`${FIELD} mt-2`} maxLength={200} value={propertyLocation.landmark} onChange={event => updateLocation({ ...propertyLocation, landmark: event.target.value })} onBlur={() => { void queue.current?.flush(); }}/></div></div>
     </>}
-    {step === 'media' && <LessorMediaStep draftId={draftId} onNext={() => { setStep('details'); window.scrollTo({ top: 0, behavior: 'instant' }); }}/>}
+    {step === 'media' && <LessorMediaStep draftId={draftId} guest={guest} onNext={() => { setStep('details'); window.scrollTo({ top: 0, behavior: 'instant' }); }}/>}
     {step === 'details' && <LessorDetailsStep value={details} onChange={updateDetails} onBlur={() => { void queue.current?.flush(); }}/>}
-    {step === 'preview' && <LessorPreviewStep draftId={draftId} onEdit={section => { setError(''); setStep(section); }} onDone={onBack}/>}
+    {step === 'preview' && <LessorPreviewStep key={previewRevision} draftId={draftId} guest={guest} onGuestSubmit={() => { void requestAuth(true); }} onEdit={section => { setError(''); setStep(section); }} onDone={onBack}/>}
     {error && <p role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
     {status === 'error' && <button className={`${SECONDARY} mt-4`} onClick={() => { void queue.current?.flush(); }}><RefreshCw className="h-4 w-4"/>Retry save</button>}
-    {status === 'conflict' && <p className="mt-3 text-sm text-rose-700">Another tab saved a newer version. Your unsynced entries remain on this device. Copy them before reloading this draft.</p>}
+    {status === 'conflict' && <p className="mt-3 text-sm text-rose-700">Another tab saved a newer version. Your unsynced entries remain {guest ? 'in this tab' : 'on this device'}. Copy them before reloading this draft.</p>}
     {step !== 'preview' && <div className="mt-8 flex flex-wrap gap-3"><button type="button" className={SECONDARY} onClick={() => { setError(''); setStep(step === 'location' ? 'pricing' : step === 'media' ? 'location' : step === 'details' ? 'media' : 'basics'); }}>Back</button>{step !== 'media' && <button type="button" disabled={status === 'conflict'} className={BUTTON} onClick={() => { void next(); }}>Continue<ArrowRight className="h-4 w-4"/></button>}</div>}
   </section>;
 }

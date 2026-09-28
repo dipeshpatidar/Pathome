@@ -77,6 +77,10 @@ public class MediaStagingConfig {
             return new S3MediaStagingService(endpoint, region, bucket, accessKey, secretKey, pathStyleAccess);
         }
 
+        if (isProductionEnvironment(environment)) {
+            throw new IllegalStateException("Guest draft media requires durable private draft storage in production: configure pathome.draft-staging.s3.bucket");
+        }
+
         log.info("Draft media object storage: S3 bucket not configured. Using local filesystem staging fallback.");
         return new FileSystemMediaStagingService(localPath);
     }

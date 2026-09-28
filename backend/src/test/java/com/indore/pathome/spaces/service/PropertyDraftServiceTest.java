@@ -596,7 +596,7 @@ class PropertyDraftServiceTest {
         media.setAdminId(ADMIN_ID);
         media.setStagingObjectKey("drafts/admin/draft-expired-15d/dm-expired_old.jpg");
 
-        when(draftRepository.findAllByStatusNotInAndUpdatedAtBefore(any(), any(), any()))
+        when(draftRepository.findAllByAdminIdIsNotNullAndStatusNotInAndUpdatedAtBefore(any(), any(), any()))
                 .thenReturn(List.of(expiredDraft));
         when(draftMediaRepository.findAllByDraftIdAndAdminId("draft-expired-15d", ADMIN_ID))
                 .thenReturn(List.of(media));
@@ -612,7 +612,7 @@ class PropertyDraftServiceTest {
     @Test
     void purgeInactiveDrafts_draftInactiveFor14Days_isRetained() {
         // Query for drafts before now - 15 days returns empty for 14-day inactive draft
-        when(draftRepository.findAllByStatusNotInAndUpdatedAtBefore(any(), any(), any()))
+        when(draftRepository.findAllByAdminIdIsNotNullAndStatusNotInAndUpdatedAtBefore(any(), any(), any()))
                 .thenReturn(List.of());
 
         int purgedCount = service.purgeInactiveDrafts();
@@ -632,7 +632,7 @@ class PropertyDraftServiceTest {
         publishedTombstone.setPublishedPropertyId(505L);
         publishedTombstone.setUpdatedAt(LocalDateTime.now().minusDays(20));
 
-        when(draftRepository.findAllByStatusNotInAndUpdatedAtBefore(any(), any(), any()))
+        when(draftRepository.findAllByAdminIdIsNotNullAndStatusNotInAndUpdatedAtBefore(any(), any(), any()))
                 .thenReturn(List.of(publishedTombstone));
 
         int purgedCount = service.purgeInactiveDrafts();

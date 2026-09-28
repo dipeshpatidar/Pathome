@@ -218,6 +218,23 @@ public class S3MediaStagingService implements MediaStagingService {
     }
 
     @Override
+    public boolean existsStrict(String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) return false;
+        String key = normalizeKey(objectKey);
+        try {
+            s3Client.headObject(HeadObjectRequest.builder().bucket(bucketName).key(key).build());
+            return true;
+        } catch (NoSuchKeyException e) {
+            return false;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) return false;
+            throw new IllegalStateException("Could not verify staged media deletion", e);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not verify staged media deletion", e);
+        }
+    }
+
+    @Override
     public void delete(String objectKey) {
         if (objectKey == null || objectKey.isBlank()) return;
         String key = normalizeKey(objectKey);

@@ -56,8 +56,16 @@ public class LandlordSubmissionService {
         Long ownerId = capabilities.requireLandlordUserId(email);
         PropertyUploadDraft draft = drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
-        LandlordDraftData data = draftData.readData(draft);
         List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+        return buildPreview(draft, rows);
+    }
+
+    public LandlordPreview previewGuest(PropertyUploadDraft draft, List<PropertyDraftMedia> rows) {
+        return buildPreview(draft, rows);
+    }
+
+    private LandlordPreview buildPreview(PropertyUploadDraft draft, List<PropertyDraftMedia> rows) {
+        LandlordDraftData data = draftData.readData(draft);
         String canonical = canonicalName(data.location());
         return new LandlordPreview(title(data, canonical),
                 data.basics() == null ? null : data.basics().propertyType(),
@@ -69,9 +77,12 @@ public class LandlordSubmissionService {
                 data.details() == null ? null : data.details().furnishingStatus(),
                 data.details() == null ? null : data.details().totalAreaSqFt(),
                 data.details() == null ? null : data.details().description(),
-                rows.stream().filter(row -> "UPLOADED".equals(row.getUploadStatus()))
+                rows.stream().filter(row -> "UPLOADED".equals(row.getUploadStatus()) || "STAGED".equals(row.getUploadStatus()))
                         .map(row -> new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(), row.getContentType(),
-                                row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
+                                row.getGuestOwned() ? "/api/v1/lessor/guest/drafts/" + draft.getDraftId() + "/media/" + row.getMediaId() + "/content"
+                                        : "STAGED".equals(row.getUploadStatus()) && row.getStagingObjectKey() != null
+                                            ? "/api/v1/lessor/properties/drafts/" + draft.getDraftId() + "/media/" + row.getMediaId() + "/content"
+                                            : row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
                                 row.getSortOrder() == null ? 0 : row.getSortOrder())).toList(),
                 missing(data, rows, canonical != null));
     }
@@ -247,7 +258,8 @@ public class LandlordSubmissionService {
                 !canonicalLocation || data.location().address() == null ||
                 data.location().address().isBlank()) missing.add("confirmed city, locality, and private address");
         if (data.details() == null || data.details().availableFrom() == null) missing.add("availability date");
-        if (rows.stream().noneMatch(row -> "UPLOADED".equals(row.getUploadStatus()) &&
+        if (rows.stream().noneMatch(row -> ("UPLOADED".equals(row.getUploadStatus()) ||
+                Boolean.TRUE.equals(row.getGuestOwned()) && "STAGED".equals(row.getUploadStatus())) &&
                 row.getContentType().startsWith("image/") && Boolean.TRUE.equals(row.getIsCover()))) {
             missing.add("at least one uploaded cover photo");
         }

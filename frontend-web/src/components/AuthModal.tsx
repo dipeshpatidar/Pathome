@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { UserProfile, UserRole } from '../types';
 import { X, Mail, Lock, User, AlertCircle } from 'lucide-react';
-import { GOOGLE_OAUTH_URL } from '../config/endpoints';
+import { API_ROOT_URL, GOOGLE_OAUTH_URL } from '../config/endpoints';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (user: UserProfile) => void;
+  lessorContext?: 'submit' | 'save' | null;
 }
 
 const normalizeRole = (rawRole: string): UserRole => {
@@ -20,21 +21,47 @@ const normalizeRole = (rawRole: string): UserRole => {
   return 'TENANT';
 };
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess, lessorContext = null }) => {
   const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = busy ? () => {} : onClose;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    emailRef.current?.focus({ preventScroll: true });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); return; }
+      if (event.key !== 'Tab') return;
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),a[href]');
+      if (!focusable?.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = overflow; previous?.focus({ preventScroll: true }); };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     setErrorMessage('');
 
     try {
-      const endpoint = authMode === 'LOGIN' ? '/api/v1/auth/login' : '/api/v1/auth/register';
+      const endpoint = `${API_ROOT_URL}/auth/${authMode === 'LOGIN' ? 'login' : 'register'}`;
       const payload = authMode === 'LOGIN' 
         ? { email, password }
         : { email, password, fullName };
@@ -60,13 +87,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           freeVisitsUsed: 0,
           walletBalance: 0
         });
-        onClose();
       } else {
         setErrorMessage('Unable to sign in with those credentials. Please check them and try again.');
       }
     } catch (err) {
       setErrorMessage('The authentication service is unavailable. Please try again when the server is running.');
-    }
+    } finally { setBusy(false); }
   };
 
   return (
@@ -76,8 +102,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
-        onClick={onClose}
-        className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-4 perspective-1000"
+        onClick={() => closeRef.current()}
+        className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-start justify-center overflow-y-auto p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:items-center sm:p-4 perspective-1000"
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.84, rotateX: 14, y: 30 }}
@@ -85,22 +111,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           exit={{ opacity: 0, scale: 0.84, rotateX: -14, y: 30 }}
           transition={{ type: 'spring', stiffness: 450, damping: 24 }}
           onClick={(e) => e.stopPropagation()}
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={lessorContext === 'submit' ? 'Sign in to submit property' : lessorContext === 'save' ? 'Sign in to save property' : 'Sign in or create account'}
           className="relative my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-x-hidden overflow-y-auto rounded-3xl border border-slate-200/90 bg-white p-5 shadow-2xl transform-gpu sm:max-h-[calc(100dvh-2rem)] sm:p-8"
         >
           
           <button
-            onClick={onClose}
-            className="absolute top-5 right-5 text-slate-400 hover:text-slate-700 p-1.5 rounded-full hover:bg-slate-100 transition-colors z-10"
+            onClick={() => closeRef.current()}
+            disabled={busy}
+            aria-label="Close sign in"
+            className="absolute top-3 right-3 flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 transition-colors z-10"
           >
             <X className="w-4 h-4" />
           </button>
 
           <div className="text-center mb-6">
             <h3 className="text-2xl font-bold text-slate-900 font-['Outfit',sans-serif]">
-              {authMode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}
+              {lessorContext === 'submit' ? 'Almost done' : lessorContext === 'save' ? 'Save across devices' : authMode === 'LOGIN' ? 'Welcome Back' : 'Create Account'}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Access rental homes with transparent pricing
+              {lessorContext === 'submit' ? 'Sign in to save your property and submit it for review.' : lessorContext === 'save' ? 'Sign in to keep this draft on your account. You can submit it later.' : 'Access rental homes with transparent pricing'}
             </p>
           </div>
 
@@ -115,7 +147,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             </motion.div>
           )}
 
-          {import.meta.env.VITE_GOOGLE_LOGIN_ENABLED === 'true' && (
+          {!lessorContext && import.meta.env.VITE_GOOGLE_LOGIN_ENABLED === 'true' && (
             <>
               <motion.a
                 whileHover={{ scale: 1.02, y: -1 }}
@@ -153,15 +185,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   className="space-y-3.5 overflow-hidden"
                 >
                   <div>
-                    <label className="text-[11px] font-bold text-slate-700 block mb-1">Full Name</label>
+                    <label htmlFor="pathome-auth-name" className="text-sm font-bold text-slate-700 block mb-1">Full Name</label>
                     <div className="relative">
                       <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                       <input
+                        id="pathome-auth-name"
                         type="text"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
                         placeholder="Full name"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-base font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
                         required
                       />
                     </div>
@@ -175,30 +208,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             </AnimatePresence>
 
             <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">Email Address</label>
+              <label htmlFor="pathome-auth-email" className="text-sm font-bold text-slate-700 block mb-1">Email Address</label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
+                  id="pathome-auth-email"
+                  ref={emailRef}
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@domain.com"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-base font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
                   required
                 />
               </div>
             </div>
 
             <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">Password</label>
+              <label htmlFor="pathome-auth-password" className="text-sm font-bold text-slate-700 block mb-1">Password</label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
+                  id="pathome-auth-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-2.5 text-base font-medium text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10 transition-all"
                   required
                 />
               </div>
@@ -209,9 +245,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               whileTap={{ scale: 0.97 }}
               transition={{ type: 'spring', stiffness: 450, damping: 25 }}
               type="submit"
+              disabled={busy}
               className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-xs shadow-md shadow-emerald-600/20 transition-all mt-3"
             >
-              {authMode === 'LOGIN' ? 'Sign In' : 'Register Account'}
+              {busy ? 'Signing in…' : authMode === 'LOGIN' ? 'Sign In' : 'Register Account'}
             </motion.button>
           </form>
 

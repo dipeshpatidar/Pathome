@@ -86,7 +86,8 @@ public class CloudinaryService {
     }
 
     /**
-     * Uploads media stream directly from staging storage to Cloudinary without loading into JVM heap.
+     * Uploads staged video as a stream. The Cloudinary SDK requires image bytes,
+     * so image reads are bounded by the existing 10 MB image limit.
      */
     public CloudinaryUploadResult uploadStreamResult(
             InputStream inputStream,
@@ -111,9 +112,15 @@ public class CloudinaryService {
         if (uploadRequestId != null) options.put("public_id", uploadRequestId);
 
         try {
-            Map<?, ?> uploadResult = isVideo
-                    ? cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES)
-                    : cloudinary.uploader().upload(inputStream, options);
+            Map<?, ?> uploadResult;
+            if (isVideo) {
+                uploadResult = cloudinary.uploader().uploadLarge(inputStream, options, VIDEO_CHUNK_BYTES);
+            } else {
+                byte[] image = inputStream.readNBytes((int) MAX_IMAGE_BYTES + 1);
+                if (image.length == 0 || image.length > MAX_IMAGE_BYTES)
+                    throw new IllegalArgumentException("Staged image exceeds the supported size");
+                uploadResult = cloudinary.uploader().upload(image, options);
+            }
 
             return extractResult(uploadResult, label);
         } catch (Exception e) {

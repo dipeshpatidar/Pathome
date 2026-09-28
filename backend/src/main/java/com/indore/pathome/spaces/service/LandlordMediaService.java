@@ -4,6 +4,8 @@ import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -18,10 +20,16 @@ public class LandlordMediaService {
     private static final Pattern CONTROL_CHARACTERS = Pattern.compile("[\\p{Cntrl}]");
     private final LandlordMediaStore store;
     private final CloudinaryService cloudinary;
+    private final MediaStagingService staging;
 
     public LandlordMediaService(LandlordMediaStore store, CloudinaryService cloudinary) {
-        this.store = store;
-        this.cloudinary = cloudinary;
+        this(store, cloudinary, null);
+    }
+
+    @Autowired
+    public LandlordMediaService(LandlordMediaStore store, CloudinaryService cloudinary,
+            @Qualifier("draftMediaStagingService") MediaStagingService staging) {
+        this.store = store; this.cloudinary = cloudinary; this.staging = staging;
     }
 
     public List<LandlordMediaItem> list(String email, String draftId) { return store.list(email, draftId); }
@@ -76,6 +84,14 @@ public class LandlordMediaService {
 
     public void delete(String email, String draftId, String mediaId) {
         PropertyDraftMedia item = store.markDeleting(email, draftId, requireUuid(mediaId));
+        if (item.getStagingObjectKey() != null && item.getCloudinaryUrl() == null) {
+            if (staging == null) throw new IllegalStateException("Temporary media storage unavailable");
+            staging.delete(item.getStagingObjectKey());
+            if (staging.existsStrict(item.getStagingObjectKey()))
+                throw new DraftConflictException(draftId, 0, "Media removal is incomplete. Retry.");
+            store.finishDeleting(email, draftId, mediaId);
+            return;
+        }
         if (Boolean.TRUE.equals(item.getReusedFromListing())) {
             // The same Cloudinary resource still belongs to the approved live listing.
             store.finishDeleting(email, draftId, mediaId);
@@ -109,7 +125,7 @@ public class LandlordMediaService {
         return name.isEmpty() ? "property-media" : name.substring(0, Math.min(name.length(), 255));
     }
 
-    private String validateFile(MultipartFile file) {
+    String validateFile(MultipartFile file) {
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("Choose a nonempty photo or video");
         String mime = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
         boolean image = List.of("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif").contains(mime);

@@ -81,16 +81,18 @@ public class LandlordMediaStore {
         lockEditable(ownerId, draftId);
         PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
         if ("UPLOADED".equals(item.getUploadStatus())) return toItem(item);
-        if (!"PENDING".equals(item.getUploadStatus()) && !"FAILED".equals(item.getUploadStatus())) {
+        if (!"PENDING".equals(item.getUploadStatus()) && !"FAILED".equals(item.getUploadStatus())
+                && !"STAGED".equals(item.getUploadStatus())) {
             throw new DraftConflictException(draftId, 0, "Media cannot be completed");
         }
         item.setCloudinaryUrl(result.secureUrl());
         item.setCloudinaryPublicId(result.publicId());
         item.setUploadStatus("UPLOADED");
         item.setUpdatedAt(LocalDateTime.now());
-        if (item.getContentType().startsWith("image/") &&
+        if (item.getContentType().startsWith("image/") && !Boolean.TRUE.equals(item.getIsCover()) &&
                 media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId).stream()
-                        .noneMatch(other -> !other.getMediaId().equals(mediaId) && "UPLOADED".equals(other.getUploadStatus())
+                        .noneMatch(other -> !other.getMediaId().equals(mediaId)
+                                && ("UPLOADED".equals(other.getUploadStatus()) || "STAGED".equals(other.getUploadStatus()))
                                 && other.getContentType().startsWith("image/") && Boolean.TRUE.equals(other.getIsCover()))) {
             item.setIsCover(true);
         }
@@ -123,8 +125,9 @@ public class LandlordMediaStore {
         List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
         PropertyDraftMedia selected = items.stream().filter(item -> mediaId.equals(item.getMediaId()))
                 .findFirst().orElseThrow(() -> new EntityNotFoundException("Media not found"));
-        if (!"UPLOADED".equals(selected.getUploadStatus()) || !selected.getContentType().startsWith("image/")) {
-            throw new IllegalArgumentException("Only an uploaded image can be the cover");
+        if (!("UPLOADED".equals(selected.getUploadStatus()) || "STAGED".equals(selected.getUploadStatus()))
+                || !selected.getContentType().startsWith("image/")) {
+            throw new IllegalArgumentException("Only a ready image can be the cover");
         }
         items.forEach(item -> item.setIsCover(item == selected));
         media.saveAll(items);
@@ -136,11 +139,12 @@ public class LandlordMediaStore {
         Long ownerId = capabilities.requireLandlordUserId(email);
         lockEditable(ownerId, draftId);
         List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-        List<String> uploaded = items.stream().filter(item -> "UPLOADED".equals(item.getUploadStatus()))
+        List<String> ready = items.stream().filter(item -> "UPLOADED".equals(item.getUploadStatus())
+                        || "STAGED".equals(item.getUploadStatus()))
                 .map(PropertyDraftMedia::getMediaId).toList();
-        if (ids == null || ids.size() != uploaded.size() || new HashSet<>(ids).size() != ids.size()
-                || !new HashSet<>(ids).equals(new HashSet<>(uploaded))) {
-            throw new IllegalArgumentException("Order must include each uploaded item exactly once");
+        if (ids == null || ids.size() != ready.size() || new HashSet<>(ids).size() != ids.size()
+                || !new HashSet<>(ids).equals(new HashSet<>(ready))) {
+            throw new IllegalArgumentException("Order must include each ready item exactly once");
         }
         for (PropertyDraftMedia item : items) {
             int index = ids.indexOf(item.getMediaId());
@@ -173,7 +177,8 @@ public class LandlordMediaStore {
         media.flush();
         if (wasCover) {
             List<PropertyDraftMedia> remaining = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-            remaining.stream().filter(other -> "UPLOADED".equals(other.getUploadStatus()) &&
+            remaining.stream().filter(other -> ("UPLOADED".equals(other.getUploadStatus())
+                            || "STAGED".equals(other.getUploadStatus())) &&
                     other.getContentType().startsWith("image/"))
                     .findFirst().ifPresent(next -> { next.setIsCover(true); media.save(next); });
         }
@@ -197,8 +202,11 @@ public class LandlordMediaStore {
     }
 
     private LandlordMediaItem toItem(PropertyDraftMedia item) {
+        String url = "STAGED".equals(item.getUploadStatus()) && item.getStagingObjectKey() != null
+                ? "/api/v1/lessor/properties/drafts/" + item.getDraftId() + "/media/" + item.getMediaId() + "/content"
+                : item.getCloudinaryUrl();
         return new LandlordMediaItem(item.getMediaId(), item.getOriginalFilename(), item.getContentType(),
-                item.getCloudinaryUrl(), item.getUploadStatus(), Boolean.TRUE.equals(item.getIsCover()),
+                url, item.getUploadStatus(), Boolean.TRUE.equals(item.getIsCover()),
                 item.getSortOrder() == null ? 0 : item.getSortOrder());
     }
 }

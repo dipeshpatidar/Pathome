@@ -100,24 +100,34 @@ public class LandlordDraftService {
     public LandlordDraftResponse updateBasics(String email, String draftId, int expectedVersion,
                                               LandlordDraftData.Basics basics) {
         LandlordDraftData.Basics validated = validateBasics(basics);
-        return update(email, draftId, expectedVersion,
+        return update(requireOwned(email, draftId), expectedVersion,
                 data -> new LandlordDraftData(validated, data.pricing(), data.location(), data.details()));
     }
 
     @Transactional
     public LandlordDraftResponse updatePricing(String email, String draftId, int expectedVersion,
                                                LandlordDraftData.Pricing pricing) {
+        validatePricing(pricing);
+        return update(requireOwned(email, draftId), expectedVersion,
+                data -> new LandlordDraftData(data.basics(), pricing, data.location(), data.details()));
+    }
+
+    private void validatePricing(LandlordDraftData.Pricing pricing) {
         if (pricing == null || pricing.monthlyRent() != null && pricing.monthlyRent().signum() <= 0
                 || pricing.securityDeposit() != null && pricing.securityDeposit().signum() < 0) {
             throw new IllegalArgumentException("Rent must be positive and deposit cannot be negative");
         }
-        return update(email, draftId, expectedVersion,
-                data -> new LandlordDraftData(data.basics(), pricing, data.location(), data.details()));
     }
 
     @Transactional
     public LandlordDraftResponse updateLocation(String email, String draftId, int expectedVersion,
                                                 LandlordDraftData.Location location) {
+        validateLocation(location);
+        return update(requireOwned(email, draftId), expectedVersion,
+                data -> new LandlordDraftData(data.basics(), data.pricing(), location, data.details()));
+    }
+
+    private void validateLocation(LandlordDraftData.Location location) {
         if (location == null || tooLong(location.city(), 120) || tooLong(location.localityInput(), 120)
                 || tooLong(location.address(), 500) || tooLong(location.landmark(), 200)
                 || location.canonicalLocalityId() != null && location.canonicalLocalityId() <= 0) {
@@ -126,13 +136,17 @@ public class LandlordDraftService {
         if (location.canonicalLocalityId() != null) {
             locations.requireMatchingLocality(location.city(), location.canonicalLocalityId());
         }
-        return update(email, draftId, expectedVersion,
-                data -> new LandlordDraftData(data.basics(), data.pricing(), location, data.details()));
     }
 
     @Transactional
     public LandlordDraftResponse updateDetails(String email, String draftId, int expectedVersion,
                                                LandlordDraftData.Details details) {
+        validateDetails(details);
+        return update(requireOwned(email, draftId), expectedVersion,
+                data -> new LandlordDraftData(data.basics(), data.pricing(), data.location(), details));
+    }
+
+    private void validateDetails(LandlordDraftData.Details details) {
         if (details == null || details.totalAreaSqFt() != null &&
                 (!Double.isFinite(details.totalAreaSqFt()) || details.totalAreaSqFt() <= 0)
                 || details.floorNumber() != null && details.floorNumber() < 0
@@ -141,8 +155,31 @@ public class LandlordDraftService {
                 || tooLong(details.description(), 4000)) {
             throw new IllegalArgumentException("Details contain an invalid value");
         }
-        return update(email, draftId, expectedVersion,
-                data -> new LandlordDraftData(data.basics(), data.pricing(), data.location(), details));
+    }
+
+    /** Guest ownership is checked by GuestDraftService before these shared validators run. */
+    @Transactional
+    public LandlordDraftResponse updateGuestBasics(PropertyUploadDraft draft, int version, LandlordDraftData.Basics value) {
+        LandlordDraftData.Basics checked = validateBasics(value);
+        return update(draft, version, data -> new LandlordDraftData(checked, data.pricing(), data.location(), data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateGuestPricing(PropertyUploadDraft draft, int version, LandlordDraftData.Pricing value) {
+        validatePricing(value);
+        return update(draft, version, data -> new LandlordDraftData(data.basics(), value, data.location(), data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateGuestLocation(PropertyUploadDraft draft, int version, LandlordDraftData.Location value) {
+        validateLocation(value);
+        return update(draft, version, data -> new LandlordDraftData(data.basics(), data.pricing(), value, data.details()));
+    }
+
+    @Transactional
+    public LandlordDraftResponse updateGuestDetails(PropertyUploadDraft draft, int version, LandlordDraftData.Details value) {
+        validateDetails(value);
+        return update(draft, version, data -> new LandlordDraftData(data.basics(), data.pricing(), data.location(), value));
     }
 
     @Transactional(readOnly = true)
@@ -178,9 +215,9 @@ public class LandlordDraftService {
         return complete * 100 / 9;
     }
 
-    private LandlordDraftResponse update(String email, String draftId, int expectedVersion,
+    private LandlordDraftResponse update(PropertyUploadDraft draft, int expectedVersion,
                                          UnaryOperator<LandlordDraftData> change) {
-        PropertyUploadDraft draft = requireOwned(email, draftId);
+        String draftId = draft.getDraftId();
         if (!"DRAFT".equals(draft.getStatus())) {
             throw new IllegalStateException("Draft can no longer be edited");
         }
@@ -200,7 +237,7 @@ public class LandlordDraftService {
         }
     }
 
-    private LandlordDraftData.Basics validateBasics(LandlordDraftData.Basics basics) {
+    LandlordDraftData.Basics validateBasics(LandlordDraftData.Basics basics) {
         if (basics == null || basics.propertyType() == null || !SUPPORTED_TYPES.contains(basics.propertyType())
                 || basics.rentalMode() != RentalMode.LONG_TERM_RENTAL
                 || basics.bhkCount() != null && !BHK_PATTERN.matcher(basics.bhkCount()).matches()) {
@@ -209,15 +246,19 @@ public class LandlordDraftService {
         return basics;
     }
 
-    private LandlordDraftResponse toResponse(PropertyUploadDraft draft, LandlordDraftData data) {
-        boolean hasCover = media.existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
-                draft.getDraftId(), draft.getLandlordUserId(), "UPLOADED", "image/");
+    LandlordDraftResponse toResponse(PropertyUploadDraft draft, LandlordDraftData data) {
+        boolean hasCover = draft.getGuestTokenHash() != null
+                ? media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(draft.getDraftId()).stream()
+                    .anyMatch(item -> "STAGED".equals(item.getUploadStatus()) && Boolean.TRUE.equals(item.getIsCover())
+                            && item.getContentType().startsWith("image/"))
+                : media.existsByDraftIdAndLandlordUserIdAndUploadStatusAndIsCoverTrueAndContentTypeStartingWith(
+                    draft.getDraftId(), draft.getLandlordUserId(), "UPLOADED", "image/");
         return new LandlordDraftResponse(draft.getDraftId(), draft.getStatus(), draft.getVersion(),
                 completionPercent(data, hasCover), data, draft.getCreatedAt(), draft.getUpdatedAt(),
                 draft.getPublishedPropertyId(), draft.getReviewNote());
     }
 
-    private String writeData(LandlordDraftData data) {
+    String writeData(LandlordDraftData data) {
         try {
             String payload = mapper.writeValueAsString(data);
             if (payload.length() > 64_000) throw new IllegalArgumentException("Draft is too large");
