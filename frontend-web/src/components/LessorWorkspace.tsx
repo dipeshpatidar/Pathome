@@ -5,9 +5,11 @@ import type { UserProfile } from '../types';
 import { API_ROOT_URL } from '../config/endpoints';
 import { createApiRequestError, getErrorMessage } from '../services/apiError';
 import { LessorAutosave, LessorSaveStatus } from '../services/lessorAutosave';
-import { LessorBasics, LessorDraft, LessorDraftSummary, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
+import { LessorBasics, LessorDetails, LessorDraft, LessorDraftSummary, LessorLocation, LessorPricing, ResidentialType, lessorDraftService } from '../services/lessorDraftService';
 import { LessorLocalityOption, lessorLocationService } from '../services/lessorLocationService';
 import { LessorMediaStep } from './LessorMediaStep';
+import { LessorDetailsStep } from './LessorDetailsStep';
+import { LessorPreviewStep } from './LessorPreviewStep';
 import { bhkChoice, exactBhk, pricingReady } from '../utils/lessorConfiguration';
 
 const TYPES: { value: ResidentialType; label: string }[] = [
@@ -112,6 +114,7 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
   const [basics, setBasics] = useState<LessorBasics | null>(null);
   const [pricing, setPricing] = useState<LessorPricing>({ monthlyRent: null, securityDeposit: null });
   const [propertyLocation, setPropertyLocation] = useState<LessorLocation>({ city: '', canonicalLocalityId: null, localityInput: '', address: '', landmark: '' });
+  const [details, setDetails] = useState<LessorDetails>({ availableFrom: null, furnishingStatus: '', totalAreaSqFt: null, floorNumber: null, totalFloors: null, amenities: '', description: '' });
   const [cities, setCities] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<LessorLocalityOption[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
@@ -137,6 +140,7 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
       setShowExactBhk(Boolean(restoredBhk && /^\d+BHK$/.test(restoredBhk) && Number.parseInt(restoredBhk) >= 4));
       setPricing(pending.pricing as LessorPricing || server.data.pricing || { monthlyRent: null, securityDeposit: null });
       setPropertyLocation(pending.location as LessorLocation || server.data.location || { city: '', canonicalLocalityId: null, localityInput: '', address: '', landmark: '' });
+      setDetails(pending.details as LessorDetails || server.data.details || { availableFrom: null, furnishingStatus: '', totalAreaSqFt: null, floorNumber: null, totalFloors: null, amenities: '', description: '' });
       setStatus(saver.getStatus());
     }).catch(cause => { if (live) setError(getErrorMessage(cause, 'Unable to load this draft.')); });
     return () => { live = false; queue.current?.dispose(); queue.current = null; };
@@ -167,13 +171,15 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
   const updateBasics = (value: LessorBasics) => { setBasics(value); queue.current?.change('basics', value); };
   const updatePricing = (value: LessorPricing) => { setPricing(value); queue.current?.change('pricing', value); };
   const updateLocation = (value: LessorLocation) => { setPropertyLocation(value); queue.current?.change('location', value); };
+  const updateDetails = (value: LessorDetails) => { setDetails(value); queue.current?.change('details', value); };
   const next = async () => {
     setError('');
     if (step === 'basics' && !basics?.bhkCount) { setError('Choose the exact configuration.'); return; }
     if (step === 'pricing' && !pricingReady(pricing.monthlyRent, pricing.securityDeposit)) { setError('Add monthly rent and a deposit amount, including ₹0 if none.'); return; }
     if (step === 'location' && (!cities.includes(propertyLocation.city) || !propertyLocation.canonicalLocalityId || !propertyLocation.address.trim())) { setError('Choose a supported city and confirmed locality, then add the private address.'); return; }
+    if (step === 'details' && !details.availableFrom) { setError('Add the availability date to continue.'); return; }
     if (!await queue.current?.flush()) { setError(status === 'conflict' ? 'A newer version exists. Review your other tab before continuing.' : 'Your changes are saved on this device. Retry the server save to continue.'); return; }
-    setStep(step === 'basics' ? 'pricing' : step === 'pricing' ? 'location' : 'media');
+    setStep(step === 'basics' ? 'pricing' : step === 'pricing' ? 'location' : step === 'location' ? 'media' : 'preview');
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
@@ -182,8 +188,8 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
   const currentBhk = showExactBhk ? '4+' : bhkChoice(basics.bhkCount);
   return <section className="mx-auto max-w-2xl">
     <div className="flex flex-wrap items-center justify-between gap-3"><button className={SECONDARY} onClick={async () => { await queue.current?.flush(); onBack(); }}><ArrowLeft className="h-4 w-4"/>My properties</button><span aria-live="polite" className={`text-xs font-semibold ${status === 'error' || status === 'conflict' ? 'text-rose-700' : 'text-slate-500'}`}>{status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'conflict' ? 'Conflict' : "Couldn't save — Retry"}</span></div>
-    <div className="mt-8 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-emerald-600 transition-[width] motion-reduce:transition-none" style={{ width: step === 'basics' ? '17%' : step === 'pricing' ? '34%' : step === 'location' ? '50%' : '67%' }}/></div>
-    <p className="mt-5 text-xs font-bold uppercase tracking-widest text-emerald-700">{step === 'basics' ? 'Home details · Step 2 of 6' : step === 'pricing' ? 'Pricing · Step 3 of 6' : step === 'location' ? 'Location · Step 4 of 6' : 'Next steps'}</p>
+    <div className="mt-8 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-emerald-600 transition-[width] motion-reduce:transition-none" style={{ width: step === 'basics' ? '17%' : step === 'pricing' ? '34%' : step === 'location' ? '50%' : step === 'media' ? '67%' : step === 'details' ? '84%' : '100%' }}/></div>
+    <p className="mt-5 text-xs font-bold uppercase tracking-widest text-emerald-700">{step === 'basics' ? 'Home details · Step 2 of 6' : step === 'pricing' ? 'Pricing · Step 3 of 6' : step === 'location' ? 'Location · Step 4 of 6' : step === 'media' ? 'Photos · Step 5 of 6' : step === 'details' ? 'Availability · Step 6 of 6' : 'Review'}</p>
     {step === 'basics' && <><h1 className="mt-2 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">Tell us about the home</h1><p className="mt-2 text-sm text-slate-600">You can adjust these details before submitting.</p>
       <label className="mt-7 block text-sm font-semibold text-slate-800" htmlFor="lessor-type">Property type</label><select id="lessor-type" className={`${FIELD} mt-2`} value={basics.propertyType} onBlur={() => { void queue.current?.flush(); }} onChange={event => updateBasics({ ...basics, propertyType: event.target.value as ResidentialType })}>{TYPES.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}</select>
       <p className="mt-7 text-sm font-semibold text-slate-800">Configuration</p><div role="group" aria-label="Configuration" className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">{BHK_OPTIONS.map(option => <button key={option} type="button" aria-pressed={currentBhk === option} onClick={() => { setShowExactBhk(option === '4+'); updateBasics({ ...basics, bhkCount: exactBhk(option, 4) }); }} className={`min-h-11 rounded-xl border px-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${currentBhk === option ? 'border-emerald-700 bg-emerald-50 text-emerald-900' : 'border-slate-300 bg-white text-slate-700'}`}>{option === '4+' ? '4+ BHK' : option === '1RK' ? '1 RK' : option.replace('BHK', ' BHK')}</button>)}</div>
@@ -200,9 +206,11 @@ function LessorEditor({ userId, draftId, onBack }: { userId: number; draftId: st
       <div><label htmlFor="lessor-landmark" className="text-sm font-semibold text-slate-800">Landmark <span className="font-normal text-slate-500">(optional)</span></label><input id="lessor-landmark" className={`${FIELD} mt-2`} maxLength={200} value={propertyLocation.landmark} onChange={event => updateLocation({ ...propertyLocation, landmark: event.target.value })} onBlur={() => { void queue.current?.flush(); }}/></div></div>
     </>}
     {step === 'media' && <LessorMediaStep draftId={draftId} onNext={() => { setStep('details'); window.scrollTo({ top: 0, behavior: 'instant' }); }}/>}
+    {step === 'details' && <LessorDetailsStep value={details} onChange={updateDetails} onBlur={() => { void queue.current?.flush(); }}/>}
+    {step === 'preview' && <LessorPreviewStep draftId={draftId} onEdit={section => { setError(''); setStep(section); }} onDone={onBack}/>}
     {error && <p role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
     {status === 'error' && <button className={`${SECONDARY} mt-4`} onClick={() => { void queue.current?.flush(); }}><RefreshCw className="h-4 w-4"/>Retry save</button>}
     {status === 'conflict' && <p className="mt-3 text-sm text-rose-700">Another tab saved a newer version. Your unsynced entries remain on this device. Copy them before reloading this draft.</p>}
-    <div className="mt-8 flex flex-wrap gap-3"><button type="button" className={SECONDARY} onClick={() => { setError(''); setStep(step === 'location' ? 'pricing' : step === 'media' ? 'location' : 'basics'); }}>Back</button>{step !== 'media' && <button type="button" disabled={status === 'conflict'} className={BUTTON} onClick={() => { void next(); }}>Continue<ArrowRight className="h-4 w-4"/></button>}</div>
+    {step !== 'preview' && <div className="mt-8 flex flex-wrap gap-3"><button type="button" className={SECONDARY} onClick={() => { setError(''); setStep(step === 'location' ? 'pricing' : step === 'media' ? 'location' : step === 'details' ? 'media' : 'basics'); }}>Back</button>{step !== 'media' && <button type="button" disabled={status === 'conflict'} className={BUTTON} onClick={() => { void next(); }}>Continue<ArrowRight className="h-4 w-4"/></button>}</div>}
   </section>;
 }

@@ -1,0 +1,129 @@
+package com.indore.pathome.spaces.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftData;
+import com.indore.pathome.spaces.entity.*;
+import com.indore.pathome.spaces.repository.*;
+import jakarta.persistence.EntityNotFoundException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+class LandlordSubmissionServiceTest {
+    private LandlordCapabilityService capabilities;
+    private LandlordDraftService draftData;
+    private LandlordLocationService locations;
+    private PropertyUploadDraftRepository drafts;
+    private PropertyDraftMediaRepository media;
+    private ListingRepository listings;
+    private PropertyMediaAssetRepository assets;
+    private UserRepository users;
+    private LandlordSubmissionService service;
+    private PropertyUploadDraft draft;
+    private List<PropertyDraftMedia> rows;
+
+    @BeforeEach
+    void setUp() {
+        capabilities = mock(LandlordCapabilityService.class);
+        draftData = mock(LandlordDraftService.class);
+        locations = mock(LandlordLocationService.class);
+        drafts = mock(PropertyUploadDraftRepository.class);
+        media = mock(PropertyDraftMediaRepository.class);
+        listings = mock(ListingRepository.class);
+        assets = mock(PropertyMediaAssetRepository.class);
+        users = mock(UserRepository.class);
+        service = new LandlordSubmissionService(capabilities, draftData, locations, drafts, media, listings,
+                assets, users, new ListingWorkflowService());
+        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
+        draft = new PropertyUploadDraft();
+        draft.setDraftId("d1");
+        draft.setLandlordUserId(5L);
+        draft.setStatus("DRAFT");
+        when(drafts.findByDraftIdAndLandlordUserId("d1", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.findLandlordDraftForUpdate("d1", 5L)).thenReturn(Optional.of(draft));
+        when(draftData.readData(draft)).thenReturn(validData());
+        Locality locality = new Locality();
+        locality.setId(10L);
+        locality.setCity("Indore");
+        locality.setSectorName("Vijay Nagar");
+        when(locations.requireMatchingLocality("Indore", 10L)).thenReturn(locality);
+        PropertyDraftMedia photo = new PropertyDraftMedia();
+        photo.setMediaId("photo-one");
+        photo.setContentType("image/jpeg");
+        photo.setUploadStatus("UPLOADED");
+        photo.setCloudinaryUrl("https://example.com/photo.jpg");
+        photo.setCloudinaryPublicId("pathome/properties/images/photo-one");
+        photo.setIsCover(true);
+        photo.setSortOrder(0);
+        rows = List.of(photo);
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L)).thenReturn(rows);
+        User owner = new User();
+        owner.setId(5L);
+        owner.setFullName("Owner");
+        owner.setPhoneNumber(null);
+        when(users.findById(5L)).thenReturn(Optional.of(owner));
+        when(listings.saveAndFlush(any())).thenAnswer(invocation -> {
+            Listing saved = invocation.getArgument(0);
+            saved.setId(42L);
+            return saved;
+        });
+    }
+
+    @Test
+    void previewRedactsAddressContactAndCoordinates() throws Exception {
+        var preview = service.preview("owner@example.com", "d1");
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(preview);
+        assertFalse(json.contains("10 Private Road"));
+        assertFalse(json.contains("ownerPhone"));
+        assertFalse(json.contains("latitude"));
+        assertEquals("Vijay Nagar", preview.locality());
+        assertTrue(preview.missingRequirements().isEmpty());
+        verify(listings, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void submitsPrivateListingOnceAndSecondTapReturnsSameListing() {
+        var first = service.submit("owner@example.com", "d1");
+        assertEquals(42L, first.listingId());
+        assertEquals(ListingWorkflowStatus.SUBMITTED, first.status());
+        assertEquals("SUBMITTED", draft.getStatus());
+        ArgumentCaptor<Listing> captured = ArgumentCaptor.forClass(Listing.class);
+        verify(listings).saveAndFlush(captured.capture());
+        var listing = (RentalDetails) captured.getValue();
+        assertEquals(ListingStatus.PENDING, listing.getStatus());
+        assertEquals("10 Private Road", listing.getAddress());
+        assertNull(listing.getOwnerPhoneNumber());
+        assertEquals(5L, listing.getOwnerUserId());
+        when(listings.findByOriginDraftId("d1")).thenReturn(Optional.of(listing));
+        var second = service.submit("owner@example.com", "d1");
+        assertEquals(first.listingId(), second.listingId());
+        verify(listings, times(1)).saveAndFlush(any());
+        verify(assets, times(1)).saveAll(any());
+    }
+
+    @Test
+    void incompleteDraftAndCrossOwnerCannotSubmit() {
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L)).thenReturn(List.of());
+        assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
+        when(drafts.findLandlordDraftForUpdate("d1", 5L)).thenReturn(Optional.empty());
+        assertThrows(EntityNotFoundException.class, () -> service.submit("owner@example.com", "d1"));
+        verify(listings, never()).saveAndFlush(any());
+    }
+
+    private LandlordDraftData validData() {
+        return new LandlordDraftData(
+                new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK"),
+                new LandlordDraftData.Pricing(new BigDecimal("20000"), BigDecimal.ZERO),
+                new LandlordDraftData.Location("Indore", 10L, "Vijay Nagar", "10 Private Road", "Near park"),
+                new LandlordDraftData.Details(LocalDate.now(), "UNFURNISHED", 850.0, 2, 5, "Balcony", "Bright flat"));
+    }
+}

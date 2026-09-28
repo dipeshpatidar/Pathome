@@ -94,7 +94,7 @@ public abstract class Listing {
     @Column(name = "media_gallery_urls", columnDefinition = "TEXT")
     private String mediaGalleryUrls;
 
-    @Column(name = "owner_phone_number", nullable = false)
+    @Column(name = "owner_phone_number")
     private String ownerPhoneNumber;
 
     @Column(name = "owner_name")

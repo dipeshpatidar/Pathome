@@ -1,0 +1,182 @@
+package com.indore.pathome.spaces.service;
+
+import com.indore.pathome.spaces.dto.lessor.LandlordDraftData;
+import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
+import com.indore.pathome.spaces.dto.lessor.LandlordPreview;
+import com.indore.pathome.spaces.dto.lessor.LandlordSubmission;
+import com.indore.pathome.spaces.entity.*;
+import com.indore.pathome.spaces.exception.DraftConflictException;
+import com.indore.pathome.spaces.repository.ListingRepository;
+import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
+import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
+import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
+import com.indore.pathome.spaces.repository.UserRepository;
+import jakarta.persistence.EntityNotFoundException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.regex.Pattern;
+
+@Service
+public class LandlordSubmissionService {
+    private static final Pattern BHK = Pattern.compile("^(?:1RK|[1-9][0-9]?BHK)$");
+    private final LandlordCapabilityService capabilities;
+    private final LandlordDraftService draftData;
+    private final LandlordLocationService locations;
+    private final PropertyUploadDraftRepository drafts;
+    private final PropertyDraftMediaRepository media;
+    private final ListingRepository listings;
+    private final PropertyMediaAssetRepository assets;
+    private final UserRepository users;
+    private final ListingWorkflowService workflow;
+
+    public LandlordSubmissionService(LandlordCapabilityService capabilities, LandlordDraftService draftData,
+                                     LandlordLocationService locations, PropertyUploadDraftRepository drafts,
+                                     PropertyDraftMediaRepository media, ListingRepository listings,
+                                     PropertyMediaAssetRepository assets, UserRepository users,
+                                     ListingWorkflowService workflow) {
+        this.capabilities = capabilities;
+        this.draftData = draftData;
+        this.locations = locations;
+        this.drafts = drafts;
+        this.media = media;
+        this.listings = listings;
+        this.assets = assets;
+        this.users = users;
+        this.workflow = workflow;
+    }
+
+    @Transactional(readOnly = true)
+    public LandlordPreview preview(String email, String draftId) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        PropertyUploadDraft draft = drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
+        LandlordDraftData data = draftData.readData(draft);
+        List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+        String canonical = canonicalName(data.location());
+        return new LandlordPreview(title(data, canonical),
+                data.basics() == null ? null : data.basics().propertyType(),
+                data.basics() == null ? null : data.basics().bhkCount(),
+                data.location() == null ? null : data.location().city(), canonical,
+                data.pricing() == null ? null : data.pricing().monthlyRent(),
+                data.pricing() == null ? null : data.pricing().securityDeposit(),
+                data.details() == null ? null : data.details().availableFrom(),
+                data.details() == null ? null : data.details().furnishingStatus(),
+                data.details() == null ? null : data.details().totalAreaSqFt(),
+                data.details() == null ? null : data.details().description(),
+                rows.stream().filter(row -> "UPLOADED".equals(row.getUploadStatus()))
+                        .map(row -> new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(), row.getContentType(),
+                                row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
+                                row.getSortOrder() == null ? 0 : row.getSortOrder())).toList(),
+                missing(data, rows, canonical != null));
+    }
+
+    @Transactional
+    public LandlordSubmission submit(String email, String draftId) {
+        Long ownerId = capabilities.requireLandlordUserId(email);
+        PropertyUploadDraft draft = drafts.findLandlordDraftForUpdate(draftId, ownerId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
+        if (!"DRAFT".equals(draft.getStatus())) {
+            Listing existing = listings.findByOriginDraftId(draftId)
+                    .filter(listing -> ownerId.equals(listing.getOwnerUserId()))
+                    .orElseThrow(() -> new DraftConflictException(draftId, draft.getVersion(), "Draft is no longer editable"));
+            return response(existing, draftId);
+        }
+        LandlordDraftData data = draftData.readData(draft);
+        List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
+        List<String> missing = missing(data, rows, canonicalName(data.location()) != null);
+        if (!missing.isEmpty()) throw new IllegalArgumentException("Complete before submitting: " + String.join(", ", missing));
+        if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
+            throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
+        }
+        Locality locality = locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
+        User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
+        RentalDetails listing = new RentalDetails();
+        listing.setTitle(title(data, locality.getSectorName()));
+        listing.setPropertyType(data.basics().propertyType());
+        listing.setBhkCount(data.basics().bhkCount());
+        listing.setCity(locality.getCity());
+        listing.setSector(locality.getSectorName());
+        listing.setAddress(data.location().address().trim());
+        listing.setLandmark(data.location().landmark());
+        listing.setDescription(data.details().description());
+        listing.setFurnishingStatus(data.details().furnishingStatus());
+        listing.setTotalAreaSqFt(data.details().totalAreaSqFt());
+        listing.setFloorNumber(data.details().floorNumber());
+        listing.setTotalFloors(data.details().totalFloors());
+        listing.setOwnerName(owner.getFullName());
+        listing.setOwnerPhoneNumber(owner.getPhoneNumber());
+        listing.setMonthlyRent(data.pricing().monthlyRent());
+        listing.setSecurityDeposit(data.pricing().securityDeposit());
+        listing.setAvailableFrom(data.details().availableFrom().atStartOfDay());
+        listing.setOriginDraftId(draftId);
+        workflow.prepareSubmitted(listing, ownerId, locality.getId());
+        Listing saved = listings.saveAndFlush(listing);
+        List<PropertyMediaAsset> permanent = new ArrayList<>();
+        for (PropertyDraftMedia row : rows.stream().filter(item -> "UPLOADED".equals(item.getUploadStatus()))
+                .sorted(Comparator.comparing(PropertyDraftMedia::getSortOrder)).toList()) {
+            boolean video = row.getContentType().startsWith("video/");
+            PropertyMediaAsset asset = new PropertyMediaAsset(saved.getId(), row.getCloudinaryUrl(),
+                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.GENERAL,
+                    video ? "Property video" : "Property photo");
+            asset.setCloudinaryPublicId(row.getCloudinaryPublicId());
+            asset.setUploadRequestId(row.getMediaId());
+            asset.setIsPrimaryCover(Boolean.TRUE.equals(row.getIsCover()) && !video);
+            asset.setSector(locality.getSectorName());
+            asset.setCity(locality.getCity());
+            asset.setPriceTag("₹" + data.pricing().monthlyRent().toPlainString() + " / month");
+            permanent.add(asset);
+        }
+        assets.saveAll(permanent);
+        draft.setStatus("SUBMITTED");
+        drafts.save(draft);
+        return response(saved, draftId);
+    }
+
+    private List<String> missing(LandlordDraftData data, List<PropertyDraftMedia> rows, boolean canonicalLocation) {
+        List<String> missing = new ArrayList<>();
+        if (data.basics() == null || data.basics().propertyType() == null ||
+                !List.of(PropertyType.FLAT, PropertyType.HOUSE, PropertyType.STUDIO,
+                        PropertyType.PENTHOUSE, PropertyType.SERVICED_APARTMENT).contains(data.basics().propertyType()) ||
+                data.basics().rentalMode() != RentalMode.LONG_TERM_RENTAL ||
+                data.basics().bhkCount() == null || !BHK.matcher(data.basics().bhkCount()).matches()) {
+            missing.add("supported home type and exact configuration");
+        }
+        if (data.pricing() == null || data.pricing().monthlyRent() == null ||
+                data.pricing().monthlyRent().compareTo(BigDecimal.ZERO) <= 0 ||
+                data.pricing().securityDeposit() == null || data.pricing().securityDeposit().compareTo(BigDecimal.ZERO) < 0) {
+            missing.add("monthly rent and deposit");
+        }
+        if (data.location() == null || data.location().city() == null || data.location().city().isBlank() ||
+                !canonicalLocation || data.location().address() == null ||
+                data.location().address().isBlank()) missing.add("confirmed city, locality, and private address");
+        if (data.details() == null || data.details().availableFrom() == null) missing.add("availability date");
+        if (rows.stream().noneMatch(row -> "UPLOADED".equals(row.getUploadStatus()) &&
+                row.getContentType().startsWith("image/") && Boolean.TRUE.equals(row.getIsCover()))) {
+            missing.add("at least one uploaded cover photo");
+        }
+        return missing;
+    }
+
+    private String canonicalName(LandlordDraftData.Location location) {
+        if (location == null || location.canonicalLocalityId() == null) return null;
+        try { return locations.requireMatchingLocality(location.city(), location.canonicalLocalityId()).getSectorName(); }
+        catch (IllegalArgumentException ex) { return null; }
+    }
+
+    private String title(LandlordDraftData data, String locality) {
+        if (data.basics() == null) return "Rental home";
+        String type = data.basics().propertyType() == null ? "home" : data.basics().propertyType().name().toLowerCase().replace('_', ' ');
+        return (data.basics().bhkCount() == null ? "" : data.basics().bhkCount() + " ") + type +
+                (locality == null ? "" : " in " + locality);
+    }
+
+    private LandlordSubmission response(Listing listing, String draftId) {
+        return new LandlordSubmission(listing.getId(), draftId, listing.getTitle(),
+                listing.getWorkflowStatus(), listing.getSubmittedAt());
+    }
+}

@@ -1675,3 +1675,13 @@ Changed: PropertyDraftMedia.java, its repository, PropertyUploadDraftRepository.
 Verification: focused Maven LandlordMediaStoreTest, LandlordMediaServiceTest, and LandlordDraftServiceTest PASS; frontend Node lessorMedia.test.mjs PASS 2/2; frontend TypeScript no-emit PASS; git diff --check PASS. Cloudinary and migration were not exercised with live credentials/database; browser media QA remains outstanding.
 
 Commit: pending Slice 5 checkpoint. Push: NO.
+
+## 2026-09-28 10:51:35 IST — Phase 1B Slice 6 details, private-safe preview, and review submission
+
+Why: Complete the minimal owner submission path without publishing unreviewed property data or exposing private address/contact details.
+
+Changed: Listing.java and V22__optional_owner_phone_for_landlord.sql allow a landlord account without a phone to submit, while admin creation keeps its own validation. LandlordSubmissionController.java, LandlordSubmissionService.java, LandlordPreview.java, and LandlordSubmission.java validate required sections, canonical location, availability, and uploaded cover; lock the owner draft; create the shared RentalDetails listing in PENDING/SUBMITTED; copy uploaded Cloudinary metadata; and make repeated submission idempotent. Preview includes only public-safe fields. LessorDetailsStep.tsx, LessorPreviewStep.tsx, lessorSubmissionService.ts, and LessorWorkspace.tsx add progressive optional details, edit links, missing-requirement feedback, and truthful Submit for review success copy. LandlordSubmissionServiceTest.java covers redaction, single submission, private listing status, missing cover, and owner scoping. The two untracked AGENTS review files were untouched.
+
+Verification: focused Maven LandlordSubmissionServiceTest and ListingWorkflowServiceTest PASS; frontend TypeScript no-emit PASS; git diff --check PASS. Database migration, full browser path, and Cloudinary-backed submission still require environment QA.
+
+Commit: pending Slice 6 checkpoint. Push: NO.
