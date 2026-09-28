@@ -2,6 +2,62 @@
 
 Purpose: A chronological handoff record maintained by Antigravity for future engineers or AI agents working on Pathome Spaces (Divyavastu Spaces). Times use Asia/Kolkata (IST). No credentials, tokens, connection strings, or other secret configuration values are recorded here.
 
+## 2026-09-28 16:25 IST — Lessor Contact Verification & Discard Checkpoint
+
+### Why this work was requested
+1. Verify if Pathome already reliably captures and retains the landlord/lessor's full name and mobile number suitable for contact through the existing account/auth/profile flow.
+2. If not, implement the smallest clean solution at the account/profile level (not property level) before a property can be submitted for review.
+3. Preserve existing intended discard UX enhancements: visible Discard button, safe destructive confirmation modal, navigation to `/lessor`, truthful success notification without legacy branding/Divyavastu/VIP pass claims, local draft pointers cleared only after server-confirmed deletion.
+4. Final Git checkpoint with single commit and normal push.
+
+### Audit Findings
+- **Owner Name**: Captured on registration/OAuth, stored on `User.full_name`.
+- **Owner Mobile**: NOT captured in `AuthModal.tsx` or Google OAuth, leaving `user.phone_number == null`.
+- **Level of Storage**: Contact data belongs at account/user level (`User` entity), not duplicated per property.
+- **Privacy**: Excluded from public property responses (`PublicDiscoveryResponse`, tenant preview).
+
+### Files Changed / Added
+- `backend/src/main/java/com/indore/pathome/spaces/dto/lessor/LandlordContactDto.java` (added)
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordContactService.java` (added)
+- `backend/src/main/java/com/indore/pathome/spaces/controller/LandlordContactController.java` (added)
+- `backend/src/main/java/com/indore/pathome/spaces/service/LandlordSubmissionService.java` (updated)
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordContactServiceTest.java` (added)
+- `backend/src/test/java/com/indore/pathome/spaces/service/LandlordSubmissionServiceTest.java` (updated)
+- `frontend-web/src/services/lessorContactService.ts` (added)
+- `frontend-web/src/components/LessorContactModal.tsx` (added)
+- `frontend-web/src/components/LessorPreviewStep.tsx` (updated)
+- `frontend-web/src/components/LessorWorkspace.tsx` (updated)
+- `frontend-web/src/tests/lessorContactAndDiscard.test.mjs` (added)
+- `antigravity_changes` (this file)
+
+### Key Implementation Changes
+1. **Account-Level Contact Service**:
+   - `LandlordContactService`: Validates Indian mobile numbers (`^(?:\\+?91)?([6-9]\\d{9})$` ignoring whitespace/dashes) and normalizes to `+91 XXXXXXXXXX`. Validates name (2-100 characters). Updates `User` entity.
+   - `LandlordContactController`: `GET` and `PUT` `/api/v1/lessor/contact` secured with `@PreAuthorize("isAuthenticated()")`.
+2. **Submission Enforcement**:
+   - `LandlordSubmissionService.submit()` enforces usable name and mobile before creating listing or submitting revision.
+3. **Compact Profile Completion Step**:
+   - `LessorContactModal`: Renders compact step with requested copy ("Almost done / How can Pathome reach you?"), inputs for Full name and Mobile number (`+91`), helper text explaining private use, double-tap prevention, and accessible focus/escape management.
+   - Triggered only when submitting if profile is incomplete. Complete profiles proceed directly without prompting.
+   - Reused across multiple properties: Once saved, subsequent properties submit without prompting again.
+   - Draft safety: Contact save failure keeps draft completely safe and stays on modal with retry.
+4. **Discard UX Checkpoint**:
+   - Verified visible Discard button, destructive confirmation modal, truthful completion notification, and local resume state cleanup on confirmed success.
+
+### Verification
+- Backend tests:
+  - `LandlordContactServiceTest`: 6/6 passed.
+  - `LandlordSubmissionServiceTest`: 9/9 passed.
+  - `GuestDraftServiceTest`: 9/9 passed.
+  - `LandlordDraftServiceTest`: 11/11 passed.
+- Frontend tests:
+  - `lessor*.test.mjs`: 30/30 passed (`node --test`).
+- TypeScript:
+  - `tsc -p tsconfig.json --noEmit` exited code 0 with 0 errors.
+- Git:
+  - `git diff --check` passed cleanly.
+  - Single commit and push.
+
 ---
 
 ## 2026-09-28 15:47 IST — Location Safety Audit & Onboarding Brand/Discard UX

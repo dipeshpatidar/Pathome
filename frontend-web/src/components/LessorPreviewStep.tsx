@@ -3,6 +3,8 @@ import { ArrowRight, Check, LoaderCircle, Pencil, RefreshCw } from 'lucide-react
 import { getErrorMessage } from '../services/apiError';
 import { LessorPreview, LessorSubmission, lessorSubmissionService } from '../services/lessorSubmissionService';
 import { lessorMediaService } from '../services/lessorMediaService';
+import { lessorContactService } from '../services/lessorContactService';
+import { LessorContactModal } from './LessorContactModal';
 import { LessorMediaAsset } from './LessorMediaAsset';
 
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
@@ -18,6 +20,8 @@ export function LessorPreviewStep({ draftId, onEdit, onDone, guest = false, onGu
   const [submitting, setSubmitting] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState('');
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [contactInitial, setContactInitial] = useState<{ name: string; phone: string }>({ name: '', phone: '' });
   const submittingRef = useRef(false);
 
   const load = async () => {
@@ -28,18 +32,40 @@ export function LessorPreviewStep({ draftId, onEdit, onDone, guest = false, onGu
   };
   useEffect(() => { void load(); }, [draftId, guest]);
 
-  const submit = async () => {
-    if (submittingRef.current || !preview || preview.missingRequirements.length) return;
-    if (guest) { onGuestSubmit?.(); return; }
+  const executeSubmit = async () => {
     submittingRef.current = true; setSubmitting(true); setError('');
     try {
-      if (preview.media.some(item => item.status === 'STAGED')) await lessorMediaService.promote(draftId);
+      if (preview?.media.some(item => item.status === 'STAGED')) await lessorMediaService.promote(draftId);
       setSubmission(await lessorSubmissionService.submit(draftId));
     }
     catch (cause) { setError(draftId.startsWith('guest-')
       ? `Your property is saved. We couldn't submit it yet. ${getErrorMessage(cause, 'Please retry.')}`
       : getErrorMessage(cause, 'Could not submit your property.')); }
     finally { submittingRef.current = false; setSubmitting(false); }
+  };
+
+  const submit = async () => {
+    if (submittingRef.current || !preview || preview.missingRequirements.length) return;
+    if (guest) { onGuestSubmit?.(); return; }
+    submittingRef.current = true; setSubmitting(true); setError('');
+    try {
+      const contact = await lessorContactService.getContact();
+      if (!contact.complete) {
+        setContactInitial({
+          name: contact.fullName || '',
+          phone: contact.phoneNumber || ''
+        });
+        setShowContactModal(true);
+        submittingRef.current = false;
+        setSubmitting(false);
+        return;
+      }
+      await executeSubmit();
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Could not verify your contact details.'));
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
 
   if (submission) return <div role="status" className="mx-auto max-w-xl py-8"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"><Check className="h-7 w-7"/></div><h1 className="mt-5 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">Property submitted</h1><p className="mt-3 text-base text-slate-600">Your property has been submitted for review. You can track its status in My Properties.</p><button type="button" className={`${SECONDARY} mt-7`} onClick={onDone}>Go to My Properties<ArrowRight className="h-4 w-4"/></button></div>;
@@ -55,5 +81,15 @@ export function LessorPreviewStep({ draftId, onEdit, onDone, guest = false, onGu
     {!guest && preview.media.some(item => item.status === 'STAGED') && <button type="button" disabled={preparing} className={`${SECONDARY} mt-4`} onClick={() => { setPreparing(true); setError(''); void lessorMediaService.promote(draftId).then(load).catch(cause => setError(getErrorMessage(cause, 'Could not prepare your photos. Retry.'))).finally(() => setPreparing(false)); }}>{preparing ? 'Preparing photos…' : 'Prepare photos for submission'}</button>}
     {error && <p role="alert" className="mt-5 text-sm text-rose-700">{error}</p>}
     <button type="button" disabled={submitting || preview.missingRequirements.length > 0} className="mt-7 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 px-6 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => { void submit(); }}>{submitting ? 'Submitting…' : error && !guest ? 'Retry submission' : 'Submit property'}<ArrowRight className="h-4 w-4"/></button>
+    <LessorContactModal
+      isOpen={showContactModal}
+      initialFullName={contactInitial.name}
+      initialPhoneNumber={contactInitial.phone}
+      onSuccess={() => {
+        setShowContactModal(false);
+        void executeSubmit();
+      }}
+      onCancel={() => setShowContactModal(false)}
+    />
   </div>;
 }

@@ -7,7 +7,6 @@ import {
   LogIn,
   AlertCircle,
   ArrowUpRight,
-  MoreHorizontal,
   Trash2
 } from 'lucide-react';
 import type { LessorSaveStatus } from '../services/lessorAutosave';
@@ -42,49 +41,44 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [pendingExitAction, setPendingExitAction] = useState<'exit' | 'landing'>('exit');
   const [isFlushing, setIsFlushing] = useState(false);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [isDiscarding, setIsDiscarding] = useState(false);
   const [discardError, setDiscardError] = useState<string | null>(null);
 
-  const menuRef = useRef<HTMLDivElement>(null);
   const keepEditingBtnRef = useRef<HTMLButtonElement>(null);
-
-  // Close overflow menu on outside click or Escape
-  useEffect(() => {
-    if (!isMenuOpen) return;
-    const handleDown = (e: MouseEvent | TouchEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setIsMenuOpen(false);
-      }
-    };
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handleDown);
-    document.addEventListener('touchstart', handleDown);
-    document.addEventListener('keydown', handleKey);
-    return () => {
-      document.removeEventListener('mousedown', handleDown);
-      document.removeEventListener('touchstart', handleDown);
-      document.removeEventListener('keydown', handleKey);
-    };
-  }, [isMenuOpen]);
+  const discardTriggerRef = useRef<HTMLButtonElement>(null);
+  const discardDialogRef = useRef<HTMLDivElement>(null);
+  const discardInFlight = useRef(false);
 
   // Focus safe button and listen for Escape when Discard modal opens
   useEffect(() => {
     if (!showDiscardConfirm) return;
-    setDiscardError(null);
-    const timer = setTimeout(() => keepEditingBtnRef.current?.focus(), 50);
+    if (!isDiscarding) keepEditingBtnRef.current?.focus();
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isDiscarding) {
         setShowDiscardConfirm(false);
         setDiscardError(null);
+        discardTriggerRef.current?.focus();
+      }
+      if (e.key === 'Tab') {
+        const buttons = discardDialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        if (!buttons?.length) {
+          e.preventDefault();
+          return;
+        }
+        const first = buttons[0];
+        const last = buttons[buttons.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener('keydown', handleKey);
     return () => {
-      clearTimeout(timer);
       document.removeEventListener('keydown', handleKey);
     };
   }, [showDiscardConfirm, isDiscarding]);
@@ -140,28 +134,28 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   };
 
   const handleTriggerDiscard = () => {
-    setIsMenuOpen(false);
     if (!hasServerDraft) {
       void onDiscard?.();
     } else {
+      setDiscardError(null);
       setShowDiscardConfirm(true);
     }
   };
 
   const handleConfirmDiscard = async () => {
-    if (isDiscarding) return;
+    if (discardInFlight.current) return;
+    discardInFlight.current = true;
     setIsDiscarding(true);
     setDiscardError(null);
     try {
       await onDiscard?.();
       setShowDiscardConfirm(false);
-    } catch (err: unknown) {
-      const message =
-        err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
-          ? err.message
-          : "Couldn't discard this draft. Please try again.";
-      setDiscardError(message);
+    } catch {
+      setDiscardError(isRevision
+        ? "Couldn't confirm the discard. Check your property before trying again."
+        : "Couldn't confirm the discard. Check your drafts before trying again.");
     } finally {
+      discardInFlight.current = false;
       setIsDiscarding(false);
     }
   };
@@ -169,7 +163,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
   return (
     <>
       <header className="sticky top-0 z-40 w-full border-b border-slate-200/90 bg-white/95 pt-[env(safe-area-inset-top)] shadow-xs backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
+        <div className="mx-auto flex min-h-16 max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-2 sm:h-16 sm:flex-nowrap sm:gap-3 sm:px-6 sm:py-0">
           {/* BRAND LOGO & TAGLINE BLOCK */}
           <button
             type="button"
@@ -198,14 +192,14 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
 
           {/* CENTER: CURRENT STEP (hidden on mobile, visible on tablet/desktop) */}
           {currentStepLabel && (
-            <div className="hidden md:flex items-center gap-2 text-xs font-semibold text-slate-600">
+            <div className="hidden lg:flex items-center gap-2 text-xs font-semibold text-slate-600">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
               <span>{currentStepLabel}</span>
             </div>
           )}
 
-          {/* RIGHT ACTIONS: AUTOSAVE STATUS, GUEST SIGN-IN, EXIT, OVERFLOW */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          {/* RIGHT ACTIONS: AUTOSAVE STATUS, GUEST SIGN-IN, EXIT, DISCARD */}
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:flex-nowrap sm:gap-3">
             {/* AUTOSAVE MICRO-UX — Strictly truthful status */}
             <div className="flex items-center text-xs min-h-6 min-w-0" aria-live="polite">
               {isFlushing || status === 'saving' ? (
@@ -216,7 +210,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               ) : status === 'saved' ? (
                 <span className="flex items-center gap-1 font-medium text-emerald-700 transition-opacity duration-150">
                   <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-                  <span>Saved</span>
+                  <span className="hidden min-[400px]:inline">Saved</span>
                 </span>
               ) : status === 'error' ? (
                 <button
@@ -265,38 +259,18 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
               <ArrowUpRight className="hidden sm:inline h-3.5 w-3.5 text-slate-500" />
             </button>
 
-            {/* OVERFLOW MENU: DISCARD ACTION */}
+            {/* DISCARD IS VISIBLE WITHOUT HIDING THE DESTRUCTIVE ACTION IN A MENU */}
             {canDiscard && (
-              <div className="relative" ref={menuRef}>
-                <button
-                  type="button"
-                  onClick={() => setIsMenuOpen(prev => !prev)}
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-600 transition-colors hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
-                  title="More options"
-                  aria-label="More options"
-                  aria-expanded={isMenuOpen}
-                  aria-haspopup="menu"
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </button>
-
-                {isMenuOpen && (
-                  <div
-                    role="menu"
-                    className="absolute right-0 top-full mt-1.5 w-44 rounded-xl border border-slate-200 bg-white py-1 shadow-lg ring-1 ring-slate-900/5 z-50 animate-in fade-in zoom-in-95 duration-100"
-                  >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={handleTriggerDiscard}
-                      className="flex w-full items-center gap-2 px-3.5 py-2.5 text-xs sm:text-sm font-medium text-rose-600 hover:bg-rose-50 hover:text-rose-700 transition-colors cursor-pointer text-left"
-                    >
-                      <Trash2 className="h-4 w-4 text-rose-500 shrink-0" />
-                      <span>{isRevision ? 'Discard changes' : 'Discard draft'}</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button
+                ref={discardTriggerRef}
+                type="button"
+                disabled={isDiscarding}
+                onClick={handleTriggerDiscard}
+                className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700 transition-colors hover:border-rose-300 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>{isRevision ? 'Discard changes' : 'Discard draft'}</span>
+              </button>
             )}
           </div>
         </div>
@@ -355,7 +329,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
           aria-labelledby="confirm-discard-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
         >
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+          <div ref={discardDialogRef} className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-100 text-rose-700">
               <Trash2 className="h-6 w-6" />
             </div>
@@ -380,6 +354,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
                 onClick={() => {
                   setShowDiscardConfirm(false);
                   setDiscardError(null);
+                  discardTriggerRef.current?.focus();
                 }}
                 className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer disabled:opacity-50"
               >
@@ -397,7 +372,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
                     <span>Discarding…</span>
                   </>
                 ) : (
-                  <span>{isRevision ? 'Discard changes' : 'Discard property'}</span>
+                  <span>{discardError ? 'Try again' : isRevision ? 'Discard changes' : 'Discard property'}</span>
                 )}
               </button>
             </div>

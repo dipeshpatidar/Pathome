@@ -69,7 +69,7 @@ class LandlordSubmissionServiceTest {
         User owner = new User();
         owner.setId(5L);
         owner.setFullName("Owner");
-        owner.setPhoneNumber(null);
+        owner.setPhoneNumber("+91 98260 12345");
         when(users.findById(5L)).thenReturn(Optional.of(owner));
         when(listings.saveAndFlush(any())).thenAnswer(invocation -> {
             Listing saved = invocation.getArgument(0);
@@ -101,7 +101,7 @@ class LandlordSubmissionServiceTest {
         var listing = (RentalDetails) captured.getValue();
         assertEquals(ListingStatus.PENDING, listing.getStatus());
         assertEquals("10 Private Road", listing.getAddress());
-        assertNull(listing.getOwnerPhoneNumber());
+        assertEquals("+91 98260 12345", listing.getOwnerPhoneNumber());
         assertEquals(5L, listing.getOwnerUserId());
         when(listings.findByOriginDraftId("d1")).thenReturn(Optional.of(listing));
         var second = service.submit("owner@example.com", "d1");
@@ -117,6 +117,18 @@ class LandlordSubmissionServiceTest {
         when(drafts.findLandlordDraftForUpdate("d1", 5L)).thenReturn(Optional.empty());
         assertThrows(EntityNotFoundException.class, () -> service.submit("owner@example.com", "d1"));
         verify(listings, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void missingOwnerPhoneOrNameRejectsSubmission() {
+        User incompleteOwner = new User();
+        incompleteOwner.setId(5L);
+        incompleteOwner.setFullName("Owner");
+        incompleteOwner.setPhoneNumber(null);
+        when(users.findById(5L)).thenReturn(Optional.of(incompleteOwner));
+
+        var ex = assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
+        assertTrue(ex.getMessage().contains("contact details"));
     }
 
     @Test

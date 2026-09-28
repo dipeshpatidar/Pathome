@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useNotification } from '../context/NotificationContext';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   ArrowLeft,
@@ -29,6 +30,8 @@ import {
 import { LessorLocalityOption, lessorLocationService } from '../services/lessorLocationService';
 import { LessorMediaItem, lessorMediaService } from '../services/lessorMediaService';
 import { lessorSubmissionService } from '../services/lessorSubmissionService';
+import { lessorContactService } from '../services/lessorContactService';
+import { LessorContactModal } from './LessorContactModal';
 import { LessorMediaStep } from './LessorMediaStep';
 import { LessorDetailsStep } from './LessorDetailsStep';
 import { LessorPreviewStep } from './LessorPreviewStep';
@@ -93,6 +96,9 @@ export function LessorWorkspace({
     'idle' | 'claiming' | 'promoting' | 'submitting' | 'failedClaim' | 'failedMedia' | 'failedSubmit'
   >('idle');
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [showWorkspaceContactModal, setShowWorkspaceContactModal] = useState(false);
+  const [pendingContactDraftId, setPendingContactDraftId] = useState<string | null>(null);
+  const [workspaceContactInitial, setWorkspaceContactInitial] = useState<{ name: string; phone: string }>({ name: '', phone: '' });
   const claimBusy = useRef(false);
   const draftId = /^\/lessor\/drafts\/([^/]+)$/.exec(location.pathname)?.[1];
   const listingId = /^\/lessor\/listings\/(\d+)$/.exec(location.pathname)?.[1];
@@ -112,6 +118,25 @@ export function LessorWorkspace({
     } catch (cause) {
       setError(getErrorMessage(cause, 'Submission could not be completed.'));
       setTransition('failedSubmit');
+    }
+  };
+
+  const handleWorkspaceContactSuccess = async () => {
+    setShowWorkspaceContactModal(false);
+    if (pendingContactDraftId) {
+      const id = pendingContactDraftId;
+      setPendingContactDraftId(null);
+      await finishSubmission(id);
+    }
+  };
+
+  const handleWorkspaceContactCancel = () => {
+    setShowWorkspaceContactModal(false);
+    const id = pendingContactDraftId;
+    setPendingContactDraftId(null);
+    setTransition('idle');
+    if (id) {
+      navigate(`/lessor/drafts/${encodeURIComponent(id)}`, { replace: true });
     }
   };
 
@@ -139,8 +164,26 @@ export function LessorWorkspace({
       localStorage.removeItem('pathome_guest_draft_id');
       sessionStorage.removeItem('pathome_guest_save_draft');
       sessionStorage.removeItem('pathome_guest_submit_draft');
-      if (submit) await finishSubmission(id);
-      else await promoteOnly(id);
+      if (submit) {
+        try {
+          const contact = await lessorContactService.getContact();
+          if (!contact.complete) {
+            setPendingContactDraftId(id);
+            setWorkspaceContactInitial({
+              name: contact.fullName || user?.fullName || '',
+              phone: contact.phoneNumber || ''
+            });
+            setShowWorkspaceContactModal(true);
+            setTransition('idle');
+            return;
+          }
+        } catch {
+          // If check fails, finishSubmission will handle the error appropriately
+        }
+        await finishSubmission(id);
+      } else {
+        await promoteOnly(id);
+      }
     } catch (cause) {
       setError(getErrorMessage(cause, 'Could not save this guest draft to your account.'));
       setTransition('failedClaim');
@@ -320,6 +363,10 @@ export function LessorWorkspace({
             onBack={() => navigate(user ? '/lessor' : '/')}
             onRequestAuth={onRequestAuth}
             previewRevision={previewRevision}
+            onDiscarded={() => {
+              setGuestResume(null);
+              setGuestExpired(false);
+            }}
           />
         )}
 
@@ -565,6 +612,13 @@ export function LessorWorkspace({
           </div>
         )}
       </main>
+      <LessorContactModal
+        isOpen={showWorkspaceContactModal}
+        initialFullName={workspaceContactInitial.name}
+        initialPhoneNumber={workspaceContactInitial.phone}
+        onSuccess={() => void handleWorkspaceContactSuccess()}
+        onCancel={handleWorkspaceContactCancel}
+      />
     </div>
   );
 }
@@ -584,7 +638,8 @@ function LessorEditor({
   onBack,
   guest,
   onRequestAuth,
-  previewRevision
+  previewRevision,
+  onDiscarded
 }: {
   userId: number | null;
   draftId: string;
@@ -592,8 +647,10 @@ function LessorEditor({
   guest: boolean;
   onRequestAuth: (draftId: string, submit: boolean) => void;
   previewRevision: number;
+  onDiscarded: () => void;
 }) {
   const navigate = useNavigate();
+  const { notifySuccess } = useNotification();
   const [draft, setDraft] = useState<LessorDraft | null>(null);
   const [basics, setBasics] = useState<LessorBasics | null>(null);
   const [pricing, setPricing] = useState<LessorPricing>({ monthlyRent: null, securityDeposit: null });
@@ -875,6 +932,7 @@ function LessorEditor({
   };
 
   const handleDiscard = async () => {
+    await lessorDraftService.discard(draftId, guest);
     queue.current?.abandon();
     localStorage.removeItem(`pathome_lessor_unsynced_${userId ?? 0}_${draftId}`);
     localStorage.removeItem(`pathome_guest_step_${draftId}`);
@@ -882,12 +940,18 @@ function LessorEditor({
       localStorage.removeItem('pathome_guest_draft_id');
       sessionStorage.removeItem('pathome_guest_submit_draft');
     }
-    await lessorDraftService.discard(draftId, guest);
-    if (guest) {
-      navigate('/');
-    } else {
-      navigate('/lessor');
-    }
+    onDiscarded();
+    const type = PROPERTY_TYPES.find(option => option.value === basics?.propertyType)?.label.toLowerCase() || 'property';
+    const property = [basics?.bhkCount, type].filter(Boolean).join(' ');
+    const place = [propertyLocation.localityInput, propertyLocation.city].filter(Boolean).join(', ');
+    const description = place ? `${property} in ${place}` : property;
+    notifySuccess(
+      draft?.revisionOfListingId ? 'Changes discarded' : 'Property draft discarded',
+      draft?.revisionOfListingId
+        ? `Changes to your ${description} were discarded. Your published property remains available.`
+        : `Your ${description} draft was discarded.`
+    );
+    navigate('/lessor', { replace: true });
   };
 
   if (error && !draft)

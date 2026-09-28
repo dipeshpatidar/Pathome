@@ -112,6 +112,10 @@ public class LandlordSubmissionService {
         if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
             throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
         }
+        User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
+        if (!LandlordContactService.isUsableName(owner.getFullName()) || !LandlordContactService.isUsablePhone(owner.getPhoneNumber())) {
+            throw new IllegalArgumentException("Complete your contact details (full name and mobile number) before submitting for review");
+        }
         Locality locality = data.location().canonicalLocalityId() == null ? null :
                 locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
         String selectedName = locality == null ? data.location().localityInput().trim() : locality.getSectorName();
@@ -147,7 +151,6 @@ public class LandlordSubmissionService {
             return new LandlordSubmission(target.getId(), draftId, title(data, selectedName),
                     ListingWorkflowStatus.SUBMITTED, draft.getUpdatedAt());
         }
-        User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
         RentalDetails listing = new RentalDetails();
         listing.setTitle(title(data, selectedName));
         listing.setPropertyType(data.basics().propertyType());
