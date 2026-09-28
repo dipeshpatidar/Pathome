@@ -6,8 +6,10 @@ import com.indore.pathome.spaces.repository.SystemNotificationRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -19,6 +21,7 @@ public class LessorWorkflowNotificationServiceTest {
     private SystemNotificationRepository notificationRepository;
     private LessorProfileRepository lessorProfileRepository;
     private LessorWorkflowNotificationService notificationService;
+    private Map<String, SystemNotification> stored;
 
     private static final Long LINKED_USER_ID = 42L;
     private static final Long UNRELATED_USER_ID = 99L;
@@ -30,6 +33,7 @@ public class LessorWorkflowNotificationServiceTest {
         notificationRepository = mock(SystemNotificationRepository.class);
         lessorProfileRepository = mock(LessorProfileRepository.class);
         notificationService = new LessorWorkflowNotificationService(notificationRepository, lessorProfileRepository);
+        stored = new HashMap<>();
 
         LessorProfile profile = new LessorProfile();
         profile.setId(PROFILE_ID);
@@ -37,10 +41,26 @@ public class LessorWorkflowNotificationServiceTest {
         when(lessorProfileRepository.findById(PROFILE_ID)).thenReturn(Optional.of(profile));
         when(lessorProfileRepository.findByLinkedUserId(LINKED_USER_ID)).thenReturn(Optional.of(profile));
 
-        when(notificationRepository.save(any(SystemNotification.class))).thenAnswer(inv -> {
-            SystemNotification n = inv.getArgument(0);
-            n.setId(1L);
-            return n;
+        when(notificationRepository.insertWorkflowIfAbsent(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> {
+                    String key = inv.getArgument(0);
+                    if (stored.containsKey(key)) return 0;
+                    SystemNotification n = new SystemNotification();
+                    n.setId((long) stored.size() + 1);
+                    n.setEventKey(key);
+                    n.setRecipientUserId(inv.getArgument(1));
+                    n.setTitle(inv.getArgument(2));
+                    n.setMessage(inv.getArgument(3));
+                    n.setType(inv.getArgument(4));
+                    n.setListingId(inv.getArgument(6));
+                    n.setRevisionId(inv.getArgument(7));
+                    n.setActionType(inv.getArgument(8));
+                    n.setActionTarget(inv.getArgument(9));
+                    stored.put(key, n);
+                    return 1;
+                });
+        when(notificationRepository.findByEventKey(any())).thenAnswer(inv -> {
+            return Optional.ofNullable(stored.get(inv.getArgument(0)));
         });
     }
 
@@ -63,10 +83,7 @@ public class LessorWorkflowNotificationServiceTest {
         Optional<SystemNotification> result = notificationService.notifyPropertySubmitted(listing);
 
         assertTrue(result.isPresent());
-        ArgumentCaptor<SystemNotification> captor = ArgumentCaptor.forClass(SystemNotification.class);
-        verify(notificationRepository).save(captor.capture());
-
-        SystemNotification saved = captor.getValue();
+        SystemNotification saved = result.get();
         assertEquals(String.valueOf(LINKED_USER_ID), saved.getRecipientUserId());
         assertNotEquals(String.valueOf(UNRELATED_USER_ID), saved.getRecipientUserId());
         assertEquals("Property submitted", saved.getTitle());
@@ -94,7 +111,7 @@ public class LessorWorkflowNotificationServiceTest {
 
         // Safe skip: returns empty, does not throw, does not save notification
         assertTrue(result.isEmpty());
-        verify(notificationRepository, never()).save(any());
+        verify(notificationRepository, never()).insertWorkflowIfAbsent(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -103,18 +120,12 @@ public class LessorWorkflowNotificationServiceTest {
         RentalDetails listing = createListing(ListingWorkflowStatus.UNDER_REVIEW);
         String expectedKey = "REVIEW_STARTED:101:1";
 
-        SystemNotification existing = new SystemNotification();
-        existing.setId(55L);
-        existing.setEventKey(expectedKey);
-
-        when(notificationRepository.existsByEventKey(expectedKey)).thenReturn(true);
-        when(notificationRepository.findByEventKey(expectedKey)).thenReturn(Optional.of(existing));
-
-        Optional<SystemNotification> result = notificationService.notifyReviewStarted(listing);
-
-        assertTrue(result.isPresent());
-        assertEquals(55L, result.get().getId());
-        // Verify save was NOT called again because dedupe key existed
+        SystemNotification first = notificationService.notifyReviewStarted(listing).orElseThrow();
+        SystemNotification replay = notificationService.notifyReviewStarted(listing).orElseThrow();
+        assertEquals(expectedKey, first.getEventKey());
+        assertEquals(first.getId(), replay.getId());
+        assertEquals(1, stored.size());
+        verify(notificationRepository, times(2)).insertWorkflowIfAbsent(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(notificationRepository, never()).save(any());
     }
 
@@ -153,7 +164,7 @@ public class LessorWorkflowNotificationServiceTest {
     public void testPublishedListingWithPendingRevisionTruthfulness() {
         RentalDetails listing = createListing(ListingWorkflowStatus.PUBLISHED);
 
-        Optional<SystemNotification> result = notificationService.notifyRevisionSubmitted(listing, "draft-rev-1");
+        Optional<SystemNotification> result = notificationService.notifyRevisionSubmitted(listing, "draft-rev-1", 3);
 
         assertTrue(result.isPresent());
         SystemNotification notif = result.get();
@@ -168,7 +179,7 @@ public class LessorWorkflowNotificationServiceTest {
     public void testPausedListingWithPendingRevisionTruthfulness() {
         RentalDetails listing = createListing(ListingWorkflowStatus.PAUSED);
 
-        Optional<SystemNotification> result = notificationService.notifyRevisionSubmitted(listing, "draft-rev-2");
+        Optional<SystemNotification> result = notificationService.notifyRevisionSubmitted(listing, "draft-rev-2", 4);
 
         assertTrue(result.isPresent());
         SystemNotification notif = result.get();
@@ -207,5 +218,51 @@ public class LessorWorkflowNotificationServiceTest {
         SystemNotification notif = result.get();
         assertEquals("Changes published", notif.getTitle());
         assertEquals("Your approved changes to 3BHK flat in Bapat are now live.", notif.getMessage());
+    }
+
+    @Test
+    public void unrelatedDatabaseFailurePropagates() {
+        when(notificationRepository.insertWorkflowIfAbsent(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new DataIntegrityViolationException("other constraint"));
+        assertThrows(DataIntegrityViolationException.class,
+                () -> notificationService.notifyPropertySubmitted(createListing(ListingWorkflowStatus.SUBMITTED)));
+    }
+
+    @Test
+    public void legacyOwnerWithoutProfileDoesNotReceiveNotification() {
+        RentalDetails listing = createListing(ListingWorkflowStatus.SUBMITTED);
+        listing.setLessorProfileId(null);
+        assertTrue(notificationService.notifyPropertySubmitted(listing).isEmpty());
+        verify(lessorProfileRepository, never()).findByLinkedUserId(any());
+        assertTrue(stored.isEmpty());
+    }
+
+    @Test
+    public void missingProfileDoesNotReceiveNotification() {
+        RentalDetails listing = createListing(ListingWorkflowStatus.SUBMITTED);
+        listing.setLessorProfileId(999L);
+        assertTrue(notificationService.notifyPropertySubmitted(listing).isEmpty());
+        assertTrue(stored.isEmpty());
+    }
+
+    @Test
+    public void revisionSubmissionVersionDistinguishesResubmissionAndDedupesRetry() {
+        RentalDetails listing = createListing(ListingWorkflowStatus.PUBLISHED);
+        SystemNotification first = notificationService.notifyRevisionSubmitted(listing, "draft-rev", 4).orElseThrow();
+        SystemNotification retry = notificationService.notifyRevisionSubmitted(listing, "draft-rev", 4).orElseThrow();
+        SystemNotification resubmitted = notificationService.notifyRevisionSubmitted(listing, "draft-rev", 7).orElseThrow();
+        assertEquals(first.getId(), retry.getId());
+        assertNotEquals(first.getId(), resubmitted.getId());
+        assertEquals(2, stored.size());
+    }
+
+    @Test
+    public void pausedRevisionApprovalDoesNotClaimVisibility() {
+        RentalDetails listing = createListing(ListingWorkflowStatus.PAUSED);
+        SystemNotification notification = notificationService.notifyRevisionPublished(listing, "draft-paused").orElseThrow();
+        assertEquals("Changes approved", notification.getTitle());
+        assertEquals("Your recent changes to 3BHK flat in Bapat were approved. This property remains paused.", notification.getMessage());
+        assertFalse(notification.getMessage().contains("live"));
+        assertFalse(notification.getMessage().contains("visible"));
     }
 }

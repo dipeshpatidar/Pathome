@@ -80,6 +80,7 @@ class LandlordSubmissionServiceTest {
             saved.setId(42L);
             return saved;
         });
+        when(drafts.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
@@ -211,6 +212,59 @@ class LandlordSubmissionServiceTest {
         verify(listings, never()).saveAndFlush(any());
         verify(assets, never()).deleteAll(any());
         assertEquals(88L, service.submit("owner@example.com", "d1").listingId());
+    }
+
+    @Test
+    void revisionSubmissionUsesPersistedVersionAndRetryDoesNotRenotify() {
+        RentalDetails live = new RentalDetails();
+        live.setId(88L);
+        live.setOwnerUserId(5L);
+        live.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        live.setVersion(3L);
+        draft.setPublishedPropertyId(88L);
+        draft.setRevisionBaseVersion(3L);
+        LessorWorkflowNotificationService notifications = mock(LessorWorkflowNotificationService.class);
+        service.setWorkflowNotifications(notifications);
+        when(listings.lockOwnedId(88L, 5L)).thenReturn(Optional.of(88L));
+        when(listings.findByIdAndOwnerUserId(88L, 5L)).thenReturn(Optional.of(live));
+        when(drafts.saveAndFlush(draft)).thenAnswer(invocation -> {
+            draft.setVersion(draft.getVersion() + 1);
+            return draft;
+        });
+
+        service.submit("owner@example.com", "d1");
+        verify(notifications).notifyRevisionSubmitted(live, "d1", 2);
+        service.submit("owner@example.com", "d1");
+        verifyNoMoreInteractions(notifications);
+
+        draft.setStatus("DRAFT"); // Same persisted draft returned for changes and edited again.
+        draft.setVersion(5);
+        service.submit("owner@example.com", "d1");
+        verify(notifications).notifyRevisionSubmitted(live, "d1", 6);
+    }
+
+    @Test
+    void revisionSubmissionSucceedsWhenProfileHasNoLinkedUser() {
+        RentalDetails live = new RentalDetails();
+        live.setId(88L);
+        live.setOwnerUserId(5L);
+        live.setLessorProfileId(50L);
+        live.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        live.setVersion(3L);
+        draft.setPublishedPropertyId(88L);
+        draft.setRevisionBaseVersion(3L);
+        when(listings.lockOwnedId(88L, 5L)).thenReturn(Optional.of(88L));
+        when(listings.findByIdAndOwnerUserId(88L, 5L)).thenReturn(Optional.of(live));
+        LessorProfile unlinked = new LessorProfile();
+        unlinked.setId(50L);
+        LessorProfileRepository profiles = mock(LessorProfileRepository.class);
+        SystemNotificationRepository notifications = mock(SystemNotificationRepository.class);
+        when(profiles.findById(50L)).thenReturn(Optional.of(unlinked));
+        service.setWorkflowNotifications(new LessorWorkflowNotificationService(notifications, profiles));
+
+        assertEquals(88L, service.submit("owner@example.com", "d1").listingId());
+        assertEquals("REVIEW", draft.getStatus());
+        verify(notifications, never()).insertWorkflowIfAbsent(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

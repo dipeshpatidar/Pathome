@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { API_ROOT_URL } from '../config/endpoints';
+import { readNotificationIdentity, visibleNotificationHistory, isCurrentNotificationRequest } from '../utils/notificationSession';
 
 export type NotificationType = 'success' | 'info' | 'warning' | 'error' | 'ai_magic';
 export type NotificationCategory = 'SYSTEM' | 'PROPERTY' | 'PAYROLL' | 'APPROVAL' | 'AI_ENGINE';
@@ -74,6 +75,10 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [markReadError, setMarkReadError] = useState<string | null>(null);
+  const [historyIdentity, setHistoryIdentity] = useState<string | null>(null);
+  const [toastsIdentity, setToastsIdentity] = useState<string | null>(null);
+  const sessionIdentityRef = useRef<string | null>(readNotificationIdentity());
+  const requestGenerationRef = useRef(0);
 
   // Helper to fetch current active role from localStorage session
   const getActiveRole = useCallback((): string => {
@@ -88,6 +93,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   // Sync notifications from Spring Boot REST API
   const fetchBackendNotifications = useCallback(async () => {
+    const identity = readNotificationIdentity();
+    if (!identity || identity !== sessionIdentityRef.current) return;
+    const generation = ++requestGenerationRef.current;
+    const isCurrent = () => isCurrentNotificationRequest(identity, generation,
+      sessionIdentityRef.current, requestGenerationRef.current) && identity === readNotificationIdentity();
     try {
       setIsLoading(true);
       setFetchError(null);
@@ -104,7 +114,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
       const data = await response.json();
 
-      if (Array.isArray(data)) {
+      if (isCurrent() && Array.isArray(data)) {
         const fetchedItems: NotificationHistoryItem[] = data.map((item: any) => ({
           id: `db-${item.id}`,
           type: (item.type as NotificationType) || 'info',
@@ -122,19 +132,46 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }));
 
         setHistory(fetchedItems);
+        setHistoryIdentity(identity);
       }
     } catch (err) {
-      console.warn("Backend notifications sync failed:", err);
-      setFetchError("We couldn't load your notifications.");
+      if (isCurrent()) {
+        console.warn("Backend notifications sync failed:", err);
+        setFetchError("We couldn't load your notifications.");
+      }
     } finally {
-      setIsLoading(false);
+      if (isCurrent()) setIsLoading(false);
     }
   }, [getActiveRole]);
 
   React.useEffect(() => {
-    fetchBackendNotifications();
-    const interval = setInterval(fetchBackendNotifications, 15000); // Polling every 15s for live notifications
-    return () => clearInterval(interval);
+    const syncSession = () => {
+      const identity = readNotificationIdentity();
+      if (identity !== sessionIdentityRef.current) {
+        sessionIdentityRef.current = identity;
+        requestGenerationRef.current++;
+        setHistory([]);
+        setHistoryIdentity(null);
+        setToasts([]);
+        setToastsIdentity(null);
+        setFetchError(null);
+        setMarkReadError(null);
+        setIsLoading(false);
+        setIsDrawerOpen(false);
+        setErrorDialog(null);
+      }
+      if (identity) void fetchBackendNotifications();
+    };
+    syncSession();
+    window.addEventListener('pathome_auth_changed', syncSession);
+    window.addEventListener('storage', syncSession);
+    const interval = setInterval(syncSession, 15000);
+    return () => {
+      requestGenerationRef.current++;
+      clearInterval(interval);
+      window.removeEventListener('pathome_auth_changed', syncSession);
+      window.removeEventListener('storage', syncSession);
+    };
   }, [fetchBackendNotifications]);
 
   const removeToast = useCallback((id: string) => {
@@ -162,6 +199,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     setToasts(prev => [newToast, ...prev.slice(0, 4)]); // Keep max 5 active floating toasts
     setHistory(prev => [{ ...newToast, read: false }, ...prev]);
+    setHistoryIdentity(readNotificationIdentity() ?? 'guest');
+    setToastsIdentity(readNotificationIdentity() ?? 'guest');
 
     return id;
   }, [getActiveRole]);
@@ -203,6 +242,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   }, []);
 
   const markAllAsRead = useCallback(async () => {
+    const identity = readNotificationIdentity();
+    if (!identity || identity !== sessionIdentityRef.current) return;
     let previousState: NotificationHistoryItem[] = [];
     setHistory(prev => {
       previousState = prev;
@@ -224,12 +265,16 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         throw new Error('Failed to mark all as read');
       }
     } catch {
-      setHistory(previousState);
-      setMarkReadError("We couldn't update notifications. Try again.");
+      if (identity === sessionIdentityRef.current && identity === readNotificationIdentity()) {
+        setHistory(previousState);
+        setMarkReadError("We couldn't update notifications. Try again.");
+      }
     }
   }, []);
 
   const markAsRead = useCallback(async (id: string) => {
+    const identity = readNotificationIdentity();
+    if (!identity || identity !== sessionIdentityRef.current) return;
     let previousState: NotificationHistoryItem[] = [];
     setHistory(prev => {
       previousState = prev;
@@ -253,18 +298,22 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           throw new Error('Failed to update notification');
         }
       } catch {
-        setHistory(previousState);
-        setMarkReadError("We couldn't update this notification. Try again.");
+        if (identity === sessionIdentityRef.current && identity === readNotificationIdentity()) {
+          setHistory(previousState);
+          setMarkReadError("We couldn't update this notification. Try again.");
+        }
       }
     }
   }, []);
 
-  const unreadCount = history.filter(item => !item.read).length;
+  const visibleHistory = visibleNotificationHistory(history, historyIdentity, readNotificationIdentity());
+  const visibleToasts = visibleNotificationHistory(toasts, toastsIdentity, readNotificationIdentity());
+  const unreadCount = visibleHistory.filter(item => !item.read).length;
 
   return (
     <NotificationContext.Provider value={{
-      toasts,
-      history,
+      toasts: visibleToasts,
+      history: visibleHistory,
       unreadCount,
       isLoading,
       fetchError,

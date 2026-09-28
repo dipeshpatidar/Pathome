@@ -5,7 +5,6 @@ import com.indore.pathome.spaces.entity.ListingWorkflowStatus;
 import com.indore.pathome.spaces.entity.LessorProfile;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.SystemNotification;
-import com.indore.pathome.spaces.entity.TargetRole;
 import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.SystemNotificationRepository;
 import org.slf4j.Logger;
@@ -42,20 +41,8 @@ public class LessorWorkflowNotificationService {
             return null;
         }
         Long profileId = listing.getLessorProfileId();
-        if (profileId != null) {
-            Optional<LessorProfile> profileOpt = lessorProfileRepository.findById(profileId);
-            if (profileOpt.isPresent()) {
-                return profileOpt.get().getLinkedUserId();
-            }
-        }
-        // Fallback for listings prior to V26 where lessorProfileId was null but ownerUserId was set
-        if (listing.getOwnerUserId() != null) {
-            Optional<LessorProfile> profileOpt = lessorProfileRepository.findByLinkedUserId(listing.getOwnerUserId());
-            if (profileOpt.isPresent()) {
-                return profileOpt.get().getLinkedUserId();
-            }
-        }
-        return null;
+        return profileId == null ? null : lessorProfileRepository.findById(profileId)
+                .map(LessorProfile::getLinkedUserId).orElse(null);
     }
 
     private String formatPropertyName(Listing listing) {
@@ -88,35 +75,12 @@ public class LessorWorkflowNotificationService {
             eventKey = eventKey.substring(0, 120);
         }
 
-        if (notificationRepository.existsByEventKey(eventKey)) {
-            log.info("Notification with eventKey [{}] already exists. Idempotent skip.", eventKey);
-            return notificationRepository.findByEventKey(eventKey);
-        }
-
-        SystemNotification notification = new SystemNotification();
-        notification.setTargetRole(TargetRole.LANDLORD);
-        notification.setRecipientUserId(String.valueOf(recipientUserId));
-        notification.setCategory("PROPERTY");
-        notification.setType(eventType.contains("CHANGES_REQUIRED") ? "warning" : "info");
-        notification.setTitle(title);
-        notification.setMessage(message);
-        notification.setListingId(listing != null ? listing.getId() : null);
-        notification.setRevisionId(revisionId);
-        notification.setActionType(actionType);
-        notification.setActionTarget(actionTarget);
-        notification.setEventKey(eventKey);
-        notification.setRead(false);
-        notification.setCreatedAt(LocalDateTime.now());
-
-        try {
-            SystemNotification saved = notificationRepository.save(notification);
-            log.info("Dispatched lessor workflow notification id={} eventKey={} recipientUserId={}",
-                    saved.getId(), eventKey, recipientUserId);
-            return Optional.of(saved);
-        } catch (org.springframework.dao.DataIntegrityViolationException e) {
-            log.info("Concurrent race creating notification with eventKey [{}]. Returning existing.", eventKey);
-            return notificationRepository.findByEventKey(eventKey);
-        }
+        int inserted = notificationRepository.insertWorkflowIfAbsent(eventKey, String.valueOf(recipientUserId),
+                title, message, eventType.contains("CHANGES_REQUIRED") ? "warning" : "info",
+                LocalDateTime.now(), listing != null ? listing.getId() : null, revisionId, actionType, actionTarget);
+        log.info("Lessor workflow notification eventKey={} inserted={} recipientUserId={}",
+                eventKey, inserted == 1, recipientUserId);
+        return notificationRepository.findByEventKey(eventKey);
     }
 
     // 1. PROPERTY_SUBMITTED
@@ -189,7 +153,7 @@ public class LessorWorkflowNotificationService {
 
     // 5. REVISION_SUBMITTED
     @Transactional
-    public Optional<SystemNotification> notifyRevisionSubmitted(Listing listing, String draftId) {
+    public Optional<SystemNotification> notifyRevisionSubmitted(Listing listing, String draftId, int submissionVersion) {
         if (listing == null) return Optional.empty();
         String prop = formatPropertyName(listing);
         boolean isLive = listing.getWorkflowStatus() == ListingWorkflowStatus.PUBLISHED;
@@ -199,7 +163,7 @@ public class LessorWorkflowNotificationService {
         return createWorkflowNotification(
                 listing,
                 "REVISION_SUBMITTED",
-                draftId != null ? draftId : "0",
+                draftId + ":" + submissionVersion,
                 "Changes submitted",
                 message,
                 "VIEW_PROPERTY",
@@ -252,12 +216,16 @@ public class LessorWorkflowNotificationService {
     public Optional<SystemNotification> notifyRevisionPublished(Listing listing, String draftId) {
         if (listing == null) return Optional.empty();
         String prop = formatPropertyName(listing);
+        boolean live = listing.getWorkflowStatus() == ListingWorkflowStatus.PUBLISHED;
         return createWorkflowNotification(
                 listing,
                 "REVISION_PUBLISHED",
                 draftId != null ? draftId : "0",
-                "Changes published",
-                "Your approved changes to " + prop + " are now live.",
+                live ? "Changes published" : "Changes approved",
+                live ? "Your approved changes to " + prop + " are now live."
+                        : listing.getWorkflowStatus() == ListingWorkflowStatus.PAUSED
+                            ? "Your recent changes to " + prop + " were approved. This property remains paused."
+                            : "Your recent changes to " + prop + " were approved.",
                 "VIEW_PROPERTY",
                 "/lessor/listings/" + listing.getId(),
                 draftId

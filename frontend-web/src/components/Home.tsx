@@ -1045,6 +1045,7 @@ export const Home: React.FC = () => {
       localStorage.removeItem('pathome_role');
       localStorage.removeItem('pathome_user');
       localStorage.removeItem('pathome_auth_token');
+      window.dispatchEvent(new Event('pathome_auth_changed'));
       if (!location.pathname.startsWith('/lessor')) navigate('/', { replace: true });
       setShowAuthModal(true);
     };
@@ -1071,6 +1072,7 @@ export const Home: React.FC = () => {
         localStorage.removeItem('pathome_role');
         localStorage.removeItem('pathome_user');
         localStorage.removeItem('pathome_auth_token');
+        window.dispatchEvent(new Event('pathome_auth_changed'));
         navigate('/', { replace: true });
         setShowAuthModal(true);
       }
@@ -1186,6 +1188,9 @@ export const Home: React.FC = () => {
   };
 
   const handleLoginSuccess = (userProfile: UserProfile) => {
+    localStorage.setItem('pathome_role', userProfile.role);
+    localStorage.setItem('pathome_user', JSON.stringify(userProfile));
+    window.dispatchEvent(new Event('pathome_auth_changed'));
     setUser(userProfile);
     setRole(userProfile.role);
     setShowAuthModal(false);
@@ -1212,6 +1217,7 @@ export const Home: React.FC = () => {
     localStorage.removeItem('pathome_role');
     localStorage.removeItem('pathome_user');
     localStorage.removeItem('pathome_auth_token');
+    window.dispatchEvent(new Event('pathome_auth_changed'));
     localStorage.removeItem('pathome_active_admin_tab');
     setUser(null);
     setRole('GUEST');

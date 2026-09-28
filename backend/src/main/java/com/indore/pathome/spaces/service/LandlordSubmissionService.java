@@ -159,13 +159,13 @@ public class LandlordSubmissionService {
             } else {
                 // Approved live content is unchanged until an administrator applies this revision.
                 draft.setStatus("REVIEW");
-                if (workflowNotifications != null) {
-                    workflowNotifications.notifyRevisionSubmitted(target, draftId);
-                }
             }
             draft.setReviewNote(null);
             draft.setUpdatedAt(LocalDateTime.now());
-            drafts.save(draft);
+            PropertyUploadDraft savedDraft = drafts.saveAndFlush(draft);
+            if ("REVIEW".equals(savedDraft.getStatus()) && workflowNotifications != null) {
+                workflowNotifications.notifyRevisionSubmitted(target, draftId, savedDraft.getVersion());
+            }
             return new LandlordSubmission(target.getId(), draftId, title(data, selectedName),
                     ListingWorkflowStatus.SUBMITTED, draft.getUpdatedAt());
         }
