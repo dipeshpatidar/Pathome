@@ -37,6 +37,12 @@ public class User {
     @Column(name = "free_visits_remaining", nullable = false)
     private Integer freeVisitsRemaining = 5;
 
+    @Column(name = "landlord_activated_at")
+    private LocalDateTime landlordActivatedAt;
+
+    @Column(name = "landlord_activated_by_user_id")
+    private Long landlordActivatedByUserId;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -77,6 +83,12 @@ public class User {
 
     public Integer getFreeVisitsRemaining() { return freeVisitsRemaining; }
     public void setFreeVisitsRemaining(Integer freeVisitsRemaining) { this.freeVisitsRemaining = freeVisitsRemaining; }
+
+    public LocalDateTime getLandlordActivatedAt() { return landlordActivatedAt; }
+    public void setLandlordActivatedAt(LocalDateTime landlordActivatedAt) { this.landlordActivatedAt = landlordActivatedAt; }
+
+    public Long getLandlordActivatedByUserId() { return landlordActivatedByUserId; }
+    public void setLandlordActivatedByUserId(Long landlordActivatedByUserId) { this.landlordActivatedByUserId = landlordActivatedByUserId; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

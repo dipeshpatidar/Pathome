@@ -1,0 +1,81 @@
+package com.indore.pathome.spaces.service;
+
+import com.indore.pathome.spaces.entity.Role;
+import com.indore.pathome.spaces.entity.User;
+import com.indore.pathome.spaces.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.security.access.AccessDeniedException;
+
+import java.time.LocalDateTime;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+class LandlordCapabilityServiceTest {
+    private UserRepository users;
+    private LandlordCapabilityService service;
+
+    @BeforeEach
+    void setUp() {
+        users = mock(UserRepository.class);
+        service = new LandlordCapabilityService(users);
+    }
+
+    @Test
+    void activatesTenantWithoutReplacingTenantRole() {
+        User tenant = user(17L, Role.ROLE_TENANT);
+        when(users.activateLandlordCapability(eq(17L), any(LocalDateTime.class))).thenReturn(1);
+        User activated = user(17L, Role.ROLE_TENANT);
+        activated.setLandlordActivatedAt(LocalDateTime.of(2026, 9, 28, 10, 0));
+        activated.setLandlordActivatedByUserId(17L);
+        when(users.findByEmail("owner@example.com"))
+                .thenReturn(Optional.of(tenant), Optional.of(activated));
+        when(users.findById(17L)).thenReturn(Optional.of(activated));
+
+        var result = service.activate("owner@example.com");
+
+        assertTrue(result.enabled());
+        assertEquals(activated.getLandlordActivatedAt(), result.activatedAt());
+        assertEquals(Role.ROLE_TENANT, activated.getRole());
+        assertEquals(17L, service.requireLandlordUserId("owner@example.com"));
+        verify(users).activateLandlordCapability(eq(17L), any(LocalDateTime.class));
+    }
+
+    @Test
+    void repeatActivationDoesNotRewriteAuditTime() {
+        User tenant = user(17L, Role.ROLE_TENANT);
+        tenant.setLandlordActivatedAt(LocalDateTime.of(2026, 9, 28, 10, 0));
+        tenant.setLandlordActivatedByUserId(17L);
+        when(users.findByEmail("owner@example.com")).thenReturn(Optional.of(tenant));
+
+        var result = service.activate("owner@example.com");
+
+        assertTrue(result.enabled());
+        assertEquals(tenant.getLandlordActivatedAt(), result.activatedAt());
+        verify(users, never()).activateLandlordCapability(any(), any());
+    }
+
+    @Test
+    void tenantWithoutActivationCannotUseLandlordOperations() {
+        when(users.findByEmail("tenant@example.com")).thenReturn(Optional.of(user(21L, Role.ROLE_TENANT)));
+        assertThrows(AccessDeniedException.class, () -> service.requireLandlordUserId("tenant@example.com"));
+    }
+
+    @Test
+    void administrativeRoleCannotSelfActivate() {
+        when(users.findByEmail("admin@example.com")).thenReturn(Optional.of(user(8L, Role.ROLE_ADMIN)));
+        assertThrows(AccessDeniedException.class, () -> service.activate("admin@example.com"));
+        verify(users, never()).activateLandlordCapability(any(), any());
+    }
+
+    private static User user(Long id, Role role) {
+        User user = new User();
+        user.setId(id);
+        user.setRole(role);
+        return user;
+    }
+}

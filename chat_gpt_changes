@@ -1615,3 +1615,13 @@ Changed: frontend-web/src/components/PropertyShowcase.tsx reuses the current dis
 Verification: frontend TypeScript no-emit PASS; focused Node node:test discovery data, discovery navigation/performance, and rental search tests PASS 37/37; git diff --check PASS. Code inspection confirms one discovery column below 1024px, two from 1024px, no scroll snapping, a width-800 Cloudinary discovery preset, and matched skeleton/card media geometry. Browser observation at 390px, 768px, and 1440px, including off-screen video pause and scrolling smoothness, remains a manual handoff because no frontend server is listening on 127.0.0.1:5173 and local Vite binding was previously denied by the sandbox. Full production build was not run because a prior build exceeded ten minutes.
 
 Commit: NO. Push: NO.
+
+## 2026-09-28 10:14:26 IST — Phase 1B Slice 0 landlord capability foundation
+
+Why: Start the approved landlord self-service mission with a same-account capability that preserves tenant behavior and does not trust client-supplied roles.
+
+Changed: backend/src/main/java/com/indore/pathome/spaces/entity/User.java and repository/UserRepository.java store and atomically activate auditable landlord capability; service/LandlordCapabilityService.java enforces eligible server-side account identity and capability checks; controller/LandlordCapabilityController.java exposes authenticated capability read/activation; backend/src/main/resources/db/migration/V18__landlord_capability.sql adds the nullable audit fields and constraints; backend/src/test/java/com/indore/pathome/spaces/service/LandlordCapabilityServiceTest.java and security/LandlordCapabilitySecurityTest.java cover activation, idempotency, existing tenant role, arbitrary client role rejection, and anonymous denial. This entry appends to chat_gpt_changes. Pre-existing untracked AGENTS review documents were untouched.
+
+Verification: focused Maven tests LandlordCapabilityServiceTest and LandlordCapabilitySecurityTest PASS 7/7 after correcting one test mock that initially returned stale pre-activation data; git diff --check PASS. Migration was reviewed but not applied against a live database in this slice. No frontend or browser verification applies yet.
+
+Commit: pending Slice 0 checkpoint. Push: NO.
