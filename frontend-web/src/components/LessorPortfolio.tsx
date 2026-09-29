@@ -293,12 +293,31 @@ export function LessorPortfolio({ userId = null, onAdd, onOpenDraft, onOpenListi
             </div>
           </div>
           {deleteError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{deleteError}</p>}
-          {deleteState === 'deleting' && <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 text-sm text-slate-700"><LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />Deleting draft…</p>}
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <button type="button" autoFocus={deleteState !== 'deleting'} disabled={deleteState === 'deleting'} onClick={() => setConfirmDraft(null)} className={`${SECONDARY} w-full sm:w-auto`}>Cancel</button>
-            <button type="button" disabled={deleteState === 'deleting'} onClick={() => { void deleteDraft(); }}
-              className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-rose-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-rose-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
-              {deleteState === 'deleting' && <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{deleteError ? 'Retry delete' : 'Delete draft'}
+            <button
+              type="button"
+              autoFocus={deleteState !== 'deleting'}
+              disabled={deleteState === 'deleting'}
+              onClick={() => setConfirmDraft(null)}
+              className={`${SECONDARY} w-full disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto`}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleteState === 'deleting'}
+              aria-busy={deleteState === 'deleting'}
+              onClick={() => { void deleteDraft(); }}
+              className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-rose-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-rose-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+            >
+              {deleteState === 'deleting' ? (
+                <>
+                  <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  <span>Deleting…</span>
+                </>
+              ) : (
+                deleteError ? 'Retry delete' : 'Delete draft'
+              )}
             </button>
           </div>
         </>}
