@@ -455,7 +455,7 @@ export const propertyService = {
       body: JSON.stringify(payload)
     });
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to send your visit request. Please try again.');
+      throw await createApiRequestError(response, 'Unable to send your visit request. Please try again.', false, token);
     }
     return response.json();
   },

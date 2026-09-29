@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -30,6 +31,8 @@ class GuestMediaStoreTest {
                 () -> store.cover("guest-one", "guest-B-proof", "known-media-id"));
         assertThrows(EntityNotFoundException.class,
                 () -> store.claim("guest-one", "guest-B-proof", "new-media", "photo.jpg", "image/jpeg", 10));
+        assertThrows(EntityNotFoundException.class,
+                () -> store.tag("guest-one", "guest-B-proof", "known-media-id", RoomTag.BEDROOM));
         verifyNoInteractions(media);
     }
 

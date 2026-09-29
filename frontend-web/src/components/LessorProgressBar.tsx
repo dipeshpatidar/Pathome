@@ -26,8 +26,6 @@ export interface LessorProgressBarProps {
 
 export const LessorProgressBar: React.FC<LessorProgressBarProps> = ({ currentStep }) => {
   const currentIndex = STEPS.findIndex(s => s.key === currentStep);
-  const activeMeta = STEPS[currentIndex] || STEPS[0];
-  const progressPercent = Math.min(100, Math.round(((currentIndex + 1) / STEPS.length) * 100));
 
   return (
     <div className="w-full">
@@ -75,21 +73,6 @@ export const LessorProgressBar: React.FC<LessorProgressBarProps> = ({ currentSte
         </div>
       </div>
 
-      {/* MOBILE COMPACT PROGRESS (< 768px) */}
-      <div className="md:hidden">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-bold uppercase tracking-wider text-emerald-800">
-            {`Step ${activeMeta.stepNumber} of ${STEPS.length}`}
-          </span>
-          <span className="font-medium text-slate-500">{activeMeta.shortLabel}</span>
-        </div>
-        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-          <div
-            className="h-full bg-emerald-600 transition-[width] duration-300 motion-reduce:transition-none"
-            style={{ width: `${progressPercent}%` }}
-          />
-        </div>
-      </div>
     </div>
   );
 };

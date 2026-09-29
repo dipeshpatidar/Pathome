@@ -21,4 +21,10 @@ public enum RoomTag {
     public String getDisplayName() {
         return displayName;
     }
+
+    public static RoomTag fromStored(String value) {
+        if (value == null || value.isBlank()) return GENERAL;
+        try { return valueOf(value); }
+        catch (IllegalArgumentException ignored) { return GENERAL; }
+    }
 }

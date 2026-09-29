@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.service.LandlordMediaService;
 import com.indore.pathome.spaces.service.LandlordMediaPromotionService;
 import org.springframework.http.MediaType;
@@ -67,6 +68,12 @@ public class LandlordMediaController {
     @PutMapping("/{mediaId}/cover")
     public List<LandlordMediaItem> cover(Authentication auth, @PathVariable String draftId, @PathVariable String mediaId) {
         return media.makeCover(auth.getName(), draftId, mediaId);
+    }
+
+    @PutMapping("/{mediaId}/tag")
+    public LandlordMediaItem tag(Authentication auth, @PathVariable String draftId,
+                                 @PathVariable String mediaId, @RequestBody RoomTag tag) {
+        return media.tag(auth.getName(), draftId, mediaId, tag);
     }
 
     @PutMapping("/order")

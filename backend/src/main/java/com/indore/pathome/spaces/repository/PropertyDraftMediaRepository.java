@@ -17,6 +17,20 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
     boolean existsByDraftIdAndGuestOwnedTrueAndIsCoverTrueAndUploadStatusAndMediaIdNot(
             String draftId, String uploadStatus, String mediaId);
 
+    @Query("SELECT m.isCover FROM PropertyDraftMedia m WHERE m.draftId = :draftId " +
+            "AND m.landlordUserId = :ownerId AND m.mediaId = :mediaId")
+    Optional<Boolean> findLessorCoverFlag(@Param("draftId") String draftId,
+                                           @Param("ownerId") Long ownerId, @Param("mediaId") String mediaId);
+
+    boolean existsByDraftIdAndLandlordUserIdAndIsCoverTrueAndUploadStatusInAndMediaIdNotAndContentTypeStartingWith(
+            String draftId, Long landlordUserId, List<String> uploadStatuses, String mediaId, String contentTypePrefix);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE PropertyDraftMedia m SET m.isCover = false WHERE m.draftId = :draftId " +
+            "AND m.landlordUserId = :ownerId AND m.mediaId <> :mediaId AND m.isCover = true")
+    int clearOtherLessorCovers(@Param("draftId") String draftId,
+                               @Param("ownerId") Long ownerId, @Param("mediaId") String mediaId);
+
     List<PropertyDraftMedia> findAllByDraftIdAndAdminId(String draftId, String adminId);
 
     Optional<PropertyDraftMedia> findByMediaIdAndAdminId(String mediaId, String adminId);

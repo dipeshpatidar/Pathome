@@ -27,9 +27,9 @@ public class LandlordContactService {
     public LandlordContactDto getContact(String email) {
         User user = users.findByEmail(email)
                 .orElseThrow(() -> new AccessDeniedException("Account unavailable"));
-        LessorProfile profile = lessorProfiles.getOrCreateProfileForUser(user);
-        boolean complete = isUsableName(profile.getDisplayName()) && isUsablePhone(profile.getMobileNumber());
-        return new LandlordContactDto(profile.getDisplayName(), profile.getMobileNumber(), complete);
+        return lessorProfiles.getProfileForUser(user.getId())
+                .map(profile -> contact(profile.getDisplayName(), profile.getMobileNumber()))
+                .orElseGet(() -> contact(user.getFullName(), user.getPhoneNumber()));
     }
 
     @Transactional
@@ -42,10 +42,19 @@ public class LandlordContactService {
 
         User user = users.findByEmail(email)
                 .orElseThrow(() -> new AccessDeniedException("Account unavailable"));
-        lessorProfiles.getOrCreateProfileForUser(user);
-        LessorProfile profile = lessorProfiles.updateProfileContact(user.getId(), cleanName, cleanPhone);
+        if (lessorProfiles.getProfileForUser(user.getId()).isPresent()) {
+            LessorProfile profile = lessorProfiles.updateProfileContact(user.getId(), cleanName, cleanPhone);
+            return contact(profile.getDisplayName(), profile.getMobileNumber());
+        }
+        // Before submission, the account owns its drafts and holds contact until the profile is created.
+        user.setFullName(cleanName);
+        user.setPhoneNumber(cleanPhone);
+        users.save(user);
+        return contact(cleanName, cleanPhone);
+    }
 
-        return new LandlordContactDto(profile.getDisplayName(), profile.getMobileNumber(), true);
+    private static LandlordContactDto contact(String name, String phone) {
+        return new LandlordContactDto(name, phone, isUsableName(name) && isUsablePhone(phone));
     }
 
     public static boolean isLegacyPlaceholderName(String name) {

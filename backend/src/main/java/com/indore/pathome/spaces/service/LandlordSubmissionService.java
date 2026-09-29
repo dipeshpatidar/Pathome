@@ -63,7 +63,7 @@ public class LandlordSubmissionService {
 
     @Transactional(readOnly = true)
     public LandlordPreview preview(String email, String draftId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         PropertyUploadDraft draft = drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
         List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
@@ -93,13 +93,14 @@ public class LandlordSubmissionService {
                                         : "STAGED".equals(row.getUploadStatus()) && row.getStagingObjectKey() != null
                                             ? "/api/v1/lessor/properties/drafts/" + draft.getDraftId() + "/media/" + row.getMediaId() + "/content"
                                             : row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
-                                row.getSortOrder() == null ? 0 : row.getSortOrder())).toList(),
+                                row.getSortOrder() == null ? 0 : row.getSortOrder(),
+                                RoomTag.fromStored(row.getRoomTag()))).toList(),
                 missing(data, rows, localityName != null));
     }
 
     @Transactional
     public LandlordSubmission submit(String email, String draftId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         PropertyUploadDraft draft = drafts.findLandlordDraftForUpdate(draftId, ownerId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
         if (!"DRAFT".equals(draft.getStatus())) {
@@ -123,10 +124,13 @@ public class LandlordSubmissionService {
             throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
         }
         User owner = users.findById(ownerId).orElseThrow(() -> new EntityNotFoundException("Account not found"));
-        LessorProfile profile = lessorProfiles.getOrCreateProfileForUser(owner);
-        if (!LandlordContactService.isUsableName(profile.getDisplayName()) || !LandlordContactService.isUsablePhone(profile.getMobileNumber())) {
+        LessorProfile existingProfile = lessorProfiles.getProfileForUser(ownerId).orElse(null);
+        String contactName = existingProfile == null ? owner.getFullName() : existingProfile.getDisplayName();
+        String contactPhone = existingProfile == null ? owner.getPhoneNumber() : existingProfile.getMobileNumber();
+        if (!LandlordContactService.isUsableName(contactName) || !LandlordContactService.isUsablePhone(contactPhone)) {
             throw new IllegalArgumentException("Complete your contact details (full name and mobile number) before submitting for review");
         }
+        LessorProfile profile = existingProfile == null ? lessorProfiles.getOrCreateProfileForUser(owner) : existingProfile;
         draft.setLessorProfileId(profile.getId());
         Locality locality = data.location().canonicalLocalityId() == null ? null :
                 locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
@@ -196,7 +200,7 @@ public class LandlordSubmissionService {
                 .sorted(Comparator.comparing(PropertyDraftMedia::getSortOrder)).toList()) {
             boolean video = row.getContentType().startsWith("video/");
             PropertyMediaAsset asset = new PropertyMediaAsset(saved.getId(), row.getCloudinaryUrl(),
-                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.GENERAL,
+                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.fromStored(row.getRoomTag()),
                     video ? "Property video" : "Property photo");
             asset.setCloudinaryPublicId(row.getCloudinaryPublicId());
             asset.setUploadRequestId(row.getMediaId());
@@ -209,10 +213,11 @@ public class LandlordSubmissionService {
         }
         assets.saveAll(permanent);
         draft.setStatus("SUBMITTED");
-        drafts.save(draft);
+        drafts.saveAndFlush(draft);
         if (workflowNotifications != null) {
             workflowNotifications.notifyPropertySubmitted(saved);
         }
+        capabilities.activateAfterSubmission(email);
         return response(saved, draftId);
     }
 
@@ -256,7 +261,7 @@ public class LandlordSubmissionService {
                 .sorted(Comparator.comparing(PropertyDraftMedia::getSortOrder)).toList()) {
             boolean video = row.getContentType().startsWith("video/");
             PropertyMediaAsset asset = new PropertyMediaAsset(listing.getId(), row.getCloudinaryUrl(),
-                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.GENERAL,
+                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.fromStored(row.getRoomTag()),
                     video ? "Property video" : "Property photo");
             asset.setCloudinaryPublicId(row.getCloudinaryPublicId());
             asset.setUploadRequestId(row.getMediaId());
@@ -288,11 +293,11 @@ public class LandlordSubmissionService {
                 !canonicalLocation || data.location().address() == null ||
                 data.location().address().isBlank()) missing.add("confirmed city, locality, and private address");
         if (data.details() == null || data.details().availableFrom() == null) missing.add("availability date");
-        if (rows.stream().noneMatch(row -> ("UPLOADED".equals(row.getUploadStatus()) ||
+        long covers = rows.stream().filter(row -> ("UPLOADED".equals(row.getUploadStatus()) ||
                 Boolean.TRUE.equals(row.getGuestOwned()) && "STAGED".equals(row.getUploadStatus())) &&
-                row.getContentType().startsWith("image/") && Boolean.TRUE.equals(row.getIsCover()))) {
-            missing.add("at least one uploaded cover photo");
-        }
+                row.getContentType().startsWith("image/") && Boolean.TRUE.equals(row.getIsCover())).count();
+        if (covers == 0) missing.add("choose a cover photo");
+        else if (covers > 1) missing.add("choose one cover photo");
         return missing;
     }
 

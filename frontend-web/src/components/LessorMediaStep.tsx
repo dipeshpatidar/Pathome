@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowDown,
   ArrowUp,
   Camera,
@@ -17,20 +18,25 @@ import {
   classifyMediaError,
   generateMediaId,
   hasCoverImage,
+  mergeUploadedMedia,
   movedMediaIds,
-  normalizeMediaType
+  normalizeMediaType,
+  selectedUploadOrder
 } from '../utils/lessorMedia';
 import { LessorMediaAsset } from './LessorMediaAsset';
+import { ROOM_TAG_OPTIONS, RoomTag } from '../types';
+import { displayFilename, displayMediaName } from '../utils/lessorMedia';
 
 interface LocalUpload {
   id: string;
   file: File;
   previewUrl?: string;
   progress: number;
-  status: 'preparing' | 'uploading' | 'retrying' | 'failed';
+  status: 'queued' | 'uploading' | 'retrying' | 'failed';
   error?: string;
   retryable?: boolean;
   isVideo: boolean;
+  roomTag: RoomTag;
 }
 
 const SECONDARY =
@@ -38,12 +44,14 @@ const SECONDARY =
 
 export function LessorMediaStep({
   draftId,
+  onBack,
   onNext,
   guest = false,
   onMediaChange,
   onActiveUploadsChange
 }: {
   draftId: string;
+  onBack: () => void;
   onNext: () => void;
   guest?: boolean;
   onMediaChange?: (items: LessorMediaItem[]) => void;
@@ -54,8 +62,22 @@ export function LessorMediaStep({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [removingMediaId, setRemovingMediaId] = useState<string | null>(null);
+  const [taggingMediaIds, setTaggingMediaIds] = useState<Set<string>>(() => new Set());
+  const [finalizingOrder, setFinalizingOrder] = useState(false);
+  const localRef = useRef<LocalUpload[]>([]);
+  const queuedRef = useRef<LocalUpload[]>([]);
+  const activeRef = useRef(0);
+  const refreshRef = useRef(0);
+  const coverRevisionRef = useRef(0);
+  const selectionOrderRef = useRef<string[]>([]);
+  const selectedTagRef = useRef<Map<string, RoomTag>>(new Map());
   const uploaded = useMemo(
     () => items.filter(item => item.status === 'UPLOADED' || item.status === 'STAGED'),
+    [items]
+  );
+  const mediaCards = useMemo(
+    () => items.filter(item => item.status === 'UPLOADED' || item.status === 'STAGED' || item.status === 'DELETING'),
     [items]
   );
   const hasImage = hasCoverImage(uploaded);
@@ -66,37 +88,37 @@ export function LessorMediaStep({
 
   useEffect(() => {
     const hasActive = local.some(
-      row => row.status === 'uploading' || row.status === 'preparing' || row.status === 'retrying'
+      row => row.status === 'uploading' || row.status === 'queued' || row.status === 'retrying'
     );
-    onActiveUploadsChange?.(hasActive);
-  }, [local, onActiveUploadsChange]);
+    onActiveUploadsChange?.(hasActive || finalizingOrder);
+  }, [local, finalizingOrder, onActiveUploadsChange]);
 
+  useEffect(() => { localRef.current = local; }, [local]);
   useEffect(() => {
     return () => {
-      local.forEach(row => {
+      localRef.current.forEach(row => {
         if (row.previewUrl) URL.revokeObjectURL(row.previewUrl);
       });
     };
-  }, [local]);
+  }, []);
 
   const refresh = async () => {
+    const revision = ++refreshRef.current;
     const loaded = await lessorMediaService.list(draftId, guest);
-    setItems(loaded);
+    if (revision === refreshRef.current) setItems(loaded);
     return loaded;
   };
 
   useEffect(() => {
     let live = true;
     setLoading(true);
-    lessorMediaService
-      .list(draftId, guest)
+    refresh()
       .then(async loaded => {
         if (!live) return;
-        setItems(loaded);
-        const recoverable = loaded.filter(item => item.status === 'FAILED' || item.status === 'PENDING');
+        const recoverable = loaded.filter(item => item.status === 'FAILED');
         if (recoverable.length) {
           await Promise.allSettled(recoverable.map(item => lessorMediaService.recover(draftId, item.mediaId, guest)));
-          if (live) setItems(await lessorMediaService.list(draftId, guest));
+          if (live) await refresh();
         }
       })
       .catch(cause => {
@@ -111,6 +133,7 @@ export function LessorMediaStep({
   }, [draftId, guest]);
 
   const uploadOne = async (row: LocalUpload) => {
+    const coverRevision = coverRevisionRef.current;
     setLocal(previous =>
       previous.map(item => (item.id === row.id ? { ...item, status: 'uploading', error: undefined } : item))
     );
@@ -127,11 +150,15 @@ export function LessorMediaStep({
         guest
       );
       if (row.previewUrl) URL.revokeObjectURL(row.previewUrl);
-      setItems(previous =>
-        [...previous.filter(item => item.mediaId !== saved.mediaId), saved].sort(
-          (a, b) => a.sortOrder - b.sortOrder
-        )
-      );
+      const selectedTag = selectedTagRef.current.get(row.id) ?? row.roomTag;
+      let savedTag = saved.roomTag;
+      if (selectedTag !== 'GENERAL') {
+        try { await lessorMediaService.tag(draftId, row.id, selectedTag, guest); savedTag = selectedTag; }
+        catch (cause) { setError(getErrorMessage(cause, 'The photo uploaded, but its category was not saved.')); }
+      }
+      refreshRef.current += 1;
+      setItems(previous => mergeUploadedMedia(previous, { ...saved, roomTag: savedTag }, coverRevision !== coverRevisionRef.current));
+      selectedTagRef.current.delete(row.id);
       setLocal(previous => previous.filter(item => item.id !== row.id));
     } catch (cause) {
       const { message, retryable } = classifyMediaError(cause, row.file, row.isVideo);
@@ -140,6 +167,30 @@ export function LessorMediaStep({
           item.id === row.id ? { ...item, status: 'failed', error: message, retryable } : item
         )
       );
+    }
+  };
+
+  const pump = () => {
+    while (activeRef.current < 2 && queuedRef.current.length) {
+      const row = queuedRef.current.shift()!;
+      activeRef.current += 1;
+      void uploadOne(row).finally(() => {
+        activeRef.current -= 1;
+        pump();
+      });
+    }
+    if (activeRef.current === 0 && queuedRef.current.length === 0 && selectionOrderRef.current.length) {
+      const selectedIds = selectionOrderRef.current;
+      selectionOrderRef.current = [];
+      setFinalizingOrder(true);
+      void lessorMediaService.list(draftId, guest).then(async rows => {
+        const ordered = selectedUploadOrder(rows, selectedIds);
+        if (ordered) {
+          await lessorMediaService.reorder(draftId, ordered, guest);
+          await refresh();
+        }
+      }).catch(cause => setError(getErrorMessage(cause, 'Could not save the photo order.')))
+        .finally(() => setFinalizingOrder(false));
     }
   };
 
@@ -161,8 +212,9 @@ export function LessorMediaStep({
         file,
         previewUrl,
         progress: 0,
-        status: 'preparing',
-        isVideo
+        status: 'queued',
+        isVideo,
+        roomTag: 'GENERAL'
       };
 
       if (!supported) {
@@ -191,23 +243,30 @@ export function LessorMediaStep({
       }
 
       setLocal(previous => [...previous, row]);
-      void uploadOne(row);
+      selectionOrderRef.current.push(id);
+      queuedRef.current.push(row);
     }
+    pump();
   };
 
   const retry = async (row: LocalUpload) => {
     if (row.retryable === false) return;
+    const coverRevision = coverRevisionRef.current;
     setLocal(previous =>
       previous.map(item => (item.id === row.id ? { ...item, status: 'retrying', error: undefined } : item))
     );
     try {
       const recovered = await lessorMediaService.recover(draftId, row.id, guest);
       if (row.previewUrl) URL.revokeObjectURL(row.previewUrl);
-      setItems(previous =>
-        [...previous.filter(item => item.mediaId !== recovered.mediaId), recovered].sort(
-          (a, b) => a.sortOrder - b.sortOrder
-        )
-      );
+      const selectedTag = selectedTagRef.current.get(row.id) ?? row.roomTag;
+      let savedTag = recovered.roomTag;
+      if (selectedTag !== 'GENERAL') {
+        try { await lessorMediaService.tag(draftId, row.id, selectedTag, guest); savedTag = selectedTag; }
+        catch (cause) { setError(getErrorMessage(cause, 'The photo uploaded, but its category was not saved.')); }
+      }
+      refreshRef.current += 1;
+      setItems(previous => mergeUploadedMedia(previous, { ...recovered, roomTag: savedTag }, coverRevision !== coverRevisionRef.current));
+      selectedTagRef.current.delete(row.id);
       setLocal(previous => previous.filter(item => item.id !== row.id));
     } catch {
       await uploadOne(row);
@@ -215,6 +274,8 @@ export function LessorMediaStep({
   };
 
   const removeLocal = (id: string) => {
+    queuedRef.current = queuedRef.current.filter(row => row.id !== id);
+    selectedTagRef.current.delete(id);
     setLocal(previous => {
       const target = previous.find(item => item.id === id);
       if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
@@ -223,42 +284,78 @@ export function LessorMediaStep({
   };
 
   const changeCover = async (mediaId: string) => {
+    coverRevisionRef.current += 1;
     setBusy(true);
     setError('');
     try {
-      setItems(await lessorMediaService.cover(draftId, mediaId, guest));
+      const updated = await lessorMediaService.cover(draftId, mediaId, guest);
+      refreshRef.current += 1;
+      setItems(updated);
     } catch (cause) {
       setError(getErrorMessage(cause, 'Could not change the cover.'));
+      void refresh().catch(() => {});
     } finally {
       setBusy(false);
     }
   };
 
   const move = async (index: number, direction: -1 | 1) => {
+    if (removingMediaId) return;
     const ids = movedMediaIds(uploaded, index, direction);
     if (!ids) return;
+    const previousSelectionOrder = selectionOrderRef.current;
+    const readySelection = ids.filter(id => previousSelectionOrder.includes(id));
+    selectionOrderRef.current = [
+      ...readySelection,
+      ...previousSelectionOrder.filter(id => !readySelection.includes(id))
+    ];
     setBusy(true);
     setError('');
     try {
-      setItems(await lessorMediaService.reorder(draftId, ids, guest));
+      const updated = await lessorMediaService.reorder(draftId, ids, guest);
+      refreshRef.current += 1;
+      setItems(updated);
     } catch (cause) {
+      selectionOrderRef.current = previousSelectionOrder;
       setError(getErrorMessage(cause, 'Could not change media order.'));
     } finally {
       setBusy(false);
     }
   };
 
-  const remove = async (mediaId: string) => {
-    if (!window.confirm('Remove this file from your property draft?')) return;
-    setBusy(true);
+  const changeTag = async (mediaId: string, tag: RoomTag) => {
+    if (removingMediaId === mediaId) return;
+    setTaggingMediaIds(previous => new Set(previous).add(mediaId));
     setError('');
+    try {
+      await lessorMediaService.tag(draftId, mediaId, tag, guest);
+      refreshRef.current += 1;
+      setItems(previous => previous.map(item => item.mediaId === mediaId ? { ...item, roomTag: tag } : item));
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Could not save the photo category.'));
+    } finally {
+      setTaggingMediaIds(previous => {
+        const next = new Set(previous);
+        next.delete(mediaId);
+        return next;
+      });
+    }
+  };
+
+  const remove = async (mediaId: string) => {
+    if (removingMediaId || taggingMediaIds.has(mediaId)) return;
+    if (!window.confirm('Remove this file from your property draft?')) return;
+    setRemovingMediaId(mediaId);
+    setError('');
+    setItems(previous => previous.map(item => item.mediaId === mediaId ? { ...item, status: 'DELETING' } : item));
     try {
       await lessorMediaService.remove(draftId, mediaId, guest);
       await refresh();
     } catch (cause) {
       setError(getErrorMessage(cause, 'Could not remove this file. Retry to finish removal.'));
+      void refresh().catch(() => {});
     } finally {
-      setBusy(false);
+      setRemovingMediaId(null);
     }
   };
 
@@ -304,48 +401,41 @@ export function LessorMediaStep({
           </button>
         </p>
       )}
-      {!guest && uploaded.some(item => item.status === 'STAGED') && (
-        <button
-          type="button"
-          disabled={busy}
-          className={`${SECONDARY} mt-5`}
-          onClick={() => {
-            setBusy(true);
-            setError('');
-            void lessorMediaService
-              .promote(draftId)
-              .then(refresh)
-              .catch(cause => setError(getErrorMessage(cause, 'Could not prepare your photos. Retry.')))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Prepare your photos
-        </button>
-      )}
       <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        {uploaded.map((item, index) => (
+        {mediaCards.map((item, mediaIndex) => {
+          const readyIndex = uploaded.findIndex(ready => ready.mediaId === item.mediaId);
+          const isDeleting = item.status === 'DELETING';
+          return (
           <article
             key={item.mediaId}
             className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
           >
-            <div className="aspect-[4/3] bg-slate-100">
+            <div className="relative aspect-[4/3] bg-slate-100">
               <LessorMediaAsset
                 url={item.url}
                 contentType={item.contentType}
                 alt={
                   item.contentType.startsWith('video/')
-                    ? `Property video ${index + 1}`
-                    : `Property photo ${index + 1}`
+                    ? `Property video ${mediaIndex + 1}`
+                    : `Property photo ${mediaIndex + 1}`
                 }
                 className={`h-full w-full ${
                   item.contentType.startsWith('video/') ? 'object-contain' : 'object-cover'
                 }`}
               />
+              {removingMediaId === item.mediaId && (
+                <div role="status" aria-live="polite" className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/45 p-3">
+                  <span className="inline-flex min-h-11 items-center gap-2 rounded-full bg-slate-950/90 px-4 text-sm font-semibold text-white shadow-lg">
+                    <LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" aria-hidden="true" />
+                    Removing photo…
+                  </span>
+                </div>
+              )}
             </div>
             <div className="p-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="min-w-0 truncate text-xs text-slate-600" title={item.filename}>
-                  {item.filename}
+                <p className="min-w-0 truncate text-xs text-slate-600" title={displayMediaName(item, mediaIndex)}>
+                  {displayMediaName(item, mediaIndex)}
                 </p>
                 {item.cover && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-700 px-2.5 py-0.5 text-xs font-bold text-white shadow-xs">
@@ -354,11 +444,24 @@ export function LessorMediaStep({
                   </span>
                 )}
               </div>
+              {item.contentType.startsWith('image/') && (
+                <label className="mt-3 block text-xs font-semibold text-slate-700">
+                  Photo category
+                  <select
+                    className="mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                    value={item.roomTag || 'GENERAL'}
+                    disabled={isDeleting || taggingMediaIds.has(item.mediaId)}
+                    onChange={event => { void changeTag(item.mediaId, event.target.value as RoomTag); }}
+                  >
+                    {ROOM_TAG_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {item.contentType.startsWith('image/') && !item.cover && (
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || isDeleting}
                     className={SECONDARY}
                     onClick={() => {
                       void changeCover(item.mediaId);
@@ -370,43 +473,43 @@ export function LessorMediaStep({
                 )}
                 <button
                   type="button"
-                  disabled={busy || index === 0}
+                  disabled={busy || removingMediaId !== null || readyIndex < 0 || readyIndex === 0}
                   className={SECONDARY}
-                  aria-label={`Move ${item.filename} up`}
+                  aria-label={`Move ${displayMediaName(item, mediaIndex)} up`}
                   onClick={() => {
-                    void move(index, -1);
+                    void move(readyIndex, -1);
                   }}
                 >
                   <ArrowUp className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
-                  disabled={busy || index === uploaded.length - 1}
+                  disabled={busy || removingMediaId !== null || readyIndex < 0 || readyIndex === uploaded.length - 1}
                   className={SECONDARY}
-                  aria-label={`Move ${item.filename} down`}
+                  aria-label={`Move ${displayMediaName(item, mediaIndex)} down`}
                   onClick={() => {
-                    void move(index, 1);
+                    void move(readyIndex, 1);
                   }}
                 >
                   <ArrowDown className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || taggingMediaIds.has(item.mediaId) || removingMediaId !== null}
                   className={SECONDARY}
                   onClick={() => {
                     void remove(item.mediaId);
                   }}
                 >
                   <Trash2 className="h-4 w-4" />
-                  Remove
+                  {removingMediaId === item.mediaId ? 'Removing…' : isDeleting ? 'Retry removal' : 'Remove'}
                 </button>
               </div>
             </div>
           </article>
-        ))}
+        );})}
 
-        {local.map(row => (
+        {local.map((row, localIndex) => (
           <article
             key={row.id}
             className={`min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm ${
@@ -415,11 +518,11 @@ export function LessorMediaStep({
           >
             <div className="aspect-[4/3] bg-slate-100 relative flex items-center justify-center overflow-hidden">
               {row.previewUrl ? (
-                <img src={row.previewUrl} alt={row.file.name} className="h-full w-full object-cover" />
+                <img src={row.previewUrl} alt={displayFilename(row.file.name, row.isVideo ? 'video/' : 'image/', uploaded.length + localIndex)} className="h-full w-full object-cover" />
               ) : (
                 <div className="flex flex-col items-center justify-center p-4 text-slate-400">
                   <Film className="h-10 w-10 text-slate-400 mb-1" />
-                  <span className="text-xs text-slate-500 truncate max-w-[200px]">{row.file.name}</span>
+                  <span className="text-xs text-slate-500 truncate max-w-[200px]">{displayFilename(row.file.name, row.isVideo ? 'video/' : 'image/', uploaded.length + localIndex)}</span>
                 </div>
               )}
               <div className="absolute top-2.5 left-2.5">
@@ -435,10 +538,10 @@ export function LessorMediaStep({
                     <span>Retrying…</span>
                   </span>
                 )}
-                {row.status === 'preparing' && (
+                {row.status === 'queued' && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-900/80 px-2.5 py-1 text-xs font-semibold text-white shadow-xs backdrop-blur-xs">
                     <LoaderCircle className="h-3 w-3 animate-spin text-slate-300" />
-                    <span>Preparing…</span>
+                    <span>Waiting to upload…</span>
                   </span>
                 )}
                 {row.status === 'failed' && (
@@ -450,9 +553,26 @@ export function LessorMediaStep({
               </div>
             </div>
             <div className="p-3">
-              <p className="min-w-0 truncate text-xs font-medium text-slate-700" title={row.file.name}>
-                {row.file.name}
+              <p className="min-w-0 truncate text-xs font-medium text-slate-700" title={displayFilename(row.file.name, row.isVideo ? 'video/' : 'image/', uploaded.length + localIndex)}>
+                {displayFilename(row.file.name, row.isVideo ? 'video/' : 'image/', uploaded.length + localIndex)}
               </p>
+              {!row.isVideo && row.status !== 'failed' && (
+                <label className="mt-3 block text-xs font-semibold text-slate-700">
+                  Photo category
+                  <select
+                    className="mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                    value={row.roomTag}
+                    onChange={event => {
+                      const tag = event.target.value as RoomTag;
+                      selectedTagRef.current.set(row.id, tag);
+                      setLocal(previous => previous.map(item => item.id === row.id
+                        ? { ...item, roomTag: tag } : item));
+                    }}
+                  >
+                    {ROOM_TAG_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+              )}
               {row.status === 'uploading' && (
                 <div className="mt-2">
                   <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
@@ -495,11 +615,11 @@ export function LessorMediaStep({
         {items
           .filter(
             item =>
-              item.status !== 'UPLOADED' && item.status !== 'STAGED' && !local.some(row => row.id === item.mediaId)
+              item.status !== 'UPLOADED' && item.status !== 'STAGED' && item.status !== 'DELETING' && !local.some(row => row.id === item.mediaId)
           )
           .map(item => (
             <div key={item.mediaId} className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="truncate text-sm font-semibold text-slate-800">{item.filename}</p>
+              <p className="truncate text-sm font-semibold text-slate-800">{displayMediaName(item, 0)}</p>
               <p className="mt-1 text-xs text-amber-800">
                 {item.status === 'DELETING' ? 'Removal needs retry' : 'Upload needs recovery or original file'}
               </p>
@@ -531,7 +651,7 @@ export function LessorMediaStep({
                     void remove(item.mediaId);
                   }}
                 >
-                  {item.status === 'DELETING' ? 'Retry removal' : 'Remove failed item'}
+                  {removingMediaId === item.mediaId ? 'Removing…' : item.status === 'DELETING' ? 'Retry removal' : 'Remove failed item'}
                 </button>
               </div>
             </div>
@@ -540,20 +660,24 @@ export function LessorMediaStep({
       {hasImage && (
         <div className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-950">
           <Check className="h-4 w-4 text-emerald-700 stroke-[3]" />
-          <span>Cover photo ready</span>
+          <span>{uploaded.some(item => item.cover && item.status === 'UPLOADED') ? 'Cover photo ready' : 'Cover photo selected'}</span>
         </div>
       )}
-      <button
-        type="button"
-        disabled={
-          !hasImage ||
-          local.some(row => row.status === 'uploading' || row.status === 'preparing' || row.status === 'retrying')
-        }
-        onClick={onNext}
-        className="mt-8 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-emerald-700 px-6 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto cursor-pointer"
-      >
-        Continue
-      </button>
+      <div className="mt-8 flex items-center justify-between gap-3 border-t border-slate-100 pt-5">
+        <button type="button" onClick={onBack} className={SECONDARY}>
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />Back
+        </button>
+        <button
+          type="button"
+          disabled={
+            !hasImage && !local.some(row => !row.isVideo && row.status !== 'failed')
+          }
+          onClick={onNext}
+          className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+        >
+          Continue
+        </button>
+      </div>
     </div>
   );
 }

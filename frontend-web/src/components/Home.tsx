@@ -12,10 +12,12 @@ import { Footer } from './Footer';
 import { AuthModal } from './AuthModal';
 import { LeaseUploadModal } from './LeaseUploadModal';
 import { TenantDashboard } from './TenantDashboard';
-import { CreditCard, ArrowUp, ChevronDown, LoaderCircle, MapPin } from 'lucide-react';
+import { ArrowUp, ChevronDown, LoaderCircle, MapPin } from 'lucide-react';
 import { PublicPropertyDetail } from './PublicPropertyDetail';
 import { VisitRequestModal } from './VisitRequestModal';
 import { LessorWorkspace } from './LessorWorkspace';
+import { PathomeRouteShell } from './PathomeRouteShell';
+import { lessorDraftService } from '../services/lessorDraftService';
 
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
@@ -23,24 +25,12 @@ import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { CompactSearchContext } from './CompactSearchContext';
 import { propertyService } from '../services/propertyService';
 import { lessorCapabilityService } from '../services/lessorCapabilityService';
-import { LessorCapabilityTracker, readLessorSessionIdentity } from '../utils/lessorCapabilityState';
+import { LessorCapabilityTracker, isCurrentLessorSession, readLessorSessionIdentity } from '../utils/lessorCapabilityState';
+import { isLessorWorkspaceRoute, normalizeRoutePathname, resolveLessorExitPath } from '../utils/navigationPolicy';
+import { getGuestResumableDraftCount, readResumableDraftCount } from '../utils/draftAccessPolicy';
 import { useNotification } from '../context/NotificationContext';
+import { clearPersistedUser, readPersistedUser } from '../utils/authSession';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters } from '../utils/rentalSearch';
-
-const getInitialSession = (): { role: UserRole; user: UserProfile | null } => {
-  try {
-    const savedToken = localStorage.getItem('pathome_auth_token');
-    const savedRole = localStorage.getItem('pathome_role') as UserRole | null;
-    const savedUserStr = localStorage.getItem('pathome_user');
-    if (savedToken && savedRole && savedUserStr) {
-      const parsedUser = JSON.parse(savedUserStr);
-      return { role: savedRole, user: parsedUser };
-    }
-  } catch (err) {
-    console.error('Failed to load session from localStorage', err);
-  }
-  return { role: 'GUEST', user: null };
-};
 
 const VALID_ADMIN_TABS = new Set([
   'overview',
@@ -716,15 +706,29 @@ export const Home: React.FC = () => {
   const { notifySuccess } = useNotification();
   const reduceMotion = useReducedMotion();
 
-  const initialSession = getInitialSession();
-  const [role, setRole] = useState<UserRole>(initialSession.role);
-  const [user, setUser] = useState<UserProfile | null>(initialSession.user);
-  const [hasLessorCapability, setHasLessorCapability] = useState(false);
+  const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
+  const role: UserRole = user?.role ?? 'GUEST';
+  const [hasLessorCapability, setHasLessorCapability] = useState<boolean | null | 'error'>(null);
+  const [draftSnapshot, setDraftSnapshot] = useState<{ key: string; count: number; state: 'loading' | 'ready' | 'error' }>({
+    key: '', count: 0, state: 'loading'
+  });
   const capabilityTrackerRef = useRef<LessorCapabilityTracker | null>(null);
   if (!capabilityTrackerRef.current) {
     capabilityTrackerRef.current = new LessorCapabilityTracker(setHasLessorCapability);
   }
   const capabilityTracker = capabilityTrackerRef.current;
+  const logoutInProgressRef = useRef(false);
+  const clearUserSession = useCallback(() => {
+    // Remove the token first so every in-flight identity check immediately becomes stale.
+    clearPersistedUser();
+    setUser(null);
+    capabilityTracker.clear();
+    setDraftSnapshot({ key: '', count: 0, state: 'loading' });
+    setPendingVisitProperty(null);
+    setShowPostPropertyModal(false);
+    setLessorAuthContext(null);
+    window.dispatchEvent(new Event('pathome_auth_changed'));
+  }, [capabilityTracker]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [discoveryState, setDiscoveryState] = useState<'LOADING' | 'READY' | 'ERROR'>('LOADING');
   const [loadedDiscoveryKey, setLoadedDiscoveryKey] = useState<string | null>(null);
@@ -735,8 +739,6 @@ export const Home: React.FC = () => {
   const currentDiscoveryPage = useRef(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [lessorAuthContext, setLessorAuthContext] = useState<'submit' | 'save' | null>(null);
-  const [showLeaseModal, setShowLeaseModal] = useState(false);
-  const [showDepositModal, setShowDepositModal] = useState(false);
   const [activeAdminTab, setActiveAdminTab] = useState<string>(getInitialAdminTab);
 
   useEffect(() => {
@@ -769,8 +771,17 @@ export const Home: React.FC = () => {
   const [refineSearchRequest, setRefineSearchRequest] = useState(0);
   const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
   const openPostProperty = useCallback(() => {
-    navigate('/lessor/new');
-  }, [navigate]);
+    const origin = resolveLessorExitPath(`${location.pathname}${location.search}`, {
+      guest: role === 'GUEST',
+      tenant: role === 'TENANT',
+      activeLessor: hasLessorCapability === true
+    });
+    navigate('/lessor/new', { state: { lessorOrigin: origin } });
+  }, [navigate, location.pathname, location.search, role, hasLessorCapability]);
+  const openDrafts = useCallback(() => navigate('/lessor?view=drafts'), [navigate]);
+  const retryDraftCheck = useCallback(() => {
+    window.dispatchEvent(new Event('pathome_lessor_drafts_changed'));
+  }, []);
   const requestLessorAuth = useCallback((draftId: string, submit: boolean) => {
     sessionStorage.setItem(submit ? 'pathome_guest_submit_draft' : 'pathome_guest_save_draft', draftId);
     setLessorAuthContext(submit ? 'submit' : 'save');
@@ -782,11 +793,15 @@ export const Home: React.FC = () => {
   const focusResultsAfterSearch = useRef(false);
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
-  const isPropertyRoute = location.pathname.startsWith('/property/');
-  const isLessorRoute = location.pathname === '/lessor' || location.pathname.startsWith('/lessor/');
-  const isOnboardingFlow = isLessorRoute && (location.pathname === '/lessor/new' || location.pathname.startsWith('/lessor/drafts/'));
-  const isPublicPropertyRoute = /^\/property\/\d+$/.test(location.pathname);
-  const publicPropertyId = isPublicPropertyRoute ? Number(location.pathname.split('/').pop()) : null;
+  const normalizedPathname = normalizeRoutePathname(location.pathname);
+  const isPropertyRoute = normalizedPathname.startsWith('/property/');
+  const isLessorRoute = isLessorWorkspaceRoute(normalizedPathname);
+  const isPublicPropertyRoute = /^\/property\/\d+$/.test(normalizedPathname);
+  const publicPropertyId = isPublicPropertyRoute ? Number(normalizedPathname.split('/').pop()) : null;
+  const draftSessionKey = user ? (readLessorSessionIdentity()?.key ?? 'missing-session') : 'guest';
+  const currentDraftSnapshot = draftSnapshot.key === draftSessionKey ? draftSnapshot : null;
+  const currentDraftCount = currentDraftSnapshot?.count ?? 0;
+  const currentDraftState = currentDraftSnapshot?.state ?? 'loading';
 
   const [showBackToTop, setShowBackToTop] = useState(false);
   const prevIsPropertyRoute = useRef(isPropertyRoute);
@@ -1015,55 +1030,45 @@ export const Home: React.FC = () => {
   // 1. MULTI-TAB & MULTI-WINDOW CROSS-TAB SESSION SYNCHRONIZATION
   useEffect(() => {
     const handleCrossTabSync = (e: StorageEvent) => {
-      if (e.key === 'pathome_user' || e.key === 'pathome_role' || e.key === null) {
-        const storedUser = localStorage.getItem('pathome_user');
-        const storedRole = localStorage.getItem('pathome_role');
+      if (e.key === 'pathome_user' || e.key === 'pathome_auth_token' || e.key === null) {
+        const storedToken = localStorage.getItem('pathome_auth_token');
+        // A new token is written before its matching profile. Wait for the user write.
+        if (e.key === 'pathome_auth_token' && storedToken) return;
+        const storedUser = readPersistedUser();
 
-        if (!storedUser || !storedRole) {
+        if (!storedToken || !storedUser) {
           // LOGOUT IN ANOTHER WINDOW/TAB DETECTED!
-          setUser(null);
-          setRole('GUEST');
-          capabilityTracker.clear();
+          clearUserSession();
           navigate('/', { replace: true });
-          setShowAuthModal(true);
         } else {
           // LOGIN/ROLE CHANGE IN ANOTHER WINDOW/TAB DETECTED!
-          try {
-            const parsedUser = JSON.parse(storedUser);
-            setUser(parsedUser);
-            setRole(storedRole as UserRole);
-            capabilityTracker.clear();
-          } catch (err) {
-            console.error('Cross-tab session sync error', err);
-          }
+          setPendingVisitProperty(null);
+          setUser(storedUser);
+          capabilityTracker.clear();
         }
       }
     };
 
     window.addEventListener('storage', handleCrossTabSync);
     return () => window.removeEventListener('storage', handleCrossTabSync);
-  }, [navigate, capabilityTracker]);
+  }, [navigate, capabilityTracker, clearUserSession]);
 
   // 1b. SESSION EXPIRATION LISTENER (Triggered by 401 / expired token)
   useEffect(() => {
-    const handleSessionExpired = () => {
+    const handleSessionExpired = (event: Event) => {
+      const requestToken = (event as CustomEvent<{ token?: string }>).detail?.token;
+      if (requestToken && requestToken !== localStorage.getItem('pathome_auth_token')) return;
       if (location.pathname.startsWith('/lessor')) {
         try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
       }
-      setRole('GUEST');
-      setUser(null);
-      capabilityTracker.clear();
-      localStorage.removeItem('pathome_role');
-      localStorage.removeItem('pathome_user');
-      localStorage.removeItem('pathome_auth_token');
-      window.dispatchEvent(new Event('pathome_auth_changed'));
+      clearUserSession();
       if (!location.pathname.startsWith('/lessor')) navigate('/', { replace: true });
       setShowAuthModal(true);
     };
 
     window.addEventListener('pathome_session_expired', handleSessionExpired);
     return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
-  }, [navigate, location.pathname, capabilityTracker]);
+  }, [navigate, location.pathname, clearUserSession]);
 
   // 1c. AUTHORITATIVE LESSOR CAPABILITY SYNCHRONIZATION
   useEffect(() => {
@@ -1087,26 +1092,73 @@ export const Home: React.FC = () => {
     };
   }, [user?.id, role, capabilityTracker]);
 
+  useEffect(() => {
+    let live = true;
+    let revision = 0;
+    const refreshDraftCount = () => {
+      const currentRevision = ++revision;
+      setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'loading' });
+      void (async () => {
+        try {
+          if (role === 'GUEST') {
+            const localDraftId = localStorage.getItem('pathome_guest_draft_id');
+            if (!localDraftId) {
+              if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'ready' });
+              return;
+            }
+            const draft = await lessorDraftService.resumeGuest();
+            const count = getGuestResumableDraftCount(localDraftId, draft);
+            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count, state: 'ready' });
+            return;
+          }
+
+          if (!user || !['TENANT', 'LANDLORD', 'ROLE_LANDLORD'].includes(role)) {
+            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'ready' });
+            return;
+          }
+          const identity = readLessorSessionIdentity();
+          if (!identity || identity.userId !== user.id) throw new Error('Session identity changed');
+          const page = await lessorDraftService.list(0);
+          const count = readResumableDraftCount(page.totalCount);
+          if (count === null) throw new Error('Draft count unavailable');
+          if (live && currentRevision === revision && isCurrentLessorSession(identity)) {
+            setDraftSnapshot({ key: draftSessionKey, count, state: 'ready' });
+          }
+        } catch {
+          if (live && currentRevision === revision &&
+              (role === 'GUEST' || readLessorSessionIdentity()?.key === draftSessionKey)) {
+            setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'error' });
+          }
+        }
+      })();
+    };
+
+    refreshDraftCount();
+    window.addEventListener('pathome_lessor_drafts_changed', refreshDraftCount);
+    window.addEventListener('pathome_auth_changed', refreshDraftCount);
+    return () => {
+      live = false;
+      window.removeEventListener('pathome_lessor_drafts_changed', refreshDraftCount);
+      window.removeEventListener('pathome_auth_changed', refreshDraftCount);
+    };
+  }, [draftSessionKey, role, user?.id]);
+
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
     const path = location.pathname.toLowerCase();
     const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm';
+    if (!isProtectedRoute) logoutInProgressRef.current = false;
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
     // GUARD CHECK 1: If user is logged out or lacks auth token on protected route
     if (!user || role === 'GUEST' || (isProtectedRoute && !hasToken)) {
       if (isProtectedRoute) {
+        if (logoutInProgressRef.current) return;
         if (path.startsWith('/lessor')) {
           try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
         }
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
-        setRole('GUEST');
-        setUser(null);
-        capabilityTracker.clear();
-        localStorage.removeItem('pathome_role');
-        localStorage.removeItem('pathome_user');
-        localStorage.removeItem('pathome_auth_token');
-        window.dispatchEvent(new Event('pathome_auth_changed'));
+        clearUserSession();
         navigate('/', { replace: true });
         setShowAuthModal(true);
       }
@@ -1127,7 +1179,7 @@ export const Home: React.FC = () => {
         navigate('/admin', { replace: true });
       }
     }
-  }, [location.pathname, user, role, navigate, isPropertyRoute]);
+  }, [location.pathname, user, role, navigate, isPropertyRoute, clearUserSession]);
 
   const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>) => {
     focusResultsAfterSearch.current = true;
@@ -1205,27 +1257,10 @@ export const Home: React.FC = () => {
     }
   };
 
-  const handleBookTour = (property: Property) => {
-    if (role === 'GUEST') {
-      setShowAuthModal(true);
-      return;
-    }
-
-    const currentVisits = user?.freeVisitsUsed || 0;
-    if (currentVisits >= 5) {
-      setShowDepositModal(true);
-    } else {
-      const updatedVisits = currentVisits + 1;
-      setUser(prev => prev ? { ...prev, freeVisitsUsed: updatedVisits } : null);
-      notifySuccess('Visit request submitted', `Visit request recorded for ${property.title}.`, 'Property visit request submitted online.');
-    }
-  };
-
   const handleLoginSuccess = (userProfile: UserProfile) => {
     localStorage.setItem('pathome_role', userProfile.role);
     localStorage.setItem('pathome_user', JSON.stringify(userProfile));
     setUser(userProfile);
-    setRole(userProfile.role);
     capabilityTracker.clear();
     window.dispatchEvent(new Event('pathome_auth_changed'));
     setShowAuthModal(false);
@@ -1249,28 +1284,37 @@ export const Home: React.FC = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('pathome_role');
-    localStorage.removeItem('pathome_user');
-    localStorage.removeItem('pathome_auth_token');
-    localStorage.removeItem('pathome_active_admin_tab');
-    setUser(null);
-    setRole('GUEST');
-    capabilityTracker.clear();
-    window.dispatchEvent(new Event('pathome_auth_changed'));
+    logoutInProgressRef.current = true;
+    clearUserSession();
+    setShowAuthModal(false);
+    sessionStorage.removeItem('pathome_pending_after_auth');
     navigate('/');
   };
 
+  const lessorWorkspace = isLessorRoute && (role === 'GUEST' || role === 'TENANT' || hasLessorCapability === true) ? (
+    <LessorWorkspace
+      key={draftSessionKey}
+      user={role === 'GUEST' ? null : user}
+      hasLessorCapability={hasLessorCapability}
+      draftCount={currentDraftCount}
+      draftState={currentDraftState}
+      onRetryDrafts={retryDraftCheck}
+      onRequestAuth={requestLessorAuth}
+    />
+  ) : null;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Inter',sans-serif]">
-      
-      {/* 1. Dynamic Role-Based Sticky Navbar Component (Omitted during active onboarding flow) */}
-      {!isOnboardingFlow && (
+      <PathomeRouteShell pathname={normalizedPathname} focused={lessorWorkspace} normal={<>
         <Navbar
           user={user}
           role={role}
           hasLessorCapability={hasLessorCapability}
+          draftCount={currentDraftCount}
+          draftState={currentDraftState}
+          onOpenDrafts={openDrafts}
+          onRetryDrafts={retryDraftCheck}
           onOpenAuthModal={() => setShowAuthModal(true)}
-          onOpenLeaseUpload={() => setShowLeaseModal(true)}
           onLogout={handleLogout}
           onOpenPostProperty={openPostProperty}
           postPropertyModalOpen={showPostPropertyModal}
@@ -1279,17 +1323,16 @@ export const Home: React.FC = () => {
           setActiveAdminTab={setActiveAdminTab}
           isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
         />
-      )}
 
       {isPropertyRoute && (
         <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />
       )}
 
-      {isLessorRoute && (role === 'GUEST' || role === 'TENANT') && <LessorWorkspace user={role === 'TENANT' ? user : null} onRequestAuth={requestLessorAuth} />}
+      {lessorWorkspace}
 
+      {!isLessorRoute && <>
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
-      <AnimatePresence mode="wait">
-        {!isPropertyRoute && role === 'EMPLOYEE' && (
+        {!isPropertyRoute && !isLessorRoute && role === 'EMPLOYEE' && (
           <motion.div 
             key="employee-crm-view"
             initial={{ opacity: 0, y: 16 }}
@@ -1300,11 +1343,9 @@ export const Home: React.FC = () => {
             <EmployeeCrmDashboard user={user} />
           </motion.div>
         )}
-      </AnimatePresence>
 
       {/* MASTER ADMIN CONSOLE & SUB-ADMIN OVERLAY */}
-      <AnimatePresence mode="wait">
-        {!isPropertyRoute && (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN') && (
+        {!isPropertyRoute && !isLessorRoute && (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN') && (
           <motion.div 
             key="master-admin-view"
             initial={{ opacity: 0, y: 16 }}
@@ -1315,23 +1356,33 @@ export const Home: React.FC = () => {
             <MasterAdminDashboard activeTab={activeAdminTab} setActiveAdminTab={setActiveAdminTab} />
           </motion.div>
         )}
-      </AnimatePresence>
 
       {/* LOGGED IN TENANT DASHBOARD VIEW vs GUEST HOMEPAGE VIEW */}
-      <AnimatePresence mode="wait">
         {!isPropertyRoute && !isLessorRoute && role === 'TENANT' && user ? (
           <motion.div
-            key="tenant-dashboard"
-            initial={{ opacity: 0, y: 16 }}
+            key={`tenant-dashboard-${draftSessionKey}`}
+            initial={false}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
-            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+            exit={{ opacity: 0, transition: { duration: 0 } }}
+            transition={{ duration: reduceMotion ? 0 : 0.2 }}
           >
             <TenantDashboard
               user={user}
               properties={properties}
-              onBookTour={handleBookTour}
-              onOpenLeaseUpload={() => setShowLeaseModal(true)}
+              discoveryState={discoveryState}
+              discoveryCity={activeDiscoveryCity}
+              discoveryQuery={activeSearchFilters.q || ''}
+              hasMoreProperties={hasMoreProperties}
+              loadingMoreProperties={loadingMore}
+              loadMorePropertiesError={loadMoreError}
+              onSearchHomes={(city, query) => {
+                const params = new URLSearchParams({ city });
+                if (query) params.set('q', query);
+                navigate(`/tenant?${params.toString()}`);
+              }}
+              onRetryDiscovery={() => loadLiveProperties(activeSearchFilters)}
+              onLoadMoreProperties={() => loadMoreProperties(activeSearchFilters)}
+              onRequestVisit={handleRequestVisit}
             />
           </motion.div>
         ) : !isPropertyRoute && !isLessorRoute && role === 'GUEST' && (
@@ -1492,7 +1543,10 @@ export const Home: React.FC = () => {
             </AnimatePresence>
           </motion.div>
         )}
-      </AnimatePresence>
+
+      </>}
+
+      </>} />
 
       {/* AUTH MODAL */}
       <AuthModal
@@ -1504,60 +1558,9 @@ export const Home: React.FC = () => {
 
       {/* LEASE UPLOAD MODAL */}
       <LeaseUploadModal
-        isOpen={showLeaseModal}
-        onClose={() => setShowLeaseModal(false)}
+        isOpen={false}
+        onClose={() => undefined}
       />
-
-      {/* ADDITIONAL VISIT REQUEST MODAL */}
-      <AnimatePresence>
-        {showDepositModal && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.25 }}
-            onClick={() => setShowDepositModal(false)}
-            className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-md flex items-center justify-center p-4"
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.92, y: 16 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.92, y: 16 }}
-              transition={{ type: 'spring', stiffness: 420, damping: 28 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white max-w-md w-full rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-200/90 relative text-center"
-            >
-              <button
-                onClick={() => setShowDepositModal(false)}
-                className="absolute top-5 right-5 text-slate-400 hover:text-slate-700 p-1.5 rounded-full hover:bg-slate-100 transition-colors"
-              >
-                ✕
-              </button>
-              <div className="w-12 h-12 bg-amber-50 text-amber-700 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-amber-200 shadow-xs">
-                <CreditCard className="w-6 h-6 text-amber-600" />
-              </div>
-              <h3 className="text-2xl font-bold text-slate-900 font-['Outfit'] mb-1">
-                Additional Visit Request
-              </h3>
-              <p className="text-xs text-slate-600 mb-5 leading-relaxed">
-                You have reached 5 visit requests for this session. You can activate an additional visit request below.
-              </p>
-              <motion.button
-                whileHover={{ scale: 1.02, y: -1 }}
-                whileTap={{ scale: 0.97 }}
-                transition={{ type: 'spring', stiffness: 450, damping: 25 }}
-                onClick={() => {
-                  notifySuccess('Visit request activated', 'Your additional visit request is now active.');
-                  setShowDepositModal(false);
-                }}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-xs shadow-md shadow-emerald-600/20 transition-all"
-              >
-                Activate Additional Visit Request
-              </motion.button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       <VisitRequestModal
         property={pendingVisitProperty}

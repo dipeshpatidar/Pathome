@@ -156,6 +156,17 @@ export function hasCoverImage(items: LessorMediaItem[]): boolean {
   return items.some(item => (item.status === 'UPLOADED' || item.status === 'STAGED') && item.contentType.startsWith('image/') && item.cover);
 }
 
+export function displayMediaName(item: LessorMediaItem, index: number): string {
+  return displayFilename(item.filename, item.contentType, index);
+}
+
+export function displayFilename(filename: string | null, contentType: string, index: number): string {
+  const name = filename?.trim() || '';
+  if (name && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.[a-z0-9]+)?$/i.test(name)
+      && !/^lessor-\d+-[0-9a-f]{32}(?:\.[a-z0-9]+)?$/i.test(name)) return name;
+  return contentType.startsWith('video/') ? `Video ${index + 1}` : `Photo ${index + 1}`;
+}
+
 export function mediaUrl(url: string, apiRoot: string): string {
   if (url.startsWith('/api/v1/') && apiRoot.startsWith('http')) {
     return `${apiRoot}${url.slice('/api/v1'.length)}`;
@@ -170,4 +181,26 @@ export function movedMediaIds(items: LessorMediaItem[], index: number, direction
   const ids = uploaded.map(item => item.mediaId);
   [ids[index], ids[other]] = [ids[other], ids[index]];
   return ids;
+}
+
+export function selectedUploadOrder(items: LessorMediaItem[], selectedIds: string[]): string[] | null {
+  const ready = items.filter(item => item.status === 'UPLOADED' || item.status === 'STAGED');
+  const current = ready.map(item => item.mediaId);
+  const readyIds = new Set(current);
+  const selected = selectedIds.filter(id => readyIds.has(id));
+  const selectedSet = new Set(selected);
+  let next = 0;
+  const ordered = current.map(id => selectedSet.has(id) ? selected[next++] : id);
+  return ordered.some((id, index) => id !== current[index]) ? ordered : null;
+}
+
+export function mergeUploadedMedia(items: LessorMediaItem[], saved: LessorMediaItem,
+                                   coverChangedDuringUpload: boolean): LessorMediaItem[] {
+  const current = items.find(item => item.mediaId === saved.mediaId);
+  const incoming = coverChangedDuringUpload
+    ? { ...saved, cover: current?.cover === true }
+    : saved;
+  const others = items.filter(item => item.mediaId !== saved.mediaId)
+    .map(item => incoming.cover ? { ...item, cover: false } : item);
+  return [...others, incoming].sort((a, b) => a.sortOrder - b.sortOrder);
 }

@@ -14,7 +14,7 @@ import org.springframework.data.repository.query.Param;
 public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
 
-    @Modifying(clearAutomatically = true)
+    @Modifying(flushAutomatically = true)
     @Query(value = "UPDATE users SET landlord_activated_at = :activatedAt, landlord_activated_by_user_id = :userId " +
             "WHERE id = :userId AND landlord_activated_at IS NULL " +
             "AND role IN ('ROLE_TENANT', 'ROLE_LANDLORD')", nativeQuery = true)

@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -75,6 +76,11 @@ public class LandlordMediaService {
 
     public List<LandlordMediaItem> makeCover(String email, String draftId, String mediaId) {
         return store.makeCover(email, draftId, requireUuid(mediaId));
+    }
+
+    public LandlordMediaItem tag(String email, String draftId, String mediaId, RoomTag tag) {
+        if (tag == null) throw new IllegalArgumentException("Photo category is required");
+        return store.tag(email, draftId, requireUuid(mediaId), tag);
     }
 
     public List<LandlordMediaItem> reorder(String email, String draftId, List<String> ids) {

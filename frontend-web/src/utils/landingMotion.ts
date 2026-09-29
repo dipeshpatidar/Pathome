@@ -17,8 +17,10 @@ export const landingEntrance = (
 ): MotionProps => {
   const { y, opacity, duration } = ENTRANCES[level];
   const showImmediately = reduceMotion || typeof IntersectionObserver === 'undefined';
-  const offset = direction === 'up' ? { y } : { x: direction === 'left' ? -24 : 24 };
-  const settled = direction === 'up' ? { y: 0 } : { x: 0 };
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  const effectiveDirection = isMobile ? 'up' : direction;
+  const offset = effectiveDirection === 'up' ? { y } : { x: effectiveDirection === 'left' ? -24 : 24 };
+  const settled = effectiveDirection === 'up' ? { y: 0 } : { x: 0 };
   return {
     initial: showImmediately ? false : { opacity, ...offset, ...(level === 'card' ? { scale: 0.992 } : {}) },
     whileInView: { opacity: 1, ...settled, ...(level === 'card' ? { scale: 1 } : {}) },

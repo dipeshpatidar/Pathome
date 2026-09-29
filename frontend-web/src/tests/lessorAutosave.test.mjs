@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LessorAutosave } from '../services/lessorAutosave.ts';
+import { clearPersistedUser } from '../utils/authSession.ts';
 
 function storage() {
-  const values = new Map();
+  const values = new Map([
+    ['pathome_auth_token', 'test-token-7'],
+    ['pathome_user', JSON.stringify({ id: 7, role: 'TENANT' })]
+  ]);
   return {
     getItem: key => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, value),
-    removeItem: key => values.delete(key)
+    removeItem: key => values.delete(key),
+    get length() { return values.size; },
+    key: index => [...values.keys()][index] ?? null
   };
 }
 
@@ -35,6 +41,29 @@ test('batches latest section edit and serializes distinct sections with fresh ve
   ]);
   assert.equal(queue.getStatus(), 'saved');
   assert.equal(localStorage.getItem('pathome_lessor_unsynced_7_d1'), null);
+  queue.dispose();
+});
+
+test('overlapping flushes never send the same draft version twice', async () => {
+  globalThis.localStorage = storage();
+  let releaseFirst;
+  const firstPending = new Promise(resolve => { releaseFirst = resolve; });
+  const calls = [];
+  const queue = new LessorAutosave(7, 'd1', 1, () => {}, () => {},
+    async (_id, section, version) => {
+      calls.push({ section, version });
+      if (calls.length === 1) await firstPending;
+      return result(version + 1);
+    });
+  queue.change('pricing', pricing);
+  const first = queue.flush();
+  // Basics was already skipped by the in-flight drain when this edit arrived.
+  queue.change('basics', basics);
+  const second = queue.flush();
+  const third = queue.flush();
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second, third]), [true, true, true]);
+  assert.deepEqual(calls, [{ section: 'pricing', version: 1 }, { section: 'basics', version: 2 }]);
   queue.dispose();
 });
 
@@ -94,4 +123,14 @@ test('guest retry keeps pending edits in memory without writing property data to
   assert.equal(await queue.flush(), true);
   assert.equal(queue.getStatus(), 'saved');
   queue.dispose();
+});
+
+test('logout clears pending user edits and dispose cannot restore the old buffer', () => {
+  globalThis.localStorage = storage();
+  const queue = new LessorAutosave(7, 'd1', 1, () => {}, () => {}, async () => result(2));
+  queue.change('pricing', pricing);
+  assert.ok(localStorage.getItem('pathome_lessor_unsynced_7_d1'));
+  clearPersistedUser();
+  queue.dispose();
+  assert.equal(localStorage.getItem('pathome_lessor_unsynced_7_d1'), null);
 });

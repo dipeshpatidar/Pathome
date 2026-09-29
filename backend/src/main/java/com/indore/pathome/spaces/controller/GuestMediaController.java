@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.security.GuestRequestGuard;
 import com.indore.pathome.spaces.service.GuestMediaService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -42,6 +43,11 @@ public class GuestMediaController {
     public List<LandlordMediaItem> cover(HttpServletRequest request, @PathVariable String draftId, @PathVariable String mediaId,
             @CookieValue(value = GuestDraftController.COOKIE, required = false) String proof) {
         guard.check(request); return media.cover(draftId, proof, mediaId);
+    }
+    @PutMapping("/{mediaId}/tag")
+    public LandlordMediaItem tag(HttpServletRequest request, @PathVariable String draftId, @PathVariable String mediaId,
+            @CookieValue(value = GuestDraftController.COOKIE, required = false) String proof, @RequestBody RoomTag tag) {
+        guard.check(request); return media.tag(draftId, proof, mediaId, tag);
     }
     @PutMapping("/order")
     public List<LandlordMediaItem> reorder(HttpServletRequest request, @PathVariable String draftId,

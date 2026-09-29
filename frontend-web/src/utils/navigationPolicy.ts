@@ -11,6 +11,65 @@ export interface LogoDestination {
   isAvailable: boolean;
 }
 
+export type AppHeaderOwner = 'GLOBAL' | 'LESSOR_ONBOARDING';
+
+export function normalizeRoutePathname(pathname: string): string {
+  const path = pathname || '/';
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
+}
+
+export function isLessorWorkspaceRoute(pathname: string): boolean {
+  const path = normalizeRoutePathname(pathname);
+  return path === '/lessor' || path.startsWith('/lessor/');
+}
+
+/** The app shell and onboarding screen use the same route classification, so only one owns a header. */
+export function resolveAppHeaderOwner(pathname: string): AppHeaderOwner {
+  const path = normalizeRoutePathname(pathname);
+  return path === '/lessor/new' || /^\/lessor\/drafts\/[^/]+$/.test(path)
+    ? 'LESSOR_ONBOARDING'
+    : 'GLOBAL';
+}
+
+export interface LessorReturnContext {
+  guest: boolean;
+  tenant: boolean;
+  activeLessor: boolean;
+}
+
+/** Preserves a known internal origin and applies safe capability-aware fallbacks to direct links. */
+export function resolveLessorExitPath(origin: unknown, context: LessorReturnContext): string {
+  const fallback = context.guest ? '/' : context.activeLessor ? '/lessor' : '/tenant';
+  if (typeof origin !== 'string' || !origin.startsWith('/') || origin.startsWith('//') || origin.includes('\\')) {
+    return fallback;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(origin, 'https://pathome.invalid');
+  } catch {
+    return fallback;
+  }
+  if (url.origin !== 'https://pathome.invalid') return fallback;
+
+  if (url.pathname === '/') return '/';
+  if (url.pathname === '/tenant') {
+    const allowed = new URLSearchParams();
+    for (const key of ['city', 'q', 'sector', 'bhk', 'propertyType', 'furnishing', 'minRent', 'maxRent', 'rentalOnly']) {
+      for (const value of url.searchParams.getAll(key)) allowed.append(key, value);
+    }
+    const query = allowed.toString();
+    return query ? `/tenant?${query}` : '/tenant';
+  }
+  if (/^\/property\/\d+$/.test(url.pathname)) return url.pathname;
+  if (url.pathname === '/lessor') {
+    if (url.searchParams.get('view') === 'drafts') return '/lessor?view=drafts';
+    if (context.activeLessor || context.guest) return '/lessor';
+    return context.tenant ? '/lessor?view=drafts' : fallback;
+  }
+  return fallback;
+}
+
 /**
  * Determines the current workspace context from the URL pathname and current user role.
  * Navigation is based on current workspace context, not simply the user's highest role.
@@ -67,35 +126,35 @@ export function resolveLogoDestination(context: WorkspaceContext): LogoDestinati
 /**
  * Authoritative capability check for displaying "My Properties" in navigation.
  * "My Properties" appears ONLY when the authenticated User has an actual
- * linked LessorProfile or authoritative lessor capability.
+ * active lessor capability reported by the backend.
  *
  * Rules:
  * - GUEST -> false
- * - TENANT-ONLY USER (no linked LessorProfile) -> false
- * - LESSOR USER (has linked LessorProfile) -> true
+ * - TENANT-ONLY USER -> false
+ * - ACTIVE LESSOR USER -> true
  * - TENANT + LESSOR USER -> true
  * - Auth method independent: NEVER keys on email or password login method.
  */
-export function shouldShowMyProperties(role?: string | null, hasLessorProfile?: boolean): boolean {
+export function shouldShowMyProperties(role?: string | null, hasLessorCapability?: boolean | null | 'error'): boolean {
   if (!role || role === 'GUEST') return false;
-  return hasLessorProfile === true;
+  return hasLessorCapability === true;
 }
 
 /**
  * Authoritative capability check for displaying "List your property" conversion action.
  * Tenant-only users may still see "List your property" as a conversion/onboarding action.
  */
-export function shouldShowListYourProperty(role?: string | null, hasLessorProfile?: boolean): boolean {
+export function shouldShowListYourProperty(role?: string | null, hasLessorCapability?: boolean | null | 'error'): boolean {
   if (!role || role === 'GUEST') return true;
-  // If user already has an active lessor capability / profile, "My Properties" is shown instead.
-  return !shouldShowMyProperties(role, hasLessorProfile);
+  // An active lessor sees "My Properties" instead.
+  return hasLessorCapability === false;
 }
 
 /**
  * Resolves the primary destination for lessor navigation actions.
  */
-export function resolveLessorNavigationDestination(hasLessorProfile?: boolean): string {
-  return hasLessorProfile ? '/lessor' : '/lessor/new';
+export function resolveLessorNavigationDestination(hasLessorCapability?: boolean): string {
+  return hasLessorCapability ? '/lessor' : '/lessor/new';
 }
 
 /**
@@ -105,9 +164,9 @@ export function resolveLessorNavigationDestination(hasLessorProfile?: boolean): 
  */
 export function resolveDirectLessorRouteState(
   isAuthenticated: boolean,
-  hasLessorProfile?: boolean
+  hasLessorCapability?: boolean
 ): 'guest' | 'inactive' | 'active' {
   if (!isAuthenticated) return 'guest';
-  if (hasLessorProfile) return 'active';
+  if (hasLessorCapability) return 'active';
   return 'inactive';
 }

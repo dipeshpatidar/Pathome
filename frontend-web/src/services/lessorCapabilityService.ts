@@ -22,25 +22,7 @@ export const lessorCapabilityService = {
       }
     });
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to check property capabilities.');
-    }
-    return response.json();
-  },
-
-  async activate(): Promise<LessorCapabilityResponse> {
-    const token = localStorage.getItem('pathome_auth_token');
-    if (!token) {
-      throw new Error('Authentication required');
-    }
-    const response = await fetch(`${API_ROOT_URL}/lessor/capability`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json'
-      }
-    });
-    if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to enable property management.');
+      throw await createApiRequestError(response, 'Unable to check property capabilities.', false, token);
     }
     return response.json();
   }

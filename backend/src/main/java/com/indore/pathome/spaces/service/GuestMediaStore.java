@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
@@ -116,6 +117,16 @@ public class GuestMediaStore {
         selected.setIsCover(true);
         media.saveAndFlush(selected);
         return rows;
+    }
+
+    @Transactional
+    public PropertyDraftMedia tag(String draftId, String proof, String mediaId, RoomTag tag) {
+        lock(draftId, proof);
+        PropertyDraftMedia row = requireMedia(draftId, mediaId);
+        if ("DELETING".equals(row.getUploadStatus()))
+            throw new DraftConflictException(draftId, 0, "Media is being removed");
+        row.setRoomTag(tag.name());
+        return media.saveAndFlush(row);
     }
 
     @Transactional

@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -43,7 +44,8 @@ public class GuestMediaService {
         return store.rows(id, proof).stream().map(row ->
                 "STAGED".equals(row.getUploadStatus()) && !staging.existsStrict(row.getStagingObjectKey())
                     ? new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(), row.getContentType(),
-                        null, "FAILED", false, row.getSortOrder() == null ? 0 : row.getSortOrder()) : item(row)).toList();
+                        null, "FAILED", false, row.getSortOrder() == null ? 0 : row.getSortOrder(),
+                        RoomTag.fromStored(row.getRoomTag())) : item(row)).toList();
     }
 
     public LandlordMediaItem upload(String id, String proof, String mediaId, MultipartFile file, String remoteAddress) {
@@ -98,6 +100,10 @@ public class GuestMediaService {
     public List<LandlordMediaItem> cover(String id, String proof, String mediaId) {
         return items(store.cover(id, proof, uuid(mediaId)));
     }
+    public LandlordMediaItem tag(String id, String proof, String mediaId, RoomTag tag) {
+        if (tag == null) throw new IllegalArgumentException("Photo category is required");
+        return item(store.tag(id, proof, uuid(mediaId), tag));
+    }
     public List<LandlordMediaItem> reorder(String id, String proof, List<String> ids) {
         return items(store.reorder(id, proof, ids == null ? null : ids.stream().map(this::uuid).toList()));
     }
@@ -115,7 +121,7 @@ public class GuestMediaService {
                 ? "/api/v1/lessor/guest/drafts/" + row.getDraftId() + "/media/" + row.getMediaId() + "/content" : null;
         return new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(), row.getContentType(),
                 url, row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
-                row.getSortOrder() == null ? 0 : row.getSortOrder());
+                row.getSortOrder() == null ? 0 : row.getSortOrder(), RoomTag.fromStored(row.getRoomTag()));
     }
     private String uuid(String raw) {
         try { String clean = UUID.fromString(raw).toString();

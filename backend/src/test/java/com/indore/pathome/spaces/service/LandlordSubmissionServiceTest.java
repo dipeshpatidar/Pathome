@@ -45,7 +45,7 @@ class LandlordSubmissionServiceTest {
         lessorProfiles = mock(LessorProfileService.class);
         service = new LandlordSubmissionService(capabilities, draftData, locations, drafts, media, listings,
                 assets, users, new ListingWorkflowService(), lessorProfiles);
-        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
+        when(capabilities.requireOnboardingUserId("owner@example.com")).thenReturn(5L);
         draft = new PropertyUploadDraft();
         draft.setDraftId("d1");
         draft.setLandlordUserId(5L);
@@ -70,11 +70,13 @@ class LandlordSubmissionServiceTest {
         when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L)).thenReturn(rows);
         User owner = new User();
         owner.setId(5L);
+        owner.setRole(Role.ROLE_TENANT);
         owner.setFullName("Owner");
         owner.setPhoneNumber("+91 98260 12345");
         when(users.findById(5L)).thenReturn(Optional.of(owner));
         LessorProfile profile = new LessorProfile(50L, 5L, "Owner", "+91 98260 12345", "owner@example.com", LessorSourceType.SELF_SERVICE);
         when(lessorProfiles.getOrCreateProfileForUser(owner)).thenReturn(profile);
+        when(lessorProfiles.getProfileForUser(5L)).thenReturn(Optional.of(profile));
         when(listings.saveAndFlush(any())).thenAnswer(invocation -> {
             Listing saved = invocation.getArgument(0);
             saved.setId(42L);
@@ -92,6 +94,22 @@ class LandlordSubmissionServiceTest {
         assertFalse(json.contains("latitude"));
         assertEquals("Vijay Nagar", preview.locality());
         assertTrue(preview.missingRequirements().isEmpty());
+        verify(listings, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void duplicateReadyCoversCannotBeSubmitted() {
+        PropertyDraftMedia second = new PropertyDraftMedia();
+        second.setMediaId("photo-two");
+        second.setContentType("image/jpeg");
+        second.setUploadStatus("UPLOADED");
+        second.setCloudinaryUrl("https://example.com/second.jpg");
+        second.setIsCover(true);
+        second.setSortOrder(1);
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d1", 5L))
+                .thenReturn(List.of(rows.get(0), second));
+        assertTrue(service.preview("owner@example.com", "d1").missingRequirements().contains("choose one cover photo"));
+        assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
         verify(listings, never()).saveAndFlush(any());
     }
 
@@ -115,6 +133,44 @@ class LandlordSubmissionServiceTest {
         assertEquals(first.listingId(), second.listingId());
         verify(listings, times(1)).saveAndFlush(any());
         verify(assets, times(1)).saveAll(any());
+        verify(capabilities, times(1)).activateAfterSubmission("owner@example.com");
+    }
+
+    @Test
+    void firstSubmissionCreatesProfileAndActivatesOnlyAfterListingAndDraftPersist() {
+        when(lessorProfiles.getProfileForUser(5L)).thenReturn(Optional.empty());
+        var result = service.submit("owner@example.com", "d1");
+        assertEquals(42L, result.listingId());
+        assertEquals(Role.ROLE_TENANT, users.findById(5L).orElseThrow().getRole());
+        var order = inOrder(lessorProfiles, listings, drafts, capabilities);
+        order.verify(lessorProfiles).getOrCreateProfileForUser(any(User.class));
+        order.verify(listings).saveAndFlush(any(Listing.class));
+        order.verify(drafts).saveAndFlush(draft);
+        order.verify(capabilities).activateAfterSubmission("owner@example.com");
+    }
+
+    @Test
+    void lateSubmissionFailureDoesNotActivate() {
+        when(lessorProfiles.getProfileForUser(5L)).thenReturn(Optional.empty());
+        when(assets.saveAll(any())).thenThrow(new IllegalStateException("media write failed"));
+        assertThrows(IllegalStateException.class, () -> service.submit("owner@example.com", "d1"));
+        verify(capabilities, never()).activateAfterSubmission(any());
+    }
+
+    @Test
+    void anotherPropertyReusesExistingProfile() {
+        service.submit("owner@example.com", "d1");
+        PropertyUploadDraft nextDraft = new PropertyUploadDraft();
+        nextDraft.setDraftId("d2");
+        nextDraft.setLandlordUserId(5L);
+        nextDraft.setStatus("DRAFT");
+        when(drafts.findLandlordDraftForUpdate("d2", 5L)).thenReturn(Optional.of(nextDraft));
+        when(draftData.readData(nextDraft)).thenReturn(validData());
+        when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d2", 5L)).thenReturn(rows);
+        service.submit("owner@example.com", "d2");
+        assertEquals(50L, nextDraft.getLessorProfileId());
+        verify(lessorProfiles, never()).getOrCreateProfileForUser(any());
+        verify(capabilities, times(2)).activateAfterSubmission("owner@example.com");
     }
 
     @Test
@@ -124,6 +180,7 @@ class LandlordSubmissionServiceTest {
         when(drafts.findLandlordDraftForUpdate("d1", 5L)).thenReturn(Optional.empty());
         assertThrows(EntityNotFoundException.class, () -> service.submit("owner@example.com", "d1"));
         verify(listings, never()).saveAndFlush(any());
+        verify(capabilities, never()).activateAfterSubmission(any());
     }
 
     @Test
@@ -133,11 +190,10 @@ class LandlordSubmissionServiceTest {
         incompleteOwner.setFullName("Owner");
         incompleteOwner.setPhoneNumber(null);
         when(users.findById(5L)).thenReturn(Optional.of(incompleteOwner));
-        LessorProfile incompleteProfile = new LessorProfile(51L, 5L, "Owner", "", "owner@example.com", LessorSourceType.SELF_SERVICE);
-        when(lessorProfiles.getOrCreateProfileForUser(incompleteOwner)).thenReturn(incompleteProfile);
-
+        when(lessorProfiles.getProfileForUser(5L)).thenReturn(Optional.empty());
         var ex = assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
         assertTrue(ex.getMessage().contains("contact details"));
+        verify(lessorProfiles, never()).getOrCreateProfileForUser(any());
     }
 
     @Test
@@ -147,11 +203,10 @@ class LandlordSubmissionServiceTest {
         placeholderOwner.setFullName("Lessor 5");
         placeholderOwner.setPhoneNumber("+91 98260 12345");
         when(users.findById(5L)).thenReturn(Optional.of(placeholderOwner));
-        LessorProfile placeholderProfile = new LessorProfile(52L, 5L, "Lessor 5", "+91 98260 12345", "owner@example.com", LessorSourceType.SELF_SERVICE);
-        when(lessorProfiles.getOrCreateProfileForUser(placeholderOwner)).thenReturn(placeholderProfile);
-
+        when(lessorProfiles.getProfileForUser(5L)).thenReturn(Optional.empty());
         var ex = assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
         assertTrue(ex.getMessage().contains("contact details"));
+        verify(lessorProfiles, never()).getOrCreateProfileForUser(any());
     }
 
     @Test
@@ -295,6 +350,7 @@ class LandlordSubmissionServiceTest {
     void submissionPreservesLandlordMediaOrderOnPermanentAssets() {
         PropertyDraftMedia cover = rows.get(0);
         cover.setSortOrder(2);
+        cover.setRoomTag("LIVING_ROOM");
         PropertyDraftMedia first = new PropertyDraftMedia();
         first.setMediaId("photo-first");
         first.setContentType("image/jpeg");
@@ -312,6 +368,7 @@ class LandlordSubmissionServiceTest {
         assertEquals(0, saved.getValue().get(0).getSortOrder());
         assertEquals("https://example.com/photo.jpg", saved.getValue().get(1).getMediaUrl());
         assertEquals(1, saved.getValue().get(1).getSortOrder());
+        assertEquals(RoomTag.LIVING_ROOM, saved.getValue().get(1).getRoomTag());
     }
 
     private LandlordDraftData validData() {

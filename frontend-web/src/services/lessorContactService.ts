@@ -20,17 +20,19 @@ function authHeaders(): Record<string, string> {
 
 export const lessorContactService = {
   async getContact(): Promise<LandlordContact> {
+    const token = localStorage.getItem('pathome_auth_token');
     const response = await fetch(BASE, {
       method: 'GET',
       headers: authHeaders()
     });
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to check your contact details.');
+      throw await createApiRequestError(response, 'Unable to check your contact details.', false, token);
     }
     return response.json();
   },
 
   async updateContact(data: { fullName: string; phoneNumber: string }): Promise<LandlordContact> {
+    const token = localStorage.getItem('pathome_auth_token');
     const response = await fetch(BASE, {
       method: 'PUT',
       headers: {
@@ -40,7 +42,7 @@ export const lessorContactService = {
       body: JSON.stringify(data)
     });
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to save your contact details.');
+      throw await createApiRequestError(response, 'Unable to save your contact details.', false, token);
     }
     return response.json();
   }

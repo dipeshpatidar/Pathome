@@ -41,6 +41,8 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
     Slice<PropertyUploadDraft> findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
             Long landlordUserId, String status, Pageable pageable);
 
+    long countByLandlordUserIdAndStatus(Long landlordUserId, String status);
+
     Optional<PropertyUploadDraft> findByDraftId(String draftId);
 
     @Query("SELECT d FROM PropertyUploadDraft d WHERE d.status = 'DISCARDED' AND d.id > :lastId " +

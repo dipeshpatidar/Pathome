@@ -26,20 +26,32 @@ public class LandlordCapabilityService {
         return toCapability(user);
     }
 
-    @Transactional
+    /** Kept for older clients; opening onboarding never grants capability. */
+    @Transactional(readOnly = true)
     public Capability activate(String authenticatedEmail) {
+        return getCapability(authenticatedEmail);
+    }
+
+    @Transactional
+    void activateAfterSubmission(String authenticatedEmail) {
         User user = requireEligibleUser(authenticatedEmail);
+        if (!lessorProfiles.existsByLinkedUserId(user.getId())) {
+            throw new IllegalStateException("Submitted listing requires a linked lessor profile");
+        }
         if (user.getLandlordActivatedAt() == null) {
             users.activateLandlordCapability(user.getId(), LocalDateTime.now());
-            user = users.findById(user.getId()).orElseThrow(() -> new AccessDeniedException("Account unavailable"));
         }
-        return toCapability(user);
+    }
+
+    @Transactional(readOnly = true)
+    public Long requireOnboardingUserId(String authenticatedEmail) {
+        return requireEligibleUser(authenticatedEmail).getId();
     }
 
     @Transactional(readOnly = true)
     public Long requireLandlordUserId(String authenticatedEmail) {
         User user = requireEligibleUser(authenticatedEmail);
-        if (user.getLandlordActivatedAt() == null && !lessorProfiles.existsByLinkedUserId(user.getId())) {
+        if (user.getLandlordActivatedAt() == null || !lessorProfiles.existsByLinkedUserId(user.getId())) {
             throw new AccessDeniedException("Landlord capability required");
         }
         return user.getId();
@@ -59,7 +71,7 @@ public class LandlordCapabilityService {
 
     private Capability toCapability(User user) {
         boolean hasProfile = lessorProfiles.existsByLinkedUserId(user.getId());
-        boolean enabled = user.getLandlordActivatedAt() != null || hasProfile;
+        boolean enabled = hasProfile && user.getLandlordActivatedAt() != null;
         return new Capability(
                 user.getId(),
                 enabled,

@@ -40,7 +40,7 @@ class LandlordMediaPromotionServiceTest {
         photo = new PropertyDraftMedia(); photo.setDraftId("guest-1"); photo.setMediaId("photo-1");
         photo.setLandlordUserId(7L); photo.setContentType("image/png"); photo.setFileSizeBytes(32L);
         photo.setUploadStatus("STAGED"); photo.setStagingObjectKey("drafts/guest/guest-1/photo-1");
-        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(7L);
+        when(capabilities.requireOnboardingUserId("owner@example.com")).thenReturn(7L);
         when(drafts.findByDraftIdAndLandlordUserId("guest-1", 7L)).thenReturn(Optional.of(draft));
         when(media.findByMediaIdAndDraftIdAndLandlordUserId("photo-1", "guest-1", 7L))
                 .thenReturn(Optional.of(photo));
@@ -53,7 +53,7 @@ class LandlordMediaPromotionServiceTest {
         var content = service.stagedContent("owner@example.com", "guest-1", "photo-1");
         assertArrayEquals(new byte[] {1, 2, 3}, content.stream().readAllBytes());
         assertEquals("image/png", content.type());
-        when(capabilities.requireLandlordUserId("other@example.com")).thenReturn(8L);
+        when(capabilities.requireOnboardingUserId("other@example.com")).thenReturn(8L);
         assertThrows(EntityNotFoundException.class,
                 () -> service.stagedContent("other@example.com", "guest-1", "photo-1"));
         verify(staging, times(1)).retrieve(photo.getStagingObjectKey());

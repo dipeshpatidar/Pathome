@@ -16,17 +16,21 @@ export function readLessorSessionIdentity(): LessorSessionIdentity | null {
   }
 }
 
+export function isCurrentLessorSession(identity: LessorSessionIdentity): boolean {
+  return readLessorSessionIdentity()?.key === identity.key;
+}
+
 export class LessorCapabilityTracker {
   private generation = 0;
-  private readonly publish: (hasLessorProfile: boolean) => void;
+  private readonly publish: (enabled: boolean | null | 'error') => void;
 
-  constructor(publish: (hasLessorProfile: boolean) => void) {
+  constructor(publish: (enabled: boolean | null | 'error') => void) {
     this.publish = publish;
   }
 
   clear(): void {
     this.generation++;
-    this.publish(false);
+    this.publish(null);
   }
 
   cancel(): void {
@@ -35,19 +39,26 @@ export class LessorCapabilityTracker {
 
   async refresh(
     identity: LessorSessionIdentity,
-    load: () => Promise<{ userId: number; hasLessorProfile: boolean }>
+    load: () => Promise<{ userId: number; enabled: boolean }>
   ): Promise<void> {
+    if (!isCurrentLessorSession(identity)) return;
     const generation = ++this.generation;
-    this.publish(false);
+    this.publish(null);
     try {
       const capability = await load();
       if (generation === this.generation &&
-          readLessorSessionIdentity()?.key === identity.key &&
-          capability.userId === identity.userId) {
-        this.publish(capability.hasLessorProfile === true);
+          isCurrentLessorSession(identity)) {
+        if (capability.userId === identity.userId) {
+          this.publish(capability.enabled === true);
+        } else {
+          // A response for another account cannot establish this user's capability.
+          this.publish('error');
+        }
       }
     } catch {
-      // The state was cleared before fetching; failure must not restore cached capability.
+      if (generation === this.generation && isCurrentLessorSession(identity)) {
+        this.publish('error');
+      }
     }
   }
 }

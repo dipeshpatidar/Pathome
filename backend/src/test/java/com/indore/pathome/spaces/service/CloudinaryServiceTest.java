@@ -210,6 +210,19 @@ class CloudinaryServiceTest {
         assertEquals("video", result.get().resourceType());
     }
 
+    @Test
+    void deleteInvalidatesCachedImageAndVideoCopies() throws Exception {
+        when(uploader.destroy(anyString(), anyMap())).thenReturn(Map.of("result", "ok"));
+
+        service.deleteResource("pathome/properties/images/deleted-image", false);
+        service.deleteResource("pathome/properties/videos/deleted-tour", true);
+
+        verify(uploader).destroy(eq("pathome/properties/images/deleted-image"), argThat(options ->
+                "image".equals(options.get("resource_type")) && Boolean.TRUE.equals(options.get("invalidate"))));
+        verify(uploader).destroy(eq("pathome/properties/videos/deleted-tour"), argThat(options ->
+                "video".equals(options.get("resource_type")) && Boolean.TRUE.equals(options.get("invalidate"))));
+    }
+
 
     @Test
     void definitiveCloudinaryNotFoundReturnsEmpty() throws Exception {

@@ -86,6 +86,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           setErrorMessage('Sign-in succeeded but did not return a secure session. Please try again.');
           return;
         }
+        setPassword('');
+        setEmail('');
         localStorage.setItem('pathome_auth_token', data.token);
         onSuccess({
           id: data.userId || 1,

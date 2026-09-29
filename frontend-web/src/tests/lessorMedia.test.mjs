@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasCoverImage, mediaUrl, movedMediaIds } from '../utils/lessorMedia.ts';
+import { displayMediaName, hasCoverImage, mediaUrl, mergeUploadedMedia, movedMediaIds, selectedUploadOrder } from '../utils/lessorMedia.ts';
 
 const image = (id, cover = false) => ({ mediaId: id, contentType: 'image/jpeg', status: 'UPLOADED', cover });
 
@@ -17,6 +17,23 @@ test('move controls preserve every uploaded media id exactly once', () => {
   assert.equal(movedMediaIds(items, 1, 1), null);
 });
 
+test('parallel completion order is restored to file-selection order', () => {
+  const rows = [image('existing'), image('second'), image('first'), { ...image('failed'), status: 'FAILED' }];
+  assert.deepEqual(selectedUploadOrder(rows, ['first', 'second', 'failed']), ['existing', 'first', 'second']);
+  assert.equal(selectedUploadOrder(rows, ['second', 'first']), null);
+});
+
+test('late upload response cannot recreate a second or obsolete cover', () => {
+  const chosen = { ...image('b', true), sortOrder: 0 };
+  const stale = { ...image('a', true), sortOrder: 1 };
+  const merged = mergeUploadedMedia([chosen], stale, true);
+  assert.deepEqual(merged.filter(item => item.cover).map(item => item.mediaId), ['b']);
+  const first = mergeUploadedMedia([], stale, false);
+  assert.deepEqual(first.filter(item => item.cover).map(item => item.mediaId), ['a']);
+  const second = mergeUploadedMedia(first, { ...image('b', true), sortOrder: 2 }, false);
+  assert.deepEqual(second.filter(item => item.cover).map(item => item.mediaId), ['b']);
+});
+
 test('privately staged guest photo can be the cover and keeps its order', () => {
   const staged = [{ ...image('a', true), status: 'STAGED' }, { ...image('b'), status: 'STAGED' }];
   assert.equal(hasCoverImage(staged), true);
@@ -29,6 +46,11 @@ test('private guest media uses the configured API host when the frontend is sepa
   assert.equal(mediaUrl(path, 'http://localhost:8081/api/v1'),
     'http://localhost:8081/api/v1/lessor/guest/drafts/guest-1/media/photo-1/content');
   assert.equal(mediaUrl(path, '/api/v1'), path);
+});
+
+test('internal media identifiers are never shown as photo names', () => {
+  assert.equal(displayMediaName({ ...image('a'), filename: '5e818bd0-b9ce-4d7d-a3ad-111111111111.jpg' }, 1), 'Photo 2');
+  assert.equal(displayMediaName({ ...image('a'), filename: 'Kitchen view.jpg' }, 0), 'Kitchen view.jpg');
 });
 
 test('generateMediaId produces a valid RFC 4122 UUID', async () => {

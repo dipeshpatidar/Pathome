@@ -85,7 +85,8 @@ public class LandlordPortfolioService {
         var media = assets.findByListingIdOrderByUploadedAtDesc(listingId).stream()
                 .map(asset -> new LandlordMediaItem(String.valueOf(asset.getId()), null,
                         asset.getMediaType() == MediaType.IMAGE ? "image/*" : "video/*",
-                        asset.getMediaUrl(), "UPLOADED", Boolean.TRUE.equals(asset.getIsPrimaryCover()), 0))
+                        asset.getMediaUrl(), "UPLOADED", Boolean.TRUE.equals(asset.getIsPrimaryCover()), 0,
+                        asset.getRoomTag()))
                 .toList();
         var preview = new LandlordPreview(listing.getTitle(), listing.getPropertyType(), listing.getBhkCount(),
                 listing.getCity(), listing.getSector(), listing.getMonthlyRent(), listing.getSecurityDeposit(),

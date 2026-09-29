@@ -30,7 +30,7 @@ public class LandlordMediaPromotionService {
     }
 
     public List<LandlordMediaItem> promote(String email, String draftId) {
-        Long owner = capabilities.requireLandlordUserId(email);
+        Long owner = capabilities.requireOnboardingUserId(email);
         var draft = drafts.findByDraftIdAndLandlordUserId(draftId, owner)
                 .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
         if (!"DRAFT".equals(draft.getStatus()))
@@ -55,7 +55,7 @@ public class LandlordMediaPromotionService {
     }
 
     public Content stagedContent(String email, String draftId, String mediaId) {
-        Long owner = capabilities.requireLandlordUserId(email);
+        Long owner = capabilities.requireOnboardingUserId(email);
         drafts.findByDraftIdAndLandlordUserId(draftId, owner)
                 .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
         PropertyDraftMedia row = media.findByMediaIdAndDraftIdAndLandlordUserId(mediaId, draftId, owner)

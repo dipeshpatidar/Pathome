@@ -12,6 +12,7 @@ import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -29,6 +30,21 @@ class LandlordDraftSecurityTest {
         mockMvc.perform(get("/api/v1/lessor/properties/drafts/a-draft"))
                 .andExpect(status().isUnauthorized());
         verifyNoInteractions(drafts);
+    }
+
+    @Test
+    void unauthenticatedDraftDeleteIsDenied() throws Exception {
+        mockMvc.perform(delete("/api/v1/lessor/properties/drafts/a-draft"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(drafts);
+    }
+
+    @Test
+    @WithMockUser(username = "owner@example.com", roles = "TENANT")
+    void authenticatedDraftDeleteUsesAuthenticatedIdentity() throws Exception {
+        mockMvc.perform(delete("/api/v1/lessor/properties/drafts/a-draft"))
+                .andExpect(status().isNoContent());
+        verify(drafts).discard("owner@example.com", "a-draft");
     }
 
     @Test

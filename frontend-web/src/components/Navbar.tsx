@@ -9,8 +9,6 @@ import { UserRole, UserProfile } from '../types';
 import { resolveWorkspaceContext, resolveLogoDestination } from '../utils/navigationPolicy';
 import {
   Building2,
-  Sparkles,
-  FileText,
   User,
   LogOut,
   ChevronDown,
@@ -21,12 +19,12 @@ import {
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 import { shouldShowMyProperties, shouldShowListYourProperty } from '../utils/navigationPolicy';
+import { DraftAccessButton, DraftAccessState } from './DraftAccessButton';
 
 interface NavbarProps {
   user: UserProfile | null;
   role: UserRole;
   onOpenAuthModal: () => void;
-  onOpenLeaseUpload: () => void;
   onLogout: () => void;
   onOpenPostProperty: () => void;
   postPropertyModalOpen: boolean;
@@ -34,7 +32,11 @@ interface NavbarProps {
   activeAdminTab?: string;
   setActiveAdminTab?: (tab: string) => void;
   isLandingHero?: boolean;
-  hasLessorCapability: boolean;
+  hasLessorCapability: boolean | null | 'error';
+  draftCount: number;
+  draftState: DraftAccessState;
+  onOpenDrafts: () => void;
+  onRetryDrafts: () => void;
 }
 
 /**
@@ -139,7 +141,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   user,
   role,
   onOpenAuthModal,
-  onOpenLeaseUpload,
   onLogout,
   onOpenPostProperty,
   postPropertyModalOpen,
@@ -147,7 +148,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeAdminTab = 'overview',
   setActiveAdminTab,
   isLandingHero = false,
-  hasLessorCapability
+  hasLessorCapability,
+  draftCount,
+  draftState,
+  onOpenDrafts,
+  onRetryDrafts
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -157,7 +162,12 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navigate = useNavigate();
   const location = useLocation();
 
-  const visitsUsed = user?.freeVisitsUsed || 0;
+  // Keep one mounted header across identity changes and drop account overlays immediately.
+  useEffect(() => {
+    setProfileDropdownOpen(false);
+    setMobileMenuOpen(false);
+  }, [user?.id, role]);
+
   const isAdminRole = role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN';
   const workspaceContext = resolveWorkspaceContext(location.pathname, role);
   const logoDestination = resolveLogoDestination(workspaceContext);
@@ -192,10 +202,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <>
-      <motion.header
-        initial={prefersReducedMotion ? false : { opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: prefersReducedMotion ? 0 : 0.45, ease: [0.16, 1, 0.3, 1] }}
+      <header data-pathome-header="global"
         className={`sticky top-0 z-[100] w-full pt-[env(safe-area-inset-top)] transition-[background-color,border-color,box-shadow] duration-300 motion-reduce:transition-none ${
           isAdminRole
             ? 'bg-slate-950/95 backdrop-blur-2xl border-b border-emerald-500/30 shadow-2xl'
@@ -245,7 +252,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span
-                    className={`pathome-tagline ${role === 'GUEST' ? 'hidden sm:inline-flex' : 'inline-flex'} whitespace-nowrap text-[10px] leading-4 sm:text-[11px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full border items-center transition-colors ${
+                    className={`pathome-tagline inline-flex whitespace-nowrap text-[9px] leading-3 min-[390px]:text-[10px] min-[390px]:leading-3.5 sm:text-[11px] sm:leading-4 font-bold px-1.5 sm:px-2 py-0.5 rounded-full border items-center transition-colors ${
                       isAdminRole
                         ? 'text-emerald-300 bg-emerald-950/80 border-emerald-500/30'
                         : isHeroTop
@@ -345,28 +352,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               </>
             )}
 
-            {role === 'TENANT' && (
-              <>
-                <div className="flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-2 text-xs font-bold min-[480px]:px-3">
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-                  <span className="hidden text-slate-500 font-medium min-[480px]:inline">Free Passes:</span>
-                  <span className="text-slate-900">{visitsUsed} / 5</span>
-                </div>
-
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.96 }}
-                  onClick={onOpenLeaseUpload}
-                  className="hidden sm:flex bg-slate-900 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition-all items-center gap-1.5 shadow-sm"
-                >
-                  <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Upload Lease Agreement</span>
-                </motion.button>
-              </>
+            {(role === 'GUEST' || role === 'TENANT' || hasLessorCapability === true) && (
+              <DraftAccessButton
+                count={draftCount}
+                state={draftState}
+                onOpen={onOpenDrafts}
+                onRetry={onRetryDrafts}
+                dark={isHeroTop}
+              />
             )}
 
             {/* CENTRALIZED NOTIFICATION BELL — RENDERED ONLY FOR AUTHENTICATED USERS */}
-            {role !== 'GUEST' && (
+            {user && role !== 'GUEST' && (
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
@@ -402,7 +399,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   whileHover={{ scale: 1.04 }}
                   whileTap={{ scale: 0.96 }}
                   onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
-                  className={`flex items-center gap-2 p-1.5 rounded-2xl border transition-all shadow-md ${
+                  className={`flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-2xl border p-1.5 transition-all shadow-md ${
                     isAdminRole
                       ? 'bg-slate-900 border-slate-800 text-white hover:border-emerald-500/40'
                       : 'bg-slate-900 border-slate-800 text-white'
@@ -418,15 +415,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <span className="text-xs font-bold max-w-[180px] sm:max-w-[220px] truncate hidden sm:inline text-slate-200">
                     {user?.fullName || role}
                   </span>
-                  <ChevronDown className={`hidden h-3.5 w-3.5 text-slate-400 transition-transform duration-300 min-[360px]:block ${profileDropdownOpen ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`hidden h-3.5 w-3.5 text-slate-400 transition-transform duration-300 sm:block ${profileDropdownOpen ? 'rotate-180' : ''}`} />
                 </motion.button>
 
-                <AnimatePresence>
                   {profileDropdownOpen && (
                     <motion.div
                       initial={{ opacity: 0, scale: 0.95, y: 8 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95, y: 8 }}
                       transition={{ type: 'spring', stiffness: 450, damping: 28 }}
                       className="absolute right-0 mt-1 w-60 bg-slate-950 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 py-2 z-50 overflow-hidden"
                     >
@@ -453,24 +448,43 @@ export const Navbar: React.FC<NavbarProps> = ({
                             <Building2 className="h-4 w-4"/>My Properties
                           </button>
                         )}
+                        {role === 'TENANT' && hasLessorCapability === null && (
+                          <p role="status" className="px-3.5 py-2.5 text-xs text-slate-300">Checking property access…</p>
+                        )}
+                        {role === 'TENANT' && hasLessorCapability === 'error' && (
+                          <div className="px-3.5 py-2.5 text-xs text-slate-300">
+                            <p role="alert">Could not check property access.</p>
+                            <button
+                              type="button"
+                              onClick={() => window.dispatchEvent(new Event('pathome_auth_changed'))}
+                              className="mt-2 min-h-11 font-semibold text-emerald-300 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                            >Try again</button>
+                          </div>
+                        )}
                         {showListProperty && role === 'TENANT' && (
                           <button
-                            onClick={() => { setProfileDropdownOpen(false); navigate('/lessor/new'); }}
+                            type="button"
+                            onClick={() => { setProfileDropdownOpen(false); onOpenPostProperty(); }}
                             className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
                           >
                             <Building2 className="h-4 w-4"/>List your property
                           </button>
                         )}
+                        {draftState === 'error' && (
+                          <div className="px-3.5 py-2.5 text-xs text-slate-300">
+                            <p role="alert">Drafts could not be checked.</p>
+                            <button type="button" onClick={onRetryDrafts} className="mt-2 min-h-11 font-semibold text-emerald-300 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">Try again</button>
+                          </div>
+                        )}
                         <button
                           onClick={() => { setProfileDropdownOpen(false); onLogout(); }}
-                          className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 flex items-center gap-2.5 transition-colors"
+                          className="w-full text-left px-3.5 py-2.5 min-h-[44px] rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 flex items-center gap-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"
                         >
                           <LogOut className="w-4 h-4 text-rose-400" /> Log Out Session
                         </button>
                       </div>
                     </motion.div>
                   )}
-                </AnimatePresence>
               </div>
             )}
 
@@ -546,7 +560,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
-      </motion.header>
+      </header>
 
       {/* Post Your Property Informational Modal */}
       <PostPropertyModal

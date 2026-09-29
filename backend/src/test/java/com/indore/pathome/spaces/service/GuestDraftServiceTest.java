@@ -27,8 +27,6 @@ class GuestDraftServiceTest {
     private MediaStagingService staging;
     private GuestDraftService service;
     private DiscardedDraftCleanupService cleanup;
-    private com.indore.pathome.spaces.repository.UserRepository users;
-    private LessorProfileService lessorProfiles;
     private ObjectMapper mapper;
     private final LandlordDraftData.Basics basics =
             new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK");
@@ -40,13 +38,11 @@ class GuestDraftServiceTest {
         capabilities = mock(LandlordCapabilityService.class);
         staging = mock(MediaStagingService.class);
         cleanup = mock(DiscardedDraftCleanupService.class);
-        users = mock(com.indore.pathome.spaces.repository.UserRepository.class);
-        lessorProfiles = mock(LessorProfileService.class);
         mapper = new ObjectMapper().findAndRegisterModules();
         LandlordDraftService existing = new LandlordDraftService(drafts, capabilities, mapper,
                 mock(LandlordLocationService.class), media, cleanup);
         service = new GuestDraftService(drafts, media, existing, capabilities,
-                staging, 15, 1, 5, cleanup, users, lessorProfiles);
+                staging, 15, 1, 5, cleanup);
         when(drafts.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
         when(media.findByDraftIdAndGuestOwnedTrueOrderBySortOrderAscIdAsc(any())).thenReturn(List.of());
     }
@@ -97,24 +93,18 @@ class GuestDraftServiceTest {
         PropertyUploadDraft draft = draftFor(created);
         when(drafts.findByDraftIdForUpdate(draft.getDraftId())).thenReturn(Optional.of(draft));
         when(drafts.findByDraftId(draft.getDraftId())).thenReturn(Optional.of(draft));
-        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(7L);
-        when(capabilities.requireLandlordUserId("other@example.com")).thenReturn(8L);
-        com.indore.pathome.spaces.entity.User ownerUser = new com.indore.pathome.spaces.entity.User();
-        ownerUser.setId(7L);
-        when(users.findById(7L)).thenReturn(Optional.of(ownerUser));
-        com.indore.pathome.spaces.entity.LessorProfile profile =
-                new com.indore.pathome.spaces.entity.LessorProfile(50L, 7L, "Owner", "+91 9826012345", "owner@example.com", com.indore.pathome.spaces.entity.LessorSourceType.SELF_SERVICE);
-        when(lessorProfiles.getOrCreateProfileForUser(ownerUser)).thenReturn(profile);
+        when(capabilities.requireOnboardingUserId("owner@example.com")).thenReturn(7L);
+        when(capabilities.requireOnboardingUserId("other@example.com")).thenReturn(8L);
 
         assertEquals(draft.getDraftId(), service.claim(draft.getDraftId(), created.credential(), "owner@example.com").draftId());
         assertEquals(7L, draft.getLandlordUserId());
-        assertEquals(50L, draft.getLessorProfileId());
+        assertNull(draft.getLessorProfileId());
         assertNull(draft.getGuestTokenHash());
         assertNull(draft.getGuestExpiresAt());
         assertThrows(EntityNotFoundException.class, () -> service.require(draft.getDraftId(), created.credential()));
         assertEquals(draft.getDraftId(), service.claim(draft.getDraftId(), null, "owner@example.com").draftId());
         assertThrows(EntityNotFoundException.class, () -> service.claim(draft.getDraftId(), created.credential(), "other@example.com"));
-        verify(capabilities, times(1)).activate("owner@example.com");
+        verify(capabilities, never()).activate(any());
     }
 
     @Test

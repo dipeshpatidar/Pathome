@@ -49,6 +49,7 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/v1/lessor/guest/drafts/*/claim").authenticated()
+                .requestMatchers(HttpMethod.GET, "/api/v1/tenant/visit-requests").hasRole("TENANT")
                 .requestMatchers(
                     "/api/v1/auth/**",
                     "/api/v1/lessor/guest/**",

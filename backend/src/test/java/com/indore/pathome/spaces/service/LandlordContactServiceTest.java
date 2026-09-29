@@ -75,6 +75,7 @@ class LandlordContactServiceTest {
 
         LandlordContactDto result2 = service.getContact("noname@example.com");
         assertFalse(result2.complete());
+        verify(lessorProfileRepo, never()).insertIfNotExists(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -93,7 +94,7 @@ class LandlordContactServiceTest {
     }
 
     @Test
-    void updateContactNormalizesAndSavesToLessorProfileWithoutOverwritingUser() {
+    void updateContactBeforeFirstSubmissionPersistsWithoutCreatingProfile() {
         User user = new User();
         user.setId(4L);
         user.setEmail("owner@example.com");
@@ -107,11 +108,11 @@ class LandlordContactServiceTest {
         assertTrue(updated.complete());
         assertEquals("Ramesh Sharma", updated.fullName());
         assertEquals("+91 9826012345", updated.phoneNumber());
-        // Verify User record was NOT continuously modified (LessorProfile is supply-side truth)
-        assertEquals("Initial Name", user.getFullName());
-        assertNull(user.getPhoneNumber());
-        verify(users, never()).saveAndFlush(user);
-        verify(lessorProfileRepo, atLeastOnce()).saveAndFlush(any());
+        assertEquals("Ramesh Sharma", user.getFullName());
+        assertEquals("+91 9826012345", user.getPhoneNumber());
+        verify(users).save(user);
+        verify(lessorProfileRepo, never()).insertIfNotExists(any(), any(), any(), any(), any(), any(), any());
+        assertEquals(updated, service.getContact("owner@example.com"));
     }
 
     @Test

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { API_ROOT_URL } from '../config/endpoints';
 import { readNotificationIdentity, visibleNotificationHistory, isCurrentNotificationRequest } from '../utils/notificationSession';
+import { notifySessionExpired } from '../services/apiError';
 
 export type NotificationType = 'success' | 'info' | 'warning' | 'error' | 'ai_magic';
 export type NotificationCategory = 'SYSTEM' | 'PROPERTY' | 'PAYROLL' | 'APPROVAL' | 'AI_ENGINE';
@@ -110,6 +111,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       const response = await fetch(`${API_ROOT_URL}/notifications?role=${activeRole}`, { headers });
       if (!response.ok) {
+        if (response.status === 401) notifySessionExpired(token);
         throw new Error('Failed to fetch notifications');
       }
       const data = await response.json();

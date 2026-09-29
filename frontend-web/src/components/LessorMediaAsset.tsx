@@ -14,7 +14,10 @@ export function LessorMediaAsset({ url, contentType, alt, className }: {
     if (!url) { setSrc(null); return; }
     const resolved = mediaUrl(url, API_ROOT_URL);
     if (!url.startsWith('/api/v1/lessor/properties/drafts/') || !url.endsWith('/content')) {
-      setSrc(resolved); return;
+      setSrc(contentType.startsWith('image/')
+        ? resolved.replace('/image/upload/', '/image/upload/f_auto,q_auto,c_limit,w_800,h_600/')
+        : resolved);
+      return;
     }
     // A 100 MB staged video stays represented by its filename until promotion.
     if (contentType.startsWith('video/')) { setSrc(null); return; }
@@ -42,6 +45,6 @@ export function LessorMediaAsset({ url, contentType, alt, className }: {
       ? 'Private video awaiting preparation' : 'Private photo loading…'}
   </div>;
   return contentType.startsWith('image/')
-    ? <img src={src} alt={alt} className={className}/>
+    ? <img src={src} alt={alt} loading="lazy" className={className}/>
     : <video src={src} controls preload="metadata" className={className} aria-label={alt}/>;
 }

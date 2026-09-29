@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.service;
 import com.indore.pathome.spaces.dto.lessor.LandlordMediaItem;
 import com.indore.pathome.spaces.entity.PropertyDraftMedia;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
+import com.indore.pathome.spaces.entity.RoomTag;
 import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
@@ -32,7 +33,7 @@ public class LandlordMediaStore {
 
     @Transactional(readOnly = true)
     public List<LandlordMediaItem> list(String email, String draftId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         requireOwned(ownerId, draftId);
         return media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId)
                 .stream().map(this::toItem).toList();
@@ -41,7 +42,7 @@ public class LandlordMediaStore {
     @Transactional
     public Claim claim(String email, String draftId, String mediaId, String filename,
                        String contentType, long size) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         var current = media.findByMediaIdAndDraftIdAndLandlordUserId(mediaId, draftId, ownerId);
         if (current.isPresent()) {
@@ -77,9 +78,13 @@ public class LandlordMediaStore {
     @Transactional
     public LandlordMediaItem complete(String email, String draftId, String mediaId,
                                       CloudinaryService.CloudinaryUploadResult result) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
+        // The request may still have a PENDING entity from claim() in OpenEntityManagerInView.
+        // Read the current cover flag as a scalar so another completed upload or cover choice wins.
+        boolean currentCover = media.findLessorCoverFlag(draftId, ownerId, mediaId).orElse(false);
+        item.setIsCover(currentCover);
         if ("UPLOADED".equals(item.getUploadStatus())) return toItem(item);
         if (!"PENDING".equals(item.getUploadStatus()) && !"FAILED".equals(item.getUploadStatus())
                 && !"STAGED".equals(item.getUploadStatus())) {
@@ -89,19 +94,21 @@ public class LandlordMediaStore {
         item.setCloudinaryPublicId(result.publicId());
         item.setUploadStatus("UPLOADED");
         item.setUpdatedAt(LocalDateTime.now());
-        if (item.getContentType().startsWith("image/") && !Boolean.TRUE.equals(item.getIsCover()) &&
-                media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId).stream()
-                        .noneMatch(other -> !other.getMediaId().equals(mediaId)
-                                && ("UPLOADED".equals(other.getUploadStatus()) || "STAGED".equals(other.getUploadStatus()))
-                                && other.getContentType().startsWith("image/") && Boolean.TRUE.equals(other.getIsCover()))) {
-            item.setIsCover(true);
+        if (item.getContentType().startsWith("image/")) {
+            if (!currentCover && !media
+                    .existsByDraftIdAndLandlordUserIdAndIsCoverTrueAndUploadStatusInAndMediaIdNotAndContentTypeStartingWith(
+                            draftId, ownerId, List.of("UPLOADED", "STAGED", "DELETING"), mediaId, "image/")) {
+                item.setIsCover(true);
+            }
         }
-        return toItem(media.saveAndFlush(item));
+        LandlordMediaItem completed = toItem(media.saveAndFlush(item));
+        if (completed.cover()) media.clearOtherLessorCovers(draftId, ownerId, mediaId);
+        return completed;
     }
 
     @Transactional
     public void markFailed(String email, String draftId, String mediaId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
         if ("PENDING".equals(item.getUploadStatus())) {
@@ -113,14 +120,14 @@ public class LandlordMediaStore {
 
     @Transactional(readOnly = true)
     public PropertyDraftMedia recoverable(String email, String draftId, String mediaId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         requireOwned(ownerId, draftId);
         return ownedMedia(ownerId, draftId, mediaId);
     }
 
     @Transactional
     public List<LandlordMediaItem> makeCover(String email, String draftId, String mediaId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
         PropertyDraftMedia selected = items.stream().filter(item -> mediaId.equals(item.getMediaId()))
@@ -135,8 +142,19 @@ public class LandlordMediaStore {
     }
 
     @Transactional
+    public LandlordMediaItem tag(String email, String draftId, String mediaId, RoomTag tag) {
+        Long ownerId = capabilities.requireOnboardingUserId(email);
+        lockEditable(ownerId, draftId);
+        PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
+        if ("DELETING".equals(item.getUploadStatus()))
+            throw new DraftConflictException(draftId, 0, "Media is being removed");
+        item.setRoomTag(tag.name());
+        return toItem(media.saveAndFlush(item));
+    }
+
+    @Transactional
     public List<LandlordMediaItem> reorder(String email, String draftId, List<String> ids) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         List<PropertyDraftMedia> items = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
         List<String> ready = items.stream().filter(item -> "UPLOADED".equals(item.getUploadStatus())
@@ -157,7 +175,7 @@ public class LandlordMediaStore {
 
     @Transactional
     public PropertyDraftMedia markDeleting(String email, String draftId, String mediaId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
         if ("PENDING".equals(item.getUploadStatus())) throw new DraftConflictException(draftId, 0, "Wait for upload to finish");
@@ -168,7 +186,7 @@ public class LandlordMediaStore {
 
     @Transactional
     public void finishDeleting(String email, String draftId, String mediaId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         lockEditable(ownerId, draftId);
         PropertyDraftMedia item = ownedMedia(ownerId, draftId, mediaId);
         if (!"DELETING".equals(item.getUploadStatus())) throw new DraftConflictException(draftId, 0, "Media is not being removed");
@@ -177,7 +195,10 @@ public class LandlordMediaStore {
         media.flush();
         if (wasCover) {
             List<PropertyDraftMedia> remaining = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-            remaining.stream().filter(other -> ("UPLOADED".equals(other.getUploadStatus())
+            boolean anotherCoverExists = remaining.stream().anyMatch(other -> ("UPLOADED".equals(other.getUploadStatus())
+                            || "STAGED".equals(other.getUploadStatus())) && Boolean.TRUE.equals(other.getIsCover())
+                    && other.getContentType().startsWith("image/"));
+            if (!anotherCoverExists) remaining.stream().filter(other -> ("UPLOADED".equals(other.getUploadStatus())
                             || "STAGED".equals(other.getUploadStatus())) &&
                     other.getContentType().startsWith("image/"))
                     .findFirst().ifPresent(next -> { next.setIsCover(true); media.save(next); });
@@ -208,7 +229,7 @@ public class LandlordMediaStore {
                 : item.getCloudinaryUrl();
         return new LandlordMediaItem(item.getMediaId(), item.getOriginalFilename(), item.getContentType(),
                 url, item.getUploadStatus(), Boolean.TRUE.equals(item.getIsCover()),
-                item.getSortOrder() == null ? 0 : item.getSortOrder());
+                item.getSortOrder() == null ? 0 : item.getSortOrder(), RoomTag.fromStored(item.getRoomTag()));
     }
 
     public List<PropertyDraftMedia> listRaw(Long ownerId, String draftId) {

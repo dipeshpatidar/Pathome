@@ -14,7 +14,7 @@ export interface LessorDraft { draftId: string; status: string; version: number;
 export interface LessorDraftSummary { draftId: string; title: string; status: string; completionPercent: number; updatedAt: string;
   propertyType: ResidentialType | null; bhkCount: string | null; city: string | null; locality: string | null;
   monthlyRent: number | null; coverUrl: string | null }
-export interface LessorDraftPage { items: LessorDraftSummary[]; page: number; hasMore: boolean }
+export interface LessorDraftPage { items: LessorDraftSummary[]; page: number; hasMore: boolean; totalCount: number }
 export type DraftSection = 'basics' | 'pricing' | 'location' | 'details';
 export type DraftSectionValue = LessorBasics | LessorPricing | LessorLocation | LessorDetails;
 
@@ -37,9 +37,10 @@ async function request<T>(
   authenticatedClaim = false,
   customFallback?: string
 ): Promise<T> {
+  const requestToken = guest && !authenticatedClaim ? null : localStorage.getItem('pathome_auth_token');
   const response = await fetch(url, { ...init, credentials: guest ? 'include' : 'same-origin',
     headers: { ...(guest ? { Accept: 'application/json' } : authHeaders()), ...init.headers } });
-  if (!response.ok) throw await createApiRequestError(response, customFallback || 'Unable to save your property right now.', guest && !authenticatedClaim);
+  if (!response.ok) throw await createApiRequestError(response, customFallback || 'Unable to save your property right now.', guest && !authenticatedClaim, requestToken);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
@@ -48,6 +49,7 @@ export const lessorDraftService = {
   async create(basics: LessorBasics, guest = false): Promise<LessorDraft> {
     // Use a dedicated try/catch so the friendly "Couldn't start your property listing"
     // message is scoped only to fresh-draft creation — not to access errors on existing drafts.
+    const requestToken = guest ? null : localStorage.getItem('pathome_auth_token');
     const response = await fetch(guest ? GUEST_BASE : BASE, {
       method: 'POST',
       credentials: guest ? 'include' : 'same-origin',
@@ -58,7 +60,7 @@ export const lessorDraftService = {
       body: JSON.stringify(basics),
     });
     if (!response.ok) {
-      const err = await createApiRequestError(response, "Couldn't start your property listing. Please try again.", guest);
+      const err = await createApiRequestError(response, "Couldn't start your property listing. Please try again.", guest, requestToken);
       // For guest create, access/origin errors should show the calm create-specific copy.
       if (guest && (err.status === 403 || err.status === 401)) {
         throw new ApiRequestError("Couldn't start your property listing. Please try again.", err.status, err.details);

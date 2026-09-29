@@ -15,7 +15,7 @@ async function get<T>(path: string, guest = false, signal?: AbortSignal): Promis
     credentials: guest ? 'include' : 'same-origin',
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: 'application/json' }
   });
-  if (!response.ok) throw await createApiRequestError(response, 'Unable to load locations.', guest);
+  if (!response.ok) throw await createApiRequestError(response, 'Unable to load locations.', guest, token);
   return response.json() as Promise<T>;
 }
 

@@ -29,23 +29,17 @@ class LandlordCapabilityServiceTest {
     }
 
     @Test
-    void activatesTenantWithoutReplacingTenantRole() {
+    void openingOnboardingDoesNotActivateTenant() {
         User tenant = user(17L, Role.ROLE_TENANT);
-        when(users.activateLandlordCapability(eq(17L), any(LocalDateTime.class))).thenReturn(1);
-        User activated = user(17L, Role.ROLE_TENANT);
-        activated.setLandlordActivatedAt(LocalDateTime.of(2026, 9, 28, 10, 0));
-        activated.setLandlordActivatedByUserId(17L);
-        when(users.findByEmail("owner@example.com"))
-                .thenReturn(Optional.of(tenant), Optional.of(activated));
-        when(users.findById(17L)).thenReturn(Optional.of(activated));
+        when(users.findByEmail("owner@example.com")).thenReturn(Optional.of(tenant));
 
         var result = service.activate("owner@example.com");
 
-        assertTrue(result.enabled());
-        assertEquals(activated.getLandlordActivatedAt(), result.activatedAt());
-        assertEquals(Role.ROLE_TENANT, activated.getRole());
-        assertEquals(17L, service.requireLandlordUserId("owner@example.com"));
-        verify(users).activateLandlordCapability(eq(17L), any(LocalDateTime.class));
+        assertFalse(result.enabled());
+        assertNull(result.activatedAt());
+        assertEquals(Role.ROLE_TENANT, tenant.getRole());
+        assertEquals(17L, service.requireOnboardingUserId("owner@example.com"));
+        verify(users, never()).activateLandlordCapability(any(), any());
     }
 
     @Test
@@ -55,7 +49,9 @@ class LandlordCapabilityServiceTest {
         tenant.setLandlordActivatedByUserId(17L);
         when(users.findByEmail("owner@example.com")).thenReturn(Optional.of(tenant));
 
-        var result = service.activate("owner@example.com");
+        when(profileRepo.existsByLinkedUserId(17L)).thenReturn(true);
+        service.activateAfterSubmission("owner@example.com");
+        var result = service.getCapability("owner@example.com");
 
         assertTrue(result.enabled());
         assertEquals(tenant.getLandlordActivatedAt(), result.activatedAt());
@@ -88,7 +84,7 @@ class LandlordCapabilityServiceTest {
     }
 
     @Test
-    void tenantWithLinkedLessorProfileReturnsTrueForHasLessorProfile() {
+    void linkedProfileWithoutActivationRemainsInactive() {
         User tenant = user(23L, Role.ROLE_TENANT);
         when(users.findByEmail("lessor@example.com")).thenReturn(Optional.of(tenant));
         when(profileRepo.existsByLinkedUserId(23L)).thenReturn(true);
@@ -96,7 +92,10 @@ class LandlordCapabilityServiceTest {
         var capability = service.getCapability("lessor@example.com");
         assertEquals(23L, capability.userId());
         assertTrue(capability.hasLessorProfile());
-        assertTrue(capability.enabled());
+        assertFalse(capability.enabled());
+        assertThrows(AccessDeniedException.class, () -> service.requireLandlordUserId("lessor@example.com"));
+        tenant.setLandlordActivatedAt(LocalDateTime.now());
+        assertTrue(service.getCapability("lessor@example.com").enabled());
         assertEquals(23L, service.requireLandlordUserId("lessor@example.com"));
     }
 
@@ -110,6 +109,15 @@ class LandlordCapabilityServiceTest {
         assertFalse(capability.hasLessorProfile());
         assertFalse(capability.enabled());
         assertThrows(AccessDeniedException.class, () -> service.requireLandlordUserId("landlord@example.com"));
+    }
+
+    @Test
+    void timestampWithoutProfileDoesNotGrantMyProperties() {
+        User tenant = user(25L, Role.ROLE_TENANT);
+        tenant.setLandlordActivatedAt(LocalDateTime.now());
+        when(users.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
+        assertFalse(service.getCapability("tenant@example.com").enabled());
+        assertThrows(AccessDeniedException.class, () -> service.requireLandlordUserId("tenant@example.com"));
     }
 
     private static User user(Long id, Role role) {

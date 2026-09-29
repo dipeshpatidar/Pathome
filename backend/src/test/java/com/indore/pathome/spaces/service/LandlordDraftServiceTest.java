@@ -12,6 +12,8 @@ import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.SliceImpl;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -38,7 +40,7 @@ class LandlordDraftServiceTest {
         cleanup = mock(DiscardedDraftCleanupService.class);
         service = new LandlordDraftService(drafts, capabilities, mapper, locations,
                 mock(PropertyDraftMediaRepository.class), cleanup);
-        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
+        when(capabilities.requireOnboardingUserId("owner@example.com")).thenReturn(5L);
     }
 
     @Test
@@ -59,6 +61,8 @@ class LandlordDraftServiceTest {
         assertTrue(saved.stream().allMatch(d -> d.getLandlordUserId().equals(5L)
                 && d.getAdminId() == null && "DRAFT".equals(d.getStatus())));
         assertTrue(first.completionPercent() < 100);
+        verify(capabilities, never()).activate(any());
+        verify(capabilities, never()).activateAfterSubmission(any());
     }
 
     @Test
@@ -86,6 +90,21 @@ class LandlordDraftServiceTest {
         when(drafts.findByDraftIdAndLandlordUserId("other-draft", 5L)).thenReturn(Optional.empty());
         assertThrows(EntityNotFoundException.class, () -> service.get("owner@example.com", "other-draft"));
         verify(drafts, never()).findByDraftId("other-draft");
+    }
+
+    @Test
+    void draftPageReportsAuthoritativeResumableCountExcludingOtherStatuses() throws Exception {
+        var draft = storedDraft(5L);
+        when(drafts.findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(5L, "DRAFT", PageRequest.of(0, 20)))
+                .thenReturn(new SliceImpl<>(List.of(draft), PageRequest.of(0, 20), true));
+        when(drafts.countByLandlordUserIdAndStatus(5L, "DRAFT")).thenReturn(21L);
+
+        var page = service.list("owner@example.com", 0);
+
+        assertEquals(21L, page.totalCount());
+        assertTrue(page.hasMore());
+        assertTrue(page.items().stream().allMatch(item -> "DRAFT".equals(item.status())));
+        verify(drafts).countByLandlordUserIdAndStatus(5L, "DRAFT");
     }
 
     @Test
@@ -153,6 +172,7 @@ class LandlordDraftServiceTest {
         assertEquals("DISCARDED", draft.getStatus());
         verify(drafts).saveAndFlush(draft);
         verify(cleanup).afterCommit("draft-one");
+        verify(capabilities, never()).activateAfterSubmission(any());
     }
 
     @Test

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LessorAutosave } from '../services/lessorAutosave.ts';
+import { lessorStepStorageKey, resolveLessorResumeStep } from '../utils/lessorStepResume.ts';
 
 test('lessor progress flow covers all 7 stages in exact sequence', () => {
   const steps = ['type', 'basics', 'pricing', 'location', 'media', 'details', 'preview'];
@@ -192,6 +193,31 @@ test('discard confirmation copy distinguishes new draft from published revision'
   assert.equal(revisionConfig.cancelLabel, 'Keep editing');
 });
 
+test('resume step is scoped to the authenticated user and exact draft', () => {
+  assert.equal(lessorStepStorageKey('draft-a', 11, false), 'pathome_lessor_step_11_draft-a');
+  assert.notEqual(lessorStepStorageKey('draft-a', 11, false), lessorStepStorageKey('draft-a', 12, false));
+  assert.notEqual(lessorStepStorageKey('draft-a', 11, false), lessorStepStorageKey('draft-b', 11, false));
+  assert.equal(lessorStepStorageKey('guest-a', null, true), 'pathome_guest_step_guest-a');
+  assert.equal(lessorStepStorageKey('draft-a', null, false), null);
+});
+
+test('resume restores Photos and falls back to the nearest still-reachable step', () => {
+  const data = {
+    basics: { propertyType: 'FLAT', rentalMode: 'LONG_TERM_RENTAL', bhkCount: '2BHK' },
+    pricing: { monthlyRent: 20000, securityDeposit: 0 },
+    location: { city: 'Indore', localityInput: 'Vijay Nagar', address: '10 Test Road',
+      canonicalLocalityId: null, resolutionType: 'MANUAL_PENDING' },
+    details: { availableFrom: '2026-10-01' }
+  };
+  assert.equal(resolveLessorResumeStep('media', data, ['Indore'], false), 'media');
+  assert.equal(resolveLessorResumeStep('details', data, ['Indore'], false), 'media');
+  assert.equal(resolveLessorResumeStep('preview', data, ['Indore'], true), 'preview');
+  assert.equal(resolveLessorResumeStep('preview', { ...data, details: null }, ['Indore'], true), 'details');
+  assert.equal(resolveLessorResumeStep('preview', data, [], true), 'location');
+  assert.equal(resolveLessorResumeStep('media', { ...data, pricing: null }, ['Indore'], false), 'pricing');
+  assert.equal(resolveLessorResumeStep('unknown', data, ['Indore'], true), 'basics');
+});
+
 test('autosave abandon cancels in-flight/pending requests and prevents delayed recreation', async () => {
   const storage = () => {
     const map = new Map();
@@ -240,7 +266,10 @@ test('autosave abandon cancels in-flight/pending requests and prevents delayed r
 });
 
 test('discard pauses an in-flight save, cancels debounce, and preserves edits if DELETE fails', async () => {
-  const values = new Map();
+  const values = new Map([
+    ['pathome_auth_token', 'test-token-10'],
+    ['pathome_user', JSON.stringify({ id: 10, role: 'TENANT' })]
+  ]);
   globalThis.localStorage = {
     getItem: key => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, value),

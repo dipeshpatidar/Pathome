@@ -17,7 +17,7 @@ async function request<T>(draftId: string, action: 'preview' | 'submit', method:
   if (!token && !guest) { notifySessionExpired(); throw new ApiRequestError('Sign in to continue.', 401); }
   const response = await fetch(`${API_ROOT_URL}/lessor/${guest ? 'guest' : 'properties'}/drafts/${encodeURIComponent(draftId)}/${action}`,
     { method, credentials: guest ? 'include' : 'same-origin', headers: { ...(guest ? {} : { Authorization: `Bearer ${token}` }), Accept: 'application/json' } });
-  if (!response.ok) throw await createApiRequestError(response, 'Your property could not be submitted right now.', guest);
+  if (!response.ok) throw await createApiRequestError(response, 'Your property could not be submitted right now.', guest, token);
   return response.json() as Promise<T>;
 }
 

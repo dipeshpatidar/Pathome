@@ -80,6 +80,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({ property, 
         note
       });
       setAcknowledgement(response.message);
+      window.dispatchEvent(new Event('pathome_visit_request_created'));
     } catch (requestError: any) {
       setError(requestError?.message || 'Unable to send your visit request. Please try again.');
     } finally {

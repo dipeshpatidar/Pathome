@@ -308,7 +308,7 @@ public class CloudinaryService {
         if (publicId == null || publicId.isBlank()) return;
         try {
             Map<?, ?> response = cloudinary.uploader().destroy(publicId,
-                    ObjectUtils.asMap("resource_type", isVideo ? "video" : "image"));
+                    ObjectUtils.asMap("resource_type", isVideo ? "video" : "image", "invalidate", true));
             String result = Objects.toString(response.get("result"), "");
             if (!"ok".equals(result) && !"not found".equals(result)) {
                 throw new IllegalStateException("Cloud storage did not confirm removal");

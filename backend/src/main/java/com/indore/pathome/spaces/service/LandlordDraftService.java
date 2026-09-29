@@ -61,7 +61,7 @@ public class LandlordDraftService {
 
     @Transactional
     public void discard(String email, String draftId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         PropertyUploadDraft draft = drafts.findLandlordDraftForUpdate(draftId, ownerId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
         if (draft.getAdminId() != null) {
@@ -80,7 +80,7 @@ public class LandlordDraftService {
 
     @Transactional
     public LandlordDraftResponse create(String email, LandlordDraftData.Basics basics) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         LandlordDraftData.Basics validated = validateBasics(basics);
         PropertyUploadDraft draft = new PropertyUploadDraft();
         draft.setDraftId("landlord-" + UUID.randomUUID());
@@ -102,7 +102,7 @@ public class LandlordDraftService {
 
     @Transactional(readOnly = true)
     public LandlordDraftPage list(String email, int page) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         Slice<PropertyUploadDraft> slice = drafts.findByLandlordUserIdAndStatusOrderByUpdatedAtDescIdDesc(
                 ownerId, "DRAFT", PageRequest.of(page, PAGE_SIZE));
@@ -120,7 +120,7 @@ public class LandlordDraftService {
                     data.location() == null ? null : data.location().localityInput(),
                     data.pricing() == null ? null : data.pricing().monthlyRent(),
                     covers.containsKey(draft.getDraftId()) ? covers.get(draft.getDraftId()).getCloudinaryUrl() : null);
-        }).toList(), page, slice.hasNext());
+        }).toList(), page, slice.hasNext(), drafts.countByLandlordUserIdAndStatus(ownerId, "DRAFT"));
     }
 
     private static Instant toInstant(LocalDateTime localDateTime) {
@@ -236,7 +236,7 @@ public class LandlordDraftService {
 
     @Transactional(readOnly = true)
     public PropertyUploadDraft requireOwned(String email, String draftId) {
-        Long ownerId = capabilities.requireLandlordUserId(email);
+        Long ownerId = capabilities.requireOnboardingUserId(email);
         return drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
                 .filter(draft -> !"DISCARDED".equals(draft.getStatus()))
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));

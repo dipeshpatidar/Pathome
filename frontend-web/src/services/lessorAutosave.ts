@@ -1,4 +1,5 @@
 import type { DraftSection, DraftSectionValue, LessorDraft } from './lessorDraftService.ts';
+import { readLessorSessionIdentity } from '../utils/lessorCapabilityState.ts';
 
 export type LessorSaveStatus = 'saved' | 'saving' | 'error' | 'conflict';
 type Pending = Partial<Record<DraftSection, DraftSectionValue>>;
@@ -23,6 +24,7 @@ export class LessorAutosave {
   private readonly save: (draftId: string, section: DraftSection, version: number,
                           value: DraftSectionValue) => Promise<LessorDraft>;
   private readonly persistLocally: boolean;
+  private readonly sessionKey: string | null;
 
   constructor(userId: number, draftId: string,
               version: number, onStatus: (status: LessorSaveStatus) => void,
@@ -35,6 +37,7 @@ export class LessorAutosave {
     this.onSaved = onSaved;
     this.save = save;
     this.persistLocally = persistLocally;
+    this.sessionKey = persistLocally ? (readLessorSessionIdentity()?.key ?? null) : null;
     this.version = version;
     this.persistedBaseVersion = version;
     this.storageKey = `pathome_lessor_unsynced_${userId}_${draftId}`;
@@ -69,11 +72,17 @@ export class LessorAutosave {
 
   async flush(): Promise<boolean> {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    if (this.blocked || this.discarding) return false;
-    if (this.inFlight) { await this.inFlight; if (this.blocked || this.discarding) return false; }
-    if (!Object.keys(this.pending).length) return true;
-    this.inFlight = this.drain();
-    try { return await this.inFlight; } finally { this.inFlight = null; }
+    while (true) {
+      if (this.blocked || this.discarding) return false;
+      if (this.inFlight) {
+        if (!await this.inFlight) return false;
+        continue;
+      }
+      if (!Object.keys(this.pending).length) return true;
+      const request = this.drain();
+      this.inFlight = request.finally(() => { this.inFlight = null; });
+      if (!await this.inFlight) return false;
+    }
   }
 
   private async drain(): Promise<boolean> {
@@ -106,6 +115,7 @@ export class LessorAutosave {
 
   private persist(): void {
     if (!this.persistLocally) return;
+    if (!this.sessionKey || readLessorSessionIdentity()?.key !== this.sessionKey) return;
     try {
       if (Object.keys(this.pending).length) {
         localStorage.setItem(this.storageKey, JSON.stringify({ version: this.blocked ? this.persistedBaseVersion : this.version, pending: this.pending }));

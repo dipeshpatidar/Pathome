@@ -289,15 +289,14 @@ class LessorProfileServiceTest {
         LandlordContactDto response = contactService.updateContact("client@example.com", requestDto);
 
         assertEquals("Updated Name", response.fullName());
-        LessorProfile profile = profileService.getProfileForUser(55L).orElseThrow();
-        assertEquals(55L, profile.getLinkedUserId());
-        assertEquals(LessorSourceType.SELF_SERVICE, profile.getSourceType());
-        assertNull(profile.getSourceReference());
+        assertTrue(profileService.getProfileForUser(55L).isEmpty());
+        assertEquals("Updated Name", user.getFullName());
+        assertEquals("+91 9826055555", user.getPhoneNumber());
     }
 
-    // 10. Contact completion writes LessorProfile
+    // 10. Pre-submission contact completion remains on User
     @Test
-    void contactCompletionWritesLessorProfile() {
+    void contactCompletionDoesNotCreateLessorProfile() {
         User user = new User(60L, "lessor@example.com", "hash", "Incomplete", null, Role.ROLE_TENANT, null, 5);
         when(userRepo.findByEmail("lessor@example.com")).thenReturn(Optional.of(user));
 
@@ -308,11 +307,9 @@ class LessorProfileServiceTest {
                 new LandlordContactDto("Valid Lessor Name", "9826066666", false));
 
         assertTrue(updated.complete());
-        LessorProfile profile = profileService.getProfileForUser(60L).orElseThrow();
-        assertEquals("Valid Lessor Name", profile.getDisplayName());
-        assertEquals("+91 9826066666", profile.getMobileNumber());
-        // User record phone remains null (proves LessorProfile is authoritative supply contact)
-        assertNull(user.getPhoneNumber());
+        assertTrue(profileService.getProfileForUser(60L).isEmpty());
+        assertEquals("Valid Lessor Name", user.getFullName());
+        assertEquals("+91 9826066666", user.getPhoneNumber());
     }
 
     // 11. Complete profile skips redundant contact prompt

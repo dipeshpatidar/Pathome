@@ -25,28 +25,31 @@ export const lessorPortfolioService = {
     const response = await fetch(`${API_ROOT_URL}/lessor/properties?page=${page}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     });
-    if (!response.ok) throw await createApiRequestError(response, 'Unable to load your properties.');
+    if (!response.ok) throw await createApiRequestError(response, 'Unable to load your properties.', false, token);
     return response.json();
   },
   async get(listingId: number): Promise<LessorListingDetail> {
+    const token = authToken();
     const response = await fetch(`${API_ROOT_URL}/lessor/properties/${listingId}`, {
-      headers: { Authorization: `Bearer ${authToken()}`, Accept: 'application/json' }
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     });
-    if (!response.ok) throw await createApiRequestError(response, 'Unable to open this property.');
+    if (!response.ok) throw await createApiRequestError(response, 'Unable to open this property.', false, token);
     return response.json();
   },
   async startRevision(listingId: number): Promise<{ draftId: string }> {
+    const token = authToken();
     const response = await fetch(`${API_ROOT_URL}/lessor/properties/${listingId}/revision`, {
-      method: 'POST', headers: { Authorization: `Bearer ${authToken()}`, Accept: 'application/json' }
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     });
-    if (!response.ok) throw await createApiRequestError(response, 'Unable to start a revision.');
+    if (!response.ok) throw await createApiRequestError(response, 'Unable to start a revision.', false, token);
     return response.json();
   },
   async changeStatus(listingId: number, version: number, action: 'pause' | 'archive' | 'resume-review'): Promise<LessorListingAction> {
+    const token = authToken();
     const response = await fetch(`${API_ROOT_URL}/lessor/properties/${listingId}/${action}`, {
-      method: 'POST', headers: { Authorization: `Bearer ${authToken()}`, Accept: 'application/json', 'If-Match': String(version) }
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'If-Match': String(version) }
     });
-    if (!response.ok) throw await createApiRequestError(response, 'Unable to update this property.');
+    if (!response.ok) throw await createApiRequestError(response, 'Unable to update this property.', false, token);
     return response.json();
   }
 };

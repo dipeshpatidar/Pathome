@@ -27,9 +27,12 @@ const messageForStatus = (status: number, fallback: string): string => {
   return fallback;
 };
 
-export const notifySessionExpired = (): void => {
+export const notifySessionExpired = (requestToken?: string | null): void => {
+  if (requestToken && (typeof localStorage === 'undefined' || requestToken !== localStorage.getItem('pathome_auth_token'))) return;
+  if (!requestToken && typeof localStorage !== 'undefined' &&
+      !localStorage.getItem('pathome_auth_token') && !localStorage.getItem('pathome_user')) return;
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    window.dispatchEvent(new CustomEvent('pathome_session_expired'));
+    window.dispatchEvent(new CustomEvent('pathome_session_expired', { detail: { token: requestToken } }));
   }
 };
 
@@ -40,7 +43,7 @@ export const notifySessionExpired = (): void => {
  * @param fallback  Generic fallback message for status codes not handled by messageForStatus.
  * @param guestAccess  True when this is an anonymous guest endpoint (401 = session expiry, not sign-in prompt).
  */
-export const createApiRequestError = async (response: Response, fallback: string, guestAccess = false): Promise<ApiRequestError> => {
+export const createApiRequestError = async (response: Response, fallback: string, guestAccess = false, requestToken?: string | null): Promise<ApiRequestError> => {
   let payload: ApiErrorPayload | null = null;
 
   try {
@@ -50,7 +53,7 @@ export const createApiRequestError = async (response: Response, fallback: string
   }
 
   if (response.status === 401 && !guestAccess) {
-    notifySessionExpired();
+    notifySessionExpired(requestToken);
   }
 
   const message = guestAccess && response.status === 401

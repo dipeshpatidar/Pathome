@@ -91,7 +91,8 @@ public class LandlordReviewService {
         var photos = assets.findByListingIdOrderByUploadedAtDesc(listingId).stream()
                 .map(asset -> new LandlordMediaItem(String.valueOf(asset.getId()), null,
                         asset.getMediaType() == MediaType.IMAGE ? "image/*" : "video/*",
-                        asset.getMediaUrl(), "UPLOADED", Boolean.TRUE.equals(asset.getIsPrimaryCover()), 0))
+                        asset.getMediaUrl(), "UPLOADED", Boolean.TRUE.equals(asset.getIsPrimaryCover()), 0,
+                        asset.getRoomTag()))
                 .toList();
         return new LandlordReviewDetail(null, listingId, listing.getWorkflowStatus().name(),
                 listing.getReviewNote(), data, photos);
@@ -106,7 +107,8 @@ public class LandlordReviewService {
         var rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, draft.getLandlordUserId());
         var items = rows.stream().map(row -> new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(),
                 row.getContentType(), row.getCloudinaryUrl(), row.getUploadStatus(),
-                Boolean.TRUE.equals(row.getIsCover()), row.getSortOrder() == null ? 0 : row.getSortOrder())).toList();
+                Boolean.TRUE.equals(row.getIsCover()), row.getSortOrder() == null ? 0 : row.getSortOrder(),
+                RoomTag.fromStored(row.getRoomTag()))).toList();
         return new LandlordReviewDetail(draftId, draft.getPublishedPropertyId(), draft.getStatus(),
                 draft.getReviewNote(), draftService.readData(draft), items);
     }
