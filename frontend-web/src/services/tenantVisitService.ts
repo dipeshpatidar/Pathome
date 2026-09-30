@@ -5,6 +5,8 @@ export interface TenantVisitRequest {
   requestId: number;
   propertyId: number;
   propertyTitle: string;
+  propertyType: string | null;
+  bhk: string | null;
   city: string | null;
   sector: string | null;
   propertyAvailable: boolean;

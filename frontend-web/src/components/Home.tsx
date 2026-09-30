@@ -721,6 +721,14 @@ export const Home: React.FC = () => {
   const clearUserSession = useCallback(() => {
     // Remove the token first so every in-flight identity check immediately becomes stale.
     clearPersistedUser();
+    discoveryAbortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
+    discoveryRequestRef.current += 1;
+    setProperties([]);
+    setDiscoveryState('LOADING');
+    setHasMoreProperties(false);
+    setLoadingMore(false);
+    setLoadMoreError(null);
     setUser(null);
     capabilityTracker.clear();
     setDraftSnapshot({ key: '', count: 0, state: 'loading' });
@@ -913,7 +921,7 @@ export const Home: React.FC = () => {
       // Failure: existing properties preserved, retry button shown
       setLoadMoreError(err?.message || 'Unable to load more properties. Please try again.');
     } finally {
-      setLoadingMore(false);
+      if (loadMoreAbortRef.current === abortController) setLoadingMore(false);
     }
   };
 
@@ -1025,7 +1033,7 @@ export const Home: React.FC = () => {
       window.removeEventListener('pathome_property_published', handlePropertyPublished);
       discoveryAbortRef.current?.abort();
     };
-  }, [location.search, isPropertyRoute, isLessorRoute]);
+  }, [location.search, isPropertyRoute, isLessorRoute, user?.id]);
 
   // 1. MULTI-TAB & MULTI-WINDOW CROSS-TAB SESSION SYNCHRONIZATION
   useEffect(() => {
@@ -1042,6 +1050,16 @@ export const Home: React.FC = () => {
           navigate('/', { replace: true });
         } else {
           // LOGIN/ROLE CHANGE IN ANOTHER WINDOW/TAB DETECTED!
+          if (storedUser.id !== user?.id) {
+            discoveryAbortRef.current?.abort();
+            loadMoreAbortRef.current?.abort();
+            discoveryRequestRef.current += 1;
+            setProperties([]);
+            setDiscoveryState('LOADING');
+            setHasMoreProperties(false);
+            setLoadingMore(false);
+            setLoadMoreError(null);
+          }
           setPendingVisitProperty(null);
           setUser(storedUser);
           capabilityTracker.clear();
@@ -1051,7 +1069,7 @@ export const Home: React.FC = () => {
 
     window.addEventListener('storage', handleCrossTabSync);
     return () => window.removeEventListener('storage', handleCrossTabSync);
-  }, [navigate, capabilityTracker, clearUserSession]);
+  }, [navigate, capabilityTracker, clearUserSession, user?.id]);
 
   // 1b. SESSION EXPIRATION LISTENER (Triggered by 401 / expired token)
   useEffect(() => {

@@ -2,6 +2,16 @@
 
 Purpose: a chronological handoff record for future engineers or AI agents working on the Pathome Spaces property-upload flow. Times use Asia/Kolkata (IST). No credentials, tokens, or other secret configuration values are recorded here.
 
+## 2026-09-30 07:50 IST — Phase 2A tenant experience and visit history
+
+Reason: Redesign the approved tenant dashboard around discovery and authoritative visit requests, without fabricated activity or appointment claims.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` (editorial search hero, responsive history and discovery cards, loading/empty/error states, image fallback and CDN sizing, pagination cancellation); `frontend-web/src/components/Home.tsx` (clear discovery results and abort stale requests across logout/account changes); `frontend-web/src/services/tenantVisitService.ts` and `frontend-web/src/utils/tenantVisitView.ts` (existing status and pagination presentation); `backend/src/main/java/com/indore/pathome/spaces/dto/TenantVisitRequestResponse.java` and `backend/src/main/java/com/indore/pathome/spaces/service/TenantVisitRequestHistoryService.java` (add existing listing type and BHK to tenant history); focused tests in `frontend-web/src/tests/tenantVisitDashboard.test.mjs` and `backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitRequestHistoryServiceTest.java`.
+
+Verification: `mvn test -Dtest=TenantVisitRequestHistoryServiceTest` passed 4 tests; `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5 tests; `npm run build` passed; `git diff --check` and `git diff --cached --check` passed. Native Chrome inspection (after the browser API rejected this session's auth method) covered empty-state layout at 390, 430, 768, and 1280px; populated history at 390 and 1280px using one temporary local request; Explore homes navigation; and offline API failure followed by successful history and discovery retries. A temporary visit request and lessor profile were removed, with zero matching QA rows remaining. Numeric scroll-width measurement, browser account switching, and an active tenant-plus-lessor flow were NOT TESTED. The already running backend did not reload the new DTO, so property type/BHK display was verified by backend test and frontend build rather than end-to-end browser. No commit or push performed. The two historical untracked review files were left untouched.
+
+---
+
 ## 2026-09-28 18:05 IST — Timezone Semantics for Last Updated & Navigation Policy Cleanup
 
 ### Why this work was requested
@@ -1918,3 +1928,33 @@ Addendum, 2026-09-30 00:46 IST: The real removal-state screenshot showed a disab
 Addendum, 2026-09-30 00:48 IST: Added anonymous-denial and authenticated-identity tests for `DELETE /api/v1/lessor/properties/drafts/{draftId}`, plus a late-upload-completion tombstone test and `DiscardedDraftCleanupServiceTest` proving a transient Cloudinary failure retains the row for the next successful cleanup retry. The expanded focused Maven batch passed 30/30; after setting the cleanup fixture's media ID, the retry test passed again 1/1. The frontend tests/build and browser findings above remain unchanged. `git diff --check` passed. Commit: not created. Push: not attempted.
 
 Addendum, 2026-09-30 00:51 IST: Cloudinary's standard CDN had still returned cached 200s after the initial storage deletion. `CloudinaryService.deleteResource` now sends `invalidate=true` on image/video destroy; `CloudinaryServiceTest` asserts resource type and invalidation options. Re-created only the two task-generated QA public IDs as disposable 1px assets, immediately destroyed both with CDN invalidation, and verified both Cloudinary Admin API and delivery CDN return 404 after propagation. The expanded focused backend suite including CloudinaryServiceTest passed 45/45; frontend tests 23/23, build passed with the existing large-chunk advisory, and `git diff --check` passed. No other media or storage objects were changed. Commit: not created. Push: not attempted.
+
+
+## 2026-09-30 10:41 IST — Phase 2A tenant responsive composition correction
+
+Why: Correct the tenant experience's reported mobile-like desktop composition within the approved Phase 2A scope.
+
+Investigated: At inspection start, Chrome showed Responsive device emulation active at 390×813 CSS px, DPR 2, visual scale 1. A separate originating screenshot was not present to measure. At measured desktop widths, the Home route did not constrain the tenant root (main filled the CSS viewport; the dashboard content max-width was 1280px). The prior desktop composition kept the hero vertically stacked and placed visit history above discovery in normal flow; only the search controls/property grid had breakpoint changes.
+
+Changed: frontend-web/src/components/TenantDashboard.tsx now uses a compact horizontal search hero at 1280px+, a full-width horizontally arranged search at 1024px, side-by-side visit history and discovery from 1024px, single-column property cards at 1024px and a balanced two-column grid at 1280px+, and keeps stacked mobile/tablet flow. Removed the hero's redundant section-link row and adjusted desktop heading scale. No backend, API, auth, or data changes in this continuation.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; `npm run build` passed with the existing Vite >500 kB chunk advisory; `git diff --check` passed. Chrome measured innerWidth/clientWidth/scrollWidth at 390, 430, 768, 1024, 1280, and 1440 with no overflow. Empty-state composition was inspected. Functional browser checks: 390px search for Bhawarkua returned matching homes; 1280px search for Tower Square returned its property; its property link opened `/property/81`, and Back to discovery returned to the tenant route. Populated visit-history browser state was not tested because the QA tenant has no visit requests; no test record was created.
+
+Commit: not created. Push: not attempted.
+
+Addendum, 2026-09-30 10:43 IST: Refined the desktop discovery grid so a single filtered result spans the available card width at 1280px+, avoiding an empty half-column. Re-ran `node --test src/tests/tenantVisitDashboard.test.mjs` (5/5 passed), `npm run build` (passed; existing >500 kB chunk advisory), and `git diff --check` (passed). Commit: not created. Push: not attempted.
+
+
+## 2026-09-30 10:55 IST — Phase 2A final visual and functional verification
+
+Reason: Close the remaining Phase 2A browser states for the final 1280px one-result layout, populated visit history, and tenant-plus-lessor navigation.
+
+Inspected: Used an isolated local headless Chrome profile and the local `pathome_db`/app. Created a disposable tenant, linked self-service LessorProfile with active local QA capability, and two truthful `RECEIVED` requests for existing listings. Verified listing 79's loaded image is a screenshot of the product UI, listing 81's discovery image has visible Alamy/template watermarking, and listing 75 exercises the missing-photo fallback. These are existing listing media; no listing rows or assets were changed.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` now keeps populated visit-history imagery in a centered square frame at desktop widths. This prevents a portrait source asset from expanding the card image to 433px; the verified desktop image frame is 199×199px. No auth, API, backend, or product data changes.
+
+Verification: At 1280px, `window.innerWidth=1280`, `document.documentElement.clientWidth=1274`, and `scrollWidth=1274`; one Tower Square result rendered with a 16:10 image frame and the desktop history/discovery columns. At 390px, `innerWidth=390`, `clientWidth=384`, and `scrollWidth=384`. Populated cards showed property identity, BHK/type, locality, request date, available preferred timing, truthful status, and property links; the fallback rendered accessibly. History API returned HTTP 200 with matching user identity; lessor capability API returned HTTP 200. My Properties was visible and opened `/lessor`; returning to `/tenant` retained discovery and visit history. Focused tenant tests passed 5/5; `npm run build` passed with the existing >500 kB bundle advisory; `git diff --check` passed.
+
+Cleanup: Removed the disposable QA user's visit requests, lessor profile, and user. Follow-up database counts for QA accounts, requests, and profiles were all zero. The isolated browser's local/session storage was cleared.
+
+Outstanding: P2 visual-data issue remains in the existing active listings' images (watermarked stock/template image and product screenshot used as property media). Data changes were outside this verification's authorized records, so these were not changed. Backend tests were not run because backend production code was unchanged. Commit: not created. Push: not attempted.

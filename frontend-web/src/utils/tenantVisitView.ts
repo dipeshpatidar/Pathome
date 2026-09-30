@@ -10,9 +10,18 @@ export function tenantVisitView(status: 'loading' | 'ready' | 'error', requests:
 
 export function appendUniqueVisitRequests(current: TenantVisitRequest[], next: TenantVisitRequest[]): TenantVisitRequest[] {
   const existingIds = new Set(current.map(request => request.requestId));
-  return [...current, ...next.filter(request => !existingIds.has(request.requestId))];
+  const combined = [...current];
+  for (const request of next) {
+    if (existingIds.has(request.requestId)) continue;
+    existingIds.add(request.requestId);
+    combined.push(request);
+  }
+  return combined;
 }
 
-export function tenantVisitStatusLabel(status: string): string {
-  return status === 'RECEIVED' ? 'Request received' : status.replace(/_/g, ' ').toLowerCase();
+export function tenantVisitStatusLabel(status: string | null | undefined): string {
+  if (typeof status !== 'string' || !status.trim()) return 'Status unavailable';
+  if (status === 'RECEIVED') return 'Request received';
+  const readable = status.trim().replace(/[_-]+/g, ' ').toLowerCase();
+  return readable.charAt(0).toUpperCase() + readable.slice(1);
 }

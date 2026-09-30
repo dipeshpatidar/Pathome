@@ -52,6 +52,7 @@ public class TenantVisitRequestHistoryService {
         List<TenantVisitRequestResponse> items = result.getContent().stream().map(request -> {
             var listing = request.getListing();
             return new TenantVisitRequestResponse(request.getId(), listing.getId(), listing.getTitle(),
+                    listing.getPropertyType() == null ? null : listing.getPropertyType().name(), listing.getBhkCount(),
                     listing.getCity(), listing.getSector(), listing.getStatus() == ListingStatus.ACTIVE,
                     coverByListing.get(listing.getId()),
                     request.getPreferredVisitTiming(), request.getStatus(), request.getCreatedAt());

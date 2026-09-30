@@ -7,6 +7,8 @@ public record TenantVisitRequestResponse(
         Long requestId,
         Long propertyId,
         String propertyTitle,
+        String propertyType,
+        String bhk,
         String city,
         String sector,
         boolean propertyAvailable,

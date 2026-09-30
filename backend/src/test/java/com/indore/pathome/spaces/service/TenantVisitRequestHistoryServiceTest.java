@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.MediaType;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
 import com.indore.pathome.spaces.entity.PropertyVisitRequest;
+import com.indore.pathome.spaces.entity.PropertyType;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,8 @@ class TenantVisitRequestHistoryServiceTest {
         when(listing.getTitle()).thenReturn("Garden apartment");
         when(listing.getCity()).thenReturn("Indore");
         when(listing.getSector()).thenReturn("Vijay Nagar");
+        when(listing.getPropertyType()).thenReturn(PropertyType.FLAT);
+        when(listing.getBhkCount()).thenReturn("2BHK");
         when(listing.getStatus()).thenReturn(ListingStatus.ACTIVE);
         PropertyVisitRequest own = new PropertyVisitRequest();
         own.setId(31L);
@@ -47,6 +50,8 @@ class TenantVisitRequestHistoryServiceTest {
         assertFalse(result.hasMore());
         assertEquals(31L, result.requests().get(0).requestId());
         assertEquals("Garden apartment", result.requests().get(0).propertyTitle());
+        assertEquals("FLAT", result.requests().get(0).propertyType());
+        assertEquals("2BHK", result.requests().get(0).bhk());
         assertEquals("Saturday afternoon", result.requests().get(0).preferredVisitTiming());
         assertEquals("RECEIVED", result.requests().get(0).status());
         assertTrue(result.requests().get(0).propertyAvailable());

@@ -6105,3 +6105,36 @@ Address Bugbot review findings against commit 487e6b0:
 - PostgreSQL EXPLAIN check on V28 UPDATE query: valid query plan.
 - Focused backend tests: `mvn -f backend/pom.xml test -Dtest="LessorProfileServiceTest,LandlordSubmissionServiceTest,LandlordContactServiceTest"` — 56/56 tests PASS.
 - `git diff --check`: PASS (0 issues).
+
+---
+
+## 2026-09-30 11:30 IST — Phase 2A Final Data-Quality Cleanup & Visual Recheck
+
+### Why this work was requested
+Address the final visual QA blocker for Phase 2A where active local property listings contained:
+1. Alamy watermarked vector graphic template and Dreamstime watermarked assets on Listing 81 (Tower Square).
+2. Pathome Admin Portal UI screenshots used as property media on Listing 79 (4 BHK Villa).
+
+### Exact Areas Investigated & Changed
+- **Local Dev Database (`pathome_db`)**:
+  - Identified bad media on Listing 81 (Media 237 [Alamy template cover], Media 239 [Dreamstime stock]).
+  - Promoted legitimate existing photo Media 238 (real kitchen interior) to primary cover on Listing 81 (`is_primary_cover = true`); deactivated/removed unsuitable media rows 237 and 239; updated `listings.media_gallery_urls`.
+  - Identified bad media on Listing 79 (Media 227, 228, 229, 230 - all Pathome UI screenshots).
+  - Replaced Media 229 on Listing 79 with existing local dev legitimate property asset (`media-62-dm-0dc6c1d2b91347d5.webp` luxury exterior villa); removed screenshot rows 227, 228, 230; updated `listings.media_gallery_urls`.
+- **Code**:
+  - No frontend or backend code was modified.
+
+### Verification Performed
+- **Database & Media Invariants**:
+  - Listing 79: 1 total media, exactly 1 primary cover, 0 broken refs.
+  - Listing 81: 2 total media, exactly 1 primary cover (real kitchen), 0 broken refs.
+  - API validation: `GET /api/v1/properties/79`, `GET /api/v1/properties/81`, `GET /api/v1/tenant/visit-requests`, `GET /api/v1/properties?city=Indore&query=Tower+Square`.
+- **Browser Visual QA (Headless Chrome CDP)**:
+  - At 390px (390×844): Populated visit history verified with 2 cards. Card 1 (Listing 79) rendered luxury villa property image crisp and centered; Card 2 (Listing 75) rendered missing-photo SVG fallback cleanly. Status badge "Request received" verified; card width 358px with 16px margins; zero horizontal overflow (`innerWidth=390, clientWidth=390, scrollWidth=390`).
+  - At 1280px (1280×800): Desktop layout verified. History rail displayed Card 1 (Listing 79) in a clean square frame (199×199px) and Card 2 (Listing 75) fallback. Discovery section filtered to "Tower Square" rendered the single available-home card (Listing 81) with the legitimate kitchen photo, 16:10 frame (642×401px inside 644px container), balanced desktop composition, no stretched-mobile appearance, and zero horizontal overflow (`innerWidth=1280, clientWidth=1274, scrollWidth=1274`).
+- **Diff Hygiene**:
+  - `git diff --check`: PASS (0 issues).
+- **Cleanup**:
+  - Deleted disposable QA tenant visit requests (zero remaining).
+
+Commit: not created. Push: not attempted. Phase 2B: not started.

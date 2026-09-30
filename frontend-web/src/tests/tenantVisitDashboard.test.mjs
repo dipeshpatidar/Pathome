@@ -22,13 +22,15 @@ test('loading, failure, empty, and populated history remain distinct', () => {
 
 test('visit status uses existing RECEIVED meaning without claiming a scheduled visit', () => {
   assert.equal(tenantVisitStatusLabel('RECEIVED'), 'Request received');
-  assert.equal(tenantVisitStatusLabel('CHANGES_REQUIRED'), 'changes required');
+  assert.equal(tenantVisitStatusLabel('CHANGES_REQUIRED'), 'Changes required');
+  assert.equal(tenantVisitStatusLabel(null), 'Status unavailable');
 });
 
 test('pagination keeps prior visits and ignores repeated request IDs', () => {
   const first = { requestId: 11, propertyTitle: 'First' };
   const second = { requestId: 12, propertyTitle: 'Second' };
   assert.deepEqual(appendUniqueVisitRequests([first], [first, second]), [first, second]);
+  assert.deepEqual(appendUniqueVisitRequests([first], [second, second]), [first, second]);
 });
 
 test('a response from tenant A cannot enter tenant B session', () => {
