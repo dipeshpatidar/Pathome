@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowRight, BedDouble, Building2, CalendarDays, Camera, ChevronLeft, ChevronRight, Clock3, Heart, Home as HomeIcon, LoaderCircle, MapPin, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowRight, BedDouble, Building2, CalendarDays, Camera, ChevronLeft, ChevronRight, Clock3, Heart, Home as HomeIcon, LoaderCircle, MapPin, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
-import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitView } from '../utils/tenantVisitView';
+import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalPropertyType, RentalSearchFilters, discoverySearchKey } from '../utils/rentalSearch';
 import { queueTenantHeroFilterScroll, resolveTenantHeroFilterScroll, type PendingTenantHeroFilterScroll } from '../utils/tenantQuickFilterScroll';
@@ -16,6 +16,13 @@ import { getMediaTagLabel } from '../utils/mediaTags';
 import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDiscovery, savedHomesForPresentation, savedHomesVisibleLimitForWidth } from '../utils/tenantSavedHomes';
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
+import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
+import { deriveQuickRefineRentBounds, mergeQuickRefineRentBounds } from '../utils/tenantQuickRefine';
+import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
+import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
+import type { TenantMobileDockItem } from '../utils/tenantMobileDock';
+import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
+import type { TenantSearchMorphOverlay } from '../utils/tenantSearchMorph';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
   applyFavoriteLookupFailure,
@@ -528,18 +535,254 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [heroSearchAnchorVisible, setHeroSearchAnchorVisible] = useState(true);
   const [searchEngaged, setSearchEngaged] = useState(false);
   const [searchActivityVersion, setSearchActivityVersion] = useState(0);
+  const [discoverySearchCollision, setDiscoverySearchCollision] = useState(false);
+  const [manualSearchOpenGrace, setManualSearchOpenGrace] = useState(false);
   const [searchBeaconTop, setSearchBeaconTop] = useState<number | null>(null);
+  const [searchMorphActive, setSearchMorphActive] = useState(false);
+  const [beaconAcknowledgement, setBeaconAcknowledgement] = useState(0);
+  const [tenantHeroVisible, setTenantHeroVisible] = useState(true);
+  const [heroSearchRevealVersion, setHeroSearchRevealVersion] = useState(0);
+  const [mobileDockIsScrolling, setMobileDockIsScrolling] = useState(false);
+  const [mobileDockActiveItem, setMobileDockActiveItem] = useState<TenantMobileDockItem>('home');
+  const [quickRefineSheetOpen, setQuickRefineSheetOpen] = useState(false);
+  const mobileDockSelectionPinnedRef = useRef(false);
+  const heroSearchWasAwayRef = useRef(false);
+  const mobileDockScrollIdleTimerRef = useRef<number | null>(null);
+  const searchMorphOverlayRef = useRef<TenantSearchMorphOverlay | null>(null);
+  const searchMorphFrameRef = useRef<number | null>(null);
+  const searchMorphCleanupTimerRef = useRef<number | null>(null);
   const pendingHeroFilterScrollRef = useRef<PendingTenantHeroFilterScroll | null>(null);
   const pendingHeroFilterScrollFrameRef = useRef<number | null>(null);
+  const visitHistoryDetailsRef = useRef<HTMLDetailsElement>(null);
+  const quickRefineOpenRef = useRef<(() => void) | null>(null);
   const savedHomesRequestRef = useRef<AbortController | null>(null);
   const savedHomesLoadingMoreRef = useRef(false);
   const favoriteMutationRef = useRef<Set<string>>(new Set());
   const favoriteMutationRevisionRef = useRef<Map<string, number>>(new Map());
   const favoriteSession = readTenantVisitSession(user.id);
   const currentDiscoveryKey = discoverySearchKey(searchFilters);
+  const mobileDockBadges = tenantMobileDockBadges(searchFilters);
+  const showTenantMobileDock = shouldRenderTenantMobileDock(
+    tenantHeroVisible, quickRefineSheetOpen, previewPropertyId !== null
+  );
+  const tenantDiscoveryRailTop = 'calc(88px + env(safe-area-inset-top) + 66px)';
+  const rentBoundsCity = (searchFilters.city || discoveryCity).trim().toLocaleLowerCase();
+  const observedRentBounds = useMemo(() => deriveQuickRefineRentBounds(
+    properties.map(property => property.monthlyRent), searchFilters
+  ), [properties, searchFilters.minRent, searchFilters.maxRent]);
+  const hasLoadedRentData = properties.some(property => Number.isSafeInteger(property.monthlyRent) && property.monthlyRent > 0);
+  const [rentBoundsMemory, setRentBoundsMemory] = useState<{
+    city: string; bounds: QuickRefineRentBounds; hasObservedRentData: boolean;
+  }>(
+    () => ({ city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: hasLoadedRentData })
+  );
+  useEffect(() => {
+    setRentBoundsMemory(current => {
+      if (current.city !== rentBoundsCity) {
+        return { city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: hasLoadedRentData };
+      }
+      if (hasLoadedRentData && !current.hasObservedRentData) {
+        return { city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: true };
+      }
+      return {
+        city: rentBoundsCity,
+        bounds: mergeQuickRefineRentBounds(current.bounds, observedRentBounds),
+        hasObservedRentData: current.hasObservedRentData || hasLoadedRentData
+      };
+    });
+  }, [rentBoundsCity, observedRentBounds, hasLoadedRentData]);
+  const quickRefineRentBounds = rentBoundsMemory.city === rentBoundsCity
+    ? rentBoundsMemory.bounds : observedRentBounds;
+  const cancelSearchMorph = useCallback(() => {
+    if (searchMorphFrameRef.current !== null) {
+      window.cancelAnimationFrame(searchMorphFrameRef.current);
+      searchMorphFrameRef.current = null;
+    }
+    if (searchMorphCleanupTimerRef.current !== null) {
+      window.clearTimeout(searchMorphCleanupTimerRef.current);
+      searchMorphCleanupTimerRef.current = null;
+    }
+    searchMorphOverlayRef.current?.cancel();
+    searchMorphOverlayRef.current = null;
+    setSearchMorphActive(false);
+  }, []);
+  const startSearchMorph = useCallback((targetMode: 'sticky' | 'beacon') => {
+    const sourceMode = stickySearchMode;
+    if (sourceMode !== 'sticky' && sourceMode !== 'beacon') {
+      setStickySearchMode(targetMode);
+      return;
+    }
+    if (sourceMode === targetMode) return;
+    const plan = tenantSearchMorphPlan(sourceMode, targetMode, reduceMotion, window.innerWidth);
+    cancelSearchMorph();
+    if (targetMode === 'beacon') setSearchBeaconTop(Math.round(window.innerHeight * 0.44 - 24));
+    const source = document.getElementById('compact-discovery-context');
+    const overlay = plan.travels && source ? createTenantSearchMorphOverlay(source, sourceMode) : null;
+    if (!overlay) {
+      setStickySearchMode(targetMode);
+      return;
+    }
+
+    searchMorphOverlayRef.current = overlay;
+    setSearchMorphActive(true);
+    setStickySearchMode(targetMode);
+    let attempts = 0;
+    const beginAnimation = () => {
+      searchMorphFrameRef.current = null;
+      if (searchMorphOverlayRef.current !== overlay) return;
+      const destination = document.getElementById('compact-discovery-context');
+      const icon = destination?.querySelector(`[data-tenant-search-mode-icon="${targetMode}"]`);
+      if (!destination || !icon) {
+        if (attempts++ < 2) searchMorphFrameRef.current = window.requestAnimationFrame(beginAnimation);
+        else cancelSearchMorph();
+        return;
+      }
+      overlay.animateTo(destination, targetMode, () => {
+        if (searchMorphOverlayRef.current !== overlay) return;
+        setSearchMorphActive(false);
+        if (targetMode === 'beacon' && !reduceMotion) setBeaconAcknowledgement(value => value + 1);
+        searchMorphCleanupTimerRef.current = window.setTimeout(() => {
+          if (searchMorphOverlayRef.current !== overlay) return;
+          overlay.cancel();
+          searchMorphOverlayRef.current = null;
+          searchMorphCleanupTimerRef.current = null;
+        }, 40);
+      });
+    };
+    searchMorphFrameRef.current = window.requestAnimationFrame(beginAnimation);
+  }, [cancelSearchMorph, reduceMotion, stickySearchMode]);
+
+  const collapseSearchToBeacon = useCallback((reason: 'inactivity' | 'discovery') => {
+    if (!shouldCollapseTenantSearch(reason, {
+      mode: stickySearchMode,
+      heroVisible: heroSearchAnchorVisible,
+      engaged: searchEngaged,
+      discoveryCollision: discoverySearchCollision,
+      manualOpenGrace: manualSearchOpenGrace
+    })) return;
+    setManualSearchOpenGrace(false);
+    startSearchMorph('beacon');
+  }, [discoverySearchCollision, heroSearchAnchorVisible, manualSearchOpenGrace, searchEngaged, startSearchMorph, stickySearchMode]);
+
+  useEffect(() => {
+    if (!searchMorphActive) return undefined;
+    const cancelOnResize = () => cancelSearchMorph();
+    window.addEventListener('resize', cancelOnResize, { passive: true });
+    return () => window.removeEventListener('resize', cancelOnResize);
+  }, [cancelSearchMorph, searchMorphActive]);
+
+  useEffect(() => () => {
+    if (searchMorphFrameRef.current !== null) window.cancelAnimationFrame(searchMorphFrameRef.current);
+    if (searchMorphCleanupTimerRef.current !== null) window.clearTimeout(searchMorphCleanupTimerRef.current);
+    searchMorphOverlayRef.current?.cancel();
+    searchMorphOverlayRef.current = null;
+  }, []);
+
   const reportSearchEngagement = useCallback((engaged: boolean) => setSearchEngaged(engaged), []);
   const recordSearchInteraction = useCallback(() => setSearchActivityVersion(version => version + 1), []);
-  const expandSearchBeacon = useCallback(() => setStickySearchMode('sticky'), []);
+  const expandSearchBeacon = useCallback(() => {
+    setManualSearchOpenGrace(true);
+    startSearchMorph('sticky');
+  }, [startSearchMorph]);
+  const reportQuickRefineSheetOpen = useCallback((isOpen: boolean) => {
+    setQuickRefineSheetOpen(isOpen);
+    if (isOpen) {
+      mobileDockSelectionPinnedRef.current = true;
+      setMobileDockActiveItem('filters');
+      return;
+    }
+    mobileDockSelectionPinnedRef.current = false;
+    const candidates: Array<{ id: string; item: TenantMobileDockItem }> = [
+      { id: 'tenant-home-search', item: 'home' },
+      { id: 'saved-homes-title', item: 'saved' },
+      { id: 'visit-history-title', item: 'visits' },
+      { id: 'discover-homes-title', item: 'home' }
+    ];
+    const visible = candidates.map(candidate => ({
+      ...candidate,
+      rect: document.getElementById(candidate.id)?.getBoundingClientRect()
+    })).filter(candidate => candidate.rect && candidate.rect.bottom > 0 && candidate.rect.top < window.innerHeight)
+      .sort((left, right) => Math.abs((left.rect?.top ?? 0) - window.innerHeight * 0.4)
+        - Math.abs((right.rect?.top ?? 0) - window.innerHeight * 0.4))[0];
+    if (visible) setMobileDockActiveItem(visible.item);
+  }, []);
+
+  useEffect(() => {
+    const hero = document.getElementById('tenant-home-search');
+    if (!hero) {
+      setTenantHeroVisible(false);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries.find(candidate => candidate.target === hero);
+      if (entry) setTenantHeroVisible(entry.intersectionRatio >= 0.12);
+    }, { threshold: [0, 0.12] });
+    observer.observe(hero);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setMobileDockIsScrolling(current => current ? current : true);
+      if (mobileDockScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(mobileDockScrollIdleTimerRef.current);
+      }
+      mobileDockScrollIdleTimerRef.current = window.setTimeout(() => {
+        mobileDockScrollIdleTimerRef.current = null;
+        setMobileDockIsScrolling(false);
+      }, 200);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (mobileDockScrollIdleTimerRef.current !== null) {
+        window.clearTimeout(mobileDockScrollIdleTimerRef.current);
+        mobileDockScrollIdleTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return undefined;
+    const targets: Array<{ id: string; item: TenantMobileDockItem }> = [
+      { id: 'tenant-home-search', item: 'home' },
+      { id: 'saved-homes-title', item: 'saved' },
+      { id: 'visit-history-title', item: 'visits' },
+      { id: 'discover-homes-title', item: 'home' }
+    ];
+    const observer = new IntersectionObserver(entries => {
+      if (mobileDockSelectionPinnedRef.current) return;
+      const closest = entries.filter(entry => entry.isIntersecting)
+        .sort((left, right) => Math.abs(left.boundingClientRect.top - window.innerHeight * 0.38)
+          - Math.abs(right.boundingClientRect.top - window.innerHeight * 0.38))[0];
+      const matched = closest && targets.find(target => document.getElementById(target.id) === closest.target);
+      if (matched) setMobileDockActiveItem(matched.item);
+    }, { rootMargin: '-120px 0px -280px 0px', threshold: 0 });
+    targets.forEach(({ id }) => {
+      const target = document.getElementById(id);
+      if (target) observer.observe(target);
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const clearPinnedSelectionForUserScroll = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return;
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+        mobileDockSelectionPinnedRef.current = false;
+      }
+    };
+    const clearPinnedSelection = () => { mobileDockSelectionPinnedRef.current = false; };
+    window.addEventListener('wheel', clearPinnedSelection, { passive: true });
+    window.addEventListener('touchstart', clearPinnedSelection, { passive: true });
+    window.addEventListener('keydown', clearPinnedSelectionForUserScroll);
+    return () => {
+      window.removeEventListener('wheel', clearPinnedSelection);
+      window.removeEventListener('touchstart', clearPinnedSelection);
+      window.removeEventListener('keydown', clearPinnedSelectionForUserScroll);
+    };
+  }, []);
   const closeQuickView = useCallback(() => navigate(-1), [navigate]);
   const openQuickView = useCallback((property: Property) => {
     const prior = location.state && typeof location.state === 'object' && !Array.isArray(location.state)
@@ -562,6 +805,17 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     const navbar = document.querySelector<HTMLElement>('[data-pathome-header="global"]');
     const navbarHeight = navbar?.getBoundingClientRect().height ?? 80;
     const setHeroVisibility = (visible: boolean) => {
+      if (visible && heroSearchWasAwayRef.current) {
+        heroSearchWasAwayRef.current = false;
+        if (window.innerWidth < 768) setHeroSearchRevealVersion(version => version + 1);
+      } else if (!visible) {
+        heroSearchWasAwayRef.current = true;
+      }
+      if (visible) {
+        cancelSearchMorph();
+        setDiscoverySearchCollision(false);
+        setManualSearchOpenGrace(false);
+      }
       setHeroSearchAnchorVisible(visible);
       setStickySearchMode(current => visible ? 'hero' : current === 'hero' ? 'sticky' : current);
     };
@@ -587,15 +841,65 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       window.removeEventListener('scroll', syncVisibility);
       window.removeEventListener('resize', syncVisibility);
     };
-  }, []);
+  }, [cancelSearchMorph]);
+
+  useEffect(() => {
+    const sentinel = document.getElementById('tenant-discovery-collision-sentinel');
+    const search = document.getElementById('compact-discovery-context');
+    if (!sentinel || !search || stickySearchMode !== 'sticky') return undefined;
+
+    let observer: IntersectionObserver | null = null;
+    const observeCollisionLine = () => {
+      observer?.disconnect();
+      observer = null;
+      if (window.innerWidth < 1024) {
+        setDiscoverySearchCollision(false);
+        return;
+      }
+      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
+      if (sentinel.getBoundingClientRect().top <= band.bottom) {
+        setDiscoverySearchCollision(true);
+        return;
+      }
+      if (typeof IntersectionObserver === 'undefined') return;
+      const bottomInset = Math.max(0, window.innerHeight - band.bottom);
+      observer = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.target === sentinel && entry.isIntersecting)) {
+          setDiscoverySearchCollision(true);
+          observer?.disconnect();
+          observer = null;
+        }
+      }, { rootMargin: `-${band.top}px 0px -${bottomInset}px 0px`, threshold: 0 });
+      observer.observe(sentinel);
+    };
+
+    observeCollisionLine();
+    window.addEventListener('resize', observeCollisionLine, { passive: true });
+    const checkCollisionWithoutObserver = () => {
+      if (typeof IntersectionObserver !== 'undefined' || window.innerWidth < 1024) return;
+      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
+      if (sentinel.getBoundingClientRect().top <= band.bottom) setDiscoverySearchCollision(true);
+    };
+    window.addEventListener('scroll', checkCollisionWithoutObserver, { passive: true });
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', observeCollisionLine);
+      window.removeEventListener('scroll', checkCollisionWithoutObserver);
+    };
+  }, [stickySearchMode]);
+
+  useEffect(() => {
+    if (!discoverySearchCollision) return;
+    collapseSearchToBeacon('discovery');
+  }, [collapseSearchToBeacon, discoverySearchCollision]);
 
   useEffect(() => {
     if (stickySearchMode !== 'sticky' || heroSearchAnchorVisible || searchEngaged) return undefined;
     const timeout = window.setTimeout(() => {
-      setStickySearchMode(current => current === 'sticky' && !heroSearchAnchorVisible && !searchEngaged ? 'beacon' : current);
+      collapseSearchToBeacon('inactivity');
     }, 5000);
     return () => window.clearTimeout(timeout);
-  }, [stickySearchMode, heroSearchAnchorVisible, searchEngaged, searchActivityVersion]);
+  }, [stickySearchMode, heroSearchAnchorVisible, searchEngaged, searchActivityVersion, collapseSearchToBeacon]);
 
   useEffect(() => {
     const pending = pendingHeroFilterScrollRef.current;
@@ -901,6 +1205,24 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     });
   };
 
+  const navigateMobileDock = (item: TenantMobileDockItem) => {
+    mobileDockSelectionPinnedRef.current = true;
+    setMobileDockActiveItem(item);
+    const targetId = tenantMobileDockTarget(item);
+    if (!targetId) return;
+    if (item === 'visits' && visitHistoryDetailsRef.current) visitHistoryDetailsRef.current.open = true;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    target.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      block: 'start'
+    });
+    const focusTarget = target.matches('[data-tenant-nav-focus]')
+      ? target
+      : target.querySelector<HTMLElement>('[data-tenant-nav-focus]');
+    focusTarget?.focus({ preventScroll: true });
+  };
+
   const clearTenantSearch = () => {
     pendingHeroFilterScrollRef.current = null;
     if (pendingHeroFilterScrollFrameRef.current !== null) {
@@ -1006,8 +1328,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
 
   return (
     <>
-    <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-16 text-slate-950">
-      <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-h-[45rem] min-w-0 flex-col overflow-visible bg-[#082a22] text-white outline-none lg:min-h-[40rem] ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
+    <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-[calc(7.25rem+env(safe-area-inset-bottom))] text-slate-950 lg:pb-16">
+      <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-h-[45rem] min-w-0 scroll-mt-[calc(72px+env(safe-area-inset-top))] flex-col overflow-visible bg-[#082a22] text-white outline-none lg:min-h-[40rem] ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
         <img src="/assets/pathome_tenant_hero_dream_home.webp" alt="" aria-hidden="true" fetchPriority="high" decoding="async" className="pointer-events-none absolute inset-0 -z-20 h-full w-full object-cover object-[88%_center] lg:object-center" />
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(3,20,16,.56)_0%,rgba(3,24,19,.36)_32%,rgba(3,24,19,.77)_100%),linear-gradient(90deg,rgba(2,26,20,.78)_0%,rgba(4,31,24,.38)_55%,rgba(4,31,24,.04)_100%)] lg:bg-[linear-gradient(90deg,rgba(2,25,19,.96)_0%,rgba(3,32,24,.91)_27%,rgba(3,34,25,.68)_44%,rgba(4,31,23,.12)_70%,rgba(4,28,20,.02)_100%)]" aria-hidden="true" />
 
@@ -1037,6 +1359,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
 
           <div id="tenant-search-placeholder" className="relative z-40 order-2 mt-auto w-full min-w-0 pt-7 lg:mt-6 lg:w-[min(52vw,58rem)] lg:max-w-full lg:pt-0">
             <CompactSearchContext appearance="tenant-hero" alwaysEditing stickyMode={stickySearchMode} beaconTop={searchBeaconTop}
+              searchMorphActive={searchMorphActive} beaconAcknowledgement={beaconAcknowledgement}
+              heroRevealVersion={heroSearchRevealVersion}
               searchPlaceholder="Search locality, landmark, or property type" city={discoveryCity} filters={searchFilters}
               onInteraction={recordSearchInteraction} onEngagementChange={reportSearchEngagement} onBeaconExpand={expandSearchBeacon}
               onSearch={handleSmartSearch}
@@ -1118,18 +1442,20 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
           </div>}
         </section>
 
-        <div className="mt-6 grid min-w-0 gap-7 sm:mt-7 lg:grid-cols-[minmax(13.5rem,0.26fr)_minmax(0,0.74fr)] lg:items-start lg:gap-6 xl:gap-7">
-          <section id="visit-history" aria-labelledby="visit-history-title" style={{ top: stickySearchMode === 'hero' ? 'calc(96px + env(safe-area-inset-top))' : 'calc(160px + env(safe-area-inset-top))' }} className={`${view === 'populated' ? 'order-1' : 'order-2'} min-w-0 scroll-mt-24 transition-[top] duration-300 motion-reduce:transition-none lg:sticky lg:order-1 lg:self-start`}>
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-              <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">Your journey</p>
-                <h2 id="visit-history-title" data-tenant-nav-focus tabIndex={-1} className="mt-1 scroll-mt-24 font-['Outfit'] text-2xl font-semibold tracking-tight focus:outline-none">Visit requests</h2>
-                <p className="mt-1 text-sm text-slate-600">Requests you have sent for homes you want to see.</p>
+        <div className="mt-6 grid min-w-0 gap-7 sm:mt-7 lg:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)] lg:items-start lg:gap-6 xl:gap-7">
+          <div style={{ '--tenant-discovery-rail-top': tenantDiscoveryRailTop } as React.CSSProperties}
+            className={`tenant-discovery-rail ${view === 'populated' ? 'order-1' : 'order-2'} min-w-0 lg:order-1`}>
+          <span id="tenant-discovery-collision-sentinel" aria-hidden="true" className="pointer-events-none absolute left-0 top-0 h-px w-px" />
+          <details ref={visitHistoryDetailsRef} id="visit-history" className="group min-w-0 overflow-hidden rounded-[18px] border border-[#e3e5dc] bg-gradient-to-br from-[#fffefa] to-[#f5f8f1] shadow-[0_8px_24px_-21px_rgba(15,45,34,.5)]">
+            <summary className={`flex min-h-[68px] cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 marker:hidden [&::-webkit-details-marker]:hidden ${focusClass}`}>
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#d8e7dd] bg-[#edf5ef] text-emerald-800"><CalendarDays size={19} aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1">
+                <h2 id="visit-history-title" data-tenant-nav-focus tabIndex={-1} onFocus={() => { if (visitHistoryDetailsRef.current) visitHistoryDetailsRef.current.open = true; }} className="scroll-mt-24 font-['Outfit'] text-sm font-semibold text-slate-950 focus:outline-none">Visit Requests</h2>
+                <p className="mt-0.5 truncate text-xs text-slate-600">{tenantVisitSummary(view, visibleHistory.totalCount)}</p>
               </div>
-              {view === 'populated' && <p className="text-sm font-medium text-slate-600" aria-label={`${visibleHistory.totalCount} ${visibleHistory.totalCount === 1 ? 'visit request' : 'visit requests'} sent`}>
-                {visibleHistory.totalCount} {visibleHistory.totalCount === 1 ? 'request' : 'requests'} sent
-              </p>}
-            </div>
-
+              <ChevronRight size={17} className="shrink-0 text-emerald-800 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+            </summary>
+            <div className="space-y-3 border-t border-emerald-950/10 p-3">
             {view === 'loading' && <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1" role="status" aria-live="polite" aria-label="Loading your visit requests">
               {[0, 1].map(index => <div key={index} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm sm:flex sm:h-48">
                 <div className="aspect-[16/9] bg-slate-200 motion-safe:animate-pulse sm:aspect-auto sm:w-[38%] sm:shrink-0" /><div className="p-5 sm:flex-1"><div className="h-4 w-24 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-5 h-5 w-4/5 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /></div>
@@ -1181,13 +1507,21 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               {visibleHistory.hasMore && <div className="mt-6 text-center"><button type="button" onClick={loadMore} disabled={loadMorePending} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-6 text-sm font-semibold text-slate-800 transition-colors hover:border-emerald-700 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>{loadMorePending ? <><RefreshCw size={15} className="mr-2 inline motion-safe:animate-spin" aria-hidden="true" />Loading more…</> : 'Load more requests'}</button>
                 {loadMoreError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more requests. Please try again.</p>}</div>}
             </>}
-          </section>
+            </div>
+          </details>
+          <TenantQuickRefinePanel filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
+            discoveryLoadedKey={discoveryLoadedKey} homesLoaded={properties.length} rentBounds={quickRefineRentBounds}
+            onSearchHomes={onSearchHomes} />
+          </div>
 
           <section id="discover-homes" aria-labelledby="discover-homes-title" className={`${view === 'populated' ? 'order-2' : 'order-1'} min-w-0 scroll-mt-[calc(80px+env(safe-area-inset-top)+4.5rem)] lg:order-2`}>
             <div className="mb-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">Keep exploring</p>
-              <h2 id="discover-homes-title" className="mt-1 font-serif text-2xl font-medium tracking-tight">Available homes</h2>
+              <h2 id="discover-homes-title" tabIndex={-1} className="mt-1 scroll-mt-[calc(80px+env(safe-area-inset-top)+4.5rem)] font-serif text-2xl font-medium tracking-tight focus:outline-none">Available homes</h2>
               <p className="mt-1 text-sm text-slate-600">Browse current listings and request a visit when you find a fit.</p>
             </div>
+            <TenantQuickRefineMobile filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
+              discoveryLoadedKey={discoveryLoadedKey} homesLoaded={properties.length} rentBounds={quickRefineRentBounds}
+              onSearchHomes={onSearchHomes} openRequestRef={quickRefineOpenRef} onSheetOpenChange={reportQuickRefineSheetOpen} />
             {(favoriteState.status === 'error' || favoriteState.lookupError) && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3" role="alert"><p className="text-sm text-amber-950">Saved property status could not be loaded.</p><button type="button" onClick={() => setFavoriteReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-bold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button></div>}
             {favoriteActionError && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3" role="alert"><p className="text-sm text-rose-900">{favoriteActionError}</p><button type="button" onClick={() => setFavoriteActionError(null)} aria-label="Dismiss saved property message" className={`flex h-11 w-11 items-center justify-center rounded-lg text-rose-900 hover:bg-rose-100 ${focusClass}`}><X size={16} aria-hidden="true" /></button></div>}
             {discoveryState === 'LOADING' && <div className="grid gap-4 sm:grid-cols-2" role="status" aria-label="Loading available homes">
@@ -1228,6 +1562,45 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
         </div>
       </div>
     </main>
+    {showTenantMobileDock && <motion.nav aria-label="Tenant quick navigation" initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: mobileDockIsScrolling ? 4 : 0 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: mobileDockIsScrolling ? 0.2 : 0.24, ease: [0.16, 1, 0.3, 1] }}
+      className={`fixed inset-x-3 bottom-[calc(0.5rem+env(safe-area-inset-bottom))] z-[95] isolate mx-auto flex h-[74px] w-[calc(100vw-24px)] max-w-[32rem] items-center gap-1 overflow-hidden rounded-[24px] border p-2 transition-[background-color,border-color,box-shadow,backdrop-filter] duration-200 motion-reduce:transition-none lg:hidden ${mobileDockIsScrolling
+        ? 'pointer-events-none border-white/15 bg-[#fffdf8]/10 shadow-none backdrop-blur-[2px]'
+        : 'border-[#ddd8ca] bg-[#fffdf8]/95 shadow-[0_12px_34px_-18px_rgba(5,40,29,.32),inset_0_1px_0_rgba(255,255,255,.92)] backdrop-blur-xl'} before:pointer-events-none before:absolute before:inset-x-10 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#c5a65d]/60 before:to-transparent ${mobileDockIsScrolling ? 'before:opacity-20' : ''}`}>
+      {([
+        { item: 'home', label: 'Home', icon: HomeIcon },
+        { item: 'filters', label: 'Filters', icon: SlidersHorizontal },
+        { item: 'visits', label: 'Visits', icon: CalendarDays },
+        { item: 'saved', label: 'Saved', icon: Heart }
+      ] as const).map(({ item, label, icon: Icon }) => {
+        const active = mobileDockActiveItem === item;
+        const badgeCount = item === 'filters' ? mobileDockBadges.filterCount
+          : item === 'visits' ? mobileDockBadges.visitCount : null;
+        return <button key={item} type="button"
+          id={item === 'filters' ? 'tenant-mobile-quick-refine-trigger' : undefined}
+          aria-label={item === 'filters' && badgeCount ? `Filters, ${badgeCount} active ${badgeCount === 1 ? 'filter' : 'filters'}` : label}
+          aria-current={active ? 'location' : undefined}
+          aria-haspopup={item === 'filters' ? 'dialog' : undefined}
+          aria-expanded={item === 'filters' ? quickRefineSheetOpen : undefined}
+          onClick={() => {
+            if (item === 'filters') {
+              setMobileDockActiveItem('filters');
+              quickRefineOpenRef.current?.();
+            } else navigateMobileDock(item);
+          }}
+          className={`relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-[17px] px-1 text-[10px] font-semibold leading-none transition-[color,background-color,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-emerald-800 motion-reduce:transition-none ${mobileDockIsScrolling ? 'pointer-events-none opacity-65' : ''} ${active ? mobileDockIsScrolling ? 'text-emerald-900' : 'bg-[#edf4e9] text-[#0a5f45]' : 'text-slate-700 hover:bg-white/75'}`}>
+          {item === 'filters' ? <span className={`relative grid h-9 w-10 place-items-center rounded-xl ${mobileDockIsScrolling ? 'bg-transparent text-emerald-900 shadow-none' : 'bg-[#0b674b] text-[#fff8e8] shadow-[0_4px_10px_-7px_rgba(4,47,31,.65)]'}`}>
+            <Icon size={18} strokeWidth={1.9} aria-hidden="true" />
+            {badgeCount !== null && <span aria-hidden="true" className="absolute -right-1.5 -top-1.5 grid h-[17px] min-w-[17px] place-items-center rounded-full border border-[#fffdf8] bg-[#d7bc78] px-1 text-[9px] font-bold leading-none text-[#153c2e]">{badgeCount}</span>}
+          </span> : <span className="relative grid h-9 w-10 place-items-center text-emerald-800"><Icon size={19} strokeWidth={1.8} aria-hidden="true" />
+            {badgeCount !== null && <span aria-hidden="true" className="absolute -right-1 -top-1 grid h-[17px] min-w-[17px] place-items-center rounded-full bg-[#d7bc78] px-1 text-[9px] font-bold leading-none text-[#153c2e]">{badgeCount}</span>}
+          </span>}
+          <span className="truncate">{label}</span>
+          {active && <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-2.5 rounded-full bg-[#c5a65d]" />}
+        </button>;
+      })}
+    </motion.nav>}
     {previewPropertyId !== null && <TenantPropertyQuickView key={previewPropertyId} propertyId={previewPropertyId}
       onClose={closeQuickView} onRequestVisit={onRequestVisit} onViewProperty={onViewProperty} />}
     </>

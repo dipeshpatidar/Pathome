@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { belongsToTenantVisitSession, readTenantVisitSession, isCurrentTenantVisitSession } from '../utils/tenantVisitSession.ts';
-import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitView } from '../utils/tenantVisitView.ts';
+import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
 
 const withSession = (userId, token) => {
   const values = new Map([
@@ -24,6 +24,14 @@ test('visit status uses existing RECEIVED meaning without claiming a scheduled v
   assert.equal(tenantVisitStatusLabel('RECEIVED'), 'Request received');
   assert.equal(tenantVisitStatusLabel('CHANGES_REQUIRED'), 'Changes required');
   assert.equal(tenantVisitStatusLabel(null), 'Status unavailable');
+});
+
+test('compact Visit Requests summary stays truthful for loading, error, empty, and populated states', () => {
+  assert.equal(tenantVisitSummary('loading', 0), 'Loading requests…');
+  assert.equal(tenantVisitSummary('error', 0), 'Requests unavailable');
+  assert.equal(tenantVisitSummary('empty', 0), 'No requests yet');
+  assert.equal(tenantVisitSummary('populated', 1), '1 request sent');
+  assert.equal(tenantVisitSummary('populated', 3), '3 requests sent');
 });
 
 test('pagination keeps prior visits and ignores repeated request IDs', () => {
