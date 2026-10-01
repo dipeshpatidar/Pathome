@@ -42,13 +42,39 @@ export function resolveNotificationActionTarget(item: {
   listingId?: number;
   actionType?: string;
 }): string {
-  if (item.actionTarget && item.actionTarget.startsWith('/')) {
+  const listingId = item.listingId;
+  const hasListingId = typeof listingId === 'number' && Number.isSafeInteger(listingId) && listingId > 0;
+  const isLessorPropertyAction = item.actionType === 'VIEW_PROPERTY' || item.actionType === 'REVIEW_CHANGES';
+
+  // Lessor workflow notifications can outlive older clients whose persisted actionTarget
+  // pointed at the public route. The authoritative owner route handles pending and live
+  // listings without making unpublished properties public.
+  if (isLessorPropertyAction) {
+    if (hasListingId) return `/lessor/listings/${listingId}`;
+    const existingOwnerTarget = /^\/lessor\/listings\/[1-9]\d*$/.test(item.actionTarget ?? '');
+    return existingOwnerTarget ? item.actionTarget! : '/lessor';
+  }
+
+  if (item.actionTarget && item.actionTarget.startsWith('/') && !item.actionTarget.startsWith('//')
+      && !item.actionTarget.includes('\\')) {
     return item.actionTarget;
   }
-  if (item.listingId) {
-    return `/lessor/listings/${item.listingId}`;
+  if (hasListingId) return `/lessor/listings/${listingId}`;
+  return '/';
+}
+
+export async function activateNotificationItem(
+  item: NotificationItemLike,
+  actions: {
+    markAsRead: (id: string) => Promise<void>;
+    closeDrawer: () => void;
+    navigate: (target: string) => void;
   }
-  return '/lessor';
+): Promise<void> {
+  if (!item.read) await actions.markAsRead(item.id);
+  if (!item.actionTarget && !item.actionType) return;
+  actions.closeDrawer();
+  actions.navigate(resolveNotificationActionTarget(item));
 }
 
 export function isLessorWorkflowEvent(type: string): boolean {

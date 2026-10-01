@@ -19,6 +19,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { useNotification, NotificationCategory, NotificationHistoryItem } from '../context/NotificationContext';
+import { activateNotificationItem, resolveNotificationActionLabel } from '../utils/notificationPolicy';
 
 function formatTimeAgo(date: Date): string {
   const now = new Date();
@@ -75,13 +76,11 @@ export const NotificationCenterDrawer: React.FC = () => {
   });
 
   const handleNotificationClick = async (item: NotificationHistoryItem) => {
-    if (!item.read) {
-      await markAsRead(item.id);
-    }
-    if (item.actionTarget) {
-      setIsDrawerOpen(false);
-      navigate(item.actionTarget);
-    }
+    await activateNotificationItem(item, {
+      markAsRead,
+      closeDrawer: () => setIsDrawerOpen(false),
+      navigate
+    });
   };
 
   const getIcon = (type: string) => {
@@ -117,10 +116,7 @@ export const NotificationCenterDrawer: React.FC = () => {
   };
 
   const getActionLabel = (item: NotificationHistoryItem) => {
-    if (item.actionType === 'REVIEW_CHANGES') {
-      return 'Review changes';
-    }
-    return 'View property';
+    return resolveNotificationActionLabel(item);
   };
 
   return (

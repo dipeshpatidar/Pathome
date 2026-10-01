@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  activateNotificationItem,
   calculateUnreadCount,
   resolveNotificationActionLabel,
   resolveNotificationActionTarget,
@@ -39,7 +40,7 @@ test('4. CHANGES_REQUIRED deep-link routes to correct property view and shows "R
   assert.notEqual(resolveNotificationActionTarget(notif), '/lessor/new');
 });
 
-test('5. PUBLISHED deep-link routes to correct property preview and shows "View property"', () => {
+test('5. Published workflow deep-link retains the existing owner listing destination', () => {
   const notif = {
     actionType: 'VIEW_PROPERTY',
     actionTarget: '/lessor/listings/202',
@@ -96,4 +97,58 @@ test('8. Long titles and messages are formatted cleanly without crashing or prod
   assert.ok(notif.title.length > 0);
   assert.ok(notif.message.length > 0);
   assert.equal(resolveNotificationActionTarget(notif), '/lessor/listings/999');
+});
+
+test('submitted workflow notifications override stale public targets with the owner property route', () => {
+  const notification = {
+    actionType: 'VIEW_PROPERTY',
+    actionTarget: '/property/314',
+    listingId: 314
+  };
+  assert.equal(resolveNotificationActionTarget(notification), '/lessor/listings/314');
+  assert.notEqual(resolveNotificationActionTarget(notification), '/property/314');
+});
+
+test('pending and published workflow notifications use the existing owner destination', () => {
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'REVIEW_CHANGES', actionTarget: '/property/315', listingId: 315
+  }), '/lessor/listings/315');
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'VIEW_PROPERTY', actionTarget: '/lessor/listings/316', listingId: 316
+  }), '/lessor/listings/316');
+});
+
+test('notification action marks unread item, closes drawer, then navigates to owner context', async () => {
+  const calls = [];
+  await activateNotificationItem({
+    id: 'db-317', read: false, title: 'Property submitted', message: 'Submitted for review.',
+    actionType: 'VIEW_PROPERTY', actionTarget: '/property/317', listingId: 317
+  }, {
+    markAsRead: async id => calls.push(`read:${id}`),
+    closeDrawer: () => calls.push('close'),
+    navigate: target => calls.push(`navigate:${target}`)
+  });
+  assert.deepEqual(calls, ['read:db-317', 'close', 'navigate:/lessor/listings/317']);
+});
+
+test('already-read notification does not repeat the read request before navigation', async () => {
+  const calls = [];
+  await activateNotificationItem({
+    id: 'db-319', read: true, title: 'Property published', message: 'Now visible to renters.',
+    actionType: 'VIEW_PROPERTY', listingId: 319
+  }, {
+    markAsRead: async id => calls.push(`read:${id}`),
+    closeDrawer: () => calls.push('close'),
+    navigate: target => calls.push(`navigate:${target}`)
+  });
+  assert.deepEqual(calls, ['close', 'navigate:/lessor/listings/319']);
+});
+
+test('malformed workflow targets fall back to My Properties and unrelated public targets remain valid', () => {
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'VIEW_PROPERTY', actionTarget: '//outside.example', listingId: Number.NaN
+  }), '/lessor');
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'OPEN_PUBLIC_PROPERTY', actionTarget: '/property/318'
+  }), '/property/318');
 });

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useNavigationType } from 'react-router-dom';
+import { useNavigate, useNavigationType } from 'react-router-dom';
 import {
-  Bath, BedDouble, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert,
+  Bath, BedDouble, Building2, Check, ChevronDown, ChevronLeft, ChevronRight,
   Dumbbell, Image as LucideImage, LayoutDashboard, LoaderCircle, MapPin,
   Maximize2, Minimize2, Ruler, Sofa, UtensilsCrossed,
   Video, WalletCards, Wind, X
@@ -10,6 +10,8 @@ import { Property, RoomTag } from '../types';
 import { propertyService } from '../services/propertyService';
 import { buildCloudinaryUrl, deriveVideoPosterUrl } from '../utils/mediaTransform';
 import { getMediaTagIcon, getMediaTagLabel, getTaggedAreas } from '../utils/mediaTags';
+import { resolvePropertyDetailBackTarget } from '../utils/propertyDetailRecovery';
+import { PropertyDetailErrorState } from './PropertyDetailErrorState';
 
 type GalleryMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string | null; roomTag?: string | null };
 
@@ -328,6 +330,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [activeMedia, setActiveMedia] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -395,11 +398,9 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
   }, []);
 
   const handleBackToDiscovery = () => {
-    if (window.history.state && window.history.state.idx > 0) {
-      navigate(-1);
-    } else {
-      navigate('/');
-    }
+    const target = resolvePropertyDetailBackTarget(window.history.state);
+    if (target === -1) navigate(-1);
+    else navigate(target);
   };
 
   useEffect(() => {
@@ -412,12 +413,13 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
     let active = true;
     setLoading(true);
     setError(null);
+    setProperty(null);
     propertyService.getPublicProperty(propertyId)
       .then((result) => { if (active) { setProperty(result); setActiveMedia(0); } })
       .catch((requestError: any) => { if (active) setError(requestError?.message || 'Unable to load this property.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [propertyId]);
+  }, [propertyId, retryCount]);
 
   const media = useMemo(() => {
     if (!property) return [] as GalleryMedia[];
@@ -523,7 +525,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
     );
   }
   if (error || !property) {
-    return <main className="mx-auto flex min-h-[60vh] max-w-xl items-center px-4"><div className="w-full rounded-3xl border border-rose-200 bg-white p-6 text-center shadow-sm"><CircleAlert className="mx-auto h-10 w-10 text-rose-600" /><h1 className="mt-3 font-['Outfit'] text-2xl font-black text-slate-900">Property unavailable</h1><p className="mt-2 text-sm leading-relaxed text-slate-600">{error || 'This property is no longer available.'}</p><Link to="/" className="mt-5 inline-flex min-h-11 items-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white">Back to discovery</Link></div></main>;
+    return <PropertyDetailErrorState
+      error={error || 'This property is no longer available.'}
+      onRetry={() => setRetryCount(value => value + 1)}
+      onBack={handleBackToDiscovery}
+    />;
   }
 
   const currentMedia = media[activeMedia];
