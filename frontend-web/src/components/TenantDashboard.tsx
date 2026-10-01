@@ -17,11 +17,11 @@ import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDis
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
-import { deriveQuickRefineRentBounds, mergeQuickRefineRentBounds } from '../utils/tenantQuickRefine';
+import { quickRefineRentBounds as getQuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
 import type { TenantMobileDockItem } from '../utils/tenantMobileDock';
-import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
+import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchCollisionReached, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
 import type { TenantSearchMorphOverlay } from '../utils/tenantSearchMorph';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
@@ -566,33 +566,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     tenantHeroVisible, quickRefineSheetOpen, previewPropertyId !== null
   );
   const tenantDiscoveryRailTop = 'calc(88px + env(safe-area-inset-top) + 66px)';
-  const rentBoundsCity = (searchFilters.city || discoveryCity).trim().toLocaleLowerCase();
-  const observedRentBounds = useMemo(() => deriveQuickRefineRentBounds(
-    properties.map(property => property.monthlyRent), searchFilters
-  ), [properties, searchFilters.minRent, searchFilters.maxRent]);
-  const hasLoadedRentData = properties.some(property => Number.isSafeInteger(property.monthlyRent) && property.monthlyRent > 0);
-  const [rentBoundsMemory, setRentBoundsMemory] = useState<{
-    city: string; bounds: QuickRefineRentBounds; hasObservedRentData: boolean;
-  }>(
-    () => ({ city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: hasLoadedRentData })
-  );
-  useEffect(() => {
-    setRentBoundsMemory(current => {
-      if (current.city !== rentBoundsCity) {
-        return { city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: hasLoadedRentData };
-      }
-      if (hasLoadedRentData && !current.hasObservedRentData) {
-        return { city: rentBoundsCity, bounds: observedRentBounds, hasObservedRentData: true };
-      }
-      return {
-        city: rentBoundsCity,
-        bounds: mergeQuickRefineRentBounds(current.bounds, observedRentBounds),
-        hasObservedRentData: current.hasObservedRentData || hasLoadedRentData
-      };
-    });
-  }, [rentBoundsCity, observedRentBounds, hasLoadedRentData]);
-  const quickRefineRentBounds = rentBoundsMemory.city === rentBoundsCity
-    ? rentBoundsMemory.bounds : observedRentBounds;
+  const quickRefineRentBounds = useMemo(() => getQuickRefineRentBounds(searchFilters),
+    [searchFilters.minRent, searchFilters.maxRent]);
   const cancelSearchMorph = useCallback(() => {
     if (searchMorphFrameRef.current !== null) {
       window.cancelAnimationFrame(searchMorphFrameRef.current);
@@ -846,9 +821,29 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   useEffect(() => {
     const sentinel = document.getElementById('tenant-discovery-collision-sentinel');
     const search = document.getElementById('compact-discovery-context');
-    if (!sentinel || !search || stickySearchMode !== 'sticky') return undefined;
+    if (!sentinel || !search || stickySearchMode !== 'sticky' || discoverySearchCollision
+      || heroSearchAnchorVisible || searchEngaged || searchMorphActive) return undefined;
 
     let observer: IntersectionObserver | null = null;
+    let collisionFrame: number | null = null;
+    const isEligible = () => window.innerWidth >= 1024
+      && !heroSearchAnchorVisible && !searchEngaged && !searchMorphActive;
+    const collisionReached = () => {
+      if (!isEligible()) return false;
+      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
+      return tenantSearchCollisionReached(sentinel.getBoundingClientRect().top, band);
+    };
+    const checkCollision = () => {
+      collisionFrame = null;
+      if (!collisionReached()) return;
+      observer?.disconnect();
+      observer = null;
+      setDiscoverySearchCollision(true);
+    };
+    const scheduleCollisionCheck = () => {
+      if (!isEligible() || collisionFrame !== null) return;
+      collisionFrame = window.requestAnimationFrame(checkCollision);
+    };
     const observeCollisionLine = () => {
       observer?.disconnect();
       observer = null;
@@ -856,37 +851,35 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
         setDiscoverySearchCollision(false);
         return;
       }
+      if (!isEligible()) return;
       const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
-      if (sentinel.getBoundingClientRect().top <= band.bottom) {
+      if (tenantSearchCollisionReached(sentinel.getBoundingClientRect().top, band)) {
         setDiscoverySearchCollision(true);
         return;
       }
       if (typeof IntersectionObserver === 'undefined') return;
       const bottomInset = Math.max(0, window.innerHeight - band.bottom);
-      observer = new IntersectionObserver(entries => {
-        if (entries.some(entry => entry.target === sentinel && entry.isIntersecting)) {
-          setDiscoverySearchCollision(true);
-          observer?.disconnect();
-          observer = null;
-        }
-      }, { rootMargin: `-${band.top}px 0px -${bottomInset}px 0px`, threshold: 0 });
+      observer = new IntersectionObserver(scheduleCollisionCheck,
+        { rootMargin: `-${band.top}px 0px -${bottomInset}px 0px`, threshold: 0 });
       observer.observe(sentinel);
     };
 
     observeCollisionLine();
-    window.addEventListener('resize', observeCollisionLine, { passive: true });
-    const checkCollisionWithoutObserver = () => {
-      if (typeof IntersectionObserver !== 'undefined' || window.innerWidth < 1024) return;
-      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
-      if (sentinel.getBoundingClientRect().top <= band.bottom) setDiscoverySearchCollision(true);
+    const onResize = () => {
+      observeCollisionLine();
+      scheduleCollisionCheck();
     };
-    window.addEventListener('scroll', checkCollisionWithoutObserver, { passive: true });
+    window.addEventListener('resize', onResize, { passive: true });
+    // IO catches ordinary crossings; this rAF-coalesced geometry check also catches a fast
+    // scroll that moves the sentinel completely past the narrow observation band.
+    window.addEventListener('scroll', scheduleCollisionCheck, { passive: true });
     return () => {
       observer?.disconnect();
-      window.removeEventListener('resize', observeCollisionLine);
-      window.removeEventListener('scroll', checkCollisionWithoutObserver);
+      if (collisionFrame !== null) window.cancelAnimationFrame(collisionFrame);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', scheduleCollisionCheck);
     };
-  }, [stickySearchMode]);
+  }, [discoverySearchCollision, heroSearchAnchorVisible, searchEngaged, searchMorphActive, stickySearchMode]);
 
   useEffect(() => {
     if (!discoverySearchCollision) return;

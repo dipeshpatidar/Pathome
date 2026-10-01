@@ -33,6 +33,11 @@ export function tenantSearchCollisionBand(searchBottom: number, viewportHeight: 
   return { top, bottom };
 }
 
+/** True once the discovery sentinel reaches or has passed the floating Search collision line. */
+export function tenantSearchCollisionReached(sentinelTop: number, band: TenantSearchCollisionBand): boolean {
+  return Number.isFinite(sentinelTop) && sentinelTop <= band.bottom;
+}
+
 export function shouldCollapseTenantSearch(
   reason: TenantSearchCollapseReason,
   context: TenantSearchCollapseContext

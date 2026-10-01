@@ -4,6 +4,7 @@ import {
   shouldCollapseTenantSearch,
   tenantSearchBeaconSide,
   tenantSearchCollisionBand,
+  tenantSearchCollisionReached,
   tenantSearchMorphPlan
 } from '../utils/tenantSearchMorph.ts';
 
@@ -11,6 +12,17 @@ test('discovery collision band is derived from the floating Search and rail geom
   assert.deepEqual(tenantSearchCollisionBand(142, 900), { top: 154, bottom: 166 });
   assert.deepEqual(tenantSearchCollisionBand(780, 844), { top: 792, bottom: 804 });
   assert.deepEqual(tenantSearchCollisionBand(842, 844), { top: 843, bottom: 844 });
+});
+
+test('fast scroll that skips the observer band still reaches the geometry collision line', () => {
+  const band = tenantSearchCollisionBand(142, 900);
+  const sentinelSamples = [190, 20]; // Above, then already past the line; no intermediate sample.
+  assert.equal(tenantSearchCollisionReached(sentinelSamples[0], band), false);
+  assert.equal(tenantSearchCollisionReached(sentinelSamples[1], band), true);
+  assert.equal(shouldCollapseTenantSearch('discovery', {
+    mode: 'sticky', heroVisible: false, engaged: false,
+    discoveryCollision: tenantSearchCollisionReached(sentinelSamples[1], band), manualOpenGrace: false
+  }), true);
 });
 
 test('discovery collision and inactivity request the same eligible Sticky-to-Beacon handoff', () => {

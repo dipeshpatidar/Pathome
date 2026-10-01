@@ -1,5 +1,6 @@
 import {
   FURNISHING_LABELS,
+  MAX_SUPPORTED_RENT,
   discoverySearchKey,
   formatRentDisplay,
   resetFiltersForSearchClear
@@ -26,7 +27,8 @@ export const QUICK_REFINE_PROPERTY_TYPES: readonly { label: string; value: Renta
 export const QUICK_REFINE_FURNISHING: readonly { label: string; value: RentalFurnishing }[] = [
   { label: FURNISHING_LABELS.UNFURNISHED, value: 'UNFURNISHED' },
   { label: FURNISHING_LABELS.SEMI_FURNISHED, value: 'SEMI_FURNISHED' },
-  { label: FURNISHING_LABELS.FURNISHED, value: 'FURNISHED' }
+  { label: FURNISHING_LABELS.FULLY_FURNISHED, value: 'FULLY_FURNISHED' },
+  { label: 'Any furnished', value: 'FURNISHED' }
 ];
 
 export type QuickRefineDimension = 'bhk' | 'propertyType' | 'furnishing' | 'budget';
@@ -36,49 +38,54 @@ export interface QuickRefineRentBounds { min: number; max: number; step: number;
 export interface QuickRefineRentValues { min: number; max: number; }
 
 const QUICK_REFINE_RENT_STEP = 500;
-const QUICK_REFINE_RENT_BOUND_ROUNDING = 5_000;
+export const QUICK_REFINE_RENT_SLIDER_MAX_POSITION = 1_001;
+const QUICK_REFINE_RENT_NUMERIC_MAX_POSITION = QUICK_REFINE_RENT_SLIDER_MAX_POSITION - 1;
 
-export const deriveQuickRefineRentBounds = (
-  monthlyRents: readonly number[],
-  filters: RentalSearchFilters
-): QuickRefineRentBounds => {
-  const observedMin = monthlyRents.reduce((minimum, rent) =>
-    Number.isSafeInteger(rent) && rent > 0 && rent < minimum ? rent : minimum, Number.POSITIVE_INFINITY);
-  const observedMax = monthlyRents.reduce((maximum, rent) =>
-    Number.isSafeInteger(rent) && rent > maximum ? rent : maximum, 0);
-  const configuredMin = Math.min(observedMin, filters.minRent || Number.POSITIVE_INFINITY);
-  const min = Number.isFinite(configuredMin)
-    ? Math.max(0, Math.floor(configuredMin / QUICK_REFINE_RENT_BOUND_ROUNDING) * QUICK_REFINE_RENT_BOUND_ROUNDING)
-    : 0;
-  const configuredMax = Math.max(
-    observedMax,
-    filters.minRent ? filters.minRent + QUICK_REFINE_RENT_STEP : 0,
-    filters.maxRent || 0
-  );
-  const max = configuredMax > 0
-    ? Math.min(10_000_000, Math.ceil(configuredMax / QUICK_REFINE_RENT_BOUND_ROUNDING) * QUICK_REFINE_RENT_BOUND_ROUNDING)
+/** Uses the accepted search-query domain, independent of the currently loaded result page. */
+export const quickRefineRentBounds = (filters: RentalSearchFilters): QuickRefineRentBounds => {
+  const selectedHigh = Math.max(filters.minRent ?? 0, filters.maxRent ?? 0);
+  const selectedDomainMax = selectedHigh > 0
+    ? Math.ceil(selectedHigh / QUICK_REFINE_RENT_STEP) * QUICK_REFINE_RENT_STEP + QUICK_REFINE_RENT_STEP
     : 0;
   return {
-    min: Math.min(min, 10_000_000),
-    max: Math.min(10_000_000, Math.max(max, min + QUICK_REFINE_RENT_STEP)),
+    min: 0,
+    // Keep a separate rightmost “Any” stop after the highest accepted numeric rent.
+    max: Math.max(MAX_SUPPORTED_RENT + QUICK_REFINE_RENT_STEP, selectedDomainMax),
     step: QUICK_REFINE_RENT_STEP
   };
 };
 
-export const mergeQuickRefineRentBounds = (
-  current: QuickRefineRentBounds,
-  observed: QuickRefineRentBounds
-): QuickRefineRentBounds => ({
-  min: Math.min(current.min, observed.min),
-  max: Math.max(current.max, observed.max),
-  step: QUICK_REFINE_RENT_STEP
-});
+export const QUICK_REFINE_CHIP_REMOVE_TARGET_PX = 44;
+
+export const quickRefineRentToSliderPosition = (
+  rent: number,
+  bounds: QuickRefineRentBounds,
+  thumb: QuickRefineRentThumb
+): number => {
+  if (thumb === 'max' && rent >= bounds.max) return QUICK_REFINE_RENT_SLIDER_MAX_POSITION;
+  const numericMax = Math.max(bounds.step, bounds.max - bounds.step);
+  const ratio = Math.max(0, Math.min(1, rent / numericMax));
+  return Math.round(Math.sqrt(ratio) * QUICK_REFINE_RENT_NUMERIC_MAX_POSITION);
+};
+
+export const quickRefineSliderPositionToRent = (
+  position: number,
+  bounds: QuickRefineRentBounds,
+  thumb: QuickRefineRentThumb
+): number => {
+  if (thumb === 'max' && position >= QUICK_REFINE_RENT_SLIDER_MAX_POSITION) return bounds.max;
+  const numericPosition = Math.max(0, Math.min(QUICK_REFINE_RENT_NUMERIC_MAX_POSITION, position));
+  const numericMax = Math.max(bounds.step, bounds.max - bounds.step);
+  const rent = numericMax * (numericPosition / QUICK_REFINE_RENT_NUMERIC_MAX_POSITION) ** 2;
+  const steppedRent = Math.round(rent / bounds.step) * bounds.step;
+  return thumb === 'max' ? Math.max(bounds.step, steppedRent) : steppedRent;
+};
 
 export const quickRefineRentValues = (
   filters: RentalSearchFilters,
   bounds: QuickRefineRentBounds
 ): QuickRefineRentValues => {
-  const rangeMax = bounds.max || Math.max(filters.minRent || 0, filters.maxRent || 0);
+  const rangeMax = Math.max(bounds.max, filters.minRent ?? 0, filters.maxRent ?? 0);
   const min = Math.min(rangeMax, Math.max(bounds.min, filters.minRent ?? bounds.min));
   const max = Math.min(rangeMax, Math.max(bounds.min, filters.maxRent ?? rangeMax));
   return min <= max ? { min, max } : { min: max, max };
@@ -94,7 +101,8 @@ export const updateQuickRefineRentSlider = (
   if (bounds.max <= bounds.min) return { filters, values: { min: bounds.min, max: bounds.max } };
   const current = quickRefineRentValues(filters, bounds);
   const snapped = Math.round(rawValue / bounds.step) * bounds.step;
-  const bounded = Math.max(bounds.min, Math.min(bounds.max, snapped));
+  const thumbMax = thumb === 'min' ? bounds.max - bounds.step : bounds.max;
+  const bounded = Math.max(bounds.min, Math.min(thumbMax, snapped));
   const nextValues = thumb === 'min'
     ? { min: Math.min(bounded, values.max), max: values.max }
     : { min: values.min, max: Math.max(bounded, values.min) };

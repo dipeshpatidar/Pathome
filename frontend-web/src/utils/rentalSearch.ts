@@ -1,5 +1,6 @@
 export type RentalPropertyType = 'FLAT' | 'HOUSE' | 'PENTHOUSE' | 'STUDIO' | 'SERVICED_APARTMENT';
 export type RentalFurnishing = 'FURNISHED' | 'FULLY_FURNISHED' | 'SEMI_FURNISHED' | 'UNFURNISHED';
+export const MAX_SUPPORTED_RENT = 10_000_000;
 
 export const PROPERTY_TYPE_LABELS: Record<RentalPropertyType, string> = {
   FLAT: 'Flat', HOUSE: 'House', PENTHOUSE: 'Penthouse',
@@ -116,7 +117,7 @@ export const parseRentalFurnishing = (value: string | null | undefined): RentalF
 export const parseRentFilter = (value: string | null | undefined): number | undefined => {
   if (!value || !/^\d+$/.test(value)) return undefined;
   const amount = Number(value);
-  return Number.isSafeInteger(amount) && amount > 0 && amount <= 10_000_000 ? amount : undefined;
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= MAX_SUPPORTED_RENT ? amount : undefined;
 };
 
 const rentalSuggestionLabel = (city: string, sector?: string, bhk?: string,

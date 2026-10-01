@@ -6,10 +6,12 @@ import {
 import { discoverySearchKey, formatRentDisplay, RentalSearchFilters } from '../utils/rentalSearch';
 import {
   QUICK_REFINE_BHK_OPTIONS, QUICK_REFINE_FURNISHING, QUICK_REFINE_PROPERTY_TYPES,
+  QUICK_REFINE_CHIP_REMOVE_TARGET_PX, QUICK_REFINE_RENT_SLIDER_MAX_POSITION,
   QuickRefineDimension, clearQuickRefineFilters,
   quickRefineActiveCount, quickRefineChipLabels, quickRefineOptionIsSelected,
   quickRefineResultSummary, updateQuickRefineFilter,
   applyQuickRefineRentSliderChanges, quickRefineRentValues,
+  quickRefineRentToSliderPosition, quickRefineSliderPositionToRent,
   updateQuickRefineRentSlider,
   type QuickRefineRentBounds, type QuickRefineRentThumb, type QuickRefineRentValues
 } from '../utils/tenantQuickRefine';
@@ -146,9 +148,9 @@ const QuickRefineOptions: React.FC<{
   </div>
 );
 
-const rentRangeLabel = (filters: RentalSearchFilters, bounds: QuickRefineRentBounds, values: QuickRefineRentValues) => {
-  const hasMin = values.min > bounds.min || (filters.minRent !== undefined && filters.minRent === values.min);
-  const hasMax = values.max < bounds.max || (filters.maxRent !== undefined && filters.maxRent === values.max);
+const rentRangeLabel = (bounds: QuickRefineRentBounds, values: QuickRefineRentValues) => {
+  const hasMin = values.min > bounds.min;
+  const hasMax = values.max < bounds.max;
   if (hasMin && hasMax) return `₹${formatRentDisplay(values.min)} – ₹${formatRentDisplay(values.max)}`;
   if (hasMin) return `From ₹${formatRentDisplay(values.min)}`;
   if (hasMax) return `Up to ₹${formatRentDisplay(values.max)}`;
@@ -156,38 +158,46 @@ const rentRangeLabel = (filters: RentalSearchFilters, bounds: QuickRefineRentBou
 };
 
 const BudgetSlider: React.FC<{
-  filters: RentalSearchFilters;
   bounds: QuickRefineRentBounds;
   values: QuickRefineRentValues;
   onChange: (thumb: QuickRefineRentThumb, value: number) => void;
   onCommit: () => void;
-}> = ({ filters, bounds, values, onChange, onCommit }) => {
+}> = ({ bounds, values, onChange, onCommit }) => {
   const [activeThumb, setActiveThumb] = useState<QuickRefineRentThumb>('min');
   const canAdjust = bounds.max > bounds.min;
-  const maxLabel = `₹${formatRentDisplay(bounds.max)}`;
-  const left = canAdjust ? `${((values.min - bounds.min) / (bounds.max - bounds.min)) * 100}%` : '0%';
-  const width = canAdjust ? `${((values.max - values.min) / (bounds.max - bounds.min)) * 100}%` : '0%';
+  const maxLabel = 'Any';
+  const minPosition = quickRefineRentToSliderPosition(values.min, bounds, 'min');
+  const maxPosition = quickRefineRentToSliderPosition(values.max, bounds, 'max');
+  const left = canAdjust ? `${(minPosition / QUICK_REFINE_RENT_SLIDER_MAX_POSITION) * 100}%` : '0%';
+  const width = canAdjust
+    ? `${((maxPosition - minPosition) / QUICK_REFINE_RENT_SLIDER_MAX_POSITION) * 100}%` : '0%';
 
   return <fieldset className="min-w-0">
     <legend className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-600">Monthly rent</legend>
     <div className="mb-1 flex min-w-0 items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
       <span>₹{formatRentDisplay(bounds.min)}</span>
       <span className="truncate rounded-full border border-[#ddcfaa] bg-[#fffaf0] px-2.5 py-1 text-[11px] font-semibold text-emerald-950 shadow-[0_3px_9px_-7px_rgba(20,60,45,.55)]" aria-live="polite">
-        {rentRangeLabel(filters, bounds, values)}
+        {rentRangeLabel(bounds, values)}
       </span>
       <span>{maxLabel}</span>
     </div>
     <div className={`relative mx-2 h-11 ${canAdjust ? '' : 'opacity-50'}`}>
       <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-[#dddcd2]" aria-hidden="true" />
       <div className="absolute top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-gradient-to-r from-[#6aa88b] to-[#087151] shadow-[0_0_7px_rgba(16,112,78,.18)]" style={{ left, width }} aria-hidden="true" />
-      <input type="range" min={bounds.min} max={bounds.max} step={bounds.step} value={values.min}
-        disabled={!canAdjust} aria-label="Minimum monthly rent" aria-valuetext={`Minimum monthly rent ${formatRentDisplay(values.min)} rupees`}
-        onFocus={() => setActiveThumb('min')} onChange={event => onChange('min', Number(event.currentTarget.value))}
+      <input type="range" min={0} max={QUICK_REFINE_RENT_SLIDER_MAX_POSITION - 1}
+        step={1} value={minPosition}
+        disabled={!canAdjust} aria-label="Minimum monthly rent" aria-valuetext={values.min <= bounds.min
+          ? 'No minimum rent' : `Minimum monthly rent ${formatRentDisplay(values.min)} rupees`}
+        onFocus={() => setActiveThumb('min')} onChange={event => onChange('min',
+          quickRefineSliderPositionToRent(Number(event.currentTarget.value), bounds, 'min'))}
         onPointerUp={onCommit} onPointerCancel={onCommit}
         className={`tenant-quick-refine-slider ${activeThumb === 'min' ? 'is-active' : ''}`} />
-      <input type="range" min={bounds.min} max={bounds.max} step={bounds.step} value={values.max}
-        disabled={!canAdjust} aria-label="Maximum monthly rent" aria-valuetext={`Maximum monthly rent ${formatRentDisplay(values.max)} rupees`}
-        onFocus={() => setActiveThumb('max')} onChange={event => onChange('max', Number(event.currentTarget.value))}
+      <input type="range" min={0} max={QUICK_REFINE_RENT_SLIDER_MAX_POSITION}
+        step={1} value={maxPosition}
+        disabled={!canAdjust} aria-label="Maximum monthly rent" aria-valuetext={values.max >= bounds.max
+          ? 'No maximum rent' : `Maximum monthly rent ${formatRentDisplay(values.max)} rupees`}
+        onFocus={() => setActiveThumb('max')} onChange={event => onChange('max',
+          quickRefineSliderPositionToRent(Number(event.currentTarget.value), bounds, 'max'))}
         onPointerUp={onCommit} onPointerCancel={onCommit}
         className={`tenant-quick-refine-slider ${activeThumb === 'max' ? 'is-active' : ''}`} />
     </div>
@@ -283,7 +293,7 @@ export const TenantQuickRefinePanel: React.FC<QuickRefineBaseProps> = props => {
 
         <div className="mt-3.5"><QuickRefineOptions filters={filters} onToggle={toggle} /></div>
         <div className="mt-3.5 border-t border-emerald-950/10 pt-2.5">
-          <BudgetSlider filters={filters} bounds={props.rentBounds} values={budget.values}
+              <BudgetSlider bounds={props.rentBounds} values={budget.values}
             onChange={budget.change} onCommit={budget.commitPending} />
         </div>
         {activeCount > 0 && <p className="relative mt-1 text-right text-[10px] font-medium text-slate-500">{activeCount} {activeCount === 1 ? 'filter' : 'filters'} applied</p>}
@@ -366,10 +376,11 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
   return <>
     {chips.length > 0 && <div className="mb-4 min-w-0 lg:hidden" aria-label="Active search filters">
       <div className="flex min-w-0 items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {chips.map(chip => <span key={chip.dimension} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full border border-emerald-800/20 bg-[#edf5ec] pl-3 pr-1 text-xs font-medium text-emerald-950">
+        {chips.map(chip => <span key={chip.dimension} className="relative inline-flex min-h-10 shrink-0 items-center rounded-full border border-emerald-800/20 bg-[#edf5ec] pl-3 pr-11 text-xs font-medium text-emerald-950">
           {chip.label}
-          <button type="button" onClick={() => clearDimension(chip.dimension)} aria-label={`Remove ${chip.dimension === 'budget' ? 'monthly rent' : chip.dimension} filter: ${chip.label}`}
-            className={`flex h-9 w-9 items-center justify-center rounded-full text-emerald-900 hover:bg-white/80 ${focusClass}`}><X size={14} aria-hidden="true" /></button>
+          <button type="button" onClick={() => clearDimension(chip.dimension)} aria-label={`Remove ${chip.label} filter`}
+            style={{ width: QUICK_REFINE_CHIP_REMOVE_TARGET_PX, height: QUICK_REFINE_CHIP_REMOVE_TARGET_PX }}
+            className={`absolute right-0 top-1/2 flex -translate-y-1/2 items-center justify-center rounded-full text-emerald-900 hover:bg-white/80 ${focusClass}`}><X size={14} aria-hidden="true" /></button>
         </span>)}
       </div>
     </div>}
@@ -399,7 +410,7 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
           <div className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5">
             <QuickRefineOptions filters={filters} onToggle={toggle} />
             <div className="mt-5 border-t border-emerald-950/10 pt-4">
-              <BudgetSlider filters={filters} bounds={props.rentBounds} values={budget.values}
+          <BudgetSlider bounds={props.rentBounds} values={budget.values}
                 onChange={budget.change} onCommit={budget.commitPending} />
             </div>
             {activeCount > 0 && <p className="mt-5 text-xs font-medium text-slate-600">{activeCount} {activeCount === 1 ? 'filter' : 'filters'} applied</p>}
