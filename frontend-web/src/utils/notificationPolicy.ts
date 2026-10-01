@@ -21,7 +21,10 @@ export interface NotificationItemLike {
   message: string;
   actionType?: string;
   actionTarget?: string;
+  eventKey?: string;
   listingId?: number;
+  targetRole?: string;
+  category?: string;
   revisionId?: string;
 }
 
@@ -41,18 +44,24 @@ export function resolveNotificationActionTarget(item: {
   actionTarget?: string;
   listingId?: number;
   actionType?: string;
+  eventKey?: string;
+  targetRole?: string;
 }): string {
   const listingId = item.listingId;
   const hasListingId = typeof listingId === 'number' && Number.isSafeInteger(listingId) && listingId > 0;
   const isLessorPropertyAction = item.actionType === 'VIEW_PROPERTY' || item.actionType === 'REVIEW_CHANGES';
+  const workflowEvent = item.eventKey?.split(':', 1)[0] ?? '';
 
-  // Lessor workflow notifications can outlive older clients whose persisted actionTarget
-  // pointed at the public route. The authoritative owner route handles pending and live
-  // listings without making unpublished properties public.
-  if (isLessorPropertyAction) {
+  // Owner workflow notifications open the authenticated owner detail route. Never route
+  // these events to public detail: pending listings are not publicly available.
+  if (isLessorPropertyAction || isLessorWorkflowEvent(workflowEvent)) {
     if (hasListingId) return `/lessor/listings/${listingId}`;
-    const existingOwnerTarget = /^\/lessor\/listings\/[1-9]\d*$/.test(item.actionTarget ?? '');
-    return existingOwnerTarget ? item.actionTarget! : '/lessor';
+    const ownerTarget = item.actionTarget?.match(/^\/lessor\/listings\/([1-9][0-9]*)$/);
+    if (ownerTarget) {
+      const targetId = Number(ownerTarget[1]);
+      if (Number.isSafeInteger(targetId) && targetId > 0) return `/lessor/listings/${targetId}`;
+    }
+    return '/lessor';
   }
 
   if (item.actionTarget && item.actionTarget.startsWith('/') && !item.actionTarget.startsWith('//')
@@ -72,7 +81,7 @@ export async function activateNotificationItem(
   }
 ): Promise<void> {
   if (!item.read) await actions.markAsRead(item.id);
-  if (!item.actionTarget && !item.actionType) return;
+  if (!item.actionTarget && !item.actionType && !item.eventKey) return;
   actions.closeDrawer();
   actions.navigate(resolveNotificationActionTarget(item));
 }

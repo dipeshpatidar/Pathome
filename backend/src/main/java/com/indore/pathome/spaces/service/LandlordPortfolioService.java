@@ -91,7 +91,8 @@ public class LandlordPortfolioService {
         var preview = new LandlordPreview(listing.getTitle(), listing.getPropertyType(), listing.getBhkCount(),
                 listing.getCity(), listing.getSector(), listing.getMonthlyRent(), listing.getSecurityDeposit(),
                 listing.getAvailableFrom() == null ? null : listing.getAvailableFrom().toLocalDate(),
-                listing.getFurnishingStatus(), listing.getTotalAreaSqFt(), listing.getDescription(), media, List.of());
+                listing.getFurnishingStatus(), listing.getTotalAreaSqFt(), listing.getAmenities(),
+                listing.getDescription(), media, List.of());
         var revision = drafts.findFirstByPublishedPropertyIdAndLandlordUserIdAndStatusInOrderByIdDesc(
                 listingId, ownerId, List.of("DRAFT", "REVIEW", "CHANGES_REQUIRED"));
         return new LandlordListingDetail(listingId, listing.getWorkflowStatus(), listing.getVersion(),

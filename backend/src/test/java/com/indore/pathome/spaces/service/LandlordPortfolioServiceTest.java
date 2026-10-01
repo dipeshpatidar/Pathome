@@ -57,17 +57,42 @@ class LandlordPortfolioServiceTest {
         owned.setAddress("Private street address");
         owned.setOwnerPhoneNumber("9000000000");
         owned.setLatitude(22.5);
+        owned.setAmenities("Balcony, Lift");
         when(listings.findByIdAndOwnerUserId(11L, 5L)).thenReturn(java.util.Optional.of(owned));
+        when(assets.findByListingIdOrderByUploadedAtDesc(11L)).thenReturn(List.of());
 
         PropertyUploadDraftRepository drafts = mock(PropertyUploadDraftRepository.class);
         var service = new LandlordPortfolioService(capabilities, listings, assets, drafts);
         var detail = service.get("owner@example.com", 11L);
         assertEquals("First", detail.preview().title());
+        assertEquals("Balcony, Lift", detail.preview().amenities());
+        assertEquals(ListingWorkflowStatus.SUBMITTED, detail.status());
+        assertEquals(ListingStatus.PENDING, owned.getStatus());
         assertFalse(detail.toString().contains("Private street address"));
         assertFalse(detail.toString().contains("9000000000"));
         assertFalse(detail.toString().contains("22.5"));
         assertThrows(EntityNotFoundException.class, () -> service.get("other@example.com", 11L));
         verify(listings).findByIdAndOwnerUserId(11L, 8L);
+    }
+
+    @Test
+    void detailKeepsNullAmenitiesSafeForOlderPendingListings() {
+        LandlordCapabilityService capabilities = mock(LandlordCapabilityService.class);
+        ListingRepository listings = mock(ListingRepository.class);
+        PropertyMediaAssetRepository assets = mock(PropertyMediaAssetRepository.class);
+        PropertyUploadDraftRepository drafts = mock(PropertyUploadDraftRepository.class);
+        when(capabilities.requireLandlordUserId("owner@example.com")).thenReturn(5L);
+        RentalDetails pending = listing(12L, "Older pending listing");
+        pending.setAmenities(null);
+        when(listings.findByIdAndOwnerUserId(12L, 5L)).thenReturn(java.util.Optional.of(pending));
+        when(assets.findByListingIdOrderByUploadedAtDesc(12L)).thenReturn(List.of());
+
+        var detail = new LandlordPortfolioService(capabilities, listings, assets, drafts)
+                .get("owner@example.com", 12L);
+
+        assertNull(detail.preview().amenities());
+        assertEquals(ListingWorkflowStatus.SUBMITTED, detail.status());
+        assertEquals(ListingStatus.PENDING, pending.getStatus());
     }
 
     @Test

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Building2, LoaderCircle, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Building2, LoaderCircle } from 'lucide-react';
 import { getErrorMessage } from '../services/apiError';
 import { LessorListingDetail, lessorPortfolioService } from '../services/lessorPortfolioService';
+import { LessorListingErrorState } from './LessorListingErrorState';
 
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 const LABELS: Record<string, string> = {
@@ -54,7 +55,11 @@ export function LessorListingView({ listingId, onBack, onOpenDraft }: { listingI
   };
 
   if (loading) return <div className="flex min-h-48 items-center justify-center gap-2 text-slate-600"><LoaderCircle className="h-5 w-5 animate-spin"/>Opening property…</div>;
-  if (!detail) return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-rose-800">{error}<button className={`${SECONDARY} ml-3`} onClick={() => { void load(); }}><RefreshCw className="h-4 w-4"/>Retry</button></div>;
+  if (!detail) return <LessorListingErrorState
+    error={error || 'Unable to open this property.'}
+    onRetry={() => { void load(); }}
+    onBack={onBack}
+  />;
   const property = detail.preview;
   const cover = property.media.find(item => item.cover && item.contentType.startsWith('image/')) || property.media.find(item => item.contentType.startsWith('image/'));
   return <section className="mx-auto max-w-3xl">

@@ -34,6 +34,7 @@ export interface ToastNotification {
   revisionId?: string;
   actionType?: string;
   actionTarget?: string;
+  eventKey?: string;
 }
 
 export interface NotificationHistoryItem extends ToastNotification {
@@ -130,7 +131,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           listingId: item.listingId,
           revisionId: item.revisionId,
           actionType: item.actionType,
-          actionTarget: item.actionTarget
+          actionTarget: item.actionTarget,
+          eventKey: item.eventKey
         }));
 
         setHistory(fetchedItems);

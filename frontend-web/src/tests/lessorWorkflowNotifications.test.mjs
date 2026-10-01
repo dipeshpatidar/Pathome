@@ -29,7 +29,7 @@ test('3. Error and retry state copy strictly matches product requirements', () =
   assert.equal(NOTIFICATION_MARK_READ_ERROR, "We couldn't update this notification. Try again.");
 });
 
-test('4. CHANGES_REQUIRED deep-link routes to correct property view and shows "Review changes"', () => {
+test('4. CHANGES_REQUIRED notification routes to My Properties and shows "Review changes"', () => {
   const notif = {
     actionType: 'REVIEW_CHANGES',
     actionTarget: '/lessor/listings/105',
@@ -40,7 +40,7 @@ test('4. CHANGES_REQUIRED deep-link routes to correct property view and shows "R
   assert.notEqual(resolveNotificationActionTarget(notif), '/lessor/new');
 });
 
-test('5. Published workflow deep-link retains the existing owner listing destination', () => {
+test('5. Published workflow notification retains the owner context', () => {
   const notif = {
     actionType: 'VIEW_PROPERTY',
     actionTarget: '/lessor/listings/202',
@@ -51,7 +51,7 @@ test('5. Published workflow deep-link retains the existing owner listing destina
   assert.notEqual(resolveNotificationActionTarget(notif), '/lessor/new');
 });
 
-test('6. Action target resolution falls back safely to property ID if actionTarget is missing', () => {
+test('6. Action target resolution uses the owner detail route when a valid listing ID exists', () => {
   const notif = {
     actionType: 'VIEW_PROPERTY',
     listingId: 303
@@ -99,42 +99,66 @@ test('8. Long titles and messages are formatted cleanly without crashing or prod
   assert.equal(resolveNotificationActionTarget(notif), '/lessor/listings/999');
 });
 
-test('submitted workflow notifications override stale public targets with the owner property route', () => {
+test('the real submitted notification payload resolves to its authenticated owner detail URL', () => {
   const notification = {
+    id: 'db-19',
+    read: false,
+    title: 'Property submitted',
+    message: '2BHK flat in Press Complex Behind Dainik Bhaskar Press was submitted for review.',
+    category: 'PROPERTY',
+    targetRole: 'LANDLORD',
+    eventKey: 'PROPERTY_SUBMITTED:100:0',
     actionType: 'VIEW_PROPERTY',
-    actionTarget: '/property/314',
-    listingId: 314
+    actionTarget: '/lessor/listings/100',
+    listingId: 100
   };
-  assert.equal(resolveNotificationActionTarget(notification), '/lessor/listings/314');
-  assert.notEqual(resolveNotificationActionTarget(notification), '/property/314');
+  assert.equal(resolveNotificationActionTarget(notification), '/lessor/listings/100');
 });
 
-test('pending and published workflow notifications use the existing owner destination', () => {
+test('legacy submitted notification overrides a stale public URL using structured workflow metadata', () => {
   assert.equal(resolveNotificationActionTarget({
-    actionType: 'REVIEW_CHANGES', actionTarget: '/property/315', listingId: 315
+    actionType: 'VIEW_PROPERTY', actionTarget: '/property/100', listingId: 100,
+    eventKey: 'PROPERTY_SUBMITTED:100:0', targetRole: 'LANDLORD'
+  }), '/lessor/listings/100');
+  assert.equal(resolveNotificationActionTarget({ eventKey: 'PROPERTY_SUBMITTED:missing:0' }), '/lessor');
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'VIEW_PROPERTY', actionTarget: '/lessor/listings/100'
+  }), '/lessor/listings/100');
+});
+
+test('pending and published workflow notifications use My Properties, while public actions stay public', () => {
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'REVIEW_CHANGES', actionTarget: '/property/315', listingId: 315,
+    eventKey: 'CHANGES_REQUIRED:315:0'
   }), '/lessor/listings/315');
   assert.equal(resolveNotificationActionTarget({
-    actionType: 'VIEW_PROPERTY', actionTarget: '/lessor/listings/316', listingId: 316
+    actionType: 'VIEW_PROPERTY', actionTarget: '/lessor/listings/316', listingId: 316,
+    eventKey: 'PROPERTY_PUBLISHED:316:0'
   }), '/lessor/listings/316');
+  assert.equal(resolveNotificationActionTarget({
+    actionType: 'OPEN_PUBLIC_PROPERTY', actionTarget: '/property/317', listingId: 317
+  }), '/property/317');
 });
 
-test('notification action marks unread item, closes drawer, then navigates to owner context', async () => {
+test('notification action marks the real legacy item read, closes drawer, then opens owner detail', async () => {
   const calls = [];
   await activateNotificationItem({
-    id: 'db-317', read: false, title: 'Property submitted', message: 'Submitted for review.',
-    actionType: 'VIEW_PROPERTY', actionTarget: '/property/317', listingId: 317
+    id: 'db-19', read: false, title: 'Property submitted', message: 'Submitted for review.',
+    category: 'PROPERTY', targetRole: 'LANDLORD', eventKey: 'PROPERTY_SUBMITTED:100:0',
+    actionType: 'VIEW_PROPERTY', actionTarget: '/lessor/listings/100', listingId: 100
   }, {
     markAsRead: async id => calls.push(`read:${id}`),
     closeDrawer: () => calls.push('close'),
     navigate: target => calls.push(`navigate:${target}`)
   });
-  assert.deepEqual(calls, ['read:db-317', 'close', 'navigate:/lessor/listings/317']);
+  assert.deepEqual(calls, ['read:db-19', 'close', 'navigate:/lessor/listings/100']);
 });
 
 test('already-read notification does not repeat the read request before navigation', async () => {
   const calls = [];
   await activateNotificationItem({
     id: 'db-319', read: true, title: 'Property published', message: 'Now visible to renters.',
+    category: 'PROPERTY', targetRole: 'LANDLORD', eventKey: 'PROPERTY_PUBLISHED:319:0',
     actionType: 'VIEW_PROPERTY', listingId: 319
   }, {
     markAsRead: async id => calls.push(`read:${id}`),
@@ -144,9 +168,10 @@ test('already-read notification does not repeat the read request before navigati
   assert.deepEqual(calls, ['close', 'navigate:/lessor/listings/319']);
 });
 
-test('malformed workflow targets fall back to My Properties and unrelated public targets remain valid', () => {
+test('malformed owner workflow resources still fall back to My Properties and public targets remain valid', () => {
   assert.equal(resolveNotificationActionTarget({
-    actionType: 'VIEW_PROPERTY', actionTarget: '//outside.example', listingId: Number.NaN
+    actionType: 'VIEW_PROPERTY', actionTarget: '//outside.example', listingId: Number.NaN,
+    eventKey: 'PROPERTY_SUBMITTED:bad:0', targetRole: 'LANDLORD'
   }), '/lessor');
   assert.equal(resolveNotificationActionTarget({
     actionType: 'OPEN_PUBLIC_PROPERTY', actionTarget: '/property/318'
