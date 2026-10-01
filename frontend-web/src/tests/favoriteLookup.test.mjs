@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyFavoriteLookupFailure,
+  applyFavoriteLookupSuccess,
+  applyFavoriteMutation,
   fetchFavoriteIdsInBatches,
+  isFavoriteLookupReadyFor,
   mergeFavoriteLookupState,
   unresolvedFavoriteIds
 } from '../utils/favoriteLookup.ts';
@@ -46,14 +50,49 @@ test('favorite results merge without dropping previously resolved homes', () => 
   assert.deepEqual([...merged.favoriteIds], [2, 4]);
 });
 
-test('a failed added batch leaves the caller’s previous Favorite state intact', async () => {
-  const resolvedIds = new Set([1, 2]);
-  const favoriteIds = new Set([2]);
+test('known-home mutations preserve incremental lookup recovery until a retry resolves new IDs', async () => {
+  const knownState = {
+    identityKey: 'tenant-a', status: 'ready', lookupError: false,
+    propertyIds: new Set([1, 2]), favoriteIds: new Set([2])
+  };
+  const allIds = [1, 2, 3, 4];
+  const unresolvedBeforeFailure = unresolvedFavoriteIds(allIds, knownState.propertyIds);
+  assert.deepEqual(unresolvedBeforeFailure, [3, 4]);
 
-  await assert.rejects(fetchFavoriteIdsInBatches([3, 4], async () => {
+  await assert.rejects(fetchFavoriteIdsInBatches(unresolvedBeforeFailure, async () => {
     throw new Error('request failed');
   }));
+  let state = applyFavoriteLookupFailure(knownState);
 
-  assert.deepEqual([...resolvedIds], [1, 2]);
-  assert.deepEqual([...favoriteIds], [2]);
+  assert.equal(state.lookupError, true);
+  assert.equal(isFavoriteLookupReadyFor(state, 'tenant-a', 1), true);
+  assert.equal(isFavoriteLookupReadyFor(state, 'tenant-a', 3), false);
+  assert.deepEqual(unresolvedFavoriteIds(allIds, state.propertyIds), [3, 4]);
+
+  state = applyFavoriteMutation(state, 1, true);
+  assert.equal(state.favoriteIds.has(1), true);
+  assert.equal(state.favoriteIds.has(2), true);
+  assert.equal(state.lookupError, true);
+  assert.equal(isFavoriteLookupReadyFor(state, 'tenant-a', 3), false);
+  assert.deepEqual(unresolvedFavoriteIds(allIds, state.propertyIds), [3, 4]);
+
+  const retryIds = unresolvedFavoriteIds(allIds, state.propertyIds);
+  const retryResults = await fetchFavoriteIdsInBatches(retryIds, async batch => batch.filter(id => id === 3));
+  state = applyFavoriteLookupSuccess(state, retryIds, retryResults);
+
+  assert.equal(state.lookupError, false);
+  assert.deepEqual(unresolvedFavoriteIds(allIds, state.propertyIds), []);
+  assert.equal(isFavoriteLookupReadyFor(state, 'tenant-a', 3), true);
+  assert.equal(isFavoriteLookupReadyFor(state, 'tenant-a', 4), true);
+  assert.deepEqual([...state.favoriteIds].sort((a, b) => a - b), [1, 2, 3]);
+});
+
+test('a normal successful Favorite mutation does not create a lookup error', () => {
+  const state = applyFavoriteMutation({
+    identityKey: 'tenant-a', status: 'ready', lookupError: false,
+    propertyIds: new Set([1]), favoriteIds: new Set()
+  }, 1, true);
+
+  assert.equal(state.lookupError, false);
+  assert.deepEqual([...state.favoriteIds], [1]);
 });

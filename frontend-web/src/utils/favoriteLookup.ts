@@ -1,3 +1,11 @@
+export type FavoriteLookupState = {
+  identityKey: string | null;
+  status: 'loading' | 'ready' | 'error';
+  lookupError: boolean;
+  propertyIds: Set<number>;
+  favoriteIds: Set<number>;
+};
+
 export const uniquePositiveFavoriteIds = (ids: number[]): number[] =>
   [...new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0))];
 
@@ -42,3 +50,43 @@ export const mergeFavoriteLookupState = (
   }
   return { resolvedIds: nextResolved, favoriteIds: nextFavorites };
 };
+
+export const applyFavoriteLookupFailure = (state: FavoriteLookupState): FavoriteLookupState => ({
+  ...state,
+  status: state.propertyIds.size > 0 ? 'ready' : 'error',
+  lookupError: true
+});
+
+export const applyFavoriteLookupSuccess = (
+  state: FavoriteLookupState,
+  requestedIds: number[],
+  returnedFavoriteIds: number[]
+): FavoriteLookupState => {
+  const merged = mergeFavoriteLookupState(state.propertyIds, state.favoriteIds, requestedIds, returnedFavoriteIds);
+  return {
+    ...state,
+    status: 'ready',
+    lookupError: false,
+    propertyIds: merged.resolvedIds,
+    favoriteIds: merged.favoriteIds
+  };
+};
+
+export const applyFavoriteMutation = (
+  state: FavoriteLookupState,
+  propertyId: number,
+  isFavorite: boolean
+): FavoriteLookupState => {
+  const propertyIds = new Set(state.propertyIds).add(propertyId);
+  const favoriteIds = new Set(state.favoriteIds);
+  if (isFavorite) favoriteIds.add(propertyId);
+  else favoriteIds.delete(propertyId);
+  return { ...state, status: 'ready', propertyIds, favoriteIds };
+};
+
+export const isFavoriteLookupReadyFor = (
+  state: FavoriteLookupState,
+  identityKey: string | null,
+  propertyId: number
+): boolean => Boolean(identityKey && state.identityKey === identityKey
+  && state.status === 'ready' && state.propertyIds.has(propertyId));

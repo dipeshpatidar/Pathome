@@ -1942,6 +1942,18 @@ Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; 
 
 Commit: not created. Push: not attempted.
 
+## 2026-10-01 12:49 IST — Favorite lookup recovery follow-up
+
+Reason: The targeted Concept 03 re-review found a successful Favorite mutation could hide the Retry state for a failed incremental lookup, leaving newly loaded unresolved hearts disabled without a visible recovery action.
+
+Changed: Extracted the lookup success/failure, readiness, and Favorite mutation state transitions into `frontend-web/src/utils/favoriteLookup.ts` and used those same helpers from `TenantDashboard.tsx`. Mutation transitions preserve an existing lookup error; lookup success resolves/merges IDs and clears it. Replaced the disconnected failure test with a transition regression covering lookup failure, known-heart success, unresolved readiness, successful retry, normal mutation, and recovery clearing. Changed files: `frontend-web/src/components/TenantDashboard.tsx`, `frontend-web/src/utils/favoriteLookup.ts`, `frontend-web/src/tests/favoriteLookup.test.mjs`, and this log. No backend files changed.
+
+Verification: `node --test src/tests/favoriteLookup.test.mjs src/tests/tenantSavedHomes.test.mjs` passed (10/10). `git diff --check` passed. `npm run build` was started once; TypeScript completed and Vite remained at dependency transformation without output until the 10-minute verification limit, so the build is unverified. No browser or backend tests were run. A stale, isolated headless localhost test-browser process was terminated to remove CPU contention; it used a temporary `/tmp` profile and was not the user's regular browser.
+
+Outstanding: Vite production build did not complete within the verification window. No browser test was run; the state transition is covered by the production-helper regression. QA/user data was not created or modified. The pre-existing untracked review documents were preserved.
+
+Commit: not created. Push: not attempted.
+
 ## 2026-10-01 12:24 IST — Concept 03 review corrective pass
 
 Reason: The user requested the four focused Concept 03 review corrections, focused tests/build checks, normal backend restart with Saved Homes verification, and one bounded desktop/mobile browser pass.

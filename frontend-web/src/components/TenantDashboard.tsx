@@ -12,7 +12,14 @@ import { favoriteService } from '../services/favoriteService';
 import { propertyService } from '../services/propertyService';
 import { getMediaTagLabel } from '../utils/mediaTags';
 import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDiscovery } from '../utils/tenantSavedHomes';
-import { mergeFavoriteLookupState, unresolvedFavoriteIds } from '../utils/favoriteLookup';
+import {
+  applyFavoriteLookupFailure,
+  applyFavoriteLookupSuccess,
+  applyFavoriteMutation,
+  isFavoriteLookupReadyFor,
+  unresolvedFavoriteIds,
+  type FavoriteLookupState
+} from '../utils/favoriteLookup';
 
 interface TenantDashboardProps {
   user: UserProfile;
@@ -310,13 +317,7 @@ const TenantPropertyQuickView: React.FC<{
   );
 };
 
-type FavoriteState = {
-  identityKey: string | null;
-  status: 'loading' | 'ready' | 'error';
-  lookupError: boolean;
-  propertyIds: Set<number>;
-  favoriteIds: Set<number>;
-};
+type FavoriteState = FavoriteLookupState;
 
 const initialFavoriteState: FavoriteState = { identityKey: null, status: 'loading', lookupError: false, propertyIds: new Set(), favoriteIds: new Set() };
 
@@ -408,14 +409,12 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       }
       setFavoriteState(currentState => {
         if (currentState.identityKey !== session.key) return currentState;
-        const merged = mergeFavoriteLookupState(currentState.propertyIds, currentState.favoriteIds, unresolvedIds, savedIds);
-        return { ...currentState, status: 'ready', lookupError: false,
-          propertyIds: merged.resolvedIds, favoriteIds: merged.favoriteIds };
+        return applyFavoriteLookupSuccess(currentState, unresolvedIds, savedIds);
       });
     }).catch(() => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
       setFavoriteState(currentState => currentState.identityKey === session.key
-        ? { ...currentState, status: currentState.propertyIds.size > 0 ? 'ready' : 'error', lookupError: true }
+        ? applyFavoriteLookupFailure(currentState)
         : { ...initialFavoriteState, identityKey: session.key, status: 'error', lookupError: true });
     });
     return () => controller.abort();
@@ -505,10 +504,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
         (favoriteMutationRevisionRef.current.get(session.key) || 0) + 1);
       setFavoriteState(current => {
         if (current.identityKey !== session.key) return current;
-        const next = new Set(current.favoriteIds);
-        if (wasSaved) next.delete(property.id); else next.add(property.id);
-        const propertyIds = new Set(current.propertyIds).add(property.id);
-        return { ...current, status: 'ready', lookupError: false, propertyIds, favoriteIds: next };
+        return applyFavoriteMutation(current, property.id, !wasSaved);
       });
       savedHomesRequestRef.current?.abort();
       setSavedHomesState(current => current.identityKey === session.key && current.status === 'ready'
@@ -604,9 +600,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   ]);
   const availableProperties = removeSavedHomesFromDiscovery(properties, visibleFavoriteIds);
   const favoriteIsReadyFor = (propertyId: number): boolean => Boolean(favoriteSession && (
-    favoriteState.identityKey === favoriteSession.key && favoriteState.status === 'ready'
-      && favoriteState.propertyIds.has(propertyId)
-    || savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.some(item => item.id === propertyId)
+    isFavoriteLookupReadyFor(favoriteState, favoriteSession.key, propertyId)
+      || savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.some(item => item.id === propertyId)
   ));
   const isPropertySaved = (propertyId: number): boolean => visibleFavoriteIds.has(propertyId);
   const isFavoritePending = (propertyId: number): boolean => Boolean(favoriteSession
