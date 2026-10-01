@@ -2358,3 +2358,13 @@ Changed: Added `frontend-web/src/utils/tenantPropertyTypeLabel.ts` with explicit
 Verification: `node --test src/tests/tenantPropertyTypeLabel.test.mjs` passed 2/2. `npm run build` passed with the existing Vite >500kB chunk advisory. `git diff --check` passed. Browser verification was not run; the helper and card rendering path were verified by code inspection and build.
 
 No commit or push.
+
+## 2026-10-01 19:36 IST — Harden Tenant property type label lookup
+
+Reason: Closed the targeted review finding where inherited JavaScript object keys could escape the Tenant property type helper's `null` fallback.
+
+Changed: `frontend-web/src/utils/tenantPropertyTypeLabel.ts` now uses a `Map` for the same seven supported labels, so prototype keys cannot resolve through inheritance. `frontend-web/src/tests/tenantPropertyTypeLabel.test.mjs` adds coverage for empty, ordinary unknown, `VILLA`, `__proto__`, `constructor`, `toString`, `hasOwnProperty`, null, and undefined values. No card styling, backend, API, database, or other UI behavior changed.
+
+Verification: `node --test src/tests/tenantPropertyTypeLabel.test.mjs` passed 2/2. `npm run build` passed with the existing Vite >500kB chunk advisory. `git diff --check` passed. No browser run was needed for this lookup-only correction.
+
+No commit or push.
