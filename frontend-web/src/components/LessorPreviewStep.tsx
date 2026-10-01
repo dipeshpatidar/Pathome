@@ -7,6 +7,7 @@ import { lessorContactService } from '../services/lessorContactService';
 import { LessorContactModal } from './LessorContactModal';
 import { LessorMediaAsset } from './LessorMediaAsset';
 import { displayMediaName } from '../utils/lessorMedia';
+import { lessorFurnishingLabel } from '../utils/lessorDetails';
 
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
@@ -139,7 +140,7 @@ export function LessorPreviewStep({ draftId, onEdit, onSubmitted, guest = false,
         </SummarySection>
         <SummarySection title="Configuration" onEdit={() => onEdit('basics')}>
           <p>{preview.bhkCount || 'Configuration to add'}</p>
-          <p>{preview.furnishingStatus ? preview.furnishingStatus.replace(/_/g, ' ').toLowerCase() : 'Furnishing not added'}</p>
+          <p>{lessorFurnishingLabel(preview.furnishingStatus) ?? 'Furnishing not added'}</p>
           {preview.totalAreaSqFt !== null && <p>{preview.totalAreaSqFt} sq ft</p>}
         </SummarySection>
       </div>

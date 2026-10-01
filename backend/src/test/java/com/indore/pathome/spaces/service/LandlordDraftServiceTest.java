@@ -100,6 +100,20 @@ class LandlordDraftServiceTest {
     }
 
     @Test
+    void draftAcceptsMissingFurnishingForLaterCompletion() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        var details = new LandlordDraftData.Details(java.time.LocalDate.of(2026, 10, 2),
+                null, null, null, null, "Balcony", "");
+
+        service.updateDetails("owner@example.com", "draft-one", 1, details);
+
+        assertNull(service.readData(draft).details().furnishingStatus());
+        assertEquals("Balcony", service.get("owner@example.com", "draft-one").data().details().amenities());
+    }
+
+    @Test
     void crossOwnerDraftIdIsNotFound() {
         when(drafts.findByDraftIdAndLandlordUserId("other-draft", 5L)).thenReturn(Optional.empty());
         assertThrows(EntityNotFoundException.class, () -> service.get("owner@example.com", "other-draft"));

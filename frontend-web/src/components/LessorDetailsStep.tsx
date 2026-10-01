@@ -1,12 +1,13 @@
 import React, { useRef } from 'react';
-import { Calendar } from 'lucide-react';
+import { Calendar, Check } from 'lucide-react';
 import type { LessorDetails } from '../services/lessorDraftService';
 import { availableNowDate, LESSOR_FURNISHING_OPTIONS } from '../utils/lessorDetails';
 
 const FIELD = 'mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200';
 
-export function LessorDetailsStep({ value, onChange, onBlur }: {
+export function LessorDetailsStep({ value, onChange, onBlur, furnishingRequired = true, furnishingError = null }: {
   value: LessorDetails; onChange: (next: LessorDetails) => void; onBlur: () => void;
+  furnishingRequired?: boolean; furnishingError?: string | null;
 }) {
   const dateInputRef = useRef<HTMLInputElement>(null);
   const today = availableNowDate();
@@ -46,8 +47,27 @@ export function LessorDetailsStep({ value, onChange, onBlur }: {
         />
       </div>
     </div>
+    <fieldset className="mt-7" aria-describedby={furnishingError ? 'lessor-furnishing-error' : undefined}>
+      <legend className="text-sm font-semibold text-slate-900">Furnishing <span className="ml-2 text-xs font-medium text-emerald-800">{furnishingRequired ? 'Required' : 'Optional'}</span></legend>
+      <div className="mt-3 grid gap-2.5 sm:grid-cols-3">
+        {LESSOR_FURNISHING_OPTIONS.map(option => {
+          const selected = value.furnishingStatus === option.value;
+          return <label key={option.value} className={`relative flex min-h-11 cursor-pointer items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-sm font-semibold transition-colors focus-within:ring-2 focus-within:ring-emerald-500 focus-within:ring-offset-2 ${selected
+            ? 'border-emerald-700 bg-emerald-50 text-emerald-950 shadow-sm'
+            : 'border-[#deded5] bg-[#fbfaf6] text-slate-700 hover:border-emerald-700/50 hover:bg-white'}`}>
+            <input type="radio" name="lessor-furnishing" value={option.value} checked={selected}
+              required={furnishingRequired} aria-invalid={Boolean(furnishingError)}
+              onChange={() => onChange({ ...value, furnishingStatus: option.value })} onBlur={onBlur}
+              className="sr-only" />
+            <span>{option.label}</span>
+            {selected && <Check size={16} className="shrink-0 text-emerald-700" aria-hidden="true" />}
+          </label>;
+        })}
+      </div>
+      {furnishingError && <p id="lessor-furnishing-error" role="alert" className="mt-2 text-sm font-medium text-rose-700">{furnishingError}</p>}
+    </fieldset>
     <details className="mt-8 border-t border-slate-200 pt-3 sm:rounded-2xl sm:border sm:bg-slate-50/50 sm:p-5"><summary className="min-h-11 cursor-pointer content-center text-sm font-semibold text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Add more details <span className="font-normal text-slate-500">(optional)</span></summary>
-      <div className="mt-4 grid gap-5 sm:grid-cols-2"><div><label htmlFor="lessor-furnishing" className="text-sm font-semibold text-slate-800">Furnishing</label><select id="lessor-furnishing" className={FIELD} value={value.furnishingStatus} onChange={event => onChange({ ...value, furnishingStatus: event.target.value })} onBlur={onBlur}><option value="">Choose if known</option>{LESSOR_FURNISHING_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+      <div className="mt-4 grid gap-5 sm:grid-cols-2">
       <div><label htmlFor="lessor-area" className="text-sm font-semibold text-slate-800">Area in sq ft</label><input id="lessor-area" type="number" min={1} inputMode="decimal" className={FIELD} value={value.totalAreaSqFt ?? ''} onChange={event => onChange({ ...value, totalAreaSqFt: event.target.value ? Number(event.target.value) : null })} onBlur={onBlur}/></div>
       <div><label htmlFor="lessor-floor" className="text-sm font-semibold text-slate-800">Floor number</label><input id="lessor-floor" type="number" min={0} inputMode="numeric" className={FIELD} value={value.floorNumber ?? ''} onChange={event => onChange({ ...value, floorNumber: event.target.value ? Number(event.target.value) : null })} onBlur={onBlur}/></div>
       <div><label htmlFor="lessor-total-floors" className="text-sm font-semibold text-slate-800">Floors in building</label><input id="lessor-total-floors" type="number" min={1} inputMode="numeric" className={FIELD} value={value.totalFloors ?? ''} onChange={event => onChange({ ...value, totalFloors: event.target.value ? Number(event.target.value) : null })} onBlur={onBlur}/></div>

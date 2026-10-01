@@ -99,6 +99,41 @@ class LandlordSubmissionServiceTest {
     }
 
     @Test
+    void newListingRequiresOneCanonicalFurnishingChoiceAtSubmission() {
+        for (String choice : List.of("UNFURNISHED", "SEMI_FURNISHED", "FULLY_FURNISHED")) {
+            when(draftData.readData(draft)).thenReturn(withFurnishing(choice));
+            assertEquals(choice, service.preview("owner@example.com", "d1").furnishingStatus());
+            assertFalse(service.preview("owner@example.com", "d1").missingRequirements().contains("furnishing"));
+            draft.setStatus("DRAFT");
+            service.submit("owner@example.com", "d1");
+        }
+        verify(listings, times(3)).saveAndFlush(any());
+    }
+
+    @Test
+    void missingOrSearchAggregateFurnishingCanRemainDraftButCannotSubmitNewListing() throws Exception {
+        var olderDetails = new ObjectMapper().findAndRegisterModules().readValue(
+                "{\"availableFrom\":\"2026-10-02\"}", LandlordDraftData.Details.class);
+        assertNull(olderDetails.furnishingStatus());
+        var original = validData();
+        when(draftData.readData(draft)).thenReturn(new LandlordDraftData(
+                original.basics(), original.pricing(), original.location(), olderDetails));
+        assertTrue(service.preview("owner@example.com", "d1").missingRequirements().contains("furnishing"));
+        assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
+
+        for (String unsupported : List.of("", "FURNISHED", "UNKNOWN")) {
+            when(draftData.readData(draft)).thenReturn(withFurnishing(unsupported));
+            assertTrue(service.preview("owner@example.com", "d1").missingRequirements().contains("furnishing"));
+            assertThrows(IllegalArgumentException.class, () -> service.submit("owner@example.com", "d1"));
+        }
+        draft.setPublishedPropertyId(42L);
+        when(draftData.readData(draft)).thenReturn(withFurnishing(null));
+        assertFalse(service.preview("owner@example.com", "d1").missingRequirements().contains("furnishing"),
+                "Legacy revision drafts are outside the new-listing requirement");
+        verify(listings, never()).saveAndFlush(any());
+    }
+
+    @Test
     void newSubmissionPersistsDraftAmenitiesAndMatchesRevisionMapping() {
         assertEquals("Balcony", service.preview("owner@example.com", "d1").amenities());
         service.submit("owner@example.com", "d1");
@@ -416,5 +451,13 @@ class LandlordSubmissionServiceTest {
                 new LandlordDraftData.Pricing(new BigDecimal("20000"), BigDecimal.ZERO),
                 new LandlordDraftData.Location("Indore", 10L, "Vijay Nagar", "10 Private Road", "Near park"),
                 new LandlordDraftData.Details(LocalDate.now(), "UNFURNISHED", 850.0, 2, 5, "Balcony", "Bright flat"));
+    }
+
+    private LandlordDraftData withFurnishing(String furnishing) {
+        var original = validData();
+        var details = original.details();
+        return new LandlordDraftData(original.basics(), original.pricing(), original.location(),
+                new LandlordDraftData.Details(details.availableFrom(), furnishing, details.totalAreaSqFt(),
+                        details.floorNumber(), details.totalFloors(), details.amenities(), details.description()));
     }
 }

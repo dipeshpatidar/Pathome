@@ -1,6 +1,7 @@
 import React from 'react';
 import { Building2, Camera, MapPin, ShieldCheck } from 'lucide-react';
 import type { ResidentialType } from '../services/lessorDraftService';
+import { lessorFurnishingLabel } from '../utils/lessorDetails';
 
 const MONEY = new Intl.NumberFormat('en-IN', {
   style: 'currency',
@@ -126,8 +127,8 @@ export const LessorLivePreview: React.FC<LessorLivePreviewProps> = ({
         </div>
         <div>
           <span className="block text-[10px] font-bold uppercase text-slate-400">Furnishing</span>
-          <span className="font-semibold text-slate-800 capitalize">
-            {furnishingStatus ? furnishingStatus.replace(/_/g, ' ').toLowerCase() : 'Not added yet'}
+          <span className="font-semibold text-slate-800">
+            {lessorFurnishingLabel(furnishingStatus) ?? 'Not added yet'}
           </span>
         </div>
         <div>

@@ -279,10 +279,10 @@ export const TenantQuickRefinePanel: React.FC<QuickRefineBaseProps> = props => {
   };
 
   return (
-    <section aria-labelledby={`${id}-title`} className="relative isolate mt-3 hidden min-w-0 overflow-hidden rounded-[24px] border border-[#dfd5bd] bg-gradient-to-br from-[#fffdf7] via-[#fafbf5] to-[#edf4e9] p-3.5 shadow-[0_12px_30px_-27px_rgba(15,45,34,.55)] lg:block xl:p-4">
+    <section aria-labelledby={`${id}-title`} className="tenant-quick-refine-panel relative isolate mt-3 hidden min-w-0 overflow-hidden rounded-[24px] border border-[#dfd5bd] bg-gradient-to-br from-[#fffdf7] via-[#fafbf5] to-[#edf4e9] p-3.5 shadow-[0_12px_30px_-27px_rgba(15,45,34,.55)] lg:flex xl:p-4">
       <BotanicalDetails />
-      <div className="relative z-10">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <div className="tenant-quick-refine-panel-content relative z-10">
+        <div className="flex min-w-0 shrink-0 items-center gap-2.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#dfd3b5] bg-gradient-to-br from-[#fff9e9] to-[#edf3e9] text-emerald-900 shadow-[0_3px_8px_-6px_rgba(20,60,45,.45)]"><SlidersHorizontal size={16} aria-hidden="true" /></span>
           <div className="min-w-0 flex-1">
             <h2 id={`${id}-title`} className="whitespace-nowrap font-serif text-[17px] font-medium leading-5 tracking-tight text-slate-950">Quick Refine</h2>
@@ -291,12 +291,14 @@ export const TenantQuickRefinePanel: React.FC<QuickRefineBaseProps> = props => {
           {activeCount > 0 && <button type="button" onClick={clearFilters} className={`min-h-11 shrink-0 rounded-lg px-1.5 text-[11px] font-semibold text-emerald-900 underline decoration-emerald-700/35 underline-offset-4 hover:bg-white/70 ${focusClass}`}>Clear all</button>}
         </div>
 
-        <div className="mt-3.5"><QuickRefineOptions filters={filters} onToggle={toggle} /></div>
-        <div className="mt-3.5 border-t border-emerald-950/10 pt-2.5">
-              <BudgetSlider bounds={props.rentBounds} values={budget.values}
-            onChange={budget.change} onCommit={budget.commitPending} />
+        <div className={`tenant-quick-refine-scroll-body mt-3.5 pr-1 pb-2 ${focusClass}`} tabIndex={0} aria-label="Quick Refine filters">
+          <QuickRefineOptions filters={filters} onToggle={toggle} />
+          <div className="mt-3.5 border-t border-emerald-950/10 pt-2.5">
+            <BudgetSlider bounds={props.rentBounds} values={budget.values}
+              onChange={budget.change} onCommit={budget.commitPending} />
+          </div>
+          {activeCount > 0 && <p className="relative mt-1 text-right text-[10px] font-medium text-slate-500">{activeCount} {activeCount === 1 ? 'filter' : 'filters'} applied</p>}
         </div>
-        {activeCount > 0 && <p className="relative mt-1 text-right text-[10px] font-medium text-slate-500">{activeCount} {activeCount === 1 ? 'filter' : 'filters'} applied</p>}
       </div>
     </section>
   );

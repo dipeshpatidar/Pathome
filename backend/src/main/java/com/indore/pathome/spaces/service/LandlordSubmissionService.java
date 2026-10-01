@@ -96,7 +96,7 @@ public class LandlordSubmissionService {
                                             : row.getCloudinaryUrl(), row.getUploadStatus(), Boolean.TRUE.equals(row.getIsCover()),
                                 row.getSortOrder() == null ? 0 : row.getSortOrder(),
                                 RoomTag.fromStored(row.getRoomTag()))).toList(),
-                missing(data, rows, localityName != null));
+                missing(data, rows, localityName != null, draft.getPublishedPropertyId() == null));
     }
 
     @Transactional
@@ -119,7 +119,8 @@ public class LandlordSubmissionService {
         }
         LandlordDraftData data = draftData.readData(draft);
         List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, ownerId);
-        List<String> missing = missing(data, rows, locationName(data.location()) != null);
+        List<String> missing = missing(data, rows, locationName(data.location()) != null,
+                draft.getPublishedPropertyId() == null);
         if (!missing.isEmpty()) throw new IllegalArgumentException("Complete before submitting: " + String.join(", ", missing));
         if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
             throw new DraftConflictException(draftId, draft.getVersion(), "Wait for media uploads or removals to finish");
@@ -224,7 +225,7 @@ public class LandlordSubmissionService {
     }
 
     void requireCompleteRevision(LandlordDraftData data, List<PropertyDraftMedia> rows) {
-        List<String> missing = missing(data, rows, locationName(data.location()) != null);
+        List<String> missing = missing(data, rows, locationName(data.location()) != null, false);
         if (!missing.isEmpty()) throw new IllegalArgumentException("Revision is incomplete: " + String.join(", ", missing));
         if (rows.stream().anyMatch(row -> "PENDING".equals(row.getUploadStatus()) || "DELETING".equals(row.getUploadStatus()))) {
             throw new IllegalArgumentException("Revision media is still changing");
@@ -277,7 +278,8 @@ public class LandlordSubmissionService {
         assets.saveAll(replacement);
     }
 
-    private List<String> missing(LandlordDraftData data, List<PropertyDraftMedia> rows, boolean canonicalLocation) {
+    private List<String> missing(LandlordDraftData data, List<PropertyDraftMedia> rows,
+                                 boolean canonicalLocation, boolean newListing) {
         List<String> missing = new ArrayList<>();
         if (data.basics() == null || data.basics().propertyType() == null ||
                 !List.of(PropertyType.FLAT, PropertyType.HOUSE, PropertyType.STUDIO,
@@ -295,12 +297,19 @@ public class LandlordSubmissionService {
                 !canonicalLocation || data.location().address() == null ||
                 data.location().address().isBlank()) missing.add("confirmed city, locality, and private address");
         if (data.details() == null || data.details().availableFrom() == null) missing.add("availability date");
+        if (newListing && (data.details() == null || !supportedFurnishing(data.details().furnishingStatus())))
+            missing.add("furnishing");
         long covers = rows.stream().filter(row -> ("UPLOADED".equals(row.getUploadStatus()) ||
                 Boolean.TRUE.equals(row.getGuestOwned()) && "STAGED".equals(row.getUploadStatus())) &&
                 row.getContentType().startsWith("image/") && Boolean.TRUE.equals(row.getIsCover())).count();
         if (covers == 0) missing.add("choose a cover photo");
         else if (covers > 1) missing.add("choose one cover photo");
         return missing;
+    }
+
+    private static boolean supportedFurnishing(String value) {
+        return "UNFURNISHED".equals(value) || "SEMI_FURNISHED".equals(value)
+                || "FULLY_FURNISHED".equals(value);
     }
 
     private String locationName(LandlordDraftData.Location location) {

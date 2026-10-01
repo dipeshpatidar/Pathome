@@ -48,7 +48,8 @@ import { changeLocationCity, changeLocalityText, chooseLocalityOption, locationV
   useLocalityForReview } from '../utils/lessorLocationState';
 import { hasCoverImage } from '../utils/lessorMedia';
 import { lessorStepStorageKey, resolveLessorResumeStep } from '../utils/lessorStepResume';
-import { EMPTY_LESSOR_DETAILS, restoreLessorDetails } from '../utils/lessorDetails';
+import { EMPTY_LESSOR_DETAILS, isLessorFurnishingChoice, lessorDetailsCompletionError,
+  restoreLessorDetails } from '../utils/lessorDetails';
 
 interface PropertyTypeOption {
   value: ResidentialType;
@@ -932,6 +933,8 @@ function LessorEditor({
   };
   const updateDetails = (value: LessorDetails) => {
     setDetails(value);
+    if (error === 'Choose the furnishing for this home to continue.' && isLessorFurnishingChoice(value.furnishingStatus))
+      setError('');
     queue.current?.change('details', value);
   };
 
@@ -963,9 +966,12 @@ function LessorEditor({
         return;
       }
     }
-    if (step === 'details' && !details.availableFrom) {
-      setError('Add the availability date to continue.');
-      return;
+    if (step === 'details') {
+      const detailsError = lessorDetailsCompletionError(details, draft?.revisionOfListingId == null);
+      if (detailsError) {
+        setError(detailsError);
+        return;
+      }
     }
     if (!(await queue.current?.flush())) {
       setError(
@@ -1519,6 +1525,8 @@ function LessorEditor({
                   <>
                     <LessorDetailsStep
                       value={details}
+                      furnishingRequired={draft?.revisionOfListingId == null}
+                      furnishingError={error === 'Choose the furnishing for this home to continue.' ? error : null}
                       onChange={updateDetails}
                       onBlur={() => {
                         void queue.current?.flush();
@@ -1571,7 +1579,8 @@ function LessorEditor({
               />
             </div>
 
-            {error && <p id="lessor-step-error" role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
+            {error && !(step === 'details' && error === 'Choose the furnishing for this home to continue.') &&
+              <p id="lessor-step-error" role="alert" className="mt-6 text-sm font-semibold text-rose-700">{error}</p>}
 
             {status === 'error' && (
               <button

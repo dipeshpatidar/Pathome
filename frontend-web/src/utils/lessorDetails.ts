@@ -16,6 +16,21 @@ export const LESSOR_FURNISHING_OPTIONS = [
   { value: 'FULLY_FURNISHED', label: 'Fully furnished' }
 ] as const;
 
+export function isLessorFurnishingChoice(value: unknown): boolean {
+  return typeof value === 'string' && LESSOR_FURNISHING_OPTIONS.some(option => option.value === value);
+}
+
+export function lessorFurnishingLabel(value: unknown): string | null {
+  return LESSOR_FURNISHING_OPTIONS.find(option => option.value === value)?.label ?? null;
+}
+
+export function lessorDetailsCompletionError(details: LessorDetails, requireFurnishing: boolean): string | null {
+  if (!details.availableFrom) return 'Add the availability date to continue.';
+  if (requireFurnishing && !isLessorFurnishingChoice(details.furnishingStatus))
+    return 'Choose the furnishing for this home to continue.';
+  return null;
+}
+
 /** Older drafts may omit newer optional keys or contain null strings. */
 export function restoreLessorDetails(saved: Partial<LessorDetails> | null | undefined,
   pending?: Partial<LessorDetails> | null): LessorDetails {

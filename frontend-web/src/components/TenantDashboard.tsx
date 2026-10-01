@@ -565,7 +565,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const showTenantMobileDock = shouldRenderTenantMobileDock(
     tenantHeroVisible, quickRefineSheetOpen, previewPropertyId !== null
   );
-  const tenantDiscoveryRailTop = 'calc(88px + env(safe-area-inset-top) + 66px)';
+  const tenantDiscoveryRailTop = 'calc(76px + env(safe-area-inset-top) + 18px)';
   const quickRefineRentBounds = useMemo(() => getQuickRefineRentBounds(searchFilters),
     [searchFilters.minRent, searchFilters.maxRent]);
   const cancelSearchMorph = useCallback(() => {

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
-import { availableNowDate, EMPTY_LESSOR_DETAILS, LESSOR_FURNISHING_OPTIONS,
+import { availableNowDate, EMPTY_LESSOR_DETAILS, isLessorFurnishingChoice,
+  lessorDetailsCompletionError, lessorFurnishingLabel, LESSOR_FURNISHING_OPTIONS,
   restoreLessorDetails } from '../utils/lessorDetails.ts';
 
 test('old partial details restore optional fields without replacing valid values', () => {
@@ -27,6 +28,20 @@ test('lessor furnishing controls use physical states, while available now uses l
     ['UNFURNISHED', 'SEMI_FURNISHED', 'FULLY_FURNISHED']);
   assert.equal(LESSOR_FURNISHING_OPTIONS.some(option => option.value === 'FURNISHED'), false);
   assert.equal(availableNowDate(new Date(2026, 9, 2, 23, 59)), '2026-10-02');
+  for (const choice of LESSOR_FURNISHING_OPTIONS) {
+    assert.equal(isLessorFurnishingChoice(choice.value), true);
+    assert.equal(lessorFurnishingLabel(choice.value), choice.label);
+    assert.equal(lessorDetailsCompletionError({ ...EMPTY_LESSOR_DETAILS, availableFrom: '2026-10-02',
+      furnishingStatus: choice.value }, true), null);
+  }
+  assert.equal(isLessorFurnishingChoice('FURNISHED'), false);
+  assert.equal(lessorFurnishingLabel(null), null);
+  assert.equal(lessorDetailsCompletionError({ ...EMPTY_LESSOR_DETAILS, availableFrom: '2026-10-02' }, true),
+    'Choose the furnishing for this home to continue.');
+  assert.equal(lessorDetailsCompletionError({ ...EMPTY_LESSOR_DETAILS, availableFrom: '2026-10-02',
+    furnishingStatus: 'FURNISHED' }, true), 'Choose the furnishing for this home to continue.');
+  assert.equal(lessorDetailsCompletionError({ ...EMPTY_LESSOR_DETAILS, availableFrom: '2026-10-02' }, false), null);
+  assert.equal(lessorDetailsCompletionError(EMPTY_LESSOR_DETAILS, true), 'Add the availability date to continue.');
 });
 
 test('production Details step renders the existing controls and available-now action', async () => {
@@ -50,8 +65,12 @@ export const render = value => renderToStaticMarkup(<LessorDetailsStep value={va
   const markup = bundled.exports.render(restoreLessorDetails({ furnishingStatus: 'SEMI_FURNISHED' }));
   assert.match(markup, /Available now/);
   assert.match(markup, /aria-pressed="false"/);
-  assert.match(markup, /value="SEMI_FURNISHED" selected=""/);
+  const selectedRadio = markup.match(/<input[^>]*value="SEMI_FURNISHED"[^>]*>/)?.[0];
+  assert.match(selectedRadio ?? '', /checked=""/);
   assert.match(markup, /value="FULLY_FURNISHED"/);
   assert.doesNotMatch(markup, /value="FURNISHED"/);
   assert.match(markup, /id="lessor-amenities"/);
+  assert.ok(markup.indexOf('Furnishing') < markup.indexOf('<details'),
+    'Furnishing must be visible before the optional disclosure');
+  assert.match(markup, /Add more details.*optional/);
 });
