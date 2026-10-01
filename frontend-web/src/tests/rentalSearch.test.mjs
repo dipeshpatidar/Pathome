@@ -550,6 +550,46 @@ test('resetFiltersForSearchClear contract establishes clean current-city default
   );
 });
 
+test('Tenant hero clear removes Smart Search and quick-filter refinements while preserving city', () => {
+  const activeSearches = [
+    { city: 'Indore', bhk: '3 BHK', rentalOnly: true },
+    { city: 'Indore', propertyType: 'HOUSE', rentalOnly: true },
+    { city: 'Indore', bhk: '3 BHK', propertyType: 'HOUSE', rentalOnly: true },
+    {
+      city: 'Indore', sector: 'Vijay Nagar', q: '3bhk house in vijay nagar',
+      bhk: '3 BHK', propertyType: 'HOUSE', rentalOnly: true
+    }
+  ];
+
+  for (const activeSearch of activeSearches) {
+    const cleared = resetFiltersForSearchClear(activeSearch.city);
+    assert.deepEqual(cleared, { city: 'Indore', rentalOnly: true });
+    assert.equal(cleared.city, activeSearch.city, 'Clear must retain the selected city');
+    assert.equal(cleared.bhk, undefined, 'Clear must remove the selected BHK chip state');
+    assert.equal(cleared.propertyType, undefined, 'Clear must remove the selected property type chip state');
+    assert.equal(cleared.q, undefined, 'Clear must remove free-text query state');
+    assert.equal(cleared.sector, undefined, 'Clear must remove Smart Search locality state');
+    assert.equal(discoverySearchKey(cleared), discoverySearchKey({ city: activeSearch.city, rentalOnly: true }));
+  }
+});
+
+test('Tenant hero X uses committed clear handling and cancels pending chip auto-scroll', () => {
+  const compactSearchSource = readFileSync(new URL('../components/CompactSearchContext.tsx', import.meta.url), 'utf-8');
+  const tenantDashboardSource = readFileSync(new URL('../components/TenantDashboard.tsx', import.meta.url), 'utf-8');
+  const tenantDraftClearBranch = compactSearchSource.match(/if \(tenantHeroAppearance\) \{[\s\S]*?return;\s*\}/)?.[0];
+  const tenantSearchClearHandler = tenantDashboardSource.match(/const clearTenantSearch = \(\) => \{[\s\S]*?\n  \};/)?.[0];
+
+  assert.ok(tenantDraftClearBranch, 'Tenant hero should have an explicit X clear branch');
+  assert.match(tenantDraftClearBranch, /handleClearAll\(\)/);
+  assert.match(compactSearchSource, /aria-label=\{tenantHeroAppearance \? 'Clear search and filters' : 'Clear search text'\}/);
+  assert.ok(tenantSearchClearHandler, 'Tenant clear callback should own the authoritative reset');
+  assert.match(tenantSearchClearHandler, /pendingHeroFilterScrollRef\.current = null/);
+  assert.match(tenantSearchClearHandler, /cancelAnimationFrame/);
+  assert.match(tenantSearchClearHandler, /onSearchHomes\(resetFiltersForSearchClear\(searchFilters\.city \|\| discoveryCity\)\)/);
+  assert.doesNotMatch(tenantSearchClearHandler, /applySmartSearch|scrollIntoView/);
+  assert.match(tenantDashboardSource, /onClearAll=\{clearTenantSearch\}/);
+});
+
 test('search clear (×) handles uncommitted draft text vs committed search correctly', () => {
   // A. Draft-only clear:
   // Committed state: city=Indore, no filters.

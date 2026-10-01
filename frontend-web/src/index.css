@@ -9,6 +9,12 @@
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
   }
+  html:has(#tenant-home-search) {
+    scrollbar-width: none;
+  }
+  html:has(#tenant-home-search)::-webkit-scrollbar {
+    display: none;
+  }
   html,
   body,
   #root {
@@ -313,9 +319,24 @@
   }
 }
 
+@keyframes tenant-search-beacon-breathe {
+  0%, 100% { opacity: 0.18; }
+  50% { opacity: 0.30; }
+}
+
+.tenant-search-beacon-halo {
+  opacity: 0.24;
+  animation: tenant-search-beacon-breathe 2.7s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .activity-dot-halo {
     animation: none !important;
     display: none !important;
+  }
+
+  .tenant-search-beacon-halo {
+    animation: none !important;
+    opacity: 0.22;
   }
 }

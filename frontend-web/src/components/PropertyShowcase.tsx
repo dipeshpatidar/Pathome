@@ -33,6 +33,16 @@ interface PropertyShowcaseProps {
 
 const videoUrlCache = new Map<number, string>();
 
+const discoveryCardRevealVariants = {
+  hidden: { opacity: 0, y: 28, scale: 0.985 },
+  visible: { opacity: 1, y: 0, scale: 1 }
+};
+
+const discoveryCardImageRevealVariants = {
+  hidden: { scale: 1.02 },
+  visible: { scale: 1 }
+};
+
 const getOrdinal = (n: number): string => {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
@@ -303,12 +313,12 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
           initial={reduceMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={reduceMotion ? undefined : { opacity: 0 }}
-          transition={{ duration: 0.18 }}
+          transition={{ duration: reduceMotion ? 0 : 0.18 }}
           src={coverDeliveryUrl || images[currentImgIdx] || images[0]}
           alt={prop.title || 'Property photo'}
           loading={index === 0 ? 'eager' : 'lazy'}
           {...({ fetchPriority: index === 0 ? 'high' : 'low' } as any)}
-          className={`absolute inset-0 h-full w-full object-cover object-center transition-transform duration-700 ease-out ${
+          className={`absolute inset-0 h-full w-full object-cover object-center transition-transform duration-300 ease-[cubic-bezier(.16,1,.3,1)] ${
             isHovered && !reduceMotion ? 'scale-[1.03]' : 'scale-100'
           }`}
         />
@@ -321,7 +331,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
   );
 
   return (
-    <article
+    <motion.article
       id={`property-card-${prop.id}`}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest('button, a, input, select')) return;
@@ -329,12 +339,21 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
       }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      initial={reduceMotion || typeof IntersectionObserver === 'undefined' ? false : 'hidden'}
+      whileInView="visible"
+      viewport={{ once: true, amount: 0.12 }}
+      variants={discoveryCardRevealVariants}
+      transition={{ duration: reduceMotion ? 0 : 0.56, delay: reduceMotion ? 0 : (index % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
+      whileHover={reduceMotion ? undefined : { y: -6, transition: { duration: 0.3, ease: [0.16, 1, 0.3, 1] } }}
       className="group flex min-w-0 w-full cursor-pointer flex-col md:max-w-[640px] md:mx-auto lg:max-w-none"
     >
       {/* MEDIA SURFACE: EDGE-TO-EDGE THUMBNAIL WITH OBJECT-COVER */}
       <div ref={mediaRef} className="relative aspect-[16/10] overflow-hidden rounded-[24px] bg-slate-200/60 sm:aspect-[16/9]">
         {/* Cover and controls remain fixed in layout while scrolling. */}
-        {coverPhoto}
+        <motion.div variants={discoveryCardImageRevealVariants}
+          transition={{ duration: reduceMotion ? 0 : 0.64, delay: reduceMotion ? 0 : (index % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
+          className="absolute inset-0">
+          {coverPhoto}
 
         {/* Video Surface (Active during desktop hover preview) */}
         {hasVideo && resolvedVideoUrl && !videoFailed && !reduceMotion && previewRequested && mediaVisible && (
@@ -355,6 +374,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
             }`}
           />
         )}
+        </motion.div>
 
         {/* Top Controls: Media Count (left) — Bookmark (right) */}
         <div className="absolute inset-x-3 top-3 flex items-start justify-between gap-2 sm:inset-x-4 sm:top-4 z-20">
@@ -386,7 +406,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
               event.stopPropagation();
               onSaveFavorite?.(prop);
             }}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/15 bg-slate-900/40 text-white/95 shadow-sm backdrop-blur-md transition-colors hover:bg-slate-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 motion-reduce:transition-none"
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/15 bg-slate-900/40 text-white/95 shadow-sm backdrop-blur-md transition-[transform,box-shadow,background-color] duration-300 hover:bg-slate-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 motion-reduce:transition-none ${isHovered && !reduceMotion ? '-translate-y-0.5 shadow-md' : ''}`}
           >
             <Bookmark className="h-4 w-4 text-white/90" aria-hidden="true" />
           </button>
@@ -418,7 +438,7 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
       </div>
 
       {/* OVERLAPPING FLOATING INFORMATION PANEL */}
-      <div className={`relative z-10 mx-3 -mt-7 flex min-w-0 flex-1 flex-col rounded-[22px] border bg-white p-3.5 transition-[box-shadow,border-color] duration-200 group-focus-within:ring-2 group-focus-within:ring-emerald-500 motion-reduce:transition-none sm:mx-4 sm:-mt-9 sm:px-4.5 sm:pt-3.5 sm:pb-4 ${isHovered ? 'border-slate-300 shadow-[0_20px_35px_-12px_rgba(15,23,42,0.18),0_6px_14px_-4px_rgba(15,23,42,0.08)]' : 'border-slate-200/90 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.12),0_4px_12px_-4px_rgba(15,23,42,0.06)]'}`}>
+      <div className={`relative z-10 mx-3 -mt-7 flex min-w-0 flex-1 flex-col rounded-[22px] border bg-white p-3.5 transition-[transform,box-shadow,border-color] duration-300 ease-[cubic-bezier(.16,1,.3,1)] group-focus-within:ring-2 group-focus-within:ring-emerald-500 motion-reduce:transition-none sm:mx-4 sm:-mt-9 sm:px-4.5 sm:pt-3.5 sm:pb-4 ${isHovered && !reduceMotion ? '-translate-y-0.5' : ''} ${isHovered ? 'border-slate-300 shadow-[0_20px_35px_-12px_rgba(15,23,42,0.18),0_6px_14px_-4px_rgba(15,23,42,0.08)]' : 'border-slate-200/90 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.12),0_4px_12px_-4px_rgba(15,23,42,0.06)]'}`}>
         <div className="flex min-w-0 items-center justify-between gap-3 text-xs font-semibold text-slate-600">
           {location && (
             <span className="flex min-w-0 items-center gap-1.5" title={location}>
@@ -489,12 +509,12 @@ const DiscoveryPropertyCard: React.FC<DiscoveryPropertyCardProps> = ({
               aria-label={`View details for ${prop.title}`}
               className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl px-2.5 text-xs font-bold text-emerald-800 transition-colors hover:bg-emerald-50 hover:text-emerald-900 active:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 motion-reduce:transition-none"
             >
-              View details <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              View details <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
             </button>
           </div>
         </div>
       </div>
-    </article>
+    </motion.article>
   );
 };
 

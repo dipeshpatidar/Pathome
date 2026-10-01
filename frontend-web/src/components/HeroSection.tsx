@@ -271,7 +271,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostPr
                   : { type: 'spring', stiffness: 280, damping: 24, delay: 0.24 }
               }
               id="hero-search-surface"
-              className="relative z-30 grid min-w-0 grid-cols-1 gap-1 rounded-2xl border border-white/30 bg-white p-1.5 shadow-[0_20px_50px_-24px_rgba(2,6,23,0.7)] transition-shadow duration-300 focus-within:shadow-[0_22px_54px_-22px_rgba(2,6,23,0.8)] sm:p-2 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.65fr)_auto] md:items-stretch md:gap-0 motion-reduce:transition-none"
+              className="relative z-30 grid min-w-0 grid-cols-1 gap-1 rounded-2xl border border-white/30 bg-white p-1 shadow-[0_16px_38px_-22px_rgba(2,6,23,0.62)] transition-shadow duration-300 focus-within:shadow-[0_18px_42px_-22px_rgba(2,6,23,0.72)] md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.65fr)_auto] md:items-stretch md:gap-0 motion-reduce:transition-none"
             >
               <button
                 type="button"
@@ -279,7 +279,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostPr
                 onClick={(event) => openLocation('city', event.currentTarget)}
                 aria-haspopup="dialog"
                 aria-expanded={isLocationOpen && locationStep === 'city'}
-                className="group flex min-h-11 min-w-0 items-center gap-2.5 rounded-xl px-3 text-left transition-colors duration-150 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 md:min-h-12 md:rounded-r-none md:border-r md:border-slate-200 motion-reduce:transition-none"
+                className="group flex min-h-11 min-w-0 items-center gap-2.5 rounded-xl px-3 text-left transition-colors duration-150 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 md:min-h-11 md:rounded-r-none md:border-r md:border-slate-200 motion-reduce:transition-none"
               >
                 <MapPin className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                 <span className="min-w-0 flex-1">
@@ -288,7 +288,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostPr
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 group-hover:translate-y-0.5 motion-reduce:group-hover:translate-y-0 motion-reduce:transition-none" aria-hidden="true" />
               </button>
-              <div className="relative z-30 flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-3 focus-within:ring-2 focus-within:ring-emerald-600 md:min-h-12 md:rounded-none">
+              <div className="relative z-30 flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-3 focus-within:ring-2 focus-within:ring-emerald-600 md:min-h-11 md:rounded-none">
                 <Search className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                 <label htmlFor="hero-smart-search" className="sr-only">Search rental homes by locality or BHK</label>
                 <input
@@ -331,17 +331,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostPr
                   placeholder="Search locality or 2 BHK"
                   className="min-w-0 flex-1 bg-transparent py-2 text-base font-medium text-slate-900 outline-none placeholder:text-slate-500"
                 />
-                {searchText && (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={handleClearSearch}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
-                  >
-                    <X className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                )}
                   <div ref={suggestionListRef} id="hero-search-suggestions" role="listbox" aria-label="Rental search suggestions" className={suggestionsOpen && suggestionState !== 'idle' ? 'absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 max-h-[min(20rem,45dvh)] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-2xl' : 'hidden'}>
                     {suggestionState === 'loading' && <p role="status" className="px-3 py-3 text-sm text-slate-600">Finding places…</p>}
                     {suggestionState === 'empty' && <p role="status" className="px-3 py-3 text-sm text-slate-600">No matching homes found.</p>}
@@ -384,15 +373,26 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onSearch, onOpenPostPr
                     ))}
                   </div>
               </div>
-              <button
-                type="button"
-                id="hero-search-btn"
-                onClick={applySearch}
-                className="group inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-bold text-white transition-colors duration-150 hover:bg-emerald-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 md:ml-1 md:min-h-12 motion-reduce:active:scale-100 motion-reduce:transition-none"
-              >
-                Show homes
-                <ArrowRight className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:group-hover:translate-x-0 motion-reduce:transition-none" aria-hidden="true" />
-              </button>
+              <div className="inline-flex h-11 min-h-11 shrink-0 items-center justify-self-end gap-0 md:justify-self-end">
+                {searchText && <button
+                  type="button"
+                  aria-label="Clear search"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleClearSearch}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center bg-transparent p-0 text-slate-400 transition-colors hover:text-slate-700 focus-visible:outline-none focus-visible:text-emerald-800 focus-visible:drop-shadow-[0_0_3px_rgba(8,123,96,0.28)] motion-reduce:transition-none"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>}
+                <button
+                  type="button"
+                  id="hero-search-btn"
+                  onClick={applySearch}
+                  aria-label="Explore homes"
+                  className="inline-flex h-11 min-h-11 w-11 min-w-11 shrink-0 items-center justify-center border-0 bg-transparent px-0 text-emerald-700 shadow-none transition-[color,transform] duration-150 hover:translate-x-0.5 hover:text-emerald-800 focus-visible:translate-x-0.5 focus-visible:outline-none focus-visible:text-emerald-950 focus-visible:drop-shadow-[0_0_3px_rgba(8,123,96,0.32)] active:translate-x-0.5 motion-reduce:transition-none motion-reduce:hover:translate-x-0 motion-reduce:focus-visible:translate-x-0"
+                >
+                  <ArrowRight className="h-[1.125rem] w-[1.125rem] drop-shadow-[0_1px_2px_rgba(8,123,96,0.18)]" strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              </div>
             </motion.div>
 
             <motion.div

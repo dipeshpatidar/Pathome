@@ -1388,6 +1388,7 @@ export const Home: React.FC = () => {
               user={user}
               properties={properties}
               discoveryState={discoveryState}
+              discoveryLoadedKey={loadedDiscoveryKey}
               discoveryCity={activeDiscoveryCity}
               discoveryQuery={activeSearchFilters.q || ''}
               searchFilters={activeSearchFilters}

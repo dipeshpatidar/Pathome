@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { flushSync } from 'react-dom';
 import { ArrowRight, ChevronDown, MapPin, Search, X } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   RentalSearchFilters,
   RentalSuggestion,
@@ -21,8 +22,14 @@ import { propertyService } from '../services/propertyService';
 export interface CompactSearchContextProps {
   city: string;
   filters: RentalSearchFilters;
-  appearance?: 'context' | 'hero';
+  appearance?: 'context' | 'hero' | 'tenant-hero';
   alwaysEditing?: boolean;
+  sticky?: boolean;
+  stickyMode?: 'hero' | 'sticky' | 'beacon';
+  beaconTop?: number | null;
+  onInteraction?: () => void;
+  onEngagementChange?: (engaged: boolean) => void;
+  onBeaconExpand?: () => void;
   searchPlaceholder?: string;
   submitLabel?: string;
   onSearch: (
@@ -39,6 +46,12 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   filters,
   appearance = 'context',
   alwaysEditing = false,
+  sticky = false,
+  stickyMode,
+  beaconTop = null,
+  onInteraction,
+  onEngagementChange,
+  onBeaconExpand,
   searchPlaceholder,
   submitLabel,
   onSearch,
@@ -53,19 +66,32 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   const [suggestions, setSuggestions] = useState<RentalSuggestion[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'results' | 'empty' | 'error'>('idle');
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
+  const [inputFocused, setInputFocused] = useState(false);
+  const [pointerInside, setPointerInside] = useState(false);
+  const prefersReducedMotion = useReducedMotion() === true;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const searchBarRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const focusAfterBeaconRef = useRef(false);
   const suggestionListRef = useRef<HTMLDivElement>(null);
   const suggestionRequestRef = useRef(0);
   const committedFiltersKey = discoverySearchKey(filters);
   const lastCommittedFiltersRef = useRef(committedFiltersKey);
   const touchStartYRef = useRef<number | null>(null);
-
   const summary = formatCompactSearchContext(filters);
   const hasFilters = hasActiveSearchFilters(filters);
-  const heroAppearance = appearance === 'hero';
+  const tenantHeroAppearance = appearance === 'tenant-hero';
+  const heroAppearance = appearance === 'hero' || tenantHeroAppearance;
+  const tenantSearchMode = stickyMode || (sticky ? 'sticky' : 'hero');
+  const tenantBeacon = tenantHeroAppearance && tenantSearchMode === 'beacon';
+  const tenantSticky = tenantHeroAppearance && tenantSearchMode === 'sticky';
+  const notifyInteraction = () => onInteraction?.();
+
+  useEffect(() => {
+    onEngagementChange?.(inputFocused || pointerInside || isLocationOpen || (isEditing && showSuggestions));
+  }, [inputFocused, pointerInside, isLocationOpen, isEditing, showSuggestions, onEngagementChange]);
+  useEffect(() => () => onEngagementChange?.(false), [onEngagementChange]);
 
   // Sync draft text if external committed filters change
   useEffect(() => {
@@ -89,6 +115,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
         !containerRef.current.contains(target) &&
         (!suggestionListRef.current || !suggestionListRef.current.contains(target))
       ) {
+        if (tenantHeroAppearance) setPointerInside(false);
+        if (tenantHeroAppearance) searchInputRef.current?.blur();
         setIsEditing(false);
         setShowSuggestions(false);
         const draft = compactSearchDraftFromFilters(filters, alwaysEditing);
@@ -201,6 +229,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   }, [searchText, city, showSuggestions, isEditing]);
 
   const enterEditMode = () => {
+    notifyInteraction();
     const draft = compactSearchDraftFromFilters(filters, true);
     flushSync(() => {
       setIsEditing(true);
@@ -214,6 +243,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   };
 
   const exitEditMode = () => {
+    notifyInteraction();
     setIsEditing(false);
     setShowSuggestions(false);
     const draft = compactSearchDraftFromFilters(filters, true);
@@ -223,6 +253,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   };
 
   const handleCitySelect = (newCity: string) => {
+    notifyInteraction();
     setIsLocationOpen(false);
     setIsEditing(false);
     setShowSuggestions(false);
@@ -243,6 +274,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   };
 
   const chooseSuggestion = (item: RentalSuggestion) => {
+    notifyInteraction();
     setIsEditing(false);
     setShowSuggestions(false);
     setSuggestions([]);
@@ -269,6 +301,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   };
 
   const applySearch = () => {
+    notifyInteraction();
     setIsEditing(false);
     setShowSuggestions(false);
     setSuggestions([]);
@@ -366,56 +399,183 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     };
   };
 
+  const clearDraftButton = searchText ? (
+    <button
+      type="button"
+      id="compact-clear-draft"
+      aria-label={tenantHeroAppearance ? 'Clear search and filters' : 'Clear search text'}
+      onClick={() => {
+        notifyInteraction();
+        if (tenantHeroAppearance) {
+          searchInputRef.current?.focus({ preventScroll: true });
+          handleClearAll();
+          return;
+        }
+        setSearchText('');
+        setSearchTextIsSummary(false);
+        searchInputRef.current?.focus();
+        setShowSuggestions(false);
+      }}
+      className={tenantHeroAppearance
+        ? 'grid h-11 w-11 shrink-0 place-items-center bg-transparent p-0 leading-none text-slate-500 transition-colors hover:text-slate-900 focus-visible:outline-none focus-visible:text-emerald-800 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-700/60'
+        : heroAppearance
+          ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600'
+          : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'}
+    >
+      <X className="block h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  ) : null;
+
+  const submitButton = (
+    <button
+      type="button"
+      id="compact-search-submit"
+      aria-label={tenantHeroAppearance ? 'Explore homes' : (submitLabel || 'Submit search')}
+      onClick={applySearch}
+      className={heroAppearance
+        ? tenantHeroAppearance
+          ? 'grid h-11 w-11 min-h-11 shrink-0 place-items-center border-0 bg-transparent p-0 leading-none text-emerald-700 shadow-none transition-[color,transform] duration-150 hover:translate-x-0.5 hover:text-emerald-800 focus-visible:translate-x-0.5 focus-visible:outline-none focus-visible:text-emerald-950 focus-visible:drop-shadow-[0_0_5px_rgba(8,123,96,0.5)] active:translate-x-0.5 motion-reduce:transition-none motion-reduce:hover:translate-x-0 motion-reduce:focus-visible:translate-x-0'
+          : `inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${submitLabel ? 'w-full sm:w-auto' : 'w-11'}`
+        : 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm transition-all hover:bg-emerald-500 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'}
+    >
+      {submitLabel && <span>{submitLabel}</span>}
+      <ArrowRight
+        className={tenantHeroAppearance ? 'block h-[1.125rem] w-[1.125rem] drop-shadow-[0_1px_2px_rgba(8,123,96,0.18)]' : 'block h-4 w-4'}
+        strokeWidth={tenantHeroAppearance ? 1.8 : 2}
+        aria-hidden="true"
+      />
+    </button>
+  );
+
   return (
     <>
       {/* FLOATING SEARCH WRAPPER — Outer relative container determining exact matched width */}
-      <div
+      <motion.div
+        layout={tenantHeroAppearance && !prefersReducedMotion}
+        transition={{ layout: { duration: prefersReducedMotion ? 0 : 0.3, ease: [0.16, 1, 0.3, 1] } }}
         ref={containerRef}
         id="compact-discovery-context"
-        className={heroAppearance ? 'relative z-50 mx-auto w-full min-w-0' : 'relative mx-auto w-full max-w-[860px]'}
+      className={tenantHeroAppearance
+          ? tenantBeacon
+            ? 'fixed left-3 right-auto top-[var(--tenant-beacon-top,44vh)] z-[95] h-12 w-12 lg:left-auto lg:right-[18px]'
+            : tenantSticky
+              ? 'fixed left-1/2 top-[calc(80px+env(safe-area-inset-top))] z-[90] mx-auto w-[calc(100vw-24px)] max-w-[860px] -translate-x-1/2 rounded-2xl border border-white/80 bg-white/85 p-1 shadow-[0_12px_30px_rgba(13,44,33,.16)] backdrop-blur-xl sm:w-[calc(100vw-48px)]'
+            : 'relative z-50 w-full min-w-0 lg:max-w-[58rem]'
+          : heroAppearance ? 'relative z-50 mx-auto w-full min-w-0' : 'relative mx-auto w-full max-w-[860px]'}
+        style={tenantHeroAppearance ? {
+          translate: tenantSticky ? '-50% 0' : undefined,
+          '--tenant-beacon-top': tenantBeacon && beaconTop !== null ? `${beaconTop}px` : undefined
+        } as React.CSSProperties : undefined}
+        onPointerEnter={event => {
+          if (tenantHeroAppearance && event.pointerType !== 'touch') {
+            setPointerInside(true);
+            if (tenantSticky) notifyInteraction();
+          }
+        }}
+        onPointerLeave={() => {
+          setPointerInside(false);
+        }}
+        onFocusCapture={() => {
+          setInputFocused(true);
+          notifyInteraction();
+        }}
+        onBlurCapture={event => {
+          const nextTarget = event.relatedTarget as Node | null;
+          if (nextTarget && (containerRef.current?.contains(nextTarget) || suggestionListRef.current?.contains(nextTarget))) return;
+          setInputFocused(false);
+          notifyInteraction();
+        }}
       >
+        <AnimatePresence initial={false} mode="wait" onExitComplete={() => {
+          if (!focusAfterBeaconRef.current) return;
+          focusAfterBeaconRef.current = false;
+          window.requestAnimationFrame(() => searchInputRef.current?.focus({ preventScroll: true }));
+        }}>
+        {tenantBeacon ? <motion.button
+          key="tenant-search-beacon"
+          type="button"
+          aria-label="Reopen home search"
+          title="Reopen home search"
+          onClick={() => {
+            notifyInteraction();
+            focusAfterBeaconRef.current = true;
+            onBeaconExpand?.();
+          }}
+          initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.84 }}
+          animate={{ opacity: 1, scale: 1 }}
+          whileHover={prefersReducedMotion ? undefined : { scale: 1.04 }}
+          exit={prefersReducedMotion ? undefined : { opacity: 0, scale: 0.84 }}
+          transition={{ duration: prefersReducedMotion ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }}
+          className="group/beacon relative isolate grid h-full w-full place-items-center rounded-full border border-white/75 bg-white/86 text-emerald-800 shadow-[0_5px_20px_rgba(9,40,29,.15)] backdrop-blur-md transition-[box-shadow,background-color] duration-300 hover:bg-white/95 hover:shadow-[0_7px_23px_rgba(9,40,29,.19)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-emerald-700 motion-reduce:transform-none motion-reduce:transition-none"
+        ><span aria-hidden="true" className="tenant-search-beacon-halo pointer-events-none absolute -inset-1 rounded-full bg-emerald-400/20 blur-md transition-opacity duration-300 group-hover/beacon:opacity-80" /><Search className="relative z-10 block h-[22px] w-[22px]" strokeWidth={1.8} aria-hidden="true" /></motion.button>
+          : <motion.div key="tenant-search-surface" initial={false} exit={prefersReducedMotion ? undefined : { opacity: 0, scale: 0.985 }} transition={{ duration: prefersReducedMotion ? 0 : 0.22, ease: [0.16, 1, 0.3, 1] }}>
         {/* 1. FLOATING SEARCH BAR (Single compact row on both desktop & mobile) */}
         <div
           ref={searchBarRef}
           id="compact-search-bar"
-            className={heroAppearance
-              ? `grid w-full min-w-0 grid-cols-1 gap-2 rounded-[18px] border border-white/80 bg-white p-1.5 text-slate-900 shadow-[0_16px_36px_rgba(4,26,19,.22)] ${isEditing ? 'ring-2 ring-white/35' : ''}`
-              : `w-full rounded-xl border bg-slate-950/80 backdrop-blur-md backdrop-saturate-150 p-1 shadow-[0_8px_28px_rgb(0,0,0,0.24)] ring-1 ring-white/10 text-white transition-all sm:rounded-2xl sm:backdrop-blur-xl sm:p-2 sm:shadow-[0_12px_40px_rgb(0,0,0,0.3)] ${
+            className={tenantHeroAppearance
+              ? tenantSticky
+                ? `flex w-full min-w-0 items-center gap-1 rounded-xl border border-white/90 bg-white p-[2px] text-slate-900 shadow-[0_4px_14px_rgba(13,44,33,.08)] ${isEditing ? 'ring-2 ring-white/35' : ''}`
+                : `grid w-full min-w-0 grid-cols-2 gap-x-1 gap-y-1 rounded-full border border-white/90 bg-white/95 p-[2px] text-slate-900 shadow-[0_11px_25px_rgba(0,0,0,.14)] backdrop-blur-sm sm:grid-cols-1 sm:gap-0 lg:rounded-xl lg:bg-white lg:backdrop-blur-none ${isEditing ? 'ring-2 ring-white/35' : ''}`
+              : heroAppearance
+                ? `grid w-full min-w-0 grid-cols-1 gap-2 rounded-[18px] border border-white/80 bg-white p-1.5 text-slate-900 shadow-[0_16px_36px_rgba(4,26,19,.22)] ${isEditing ? 'ring-2 ring-white/35' : ''}`
+                : `w-full rounded-xl border bg-slate-950/80 backdrop-blur-md backdrop-saturate-150 p-1 shadow-[0_8px_28px_rgb(0,0,0,0.24)] ring-1 ring-white/10 text-white transition-all sm:rounded-2xl sm:backdrop-blur-xl sm:p-2 sm:shadow-[0_12px_40px_rgb(0,0,0,0.3)] ${
             isEditing ? 'border-emerald-500/50 ring-2 ring-emerald-500/20' : 'border-white/15'
           }`}
         >
-          <div className={heroAppearance
-            ? 'grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] sm:items-center'
-            : 'flex h-10 w-full min-w-0 items-center gap-1.5 sm:gap-2'}>
+          <div className={tenantHeroAppearance
+            ? tenantSticky
+              ? 'grid h-11 min-w-0 flex-1 grid-cols-[minmax(4rem,0.72fr)_minmax(0,1.28fr)] items-center gap-x-1 max-[360px]:grid-cols-[4.5rem_minmax(0,1fr)]'
+              : 'col-span-2 grid min-w-0 grid-cols-[minmax(4.75rem,0.58fr)_minmax(0,1.42fr)] gap-x-1 max-[360px]:grid-cols-[68px_minmax(0,1fr)] sm:col-span-1 sm:grid-cols-[minmax(0,8rem)_minmax(0,1fr)] sm:items-center sm:gap-0'
+            : heroAppearance
+              ? 'grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] sm:items-center'
+              : 'flex h-10 w-full min-w-0 items-center gap-1.5 sm:gap-2'}>
             {/* City Selector */}
+            <div className={tenantHeroAppearance ? 'flex min-w-0 items-center' : 'contents'}>
             <button
               type="button"
               id="compact-city-selector"
               onClick={() => {
+                notifyInteraction();
                 setIsEditing(false);
                 setShowSuggestions(false);
                 setIsLocationOpen(true);
               }}
               aria-haspopup="dialog"
               aria-label={`Current city: ${city || 'Choose city'}. Click to change.`}
-              className={heroAppearance
-                ? 'group inline-flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl border border-slate-200/80 bg-[#f8faf7] px-3 text-left text-slate-800 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600'
+              className={tenantHeroAppearance
+                ? tenantSticky
+                  ? 'group inline-flex h-11 min-w-0 flex-1 items-center justify-end rounded-lg border-0 px-2 pr-4 text-left text-slate-800 transition-colors hover:bg-emerald-50/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600 max-[360px]:px-1.5 max-[360px]:pr-1.5'
+                  : 'group inline-flex h-12 min-w-0 flex-1 items-center justify-end rounded-lg border-0 px-2 pr-4 text-left text-slate-800 transition-colors hover:bg-emerald-50/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600 max-[360px]:px-1.5 max-[360px]:pr-1.5 sm:h-11 sm:px-2.5 sm:pr-4'
+                : heroAppearance
+                  ? 'group inline-flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl border border-slate-200/80 bg-[#f8faf7] px-3 text-left text-slate-800 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600'
                 : 'group inline-flex h-9 sm:h-10 shrink-0 items-center gap-1.5 sm:gap-2 rounded-xl px-2 sm:px-3 text-left transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'}
             >
-              <MapPin className={`h-4 w-4 shrink-0 ${heroAppearance ? 'text-emerald-700' : 'text-emerald-400 transition-colors group-hover:text-emerald-300'}`} aria-hidden="true" />
-              <span className={`${heroAppearance ? 'min-w-0 flex-1' : 'max-w-[80px] sm:max-w-[140px]'} truncate text-xs font-bold ${heroAppearance ? 'text-slate-800' : 'text-white'} sm:text-sm tracking-tight`}>
-                {city || 'Choose city'}
+              <span className={tenantHeroAppearance
+                ? tenantSticky
+                  ? 'flex min-w-0 items-center gap-1 sm:gap-2 max-[360px]:gap-1'
+                  : 'flex min-w-0 items-center gap-1 sm:gap-2.5 max-[360px]:gap-1'
+                : 'contents'}>
+                {tenantHeroAppearance
+                  ? <MapPin className="hidden h-3.5 w-3.5 shrink-0 text-emerald-700 transition-colors group-hover:text-emerald-800 min-[361px]:block" strokeWidth={1.8} aria-hidden="true" />
+                  : <MapPin className={`h-4 w-4 shrink-0 ${heroAppearance ? 'text-emerald-700' : 'text-emerald-400 transition-colors group-hover:text-emerald-300'}`} aria-hidden="true" />}
+                <span className={`${tenantHeroAppearance ? 'min-w-0 max-w-[140px] font-semibold leading-none text-slate-800 sm:text-[13px]' : `${heroAppearance ? 'min-w-0 flex-1 text-slate-800' : 'max-w-[80px] sm:max-w-[140px] text-white'} font-bold sm:text-sm`} truncate text-xs tracking-tight`}>
+                  {city || 'Choose city'}
+                </span>
+                <ChevronDown className={`shrink-0 ${tenantHeroAppearance ? 'h-3 w-3 text-slate-400 transition-colors group-hover:text-emerald-700' : `h-3.5 w-3.5 ${heroAppearance ? 'text-slate-500' : 'text-slate-400 transition-transform group-hover:translate-y-0.5 group-hover:text-white'}`}`} aria-hidden="true" />
               </span>
-              <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${heroAppearance ? 'text-slate-500' : 'text-slate-400 transition-transform group-hover:translate-y-0.5 group-hover:text-white'}`} aria-hidden="true" />
             </button>
+            {tenantHeroAppearance && <span className="h-5 w-px shrink-0 self-center bg-slate-300/55" aria-hidden="true" />}
+            </div>
 
             {/* Faint Divider */}
             {!heroAppearance && <div className="h-5 w-px shrink-0 bg-white/15" aria-hidden="true" />}
 
             {/* CONDITIONAL CONTROLS: CONTEXT MODE vs EDIT MODE */}
+            <div className={tenantHeroAppearance ? 'relative min-w-0' : 'contents'}>
             {!isEditing && !alwaysEditing ? (
               /* CONTEXT MODE (Committed filter summary or clean placeholder) */
-              <div className="flex h-9 sm:h-10 flex-1 min-w-0 items-center gap-1.5 sm:gap-2 px-1 sm:px-1.5">
+              <div className={`flex ${tenantHeroAppearance ? tenantSticky ? 'h-11' : 'h-9 sm:h-10' : 'h-9 sm:h-10'} flex-1 min-w-0 items-center gap-1.5 sm:gap-2 px-1 sm:px-1.5`}>
                 <button
                   type="button"
                   id="compact-search-trigger"
@@ -452,9 +612,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
             ) : (
               /* EDIT MODE (Real input, clear draft text button, submit arrow; Clear all is strictly hidden) */
               <div className={heroAppearance
-              ? 'relative grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 rounded-xl border border-slate-200 bg-white px-3 py-1 text-slate-900 focus-within:ring-2 focus-within:ring-emerald-600 sm:flex sm:py-0'
+              ? tenantHeroAppearance
+              ? tenantSticky
+                  ? 'relative flex h-11 min-h-11 min-w-0 items-center gap-x-1 rounded-lg px-1 text-slate-900'
+                  : `relative grid h-12 min-h-12 min-w-0 ${searchText ? 'grid-cols-[auto_minmax(0,1fr)_5.5rem]' : 'grid-cols-[auto_minmax(0,1fr)_2.75rem]'} items-center gap-x-1 rounded-full px-1 pb-0 pt-0 text-slate-900 max-[360px]:gap-x-0 max-[360px]:px-0 sm:grid-cols-[auto_minmax(0,1fr)_5.5rem] sm:h-11 sm:min-h-11 sm:pb-0 sm:pt-0 sm:gap-x-1 sm:px-1 lg:rounded-lg`
+                : 'relative grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 rounded-xl border border-slate-200 bg-white px-3 py-1 text-slate-900 focus-within:ring-2 focus-within:ring-emerald-600 sm:flex sm:items-center sm:py-0'
                 : 'flex h-9 sm:h-10 flex-1 min-w-0 items-center gap-1.5 sm:gap-2 px-1 sm:px-1.5'}>
-                <Search className={`h-4 w-4 shrink-0 ${heroAppearance ? 'text-emerald-700' : 'text-emerald-400'}`} aria-hidden="true" />
+                <Search className={`h-4 w-4 shrink-0 ${heroAppearance ? 'text-emerald-700' : 'text-emerald-400'} ${tenantHeroAppearance ? 'max-[360px]:hidden' : ''}`} aria-hidden="true" />
                 <input
                   ref={searchInputRef}
                   id="compact-search-input"
@@ -466,6 +630,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   aria-activedescendant={activeSuggestionIndex >= 0 ? `compact-opt-${activeSuggestionIndex}` : undefined}
                   value={searchText}
                   onFocus={() => {
+                    notifyInteraction();
+                    setInputFocused(true);
                     setIsEditing(true);
                     if (searchText.trim().length >= 2) setShowSuggestions(true);
                   }}
@@ -477,11 +643,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                     setShowSuggestions(false);
                   }}
                   onChange={(e) => {
+                    notifyInteraction();
                     setSearchText(e.target.value);
                     setSearchTextIsSummary(false);
                     setShowSuggestions(true);
                   }}
                   onKeyDown={(e) => {
+                    notifyInteraction();
                     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                       if (suggestions.length) {
                         e.preventDefault();
@@ -506,45 +674,21 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   placeholder={searchPlaceholder || summary || "Search locality or 2 BHK"}
                   aria-label="Search homes"
                   autoComplete="off"
-                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${heroAppearance ? 'text-slate-900 placeholder:text-slate-500' : 'text-white placeholder:text-slate-400'}`}
+                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${tenantHeroAppearance ? 'sm:text-xs' : ''} ${heroAppearance ? 'text-slate-900 placeholder:text-slate-500' : 'text-white placeholder:text-slate-400'}`}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck="false"
                 />
 
-                {/* Clear draft text button (×) - ONLY when searchText has text */}
-                {searchText ? (
-                  <button
-                    type="button"
-                    id="compact-clear-draft"
-                    aria-label="Clear search text"
-                    onClick={() => {
-                      setSearchText('');
-                      setSearchTextIsSummary(false);
-                      searchInputRef.current?.focus();
-                      setShowSuggestions(false);
-                    }}
-                    className={`flex shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none ${heroAppearance ? 'h-11 w-11 text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-emerald-600' : 'h-7 w-7 text-slate-400 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-emerald-400'}`}
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                ) : null}
-
-                {/* Submit arrow icon action (→) */}
-                <button
-                  type="button"
-                  id="compact-search-submit"
-                  aria-label="Submit search"
-                  onClick={applySearch}
-                  className={heroAppearance
-                    ? `col-span-3 inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${submitLabel ? 'w-full sm:w-auto sm:col-span-1' : 'w-11'}`
-                    : 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm transition-all hover:bg-emerald-500 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'}
-                >
-                  {submitLabel && <span>{submitLabel}</span>}
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </button>
+                {tenantHeroAppearance
+                  ? <div role="group" aria-label="Search actions" className={`grid h-11 shrink-0 place-items-center ${searchText ? 'w-[5.5rem] grid-cols-2' : 'w-11 grid-cols-1'} sm:w-[5.5rem] sm:grid-cols-2`}>
+                      {searchText && <span className="grid h-11 w-11 place-items-center">{clearDraftButton}</span>}
+                      <span className="grid h-11 w-11 place-items-center">{submitButton}</span>
+                    </div>
+                  : <>{clearDraftButton}{submitButton}</>}
               </div>
             )}
+            </div>
           </div>
         </div>
 
@@ -556,10 +700,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
             id="compact-search-suggestions"
             role="listbox"
             aria-label="Rental search suggestions"
-            className={heroAppearance
-              ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-2xl'
+            className={tenantHeroAppearance
+              ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-[0_18px_34px_rgba(19,46,34,.17)] sm:left-[10rem] sm:right-0 sm:w-auto'
+              : heroAppearance
+                ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-2xl'
               : 'absolute left-0 right-0 top-[calc(100%+8px)] z-50 w-full max-h-[260px] sm:max-h-[300px] overflow-y-auto overscroll-contain rounded-2xl border border-slate-700/80 bg-slate-900/95 backdrop-blur-xl p-1.5 text-white shadow-[0_16px_50px_rgb(0,0,0,0.5)] ring-1 ring-white/10 divide-y divide-slate-800/60'}
           >
+            {tenantHeroAppearance && <div aria-hidden="true" className="px-2 pb-1 pt-1 text-[9px] font-bold tracking-[0.14em] text-slate-500">SEARCH SUGGESTIONS</div>}
             {suggestionState === 'loading' && (
               <div className={`flex items-center gap-2.5 px-3 py-3 text-xs ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>
                 <div className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
@@ -583,6 +730,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   aria-selected={index === activeSuggestionIndex}
                   tabIndex={-1}
                   onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={notifyInteraction}
+                  onFocus={notifyInteraction}
                   onClick={() => chooseSuggestion(item)}
                   className={`flex min-h-[52px] w-full min-w-0 items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 ${heroAppearance ? 'focus-visible:ring-emerald-600' : 'focus-visible:ring-emerald-500'} ${
                     index === activeSuggestionIndex
@@ -616,7 +765,9 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
             })}
           </div>
         )}
-      </div>
+        </motion.div>}
+        </AnimatePresence>
+      </motion.div>
 
       {/* Shared City Dialog */}
       <DiscoveryLocationDialog
@@ -627,10 +778,10 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
         locality=""
         cityOnly
         onCityChange={handleCitySelect}
-        onCitySelected={() => setIsLocationOpen(false)}
+        onCitySelected={() => { notifyInteraction(); setIsLocationOpen(false); }}
         onLocalityChange={() => {}}
         onApply={() => {}}
-        onClose={() => setIsLocationOpen(false)}
+        onClose={() => { notifyInteraction(); setIsLocationOpen(false); }}
       />
     </>
   );
