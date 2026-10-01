@@ -1859,7 +1859,7 @@ public class PropertyController {
                 .map(url -> new PublicPropertyMediaResponse(
                         url,
                         url.toLowerCase(Locale.ROOT).contains(".mp4") ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE,
-                        RoomTag.GENERAL,
+                        null,
                         false))
                 .toList();
     }

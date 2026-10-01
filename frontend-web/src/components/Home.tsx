@@ -1390,17 +1390,27 @@ export const Home: React.FC = () => {
               discoveryState={discoveryState}
               discoveryCity={activeDiscoveryCity}
               discoveryQuery={activeSearchFilters.q || ''}
+              searchFilters={activeSearchFilters}
               hasMoreProperties={hasMoreProperties}
               loadingMoreProperties={loadingMore}
               loadMorePropertiesError={loadMoreError}
-              onSearchHomes={(city, query) => {
-                const params = new URLSearchParams({ city });
-                if (query) params.set('q', query);
+              onSearchHomes={filters => {
+                const params = new URLSearchParams();
+                if (filters.city) params.set('city', filters.city);
+                if (filters.sector) params.set('sector', filters.sector);
+                if (filters.q) params.set('q', filters.q);
+                if (filters.bhk) params.set('bhk', filters.bhk);
+                if (filters.propertyType) params.set('propertyType', filters.propertyType);
+                if (filters.furnishing) params.set('furnishing', filters.furnishing);
+                if (filters.minRent) params.set('minRent', String(filters.minRent));
+                if (filters.maxRent) params.set('maxRent', String(filters.maxRent));
+                if (filters.rentalOnly) params.set('rentalOnly', 'true');
                 navigate(`/tenant?${params.toString()}`);
               }}
               onRetryDiscovery={() => loadLiveProperties(activeSearchFilters)}
               onLoadMoreProperties={() => loadMoreProperties(activeSearchFilters)}
               onRequestVisit={handleRequestVisit}
+              onViewProperty={handleOpenPropertyDetail}
             />
           </motion.div>
         ) : !isPropertyRoute && !isLessorRoute && role === 'GUEST' && (

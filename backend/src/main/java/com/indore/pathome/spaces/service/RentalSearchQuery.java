@@ -66,7 +66,7 @@ public record RentalSearchQuery(
             "(?i)\\b(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)\\s+to\\s+(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)?\\b");
     private static final Pattern PLAIN_RANGE = Pattern.compile("\\b(\\d{4,7})\\s+to\\s+(\\d{4,7})\\b");
     private static final Pattern MAX_PRICE = Pattern.compile(
-            "(?i)\\b(?:under|below|max|up\\s*to)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)?\\b");
+            "(?i)\\b(?:under|below|less\\s+than|max|up\\s*to|upto)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)?\\b");
     private static final Pattern MIN_PRICE = Pattern.compile(
             "(?i)\\b(?:above|min|over|from|starting\\s+at)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)?\\b");
 
@@ -74,7 +74,7 @@ public record RentalSearchQuery(
             "(?i)\\bbetween\\s+(?:rs\\.?\\s*|inr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(k|lakh|lac)?(?:\\s+and)?\\s*$");
     private static final Pattern PARTIAL_BETWEEN_EMPTY = Pattern.compile("(?i)\\bbetween\\s*$");
     private static final Pattern PARTIAL_MAX_PRICE = Pattern.compile(
-            "(?i)\\b(?:under|below|max|up\\s*to)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d{1,3})?\\s*$");
+            "(?i)\\b(?:under|below|less\\s+than|max|up\\s*to|upto)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d{1,3})?\\s*$");
     private static final Pattern PARTIAL_MIN_PRICE = Pattern.compile(
             "(?i)\\b(?:above|min|over|from|starting\\s+at)\\s*(?:rs\\.?\\s*|inr\\s*)?(\\d{1,3})?\\s*$");
 

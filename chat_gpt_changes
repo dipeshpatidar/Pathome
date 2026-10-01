@@ -1958,3 +1958,154 @@ Verification: At 1280px, `window.innerWidth=1280`, `document.documentElement.cli
 Cleanup: Removed the disposable QA user's visit requests, lessor profile, and user. Follow-up database counts for QA accounts, requests, and profiles were all zero. The isolated browser's local/session storage was cleared.
 
 Outstanding: P2 visual-data issue remains in the existing active listings' images (watermarked stock/template image and product screenshot used as property media). Data changes were outside this verification's authorized records, so these were not changed. Backend tests were not run because backend production code was unchanged. Commit: not created. Push: not attempted.
+
+
+## 2026-09-30 11:52 IST — Phase 2A premium tenant UI refinement
+
+Reason: Apply the user-approved premium real-estate visual direction to the existing Phase 2A tenant dashboard while preserving live data and all existing flows.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` refines the tenant hero/search surface with a deep-green tone, architectural line art, compact responsive controls, and warm page backdrop; polishes the truthful empty visit state and request cards; and presents the first returned home as a larger editorial card with supporting cards, using only existing property fields and the single cover image returned by discovery. Kept visit history, search, pagination, retry, property links, and request-visit actions wired as before. Cover images remain lazy loaded. No API, backend, auth, database, or capability changes; no extra media requests or fabricated trust/amenity/availability claims.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; `npm run build` passed (existing Vite warning: minified JS chunk exceeds 500 kB); `git diff --check` passed. An isolated local Chrome browser run captured and inspected 320, 375, 390, 430, 768, 1024, 1280, and 1440 CSS-pixel widths. At each width `scrollWidth` equaled `clientWidth` (314, 369, 384, 424, 762, 1018, 1274, and 1434 respectively), with no horizontal overflow. Search for “Tower Square” at 390px produced one result; at 1280px the property link opened `/property/81`, and Back restored the filtered tenant dashboard. The empty visit state rendered. Disposable QA tenants were deleted and verified absent; browser local/session storage was cleared.
+
+Outstanding P2 data quality finding: Existing active listing media still includes a visibly watermarked stock/template image and an image of the Pathome product UI used as property photography (previously identified for listings 81 and 79). These source records/media were not changed in this UI-only task; no replacement imagery was invented. This prevents a truthful visual-ready verdict until the listing media is corrected through an authorized data/lessor-media workflow. Populated visit-history visual presentation was not separately re-rendered in this pass; focused history regression tests passed, and the earlier 2026-09-30 10:55 IST verification exercised populated history.
+
+Commit: not created. Push: not attempted.
+
+
+## 2026-09-30 12:22 IST — Phase 2A property-first premium tenant UI
+
+Reason: Continue the user's approved tenant UI work with a property-first desktop layout, functional discovery filters already supported by Pathome, and compact responsive search controls.
+
+Inspected: Kept inspection to `TenantDashboard.tsx`, the tenant discovery wiring in `Home.tsx`, frontend `RentalSearchFilters`/`propertyService.fetchDiscoveryPage`, and the corresponding `PropertyController`, `RentalSearchQuery`, `PropertyType`, and `ListingRepository.searchPublicRentals` contract. Existing discovery accepts locality/sector, monthly-rent min/max, BHK, rental property type, furnishing, and rentals-only. The repository query applies these criteria to active rent listings; no backend implementation change was needed.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` replaces the single oversized lead card with a balanced two-column property grid, makes the visit-request area a narrower supporting column, compacts the empty visit state, reduces hero height, and integrates the controls with a translucent emerald search surface. Added locality, monthly-rent range, supported BHK, rental property type, and furnishing controls. Rent bounds are constrained and cross-validated; BHK is a select restricted to values accepted by the existing parser. `frontend-web/src/components/Home.tsx` now serializes those selected filters to the existing tenant URL so pagination/retry retain active criteria. No API/schema/backend/auth change, extra API call, fake data, unsupported reference feature, commit, or push.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; final `npm run build` passed (existing Vite warning for a >500 kB minified JS chunk); `git diff --check` passed. One bounded isolated Chrome pass captured and inspected 390, 1280, and 1440 CSS-pixel screenshots and measured all requested widths: 390 (client/scroll 384/384), 430 (424/424), 768 (762/762), 1024 (1018/1018), 1280 (1274/1274), and 1440 (1434/1434); no horizontal overflow. At 768px+ discovery uses two columns. A combined locality + 3 BHK + Penthouse search returned the one matching property, opened `/property/81`, and Back restored the filtered results. The browser showed the truthful empty visit state. Disposable QA user 25 was deleted and verified absent; browser storage was cleared. The checked source/API contract confirms rent bounds, furnishing, property type, and BHK filter behavior; locality/BHK/type were also exercised in-browser.
+
+Data: Local listing image quality was not treated as a UI defect, as requested. The UI uses the returned per-property cover and existing fallback without substituting imagery.
+
+Commit: not created. Push: not attempted.
+
+
+Addendum, 2026-09-30 12:23 IST: Scrolled the isolated 390px browser session to the filtered Available Homes result. The Tower Square + 3 BHK + Penthouse result showed a 16:10 cover, title, locality, ₹45,000/month, and both actions; its lazy image loaded when brought into view. CSS widths remained 390/384/384 (inner/client/scroll), with no overflow. QA tenant 26 was deleted and verified absent; browser storage was cleared.
+
+## 2026-09-30 12:35 IST — Reference-led tenant dashboard visual correction
+
+Reason: The user directly requested that the tenant page match the attached premium property-search reference more closely after rejecting the prior visual result.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` now places the existing truthful locality/rent/BHK/type/furnishing filters inside the dark search hero, reduces vertical spacing and card chrome, shows a denser three-card discovery grid at wide desktop widths, and narrows the supporting Visit Requests area. On smaller screens the filters use an accessible disclosure and Available Homes comes before Visit Requests so listings appear sooner. The previously modified `frontend-web/src/components/Home.tsx` search wiring was preserved unchanged in this turn. No listing records, source imagery, backend code, API contracts, auth, or permissions were changed.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5. `npm run build` passed; the existing Vite >500 kB chunk advisory remains. `git diff --check` and `git diff --cached --check` passed. An authenticated local Chrome render was inspected at 390, 768, 1024, 1280, and 1440 CSS px; follow-up checks covered 320, 375, and 430 px. At every width, document scrollWidth equaled clientWidth (314, 369, 384, 424, 762, 1018, 1274, and 1434 respectively). The mobile filters disclosure was clicked and confirmed to open and close. Disposable QA accounts were deleted with zero remaining rows; QA browser storage was cleared. Search/property navigation were not re-run after this styling pass because the wiring was not changed and the preceding Phase 2A browser check covered those flows.
+
+Visual limit: Several current listing cover images are not credible premium property photography (including a miniature house and a product screenshot). These live source assets were not replaced or misrepresented. Reference-only Saved Homes, recently viewed activity, message counts, verified badges, and confirmed visits remain absent because the current tenant data does not support them.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 12:46 IST — Tenant hero search simplification
+
+Reason: Apply the user's reattached tenant hero reference and specific simplification brief: remove the secondary filter controls and center the hero on the existing City and natural-language search controls.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` removes the visible Locality, minimum/maximum rent, BHK, property type, and furnishing controls and their mobile disclosure. The existing City and Search homes controls remain in the same form and retain their submit and state wiring. Set the search placeholder exactly to `prompt: 2bhk flat in vijay nagar under 10000 budget`; reduced desktop vertical padding after removing the second row. No other page sections, Home.tsx wiring, backend, API, autocomplete, suggestion logic, or search URL flow were changed in this task.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; `npm run build` passed with the existing Vite >500 kB chunk advisory; `git diff --check` passed. One authenticated local Chrome pass at 390px and 1280px confirmed the City and Search homes controls are present, the exact placeholder is present, no hero select/number filter controls remain, and there is no horizontal overflow (390/384/384 and 1280/1274/1274 innerWidth/clientWidth/scrollWidth). The hero measured 372.5px at 390px and 130px at 1280px. Disposable QA user deleted with zero remaining rows; browser storage cleared.
+
+City control note: The existing City control is an editable input in the current implementation; this pass preserved it without introducing a new dropdown or changing its behavior. Existing search state still carries any filter values already present in the URL, consistent with the instruction to preserve current search-state behavior.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 18:26 IST — Tenant and landing-page Smart Search unification
+
+Reason: Give authenticated tenants the existing public Landing Page Smart Search behavior and verify the requested natural-language query, suggestion flow, selected city context, and shared parsing semantics.
+
+Changed: `frontend-web/src/components/TenantDashboard.tsx` now uses the existing `CompactSearchContext` smart search instead of a tenant-only plain input, preserving the approved hero and property/visit layout. It passes the active city and current search state, routes free-text and selected-suggestion filters through the existing tenant URL callback, and clears search on city changes using shared reset helpers. `frontend-web/src/components/CompactSearchContext.tsx` gained an optional hero appearance with an always-visible input, the tenant placeholder/CTA, and a light scrollable suggestion panel; its public compact appearance remains the default. Both use `propertyService.fetchRentalSuggestions` (`GET /api/v1/properties/search-suggestions`, limit 8), `buildRentalSearchFilters`, and the shared result contract. `backend/src/main/java/com/indore/pathome/spaces/service/RentalSearchQuery.java` now recognizes `less than` and `upto` as maximum-rent phrases alongside existing `under`, `below`, and `up to`; focused parser cases were added in `backend/src/test/java/com/indore/pathome/spaces/service/RentalSearchQueryTest.java`. No page-specific NLP/parser or suggestion endpoint was added. Existing uncommitted `Home.tsx` wiring was not changed in this task.
+
+Verified: Public suggestions use a 250ms debounce, abort previous requests and ignore stale responses, cap results at 8, show loading/empty/error states, and support arrow-key selection, Enter, Escape, mouse/touch selection, and free-text submission. The tenant reuses the existing component/service and tested UI behavior. The backend parser resolves `2bhk flat in vijay nagar under 20000` as BHK `2BHK`, type `FLAT`, locality `vijay nagar`, maximum rent `20000`; selected city remains the current UI city (Indore in the acceptance run). The live discovery endpoint returned the existing 2 BHK Flat in Vijay Nagar at ₹20,000/month.
+
+Tests: `node --test src/tests/rentalSearch.test.mjs src/tests/tenantVisitDashboard.test.mjs` passed 22/22. `mvn -Dtest=RentalSearchQueryTest test` passed 11/11. `npm run build` passed with the existing >500 kB bundle advisory. `git diff --check` passed.
+
+Browser: One authenticated Chrome pass tested both public and tenant experiences at 390px and 1280px. Both produced the same ordered `2bhk fla` candidates, including Vijay Nagar. Tenant free-text Enter returned the correct city-scoped listing at both widths; selecting the Vijay Nagar suggestion produced city=Indore, sector=Vijay Nagar, bhk=2BHK, propertyType=FLAT, maxRent=20000 at both widths. Suggestion panels were visible, above content, and scrollable. `scrollWidth` equaled `clientWidth` (384/384 and 1274/1274). Disposable QA account deleted with zero remaining rows and browser storage cleared.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 19:04 IST — Premium tenant experience product-design board
+
+Reason: Generate the requested five-view, high-fidelity Pathome tenant UX concept as a visual presentation while keeping all listing facts, suggestion counts, and property media tied to authoritative active public data.
+
+Artifact: Created `/Users/dipeshpatidar/.codex/visualizations/2026/09/30/01a0f017-f822-7111-8436-80da28219def/tenant-experience-design-board.html` (self-contained board with embedded media) and `/Users/dipeshpatidar/.codex/visualizations/2026/09/30/01a0f017-f822-7111-8436-80da28219def/tenant-experience-design-board.png` (rendered presentation). The board covers tenant landing, desktop quick-view drawer, full property detail, mobile landing, and mobile quick view. It uses active public listings #66, #52, #72, and #43; detail facts and four media images from #52; and live `2bhk fla` suggestion labels/counts from `/api/v1/properties/search-suggestions` for Indore. The visit-request rail is an explicitly labeled empty-state concept; no private tenant data was fetched or fabricated. No application source files were changed for this design task.
+
+Verification: Rendered the HTML in headless Chrome at 1540px and checked at 390px. All 22 images loaded with zero broken images; document width matched the viewport at both widths. Desktop next-photo and mobile thumbnail selection changed the displayed actual photo; mobile count updated to `3 / 4 photos`; no page errors. Visually inspected the complete presentation and native-resolution desktop, drawer, detail, and mobile crops.
+
+Outstanding: This is a design artifact, not an implemented tenant flow. Authenticated Request Visit, routing, and account-specific Visit Requests were not tested in this task.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 19:07 IST — Separate tenant concept screen exports
+
+Reason: The user clarified that every requested concept use case needs its own image, rather than only the composite presentation.
+
+Artifacts: Exported five full-resolution PNGs from the existing self-contained design board in `/Users/dipeshpatidar/.codex/visualizations/2026/09/30/01a0f017-f822-7111-8436-80da28219def/`: `01-tenant-landing-desktop.png`, `02-property-quick-view-desktop.png`, `03-full-property-detail-desktop.png`, `04-tenant-landing-mobile.png`, and `05-property-quick-view-mobile.png`. The original HTML board and full board PNG remain in the same folder. No application source changed.
+
+Verification: Playwright/Chrome captured all five artboards at 2x device scale. Pillow opened all five files and verified image dimensions; the mobile landing export was visually inspected. Desktop images are 2752px wide; mobile images are 780px wide. These are design exports using existing public Pathome listing media, not newly generated property photos.
+
+Outstanding: The populated visit-request state was not depicted because no authenticated tenant request was provided; no private record was invented. This export does not implement app behavior.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 23:53 IST — Premium tenant experience concept 02
+
+Reason: The user requested a second, distinctly more premium visual design after reviewing the first concept.
+
+Artifacts: Created `/Users/dipeshpatidar/.codex/visualizations/2026/09/30/01a0f017-f822-7111-8436-80da28219def/tenant-experience-premium-v2.html`, `tenant-experience-premium-v2.png`, and five separate `concept-02-0*.png` screen exports in the same folder (desktop landing, desktop property quick view, desktop full detail, mobile landing, mobile quick view). This is a static design board with working gallery navigation and section links; no application source was changed. The design uses existing active Pathome public listing facts/media for #66, #43, #33, and #52, and current public `3bhk penthouse` suggestions for Indore. The selected #43 gallery shows four actual uploaded photos from its 12 images; one video walkthrough exists. The visit-request area is explicitly an empty-state design because no authenticated tenant request was supplied.
+
+Verification: Headless Chrome rendered the board and captured five artboards at 2x device scale. At 1540px and 390px, document scroll width matched viewport width. All 24 image elements loaded; no page errors. Desktop next-photo and mobile thumbnail selection changed the image, with mobile photo count updating to `3 / 12 photos`. Visually reviewed the board and native-resolution desktop landing and mobile quick-view exports.
+
+Outstanding: Authenticated Request Visit, routing, and private visit history were not tested; this is a product design artifact. Existing source listing media quality varies; no property photographs were generated or altered.
+
+Commit: not created. Push: not attempted.
+
+## 2026-09-30 23:58 IST — Copy premium tenant concept images to Pathome docs
+
+Reason: User requested the latest tenant concept images in `Documents/pathome docs/page_layouts/new_folder`.
+
+Changed: Created `/Users/dipeshpatidar/Documents/pathome docs/page_layouts/new_folder` and copied the five Concept 02 screen PNGs plus `tenant-experience-premium-v2.png` from the Codex visualizations folder. Original artifacts were preserved; no application source files changed.
+
+Verification: Confirmed all six destination PNGs exist and that SHA-256 hashes match their source files.
+
+Commit: not created. Push: not attempted.
+
+## 2026-10-01 00:07 IST — Premium tenant experience concept 03
+
+Reason: User requested a Pathome tenant design inspired by the newly supplied premium reference board, covering the different desktop and mobile use cases from the prior design task.
+
+Artifacts: Created `/Users/dipeshpatidar/Documents/pathome docs/page_layouts/new_folder/pathome-tenant-premium-concept-03.html`, a full presentation PNG, and six separate `concept-03-0*.png` exports: desktop tenant landing, desktop property quick view, desktop full property detail, mobile tenant landing, mobile quick view, and mobile full detail. The concept uses existing active public Pathome listing facts and uploaded media from the prior concept snapshot (#66, #43, #33, #52), including #43's uploaded gallery and factual listing attributes. The visit-request area is an empty-state design; no private tenant record, confirmed visit, verification status, or other feature was fabricated. No application source was changed.
+
+Verification: Rendered all seven PNGs from the self-contained HTML in headless Chrome. All 32 image elements loaded; no page errors. At 320, 390, 768, and 1510 CSS px the board's document scrollWidth equaled viewport width. Desktop next-photo and mobile thumbnail selection changed the displayed uploaded image; counters updated to `2 / 12 photos` and `3 / 12 photos`. Visually reviewed desktop landing, desktop quick view, mobile landing, mobile quick view, and mobile full detail exports. `git diff --check` and `git diff --cached --check` passed.
+
+Outstanding: This is a visual concept. Authenticated Request Visit, real tenant-specific Visit Requests, routing, and production responsive behavior were NOT TESTED. Existing source listing photography varies in quality; no property image was generated or substituted. No dependencies, API contracts, backend state, auth, or security code changed.
+
+Commit: not created. Push: not attempted.
+
+## 2026-10-01 00:46 IST — Implement approved Concept 03 tenant experience
+
+Reason: The user approved implementation of Concept 03 across tenant discovery, property quick view, full property detail, favorites, and responsive layouts while preserving shared Smart Search, visit requests, and authoritative listing data.
+
+Changed: Added authenticated, tenant-scoped saved-property persistence with an idempotent PostgreSQL migration and bounded batch reads (`UserFavoriteController`, `UserFavoriteService`, `UserFavoriteRepository`, favorite DTOs, `V32__user_favorite_properties.sql`, and `favoriteService.ts`). The JWT filter retains its existing principal name and role and attaches the verified stable `user_id` claim to authentication details; favorites resolve ownership by that ID (`JwtAuthenticationFilter`, `PathomeAuthenticationDetails`). Reworked tenant discovery cards and visit-request hierarchy around the reference's media-first layout; added an abortable, accessible quick-view drawer with keyboard focus management, gallery media and saved room tags, and full-detail navigation (`TenantDashboard.tsx`). Wired full-detail navigation in `Home.tsx`, kept the shared search filters, and refined `PublicPropertyDetail.tsx`. Legacy gallery URLs no longer claim a fabricated `GENERAL` room tag; public property fetch accepts cancellation. Added six favorite service tests and a focused JWT filter test. The feature adds scoped favorites endpoints without changing existing API behavior or adding third-party dependencies.
+
+Verification: `mvn -Dtest=UserFavoriteServiceTest,JwtAuthenticationFilterTest test` passed (7/7). `npm run build` passed (Vite reports the existing large-chunk advisory). `node --test src/tests/tenantVisitDashboard.test.mjs src/tests/rentalSearch.test.mjs` passed (22/22). Authenticated local Chrome passes verified real listing media, favorite save/reload/remove persistence, quick-view loading and Escape/focus restoration, visit-request modal entry, full property detail/back flow, and Smart Search suggestions (one result). After the stable-user-ID refinement, a focused browser check again verified save/reload/remove/reload; direct API checks returned PUT 200, GET saved, DELETE 204, and GET empty. Document/body width did not exceed the viewport at 320, 375, 390, 414, 430, 768, 1024, 1280, or 1440 CSS px; no browser page errors occurred. The temporary QA tenant accounts and their favorite rows were removed after the check. Clean mobile and desktop verification screenshots were saved to `/Users/dipeshpatidar/Documents/pathome docs/page_layouts/new_folder/` as `pathome-concept-03-implementation-mobile-390.png` and `pathome-concept-03-implementation-desktop-1280.png`.
+
+Outstanding: Physical-device checks were not run. Search and authenticated tenant flows were exercised locally; other roles and production deployment were not tested. Existing property photography quality varies; no listing content or photos were invented or modified. Earlier unrelated working-tree changes were preserved.
+
+Commit: not created. Push: not attempted.
+
+## 2026-10-01 01:14 IST — Concept 03 visual fidelity and Saved Homes verification pass
+
+Reason: The user supplied the final Concept 03 fidelity brief and requested a bounded final correction/verification pass for the authenticated tenant experience and persistent Saved Homes.
+
+Changed: Refined the tenant hero and search surface to the photographic, left-editorial/right-search Concept 03 composition, using the existing local `/assets/interior_living.jpg` asset as decorative brand media rather than an active listing cover. Reduced discovery-card chrome, removed room tags only from discovery/Saved Homes cards, retained truthful combined media counts, softened Favorite hearts while preserving their 44px targets and persistent behavior, reduced Quick View to a secondary action, and compacted the empty Visit Requests state. Added the authenticated Saved Homes shelf using a user-scoped paginated summary endpoint and batched listing/media reads; save/remove updates both shelves only after successful persistence, deduplicates Available Homes, and guards account/session changes. Files in this pass: `frontend-web/src/components/TenantDashboard.tsx`, `frontend-web/src/components/CompactSearchContext.tsx`, `frontend-web/src/services/propertyService.ts`, `frontend-web/src/services/favoriteService.ts`, `frontend-web/src/utils/tenantSavedHomes.ts`, `frontend-web/src/tests/tenantSavedHomes.test.mjs`, `backend/src/main/java/com/indore/pathome/spaces/controller/UserFavoriteController.java`, `backend/src/main/java/com/indore/pathome/spaces/repository/UserFavoriteRepository.java`, `backend/src/main/java/com/indore/pathome/spaces/service/UserFavoriteService.java`, `backend/src/test/java/com/indore/pathome/spaces/service/UserFavoriteServiceTest.java`, and this log. Existing in-progress changes from earlier authorized work were preserved. No dependency was added; no commit or push was made.
+
+Verification: `node --test src/tests/tenantVisitDashboard.test.mjs src/tests/rentalSearch.test.mjs src/tests/tenantSavedHomes.test.mjs` passed (26/26); `mvn -Dtest=UserFavoriteServiceTest,JwtAuthenticationFilterTest test` passed (9/9); `npm run build` passed with the existing Vite large-chunk advisory; `git diff --check` and `git diff --cached --check` passed. One bounded browser pass verified Smart Search suggestions, save/reload/remove, retry-safe save failure, tenant A/B isolation, compact empty Saved Homes for tenant B, Quick View selected-media tags, Full Property selected-media tag, Escape close, and Request Visit dialog without submission. No room tags appeared on discovery cards. Layout bounds showed no horizontal overflow at 320, 390, 430, 768, 1024, 1280, and 1440px; visual composition was inspected at 390, 1280, and 1440px. The two disposable QA tenants and their favorites were deleted and verified absent. Temporary browser/backend tooling was removed/stopped.
+
+Outstanding: The pre-existing user-owned backend on port 8080 was running stale code and returned HTTP 500 for the new Saved Homes summary route; the current code was verified with an isolated backend on port 8081, then that temporary process was stopped. Restart the existing backend before relying on its browser session. Physical-device testing was not run. A pre-existing static sign-in prompt remains visible on Full Property even while authenticated; it does not block the working Request Visit action and was left unchanged to avoid an unapproved copy change.
+
+Commit: not created. Push: not attempted.

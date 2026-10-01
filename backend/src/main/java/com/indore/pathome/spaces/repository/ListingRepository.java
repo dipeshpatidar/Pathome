@@ -19,6 +19,7 @@ import java.util.Optional;
 @Repository
 public interface ListingRepository extends JpaRepository<Listing, Long> {
     Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
+    Optional<Listing> findByIdAndStatus(Long id, ListingStatus status);
 
     @Query(value = "select id from listings where id = :id and owner_user_id = :ownerId for update", nativeQuery = true)
     Optional<Long> lockOwnedId(@Param("id") Long id, @Param("ownerId") Long ownerId);

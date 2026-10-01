@@ -130,7 +130,7 @@ const mapPublicProperty = (item: any): Property => {
  * Maps a single PublicDiscoveryResponse item (paginated list endpoint).
  * Each item carries only `coverImageUrl` for the landing card; no full gallery.
  */
-const mapDiscoveryProperty = (item: any): Property => ({
+export const mapDiscoveryProperty = (item: any): Property => ({
   id: item.id,
   title: item.title || '',
   listingType: item.listingType || 'RENT',
@@ -425,9 +425,10 @@ export const propertyService = {
     return result.properties;
   },
 
-  async getPublicProperty(propertyId: number): Promise<Property> {
+  async getPublicProperty(propertyId: number, signal?: AbortSignal): Promise<Property> {
     const response = await fetch(`${API_BASE_URL}/${propertyId}`, {
-      headers: { 'Accept': 'application/json' }
+      headers: { 'Accept': 'application/json' },
+      signal
     });
     if (!response.ok) {
       throw await createApiRequestError(response, response.status === 404

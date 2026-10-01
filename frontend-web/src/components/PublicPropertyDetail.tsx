@@ -540,7 +540,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
           onClose={() => setLightboxOpen(false)}
         />
       )}
-      <main className="mx-auto w-full max-w-7xl px-4 pt-3 pb-28 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
+      <main className="mx-auto w-full max-w-[1440px] bg-[#f7f7f2] px-4 pt-3 pb-28 text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
         {/* Dependable High-Contrast Floating Back Navigation */}
         <div className="mb-4 flex h-11 items-center justify-between">
           <button
@@ -548,13 +548,13 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
             onClick={handleBackToDiscovery}
             aria-label="Back to discovery"
             title="Back to discovery"
-            className={`group inline-flex items-center rounded-full border border-white/25 ring-1 ring-black/40 bg-slate-950/80 text-white shadow-xl shadow-black/35 backdrop-blur-2xl transition-all duration-300 ease-out hover:border-emerald-400/50 hover:bg-slate-900 hover:shadow-2xl hover:shadow-black/50 hover:text-white active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 ${
+            className={`group inline-flex items-center rounded-full border border-slate-200 bg-white text-emerald-950 shadow-sm transition-all duration-200 ease-out hover:border-emerald-500 hover:bg-emerald-50 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 ${
               isScrolled
                 ? 'fixed top-[84px] left-4 sm:left-6 lg:left-8 z-50 h-11 w-11 min-h-[44px] min-w-[44px] p-0 justify-center sm:h-auto sm:w-auto sm:px-4 sm:py-2.5 sm:min-w-0 sm:gap-2 text-xs font-bold'
                 : 'min-h-[44px] px-4 py-2.5 gap-2 text-xs font-bold'
             }`}
           >
-            <ChevronLeft className="h-4.5 w-4.5 shrink-0 text-white transition-transform duration-200 group-hover:-translate-x-0.5 group-hover:text-emerald-400" />
+            <ChevronLeft className="h-4.5 w-4.5 shrink-0 text-emerald-800 transition-transform duration-200 group-hover:-translate-x-0.5" />
             <span className={isScrolled ? 'hidden sm:inline' : 'inline'}>
               Back to discovery
             </span>
@@ -576,7 +576,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
             {/* Main viewer: Fixed responsive height prevents CLS; dark containment preserves aspect ratios */}
             <div
               ref={mediaStageRef}
-              className="relative h-[340px] sm:h-[420px] lg:h-[480px] w-full overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 shadow-xl shadow-slate-900/10"
+              className="relative h-[300px] w-full overflow-hidden rounded-[22px] border border-[#e1e5dc] bg-[#e8e9e2] shadow-[0_18px_48px_-38px_rgba(12,43,31,.5)] sm:h-[420px] lg:h-[500px]"
             >
               <div className="flex h-full w-full items-center justify-center">
                 {currentMedia ? (
@@ -710,11 +710,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
           </section>
 
           <aside className="space-y-5 lg:col-span-5 lg:sticky lg:top-24">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-              <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Rental property</p>
-              <h1 className="mt-2 font-['Outfit'] text-2xl font-black leading-tight text-slate-900 sm:text-3xl">{property.title}</h1>
+            <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-[0_18px_46px_-38px_rgba(15,45,34,.52)] sm:p-7">
+              <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-emerald-800">Explore this home</p>
+              <h1 className="mt-2 font-serif text-2xl font-medium leading-tight tracking-tight text-slate-950 sm:text-3xl">{property.title}</h1>
               <p className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-600"><MapPin className="h-4 w-4 shrink-0 text-emerald-600" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Locality details available on request'}</p>
-              <div className="mt-5 grid grid-cols-2 gap-3 border-y border-slate-100 py-5"><div><p className="text-xs font-bold uppercase tracking-wider text-slate-400">Monthly rent</p><p className="mt-1 font-mono text-xl font-black text-slate-900">{formatRupees(property.monthlyRent) || 'On request'}</p></div>{formatRupees(property.securityDeposit) && <div><p className="text-xs font-bold uppercase tracking-wider text-slate-400">Security deposit</p><p className="mt-1 font-mono text-lg font-black text-emerald-700">{formatRupees(property.securityDeposit)}</p></div>}</div>
+              <div className="mt-5 grid grid-cols-2 gap-3 border-y border-slate-100 py-5"><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Monthly rent</p><p className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">{formatRupees(property.monthlyRent) || 'On request'}</p></div>{formatRupees(property.securityDeposit) && <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Security deposit</p><p className="mt-1 text-lg font-bold text-emerald-800">{formatRupees(property.securityDeposit)}</p></div>}</div>
               {formatRupees(property.maintenanceCharge) && <p className="mt-4 flex items-center gap-2 text-sm text-slate-600"><WalletCards className="h-4 w-4 text-emerald-600" />Maintenance: {formatRupees(property.maintenanceCharge)} / month</p>}
               <button type="button" onClick={() => onRequestVisit(property)} className="mt-6 hidden min-h-12 w-full items-center justify-center rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 lg:flex">Request a Visit</button>
               <p className="mt-3 text-xs leading-relaxed text-slate-500">Your request is reviewed for availability before any Visit Session is confirmed.</p>
@@ -724,8 +724,8 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
         </div>
 
         <section className="mt-7 grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 lg:col-span-2">
-            <h2 className="font-['Outfit'] text-xl font-black text-slate-900">About this property</h2>
+          <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-sm lg:col-span-2">
+            <h2 className="font-serif text-2xl font-medium tracking-tight text-slate-950">About this property</h2>
             {property.description && <p className="mt-3 whitespace-pre-line text-sm leading-7 text-slate-600">{property.description}</p>}
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
               {property.bhk && <DetailFact icon={<BedDouble />} label="Configuration" value={property.bhk} />}
@@ -736,8 +736,8 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
               {property.furnishingStatus && <DetailFact icon={<Maximize2 />} label="Furnishing" value={property.furnishingStatus} />}
             </div>
           </div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5">
-            <h2 className="font-['Outfit'] text-xl font-black text-slate-900">Preferences</h2>
+          <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-sm">
+            <h2 className="font-serif text-xl font-medium tracking-tight text-slate-950">Preferences</h2>
             <dl className="mt-4 space-y-3 text-sm">
               {preferredTenant && <div><dt className="font-bold text-slate-500">Suitable for</dt><dd className="mt-1 capitalize text-slate-800">{preferredTenant}</dd></div>}
               {typeof property.bachelorAllowed === 'boolean' && <div><dt className="font-bold text-slate-500">Bachelor accommodation</dt><dd className="mt-1 text-slate-800">{property.bachelorAllowed ? 'Allowed' : 'Not specified as allowed'}</dd></div>}
