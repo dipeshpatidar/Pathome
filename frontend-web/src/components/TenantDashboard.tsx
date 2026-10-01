@@ -15,6 +15,7 @@ import { propertyService } from '../services/propertyService';
 import { getMediaTagLabel } from '../utils/mediaTags';
 import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDiscovery, savedHomesForPresentation, savedHomesVisibleLimitForWidth } from '../utils/tenantSavedHomes';
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
+import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
   applyFavoriteLookupFailure,
@@ -97,9 +98,6 @@ const PropertyImage: React.FC<{ src?: string | null; alt: string; editorialHover
 const focusClass = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700';
 const readText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const TENANT_CARD_BHK_PATTERN = /^(\d+)\s*(bhk|rk)$/i;
-const TENANT_CARD_PROPERTY_TYPE_LABELS: Record<Property['propertyType'], string> = {
-  FLAT: 'Flat', HOUSE: 'House', PLOT: 'Plot', LAND: 'Land'
-};
 const TENANT_CARD_FURNISHING_LABELS: Record<string, string> = {
   'fully furnished': 'Fully furnished',
   'semi furnished': 'Semi-furnished',
@@ -163,7 +161,7 @@ const SupportingPropertyCard: React.FC<{
   const area = formatPropertyArea(property.totalAreaSqFt);
   const bhk = formatTenantCardBhk(property.bhk);
   const furnishing = formatTenantCardFurnishing(property.furnishingStatus);
-  const propertyType = TENANT_CARD_PROPERTY_TYPE_LABELS[property.propertyType] ?? null;
+  const propertyType = tenantPropertyTypeLabel(property.propertyType);
   const deposit = isRent && typeof property.securityDeposit === 'number'
     && Number.isFinite(property.securityDeposit) && property.securityDeposit >= 0
     ? formatSecurityDeposit(property.securityDeposit)
@@ -211,7 +209,8 @@ const SupportingPropertyCard: React.FC<{
         {bhk && <span className="inline-flex items-center gap-1.5 font-bold text-slate-800">
           <BedDouble className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />{bhk}
         </span>}
-        {furnishing ? <span>{furnishing}</span> : propertyType ? <span>{propertyType}</span> : null}
+        {propertyType && <span>{propertyType}</span>}
+        {furnishing && <span>{furnishing}</span>}
       </div>
 
       <div className="mt-auto pt-3">

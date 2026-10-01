@@ -2348,3 +2348,13 @@ Changed: In `frontend-web/src/components/CompactSearchContext.tsx`, the Tenant c
 Verification: `npm run build` passed with the existing Vite >500kB chunk advisory. `git diff --check` passed. Authenticated Tenant Landing was visually checked at 1280×900 and 390×844. The 390px city text remained readable, the pin/value/chevron fit within the compact selector, the search input retained most of the strip, and no horizontal overflow was visible. At both viewports, the city control opened the existing city dialog and it was closed without changing the selected Indore city. Programmatic `scrollWidth` measurement, keyboard/screen-reader audit, and physical-device checks were NOT TESTED. Server was not restarted.
 
 Commit: not created. Push: not attempted.
+
+## 2026-10-01 19:28 IST — Tenant property type label coverage
+
+Reason: Corrected the production review finding that supported property types could be omitted from Tenant Available Homes cards.
+
+Changed: Added `frontend-web/src/utils/tenantPropertyTypeLabel.ts` with explicit labels for the seven current backend `PropertyType` enum values. `frontend-web/src/components/TenantDashboard.tsx` now uses the helper and renders the property type alongside furnishing when both are available. Added `frontend-web/src/tests/tenantPropertyTypeLabel.test.mjs`, which imports and calls the production helper for all seven values and confirms unknown/null values retain the safe null result. Card styling, backend, APIs, database, auth, and unrelated Tenant flows were not changed.
+
+Verification: `node --test src/tests/tenantPropertyTypeLabel.test.mjs` passed 2/2. `npm run build` passed with the existing Vite >500kB chunk advisory. `git diff --check` passed. Browser verification was not run; the helper and card rendering path were verified by code inspection and build.
+
+No commit or push.
