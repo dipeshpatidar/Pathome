@@ -425,6 +425,7 @@ public class PropertyControllerTest {
         listing.setBhkCount("2 BHK");
         listing.setCity("Indore");
         listing.setSector("Vijay Nagar");
+        listing.setAmenities("Balcony, Lift");
         PropertyMediaAsset image = new PropertyMediaAsset();
         image.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v12345/prop.webp");
         image.setMediaType(MediaType.IMAGE);
@@ -437,6 +438,7 @@ public class PropertyControllerTest {
 
         PublicDiscoveryResponse listItem = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
         PublicPropertyResponse detailResponse = propertyController.getPropertyById(31L).getBody();
+        assertEquals("Balcony, Lift", detailResponse.amenities());
 
         // Discovery returns cover URL (possibly width-transformed); detail returns full media collection
         assertNotNull(listItem.coverImageUrl());

@@ -86,6 +86,7 @@ public class LandlordSubmissionService {
                 data.details() == null ? null : data.details().availableFrom(),
                 data.details() == null ? null : data.details().furnishingStatus(),
                 data.details() == null ? null : data.details().totalAreaSqFt(),
+                data.details() == null ? null : data.details().amenities(),
                 data.details() == null ? null : data.details().description(),
                 rows.stream().filter(row -> "UPLOADED".equals(row.getUploadStatus()) || "STAGED".equals(row.getUploadStatus()))
                         .map(row -> new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(), row.getContentType(),
@@ -187,6 +188,7 @@ public class LandlordSubmissionService {
         listing.setTotalAreaSqFt(data.details().totalAreaSqFt());
         listing.setFloorNumber(data.details().floorNumber());
         listing.setTotalFloors(data.details().totalFloors());
+        listing.setAmenities(data.details().amenities());
         listing.setLessorProfileId(profile.getId());
         listing.setMonthlyRent(data.pricing().monthlyRent());
         listing.setSecurityDeposit(data.pricing().securityDeposit());

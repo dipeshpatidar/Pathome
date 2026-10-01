@@ -93,8 +93,47 @@ class LandlordSubmissionServiceTest {
         assertFalse(json.contains("ownerPhone"));
         assertFalse(json.contains("latitude"));
         assertEquals("Vijay Nagar", preview.locality());
+        assertEquals("Balcony", preview.amenities());
         assertTrue(preview.missingRequirements().isEmpty());
         verify(listings, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void newSubmissionPersistsDraftAmenitiesAndMatchesRevisionMapping() {
+        assertEquals("Balcony", service.preview("owner@example.com", "d1").amenities());
+        service.submit("owner@example.com", "d1");
+        ArgumentCaptor<Listing> captured = ArgumentCaptor.forClass(Listing.class);
+        verify(listings).saveAndFlush(captured.capture());
+        assertEquals("Balcony", captured.getValue().getAmenities());
+
+        RentalDetails revision = new RentalDetails();
+        service.applyRevision(revision, validData(), List.of(), null);
+        assertEquals(captured.getValue().getAmenities(), revision.getAmenities());
+    }
+
+    @Test
+    void nullAmenitiesFromOlderDraftAndEmptyAmenitiesRemainSafe() throws Exception {
+        var original = validData();
+        var oldDetails = new ObjectMapper().findAndRegisterModules().readValue(
+                "{\"availableFrom\":\"2026-10-02\",\"furnishingStatus\":\"UNFURNISHED\"}",
+                LandlordDraftData.Details.class);
+        assertNull(oldDetails.amenities());
+        when(draftData.readData(draft)).thenReturn(new LandlordDraftData(
+                original.basics(), original.pricing(), original.location(), oldDetails));
+        assertNull(service.preview("owner@example.com", "d1").amenities());
+        service.submit("owner@example.com", "d1");
+        ArgumentCaptor<Listing> captured = ArgumentCaptor.forClass(Listing.class);
+        verify(listings).saveAndFlush(captured.capture());
+        assertNull(captured.getValue().getAmenities());
+
+        var emptyDetails = new LandlordDraftData.Details(oldDetails.availableFrom(),
+                oldDetails.furnishingStatus(), null, null, null, "", null);
+        when(draftData.readData(draft)).thenReturn(new LandlordDraftData(
+                original.basics(), original.pricing(), original.location(), emptyDetails));
+        draft.setStatus("DRAFT");
+        service.submit("owner@example.com", "d1");
+        verify(listings, times(2)).saveAndFlush(captured.capture());
+        assertEquals("", captured.getValue().getAmenities());
     }
 
     @Test

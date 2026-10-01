@@ -48,6 +48,7 @@ import { changeLocationCity, changeLocalityText, chooseLocalityOption, locationV
   useLocalityForReview } from '../utils/lessorLocationState';
 import { hasCoverImage } from '../utils/lessorMedia';
 import { lessorStepStorageKey, resolveLessorResumeStep } from '../utils/lessorStepResume';
+import { EMPTY_LESSOR_DETAILS, restoreLessorDetails } from '../utils/lessorDetails';
 
 interface PropertyTypeOption {
   value: ResidentialType;
@@ -732,15 +733,7 @@ function LessorEditor({
     address: '',
     landmark: ''
   });
-  const [details, setDetails] = useState<LessorDetails>({
-    availableFrom: null,
-    furnishingStatus: '',
-    totalAreaSqFt: null,
-    floorNumber: null,
-    totalFloors: null,
-    amenities: '',
-    description: ''
-  });
+  const [details, setDetails] = useState<LessorDetails>(EMPTY_LESSOR_DETAILS);
   const [mediaItems, setMediaItems] = useState<LessorMediaItem[]>([]);
   const [hasActiveUploads, setHasActiveUploads] = useState(false);
   const [cities, setCities] = useState<string[]>([]);
@@ -799,11 +792,14 @@ function LessorEditor({
         );
         queue.current = saver;
         const pending = saver.getPending();
+        const pendingDetails = pending.details as Partial<LessorDetails> | undefined;
         const resumeData: LessorDraftData = {
           basics: (pending.basics as LessorBasics | undefined) ?? server.data.basics,
           pricing: (pending.pricing as LessorPricing | undefined) ?? server.data.pricing,
           location: (pending.location as LessorLocation | undefined) ?? server.data.location,
-          details: (pending.details as LessorDetails | undefined) ?? server.data.details
+          details: pendingDetails
+            ? restoreLessorDetails(server.data.details, pendingDetails)
+            : server.data.details
         };
         const stepKey = lessorStepStorageKey(draftId, userId, guest);
         const requestedStep = guest && sessionStorage.getItem('pathome_guest_submit_draft') === draftId
@@ -827,15 +823,7 @@ function LessorEditor({
         setShowExactBhk(Boolean(restoredBhk && /^\d+BHK$/.test(restoredBhk) && Number.parseInt(restoredBhk) >= 4));
         setPricing(resumeData.pricing || { monthlyRent: null, securityDeposit: null });
         setPropertyLocation(resumeData.location || { city: '', canonicalLocalityId: null, localityInput: '', address: '', landmark: '' });
-        setDetails(resumeData.details || {
-          availableFrom: null,
-          furnishingStatus: '',
-          totalAreaSqFt: null,
-          floorNumber: null,
-          totalFloors: null,
-          amenities: '',
-          description: ''
-        });
+        setDetails(restoreLessorDetails(resumeData.details));
         if (supportedCities.length) setCities(supportedCities);
         setStep(resolveLessorResumeStep(requestedStep, resumeData, supportedCities, hasReadyCover));
         setDirection(1);

@@ -155,6 +155,7 @@ export function LessorPreviewStep({ draftId, onEdit, onSubmitted, guest = false,
         <p>Available from: {preview.availableFrom || 'To add'}</p>
       </SummarySection>
       <SummarySection title="Additional details" onEdit={() => onEdit('details')}>
+        {preview.amenities ? <p className="whitespace-pre-wrap">Amenities: {preview.amenities}</p> : null}
         {preview.description ? <p className="whitespace-pre-wrap">{preview.description}</p> : <p>No description added.</p>}
       </SummarySection>
     </div>

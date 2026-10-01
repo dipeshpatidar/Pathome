@@ -127,6 +127,50 @@ class LandlordSubmissionPostgresRollbackTest {
         assertEquals(Role.ROLE_TENANT, users.findById(ownerId).orElseThrow().getRole());
     }
 
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void firstSubmissionStoresDraftAmenitiesInPostgres() {
+        jdbc.execute("DROP INDEX IF EXISTS idx_lessor_profiles_linked_user");
+        jdbc.execute("CREATE UNIQUE INDEX idx_lessor_profiles_linked_user ON lessor_profiles (linked_user_id) WHERE linked_user_id IS NOT NULL");
+        User owner = new User();
+        owner.setEmail("amenities@example.test");
+        owner.setRole(Role.ROLE_TENANT);
+        owner.setFullName("Amenities Owner");
+        owner.setPhoneNumber("+919876543210");
+        owner = users.saveAndFlush(owner);
+        String draftId = UUID.randomUUID().toString();
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(draftId);
+        draft.setLandlordUserId(owner.getId());
+        draft.setPayload("{}");
+        drafts.saveAndFlush(draft);
+        PropertyDraftMedia photo = new PropertyDraftMedia();
+        photo.setDraftId(draftId);
+        photo.setLandlordUserId(owner.getId());
+        photo.setMediaId(UUID.randomUUID().toString());
+        photo.setOriginalFilename("cover.jpg");
+        photo.setContentType("image/jpeg");
+        photo.setCloudinaryUrl("https://example.test/cover.jpg");
+        photo.setUploadStatus("UPLOADED");
+        photo.setIsCover(true);
+        photo.setSortOrder(0);
+        media.saveAndFlush(photo);
+        var data = new LandlordDraftData(
+                new LandlordDraftData.Basics(PropertyType.FLAT, RentalMode.LONG_TERM_RENTAL, "2BHK"),
+                new LandlordDraftData.Pricing(new BigDecimal("20000"), BigDecimal.ZERO),
+                new LandlordDraftData.Location("Indore", null, "Vijay Nagar", "10 Test Road", null,
+                        LocationResolution.MANUAL_PENDING, null, null, null),
+                new LandlordDraftData.Details(LocalDate.now(), "UNFURNISHED", 850.0, 2, 5,
+                        "Balcony, Lift", "Test home"));
+        when(draftData.readData(org.mockito.ArgumentMatchers.any(PropertyUploadDraft.class))).thenReturn(data);
+
+        var submission = submissions.submit("amenities@example.test", draftId);
+
+        assertEquals("Balcony, Lift", jdbc.queryForObject(
+                "SELECT amenities FROM listings WHERE id = ?", String.class, submission.listingId()));
+        assertEquals(1, count("SELECT count(*) FROM property_upload_drafts WHERE draft_id = ? AND status = 'SUBMITTED'", draftId));
+    }
+
     private int count(String sql, Object parameter) {
         return jdbc.queryForObject(sql, Integer.class, parameter);
     }

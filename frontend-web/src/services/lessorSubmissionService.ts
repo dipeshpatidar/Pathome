@@ -8,7 +8,7 @@ export interface LessorPreview {
   city: string | null; locality: string | null; monthlyRent: number | null;
   securityDeposit: number | null; availableFrom: string | null;
   furnishingStatus: string | null; totalAreaSqFt: number | null;
-  description: string | null; media: LessorMediaItem[]; missingRequirements: string[];
+  amenities: string | null; description: string | null; media: LessorMediaItem[]; missingRequirements: string[];
 }
 export interface LessorSubmission { listingId: number; draftId: string; title: string; status: string; submittedAt: string }
 

@@ -86,6 +86,20 @@ class LandlordDraftServiceTest {
     }
 
     @Test
+    void detailsWithAmenitiesRoundTripThroughStoredDraftPayload() throws Exception {
+        PropertyUploadDraft draft = storedDraft(5L);
+        when(drafts.findByDraftIdAndLandlordUserId("draft-one", 5L)).thenReturn(Optional.of(draft));
+        when(drafts.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        var details = new LandlordDraftData.Details(java.time.LocalDate.of(2026, 10, 2),
+                "SEMI_FURNISHED", 850.0, 2, 5, "Balcony, Lift", "Bright flat");
+
+        service.updateDetails("owner@example.com", "draft-one", 1, details);
+
+        assertEquals("Balcony, Lift", service.readData(draft).details().amenities());
+        assertEquals(details, service.get("owner@example.com", "draft-one").data().details());
+    }
+
+    @Test
     void crossOwnerDraftIdIsNotFound() {
         when(drafts.findByDraftIdAndLandlordUserId("other-draft", 5L)).thenReturn(Optional.empty());
         assertThrows(EntityNotFoundException.class, () -> service.get("owner@example.com", "other-draft"));

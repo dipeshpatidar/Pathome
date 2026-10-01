@@ -11,5 +11,5 @@ public record LandlordPreview(String title, PropertyType propertyType, String bh
                               String city, String locality, BigDecimal monthlyRent,
                               BigDecimal securityDeposit, LocalDate availableFrom,
                               String furnishingStatus, Double totalAreaSqFt,
-                              String description, List<LandlordMediaItem> media,
+                              String amenities, String description, List<LandlordMediaItem> media,
                               List<String> missingRequirements) {}
