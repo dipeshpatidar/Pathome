@@ -6,10 +6,12 @@ import {
   RentalSuggestion,
   PROPERTY_TYPE_LABELS,
   buildRentalSearchFilters,
+  compactSearchDraftFromFilters,
   discoverySearchKey,
   formatCompactSearchContext,
   hasActiveSearchFilters,
   normalizeSearchText,
+  resolveCompactSearchDraft,
   shouldSurfaceSuggestionFailure,
   suggestionFailureDiagnostic
 } from '../utils/rentalSearch';
@@ -46,7 +48,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   const [isLocationOpen, setIsLocationOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(alwaysEditing);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [searchText, setSearchText] = useState(() => alwaysEditing ? filters.q || formatCompactSearchContext(filters) || '' : '');
+  const [searchText, setSearchText] = useState(() => compactSearchDraftFromFilters(filters, alwaysEditing).text);
+  const [searchTextIsSummary, setSearchTextIsSummary] = useState(() => compactSearchDraftFromFilters(filters, alwaysEditing).isDisplaySummary);
   const [suggestions, setSuggestions] = useState<RentalSuggestion[]>([]);
   const [suggestionState, setSuggestionState] = useState<'idle' | 'loading' | 'results' | 'empty' | 'error'>('idle');
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
@@ -68,11 +71,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   useEffect(() => {
     if (lastCommittedFiltersRef.current !== committedFiltersKey) {
       lastCommittedFiltersRef.current = committedFiltersKey;
-      setSearchText(filters.q || summary || '');
+      const draft = compactSearchDraftFromFilters(filters, alwaysEditing);
+      setSearchText(draft.text);
+      setSearchTextIsSummary(draft.isDisplaySummary);
       setIsEditing(false);
       setShowSuggestions(false);
     }
-  }, [committedFiltersKey, filters.q, summary]);
+  }, [committedFiltersKey, filters.q, summary, alwaysEditing]);
 
   // Click outside to close autocomplete suggestions & exit edit mode
   useEffect(() => {
@@ -86,12 +91,14 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
       ) {
         setIsEditing(false);
         setShowSuggestions(false);
-        setSearchText(filters.q || summary || '');
+        const draft = compactSearchDraftFromFilters(filters, alwaysEditing);
+        setSearchText(draft.text);
+        setSearchTextIsSummary(draft.isDisplaySummary);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isEditing, showSuggestions, filters.q, summary]);
+  }, [isEditing, showSuggestions, filters.q, summary, alwaysEditing]);
 
   // Mobile page-scroll keyboard dismissal:
   // When in edit mode, detect real user page scroll gestures originating outside
@@ -122,7 +129,9 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
         searchInputRef.current?.blur();
         setIsEditing(false);
         setShowSuggestions(false);
-        setSearchText(filters.q || summary || '');
+        const draft = compactSearchDraftFromFilters(filters, alwaysEditing);
+        setSearchText(draft.text);
+        setSearchTextIsSummary(draft.isDisplaySummary);
         touchStartYRef.current = null;
       }
     };
@@ -138,7 +147,9 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
       searchInputRef.current?.blur();
       setIsEditing(false);
       setShowSuggestions(false);
-      setSearchText(filters.q || summary || '');
+      const draft = compactSearchDraftFromFilters(filters, alwaysEditing);
+      setSearchText(draft.text);
+      setSearchTextIsSummary(draft.isDisplaySummary);
     };
 
     document.addEventListener('touchstart', handleTouchStart, { passive: true });
@@ -152,7 +163,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
       document.removeEventListener('touchend', handleTouchEnd);
       window.removeEventListener('wheel', handleWheel);
     };
-  }, [isEditing, filters.q, summary]);
+  }, [isEditing, filters.q, summary, alwaysEditing]);
 
   // Fetch suggestions when user types in search input
   useEffect(() => {
@@ -190,9 +201,11 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   }, [searchText, city, showSuggestions, isEditing]);
 
   const enterEditMode = () => {
+    const draft = compactSearchDraftFromFilters(filters, true);
     flushSync(() => {
       setIsEditing(true);
-      setSearchText(filters.q || summary || '');
+      setSearchText(draft.text);
+      setSearchTextIsSummary(draft.isDisplaySummary);
     });
     searchInputRef.current?.focus();
     if ((filters.q || summary || '').trim().length >= 2) {
@@ -203,7 +216,9 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   const exitEditMode = () => {
     setIsEditing(false);
     setShowSuggestions(false);
-    setSearchText(filters.q || summary || '');
+    const draft = compactSearchDraftFromFilters(filters, true);
+    setSearchText(draft.text);
+    setSearchTextIsSummary(draft.isDisplaySummary);
     searchInputRef.current?.blur();
   };
 
@@ -212,6 +227,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     setIsEditing(false);
     setShowSuggestions(false);
     setSearchText('');
+    setSearchTextIsSummary(false);
     lastCommittedFiltersRef.current = discoverySearchKey({ city: newCity, rentalOnly: true });
     onManualCityChange(newCity);
   };
@@ -221,6 +237,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     setShowSuggestions(false);
     setSuggestions([]);
     setSearchText('');
+    setSearchTextIsSummary(false);
     lastCommittedFiltersRef.current = discoverySearchKey({ city, rentalOnly: true });
     onClearAll();
   };
@@ -247,6 +264,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     const nextFilters = buildRentalSearchFilters(item.city, item.label, item);
     lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
     setSearchText(item.label);
+    setSearchTextIsSummary(!nextFilters.q);
     onSearch(nextFilters.city, nextFilters.sector, nextFilters);
   };
 
@@ -256,11 +274,17 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     setSuggestions([]);
     searchInputRef.current?.blur();
     const query = searchText.trim();
+    if (searchTextIsSummary) {
+      const nextFilters = resolveCompactSearchDraft(filters, { text: query, isDisplaySummary: true });
+      lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
+      onSearch(nextFilters.city, nextFilters.sector, nextFilters);
+      return;
+    }
     if (!query) {
       handleClearAll();
       return;
     }
-    const nextFilters = buildRentalSearchFilters(city, query, null);
+    const nextFilters = resolveCompactSearchDraft(filters, { text: query, isDisplaySummary: false });
     lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
     onSearch(nextFilters.city, nextFilters.sector, nextFilters);
   };
@@ -454,6 +478,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   }}
                   onChange={(e) => {
                     setSearchText(e.target.value);
+                    setSearchTextIsSummary(false);
                     setShowSuggestions(true);
                   }}
                   onKeyDown={(e) => {
@@ -495,6 +520,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                     aria-label="Clear search text"
                     onClick={() => {
                       setSearchText('');
+                      setSearchTextIsSummary(false);
                       searchInputRef.current?.focus();
                       setShowSuggestions(false);
                     }}

@@ -1343,7 +1343,7 @@ export const Home: React.FC = () => {
         />
 
       {isPropertyRoute && (
-        <PublicPropertyDetail propertyId={publicPropertyId} onRequestVisit={handleRequestVisit} />
+        <PublicPropertyDetail propertyId={publicPropertyId} isAuthenticated={Boolean(user) && role !== 'GUEST'} onRequestVisit={handleRequestVisit} />
       )}
 
       {lessorWorkspace}

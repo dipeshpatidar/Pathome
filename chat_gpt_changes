@@ -1942,6 +1942,18 @@ Verification: `node --test src/tests/tenantVisitDashboard.test.mjs` passed 5/5; 
 
 Commit: not created. Push: not attempted.
 
+## 2026-10-01 12:24 IST — Concept 03 review corrective pass
+
+Reason: The user requested the four focused Concept 03 review corrections, focused tests/build checks, normal backend restart with Saved Homes verification, and one bounded desktop/mobile browser pass.
+
+Changed: Added bounded, deduplicated Favorite lookup batches with incremental state merging and per-session mutation-race protection; separated restored structured-search display summaries from edited free-text queries; gated the Full Property sign-in guidance to guests; and gave Quick View a persistent accessible title across loading, error, and success states. Updated targeted Favorite and shared-search tests. No backend production code, API contract, migration, auth architecture, or unrelated feature was changed.
+
+Verification: `node --test src/tests/favoriteLookup.test.mjs src/tests/rentalSearch.test.mjs src/tests/tenantSavedHomes.test.mjs src/tests/tenantVisitDashboard.test.mjs` passed (33/33). `npm run build` passed with the existing Vite large-chunk advisory. `git diff --check` passed. Restarted the normal local backend from current source; Flyway validated all 32 migrations and reported V32 current. Authenticated `GET /api/v1/favorites/properties?page=0&size=6` returned HTTP 200 with an empty page for a fresh disposable QA tenant; the QA account was signed out and deleted after verification. One bounded in-app browser pass verified restored structured filters resubmit unchanged without `q`, an edited natural-language query submits as `q`, Quick View's stable accessible name, and authenticated Full Property without the guest-only sign-in guidance at 1280px; the guest property-detail guidance remained visible. At 390px, Quick View opened, Escape closed it, and `scrollWidth` equaled viewport width. The temporary viewport override was reset.
+
+Outstanding: Quick View loading/error states were not artificially forced in the browser; the same persistent title is rendered outside the conditional state panels. Physical-device testing was not run. Existing Vite chunk-size advisory remains.
+
+Commit: not created. Push: not attempted.
+
 Addendum, 2026-09-30 10:43 IST: Refined the desktop discovery grid so a single filtered result spans the available card width at 1280px+, avoiding an empty half-column. Re-ran `node --test src/tests/tenantVisitDashboard.test.mjs` (5/5 passed), `npm run build` (passed; existing >500 kB chunk advisory), and `git diff --check` (passed). Commit: not created. Push: not attempted.
 
 

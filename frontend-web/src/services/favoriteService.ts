@@ -2,6 +2,7 @@ import { API_ROOT_URL } from '../config/endpoints';
 import { ApiRequestError, createApiRequestError } from './apiError';
 import { Property } from '../types';
 import { mapDiscoveryProperty } from './propertyService';
+import { fetchFavoriteIdsInBatches, uniquePositiveFavoriteIds } from '../utils/favoriteLookup';
 
 const MAX_BATCH_SIZE = 100;
 
@@ -39,24 +40,26 @@ export const favoriteService = {
   },
 
   async listForProperties(propertyIds: number[], signal?: AbortSignal): Promise<number[]> {
-    const uniqueIds = [...new Set(propertyIds)];
+    if (propertyIds.some(id => !Number.isSafeInteger(id) || id <= 0)) {
+      throw new ApiRequestError('Unable to load saved properties. Please try again.');
+    }
+    const uniqueIds = uniquePositiveFavoriteIds(propertyIds);
     if (uniqueIds.length === 0) return [];
-    if (uniqueIds.length > MAX_BATCH_SIZE || uniqueIds.some(id => !Number.isSafeInteger(id) || id <= 0)) {
-      throw new ApiRequestError('Unable to load saved properties. Please try again.');
-    }
     const token = getToken();
-    const query = new URLSearchParams();
-    uniqueIds.forEach(id => query.append('propertyIds', String(id)));
-    const response = await fetch(`${API_ROOT_URL}/favorites?${query.toString()}`, {
-      headers: authenticatedRequest(token), signal
-    });
-    if (!response.ok) throw await createApiRequestError(response, 'Unable to load saved properties. Please try again.', false, token);
-    const payload = await response.json() as { propertyIds?: unknown };
-    if (!Array.isArray(payload?.propertyIds)
-      || payload.propertyIds.some(id => !Number.isSafeInteger(id) || !uniqueIds.includes(id as number))) {
-      throw new ApiRequestError('Unable to load saved properties. Please try again.');
-    }
-    return [...new Set(payload.propertyIds as number[])];
+    return fetchFavoriteIdsInBatches(uniqueIds, async batch => {
+      const query = new URLSearchParams();
+      batch.forEach(id => query.append('propertyIds', String(id)));
+      const response = await fetch(`${API_ROOT_URL}/favorites?${query.toString()}`, {
+        headers: authenticatedRequest(token), signal
+      });
+      if (!response.ok) throw await createApiRequestError(response, 'Unable to load saved properties. Please try again.', false, token);
+      const payload = await response.json() as { propertyIds?: unknown };
+      if (!Array.isArray(payload?.propertyIds)
+        || payload.propertyIds.some(id => !Number.isSafeInteger(id) || !batch.includes(id as number))) {
+        throw new ApiRequestError('Unable to load saved properties. Please try again.');
+      }
+      return payload.propertyIds as number[];
+    }, MAX_BATCH_SIZE);
   },
 
   async save(propertyId: number): Promise<void> {

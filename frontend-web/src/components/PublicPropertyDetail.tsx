@@ -204,6 +204,7 @@ const AreaNavigationDropdown: React.FC<AreaNavigationDropdownProps> = ({
 
 interface PublicPropertyDetailProps {
   propertyId: number | null;
+  isAuthenticated: boolean;
   onRequestVisit: (property: Property) => void;
 }
 
@@ -322,7 +323,7 @@ const Lightbox: React.FC<{
   );
 };
 
-export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ propertyId, onRequestVisit }) => {
+export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ propertyId, isAuthenticated, onRequestVisit }) => {
   const navigate = useNavigate();
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
@@ -718,7 +719,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
               {formatRupees(property.maintenanceCharge) && <p className="mt-4 flex items-center gap-2 text-sm text-slate-600"><WalletCards className="h-4 w-4 text-emerald-600" />Maintenance: {formatRupees(property.maintenanceCharge)} / month</p>}
               <button type="button" onClick={() => onRequestVisit(property)} className="mt-6 hidden min-h-12 w-full items-center justify-center rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 lg:flex">Request a Visit</button>
               <p className="mt-3 text-xs leading-relaxed text-slate-500">Your request is reviewed for availability before any Visit Session is confirmed.</p>
-              <p className="mt-2 text-xs leading-relaxed text-slate-500">Interested in this property? Sign in to request a visit and manage your visit requests.</p>
+              {!isAuthenticated && <p className="mt-2 text-xs leading-relaxed text-slate-500">Interested in this property? Sign in to request a visit and manage your visit requests.</p>}
             </div>
           </aside>
         </div>

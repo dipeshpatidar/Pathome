@@ -13,6 +13,8 @@ import {
   resetFiltersForManualCityChange,
   resetFiltersForSearchClear,
   formatCompactSearchContext,
+  compactSearchDraftFromFilters,
+  resolveCompactSearchDraft,
   hasActiveSearchFilters,
   formatRentDisplay,
   shouldSurfaceSuggestionFailure,
@@ -21,6 +23,31 @@ import {
   suggestionFromStructuredFilters,
   extractCityFromSearchQuery
 } from '../utils/rentalSearch.ts';
+
+test('unchanged restored structured summary resubmits its committed filters', () => {
+  const restored = {
+    city: 'Indore', sector: 'Vijay Nagar', bhk: '2BHK', propertyType: 'FLAT',
+    maxRent: 20000, rentalOnly: true
+  };
+  const draft = compactSearchDraftFromFilters(restored, true);
+
+  assert.equal(draft.text, 'Vijay Nagar · 2 BHK · Flat · Up to ₹20k');
+  assert.equal(draft.isDisplaySummary, true);
+  assert.deepEqual(resolveCompactSearchDraft(restored, draft), restored);
+  assert.equal(resolveCompactSearchDraft(restored, draft).q, undefined);
+});
+
+test('an edited restored summary becomes a normal shared free-text query', () => {
+  const restored = {
+    city: 'Indore', sector: 'Vijay Nagar', bhk: '2BHK', propertyType: 'FLAT',
+    maxRent: 20000, rentalOnly: true
+  };
+  const draft = { ...compactSearchDraftFromFilters(restored, true), text: '2bhk flat in vijay nagar under 20000', isDisplaySummary: false };
+
+  assert.deepEqual(resolveCompactSearchDraft(restored, draft), {
+    city: 'Indore', q: '2bhk flat in vijay nagar under 20000', rentalOnly: true
+  });
+});
 
 test('maps only public structured suggestion fields with an actual location', () => {
   const mapped = mapRentalSuggestion({

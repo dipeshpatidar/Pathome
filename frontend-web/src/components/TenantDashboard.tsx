@@ -12,6 +12,7 @@ import { favoriteService } from '../services/favoriteService';
 import { propertyService } from '../services/propertyService';
 import { getMediaTagLabel } from '../utils/mediaTags';
 import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDiscovery } from '../utils/tenantSavedHomes';
+import { mergeFavoriteLookupState, unresolvedFavoriteIds } from '../utils/favoriteLookup';
 
 interface TenantDashboardProps {
   user: UserProfile;
@@ -265,10 +266,10 @@ const TenantPropertyQuickView: React.FC<{
   return (
     <div className="fixed inset-0 z-[110] flex justify-end" data-testid="tenant-property-quick-view">
       <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]" />
-      <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="tenant-quick-view-title" tabIndex={-1}
+      <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="tenant-quick-view-dialog-title" tabIndex={-1}
         className="relative z-10 flex h-full w-full min-w-0 flex-col bg-[#fffefa] shadow-2xl md:w-[min(56vw,760px)] md:border-l md:border-white/60">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e5e9e1] px-4 sm:px-6">
-          <p className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">Property quick view</p>
+          <h2 id="tenant-quick-view-dialog-title" className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">Property quick view</h2>
           <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close property quick view" className={`flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 hover:bg-emerald-50 ${focusClass}`}><X size={18} aria-hidden="true" /></button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-3 sm:px-6">
@@ -290,7 +291,7 @@ const TenantPropertyQuickView: React.FC<{
             </button>)}</div>}
             <div className="mt-5">
               <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">{property.bhk || ''}{property.bhk && typeLabel ? ' · ' : ''}{typeLabel || ''}</p>
-              <h1 id="tenant-quick-view-title" className="mt-2 font-serif text-[clamp(1.45rem,3vw,2rem)] font-medium leading-tight tracking-tight text-slate-950">{property.title}</h1>
+              <h1 className="mt-2 font-serif text-[clamp(1.45rem,3vw,2rem)] font-medium leading-tight tracking-tight text-slate-950">{property.title}</h1>
               <p className="mt-2 flex items-start gap-1.5 text-sm text-slate-600"><MapPin size={16} className="mt-0.5 shrink-0 text-emerald-800" aria-hidden="true" />{[property.sector, property.city].filter(Boolean).join(', ')}</p>
               {formatMoney(property.monthlyRent) && <p className="mt-3 text-2xl font-bold tracking-tight text-slate-950">{formatMoney(property.monthlyRent)} <span className="text-sm font-normal text-slate-600">/ month</span></p>}
               <div className="mt-3 flex flex-wrap gap-2">{property.bhk && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.bhk}</span>}{typeLabel && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold capitalize text-emerald-950">{typeLabel}</span>}{property.totalAreaSqFt > 0 && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.totalAreaSqFt.toLocaleString('en-IN')} sq ft</span>}{property.furnishingStatus && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.furnishingStatus}</span>}</div>
@@ -312,11 +313,12 @@ const TenantPropertyQuickView: React.FC<{
 type FavoriteState = {
   identityKey: string | null;
   status: 'loading' | 'ready' | 'error';
+  lookupError: boolean;
   propertyIds: Set<number>;
   favoriteIds: Set<number>;
 };
 
-const initialFavoriteState: FavoriteState = { identityKey: null, status: 'loading', propertyIds: new Set(), favoriteIds: new Set() };
+const initialFavoriteState: FavoriteState = { identityKey: null, status: 'loading', lookupError: false, propertyIds: new Set(), favoriteIds: new Set() };
 
 type SavedHomesState = {
   identityKey: string | null;
@@ -350,6 +352,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     ? candidatePreviewId : null;
   const propertyIdsKey = [...new Set(properties.map(property => property.id).filter(id => Number.isSafeInteger(id) && id > 0))].join(',');
   const [favoriteState, setFavoriteState] = useState<FavoriteState>(initialFavoriteState);
+  const favoriteStateRef = useRef(favoriteState);
   const [favoriteReload, setFavoriteReload] = useState(0);
   const [favoritePendingIds, setFavoritePendingIds] = useState<Set<string>>(() => new Set());
   const [favoriteActionError, setFavoriteActionError] = useState<string | null>(null);
@@ -358,6 +361,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const savedHomesRequestRef = useRef<AbortController | null>(null);
   const savedHomesLoadingMoreRef = useRef(false);
   const favoriteMutationRef = useRef<Set<string>>(new Set());
+  const favoriteMutationRevisionRef = useRef<Map<string, number>>(new Map());
   const favoriteSession = readTenantVisitSession(user.id);
   const closeQuickView = useCallback(() => navigate(-1), [navigate]);
   const openQuickView = useCallback((property: Property) => {
@@ -369,29 +373,50 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   }, [location.hash, location.pathname, location.search, location.state, navigate]);
 
   useEffect(() => {
+    favoriteStateRef.current = favoriteState;
+  }, [favoriteState]);
+
+  useEffect(() => {
     const session = readTenantVisitSession(user.id);
     const ids = propertyIdsKey ? propertyIdsKey.split(',').map(Number) : [];
     if (!session) {
-      setFavoriteState({ identityKey: null, status: 'error', propertyIds: new Set(ids), favoriteIds: new Set() });
+      setFavoriteState({ ...initialFavoriteState, status: 'error' });
       return;
     }
     const controller = new AbortController();
+    const current = favoriteStateRef.current;
+    const knownState = current.identityKey === session.key
+      ? current : { ...initialFavoriteState, identityKey: session.key };
+    const unresolvedIds = unresolvedFavoriteIds(ids, knownState.propertyIds);
+    const mutationRevision = favoriteMutationRevisionRef.current.get(session.key) || 0;
     setFavoriteActionError(null);
-    setFavoriteState(current => current.identityKey === session.key
-      ? { ...current, status: 'loading', propertyIds: new Set(ids) }
-      : { identityKey: session.key, status: 'loading', propertyIds: new Set(ids), favoriteIds: new Set() });
-    if (ids.length === 0) {
-      setFavoriteState({ identityKey: session.key, status: 'ready', propertyIds: new Set(), favoriteIds: new Set() });
+    if (unresolvedIds.length === 0) {
+      setFavoriteState(currentState => currentState.identityKey === session.key
+        ? { ...currentState, status: 'ready', lookupError: false }
+        : { ...initialFavoriteState, identityKey: session.key, status: 'ready' });
       return () => controller.abort();
     }
-    favoriteService.listForProperties(ids, controller.signal).then(savedIds => {
+    const hasResolvedState = knownState.status === 'ready' || knownState.propertyIds.size > 0;
+    setFavoriteState(currentState => currentState.identityKey === session.key
+      ? { ...currentState, status: hasResolvedState ? 'ready' : 'loading', lookupError: false }
+      : { ...initialFavoriteState, identityKey: session.key });
+    favoriteService.listForProperties(unresolvedIds, controller.signal).then(savedIds => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
-      setFavoriteState({ identityKey: session.key, status: 'ready', propertyIds: new Set(ids), favoriteIds: new Set(savedIds) });
+      if ((favoriteMutationRevisionRef.current.get(session.key) || 0) !== mutationRevision) {
+        setFavoriteReload(value => value + 1);
+        return;
+      }
+      setFavoriteState(currentState => {
+        if (currentState.identityKey !== session.key) return currentState;
+        const merged = mergeFavoriteLookupState(currentState.propertyIds, currentState.favoriteIds, unresolvedIds, savedIds);
+        return { ...currentState, status: 'ready', lookupError: false,
+          propertyIds: merged.resolvedIds, favoriteIds: merged.favoriteIds };
+      });
     }).catch(() => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
-      setFavoriteState(current => current.identityKey === session.key
-        ? { ...current, status: 'error', propertyIds: new Set(ids) }
-        : { identityKey: session.key, status: 'error', propertyIds: new Set(ids), favoriteIds: new Set() });
+      setFavoriteState(currentState => currentState.identityKey === session.key
+        ? { ...currentState, status: currentState.propertyIds.size > 0 ? 'ready' : 'error', lookupError: true }
+        : { ...initialFavoriteState, identityKey: session.key, status: 'error', lookupError: true });
     });
     return () => controller.abort();
   }, [favoriteReload, propertyIdsKey, user.id]);
@@ -439,6 +464,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       savedHomesRequestRef.current?.abort();
       savedHomesLoadingMoreRef.current = false;
       favoriteMutationRef.current.clear();
+      favoriteMutationRevisionRef.current.clear();
       setFavoritePendingIds(new Set());
       setFavoriteState(initialFavoriteState);
       setSavedHomesState(initialSavedHomesState);
@@ -475,12 +501,14 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       if (wasSaved) await favoriteService.remove(property.id);
       else await favoriteService.save(property.id);
       if (!isCurrentTenantVisitSession(session)) return;
+      favoriteMutationRevisionRef.current.set(session.key,
+        (favoriteMutationRevisionRef.current.get(session.key) || 0) + 1);
       setFavoriteState(current => {
-        if (current.identityKey !== session.key || current.status !== 'ready') return current;
+        if (current.identityKey !== session.key) return current;
         const next = new Set(current.favoriteIds);
         if (wasSaved) next.delete(property.id); else next.add(property.id);
         const propertyIds = new Set(current.propertyIds).add(property.id);
-        return { ...current, status: 'ready', propertyIds, favoriteIds: next };
+        return { ...current, status: 'ready', lookupError: false, propertyIds, favoriteIds: next };
       });
       savedHomesRequestRef.current?.abort();
       setSavedHomesState(current => current.identityKey === session.key && current.status === 'ready'
@@ -766,7 +794,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               <h2 id="discover-homes-title" className="mt-1 font-serif text-2xl font-medium tracking-tight">Available homes</h2>
               <p className="mt-1 text-sm text-slate-600">Browse current listings and request a visit when you find a fit.</p>
             </div>
-            {favoriteState.status === 'error' && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3" role="alert"><p className="text-sm text-amber-950">Saved property status could not be loaded.</p><button type="button" onClick={() => setFavoriteReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-bold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button></div>}
+            {(favoriteState.status === 'error' || favoriteState.lookupError) && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3" role="alert"><p className="text-sm text-amber-950">Saved property status could not be loaded.</p><button type="button" onClick={() => setFavoriteReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-bold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button></div>}
             {favoriteActionError && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3" role="alert"><p className="text-sm text-rose-900">{favoriteActionError}</p><button type="button" onClick={() => setFavoriteActionError(null)} aria-label="Dismiss saved property message" className={`flex h-11 w-11 items-center justify-center rounded-lg text-rose-900 hover:bg-rose-100 ${focusClass}`}><X size={16} aria-hidden="true" /></button></div>}
             {discoveryState === 'LOADING' && <div className="grid gap-4 sm:grid-cols-2" role="status" aria-label="Loading available homes">
               {[0, 1, 2].map(index => <div key={index} className="overflow-hidden rounded-[26px] border border-slate-200 bg-white"><div className="aspect-[16/10] bg-slate-200 motion-safe:animate-pulse" /><div className="p-5"><div className="h-5 w-3/4 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /><div className="mt-6 h-11 rounded-xl bg-slate-100 motion-safe:animate-pulse" /></div></div>)}

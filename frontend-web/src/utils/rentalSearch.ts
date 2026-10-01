@@ -264,3 +264,22 @@ export const formatCompactSearchContext = (filters: RentalSearchFilters): string
 
   return parts.length > 0 ? parts.join(' · ') : null;
 };
+
+export type CompactSearchDraft = { text: string; isDisplaySummary: boolean };
+
+export const compactSearchDraftFromFilters = (
+  filters: RentalSearchFilters,
+  showStructuredSummary = false
+): CompactSearchDraft => {
+  const summary = formatCompactSearchContext(filters);
+  return filters.q
+    ? { text: filters.q, isDisplaySummary: false }
+    : { text: showStructuredSummary ? summary || '' : '', isDisplaySummary: showStructuredSummary && Boolean(summary) };
+};
+
+export const resolveCompactSearchDraft = (
+  filters: RentalSearchFilters,
+  draft: CompactSearchDraft
+): RentalSearchFilters => draft.isDisplaySummary
+  ? filters
+  : buildRentalSearchFilters(filters.city, draft.text, null);
