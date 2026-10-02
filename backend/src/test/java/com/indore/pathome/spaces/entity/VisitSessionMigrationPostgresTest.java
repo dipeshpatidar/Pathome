@@ -13,11 +13,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Runs V33 against a disposable PostgreSQL schema when local DB access is explicitly enabled. */
+/** Runs V33 and V34 against a disposable PostgreSQL schema when local DB access is explicitly enabled. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_VISIT_SESSION_SCHEMA_TEST", matches = "true")
 class VisitSessionMigrationPostgresTest {
     @Test
-    void migrationPreservesExistingRequestsAndAddsSessionConstraints() throws Exception {
+    void provenanceMigrationPreservesHistoryAndEnforcesIndependentRequestRelationships() throws Exception {
         String url = System.getenv().getOrDefault("SPRING_DATASOURCE_URL", "jdbc:postgresql://localhost:5432/pathome_db");
         String username = System.getenv().getOrDefault("SPRING_DATASOURCE_USERNAME", "pathome");
         String password = System.getenv().getOrDefault("SPRING_DATASOURCE_PASSWORD", "");
@@ -39,47 +39,122 @@ class VisitSessionMigrationPostgresTest {
                         + "status VARCHAR(40) NOT NULL DEFAULT 'RECEIVED', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
                         + "CONSTRAINT uk_property_visit_request_tenant_listing UNIQUE (tenant_id, listing_id))");
                 execute(connection, "INSERT INTO " + schema + ".users (id) VALUES (1), (2)");
-                execute(connection, "INSERT INTO " + schema + ".listings (id) VALUES (101), (102), (103)");
+                execute(connection, "INSERT INTO " + schema + ".listings (id) VALUES (101), (102), (103), (104), (105), (106), (107), (108)");
                 execute(connection, "INSERT INTO " + schema + ".property_visit_requests (tenant_id, listing_id) VALUES (1, 101)");
 
-                var result = Flyway.configure().dataSource(url, username, password)
-                        .schemas(schema).defaultSchema(schema)
-                        .baselineOnMigrate(true).baselineVersion("32")
-                        .locations("classpath:db/migration").load().migrate();
-                assertTrue(result.success);
-                assertEquals("33", result.targetSchemaVersion);
-
+                migrate(url, username, password, schema, "33");
                 connection.setSchema(schema);
                 assertEquals(1, count(connection, "SELECT count(*) FROM property_visit_requests WHERE status = 'RECEIVED' AND session_id IS NULL AND version = 0"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_policy WHERE id = 1 AND free_visit_sessions_default = 5 AND max_visit_session_duration_minutes = 60"));
 
-                execute(connection, "INSERT INTO visit_sessions (tenant_id, city) VALUES (1, 'Sample City')");
-                execute(connection, "INSERT INTO visit_sessions (tenant_id, city) VALUES (1, 'Sample City')");
-                execute(connection, "UPDATE property_visit_requests SET session_id = 1 WHERE id = 1");
-                execute(connection, "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id) VALUES (1, 101, 1, 1)");
-                execute(connection, "INSERT INTO visit_session_items (session_id, listing_id, position) VALUES (1, 102, 2)");
-                assertEquals("101,102", text(connection,
-                        "SELECT string_agg(listing_id::text, ',' ORDER BY position) FROM visit_session_items WHERE session_id = 1"));
-                execute(connection, "UPDATE visit_session_items SET removed_at = CURRENT_TIMESTAMP, removal_reason = 'Unavailable' WHERE listing_id = 102");
-                assertEquals(1, count(connection, "SELECT count(*) FROM visit_session_items WHERE listing_id = 102 AND removed_at IS NOT NULL"));
-                assertEquals("23505", sqlStateForRejectedInsert(connection,
-                        "INSERT INTO visit_session_items (session_id, listing_id, position) VALUES (1, 101, 3)"));
-                assertEquals("23505", sqlStateForRejectedInsert(connection,
-                        "INSERT INTO visit_session_items (session_id, listing_id, position) VALUES (1, 103, 2)"));
-                assertEquals("23503", sqlStateForRejectedInsert(connection,
-                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id) VALUES (1, 103, 3, 1)"));
-                assertEquals("23503", sqlStateForRejectedInsert(connection,
-                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id) VALUES (2, 101, 1, 1)"));
-                assertEquals("23503", sqlStateForRejectedInsert(connection,
-                        "INSERT INTO visit_sessions (tenant_id, city) VALUES (999, 'Other City')"));
+                execute(connection, "INSERT INTO visit_sessions (id, tenant_id, city) VALUES "
+                        + "(500, 1, 'Sample City'), (501, 1, 'Sample City'), (502, 2, 'Other City')");
+                execute(connection, "UPDATE property_visit_requests SET session_id = 500 WHERE id = 1");
+                execute(connection, "INSERT INTO property_visit_requests (tenant_id, listing_id, session_id) VALUES "
+                        + "(1, 104, 500), (2, 106, 502), (1, 107, 501)");
 
-                execute(connection, "INSERT INTO property_visit_requests (tenant_id, listing_id) VALUES (2, 102)");
+                // These represent rows that can exist between Package 1 and Package 2A.
+                execute(connection, "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id) VALUES (500, 101, 1, 1)");
+                execute(connection, "INSERT INTO visit_session_items (session_id, listing_id, position) VALUES (501, 105, 1)");
+
+                migrate(url, username, password, schema, "34");
+                connection.setSchema(schema);
+                assertEquals("TENANT_REQUESTED", text(connection,
+                        "SELECT origin FROM visit_session_items WHERE session_id = 500 AND listing_id = 101"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_session_items "
+                        + "WHERE session_id = 501 AND listing_id = 105 AND source_request_id IS NULL "
+                        + "AND derived_from_request_id IS NULL AND origin IS NULL"));
+
+                // One request can directly identify its own listing, or derive additional listings.
+                execute(connection, "INSERT INTO visit_session_items "
+                        + "(session_id, listing_id, position, derived_from_request_id, origin) "
+                        + "VALUES (500, 102, 2, 1, 'OE_ADDED')");
+                execute(connection, "INSERT INTO visit_session_items "
+                        + "(session_id, listing_id, position, derived_from_request_id, origin) "
+                        + "VALUES (500, 103, 3, 1, 'LESSOR_SUGGESTED')");
+                execute(connection, "INSERT INTO visit_session_items "
+                        + "(session_id, listing_id, position, source_request_id, origin) "
+                        + "VALUES (500, 104, 4, 2, 'TENANT_REQUESTED')");
+                execute(connection, "INSERT INTO visit_session_items "
+                        + "(session_id, listing_id, position, derived_from_request_id, origin) "
+                        + "VALUES (500, 105, 5, 2, 'OE_ADDED')");
+                assertEquals("1", text(connection,
+                        "SELECT derived_from_request_id::text FROM visit_session_items WHERE session_id = 500 AND listing_id = 102"));
+                assertEquals("2", text(connection,
+                        "SELECT derived_from_request_id::text FROM visit_session_items WHERE session_id = 500 AND listing_id = 105"));
+
+                // The derived relationship permits a different listing but never a different session/tenant.
                 assertEquals("23503", sqlStateForRejectedInsert(connection,
-                        "UPDATE property_visit_requests SET session_id = 1 WHERE tenant_id = 2 AND listing_id = 102"));
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, derived_from_request_id, origin) "
+                                + "VALUES (501, 102, 2, 1, 'OE_ADDED')"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, derived_from_request_id, origin) "
+                                + "VALUES (500, 108, 6, 3, 'OE_ADDED')"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "UPDATE property_visit_requests SET session_id = 500 WHERE id = 3"));
+
+                // The Package-1 source relationship remains bound to the exact listing and session.
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, origin) "
+                                + "VALUES (500, 108, 7, 1, 'TENANT_REQUESTED')"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, origin) "
+                                + "VALUES (501, 102, 2, 4, 'TENANT_REQUESTED')"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, origin) "
+                                + "VALUES (501, 101, 2, 1, 'TENANT_REQUESTED')"));
+
+                // The CHECK rejects contradictory states even when their foreign keys would be valid.
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, derived_from_request_id, origin) "
+                                + "VALUES (501, 107, 2, 4, 4, 'OE_ADDED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, origin) "
+                                + "VALUES (501, 102, 2, 'TENANT_REQUESTED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, origin) "
+                                + "VALUES (501, 102, 2, 'OE_ADDED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, origin) "
+                                + "VALUES (501, 102, 2, 'LESSOR_SUGGESTED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, origin) "
+                                + "VALUES (501, 107, 2, 4, 'OE_ADDED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id, origin) "
+                                + "VALUES (501, 107, 2, 4, 'LESSOR_SUGGESTED')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, source_request_id) "
+                                + "VALUES (501, 107, 2, 4)"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, derived_from_request_id) "
+                                + "VALUES (501, 108, 2, 4)"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_items (session_id, listing_id, position, origin) "
+                                + "VALUES (501, 102, 2, 'SYSTEM_RECOMMENDED')"));
+
+                // Status changes do not rewrite provenance, and referenced request deletion is restricted.
+                execute(connection, "UPDATE property_visit_requests SET status = 'CANCELLED' WHERE id = 1");
+                assertEquals("1", text(connection,
+                        "SELECT derived_from_request_id::text FROM visit_session_items WHERE session_id = 500 AND listing_id = 102"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "DELETE FROM property_visit_requests WHERE id = 1"));
+
+                assertEquals(1, count(connection, "SELECT count(*) FROM pg_indexes "
+                        + "WHERE schemaname = '" + schema + "' AND indexname = 'idx_visit_session_item_derived_request'"));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }
         }
+    }
+
+    private static void migrate(String url, String username, String password, String schema, String target) {
+        var result = Flyway.configure().dataSource(url, username, password)
+                .schemas(schema).defaultSchema(schema)
+                .baselineOnMigrate(true).baselineVersion("32")
+                .target(target).locations("classpath:db/migration").load().migrate();
+        assertTrue(result.success);
+        assertEquals(target, result.targetSchemaVersion);
     }
 
     private static void execute(Connection connection, String sql) throws SQLException {

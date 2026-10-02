@@ -31,6 +31,14 @@ public class VisitSessionItem {
     @JoinColumn(name = "source_request_id")
     private PropertyVisitRequest sourceRequest;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "derived_from_request_id")
+    private PropertyVisitRequest derivedFromRequest;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "origin", length = 32)
+    private VisitSessionItemOrigin origin;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "confirmation_status", nullable = false, length = 24)
     private VisitSessionItemConfirmationStatus confirmationStatus = VisitSessionItemConfirmationStatus.PENDING;
@@ -59,7 +67,7 @@ public class VisitSessionItem {
 
     @PrePersist
     protected void onCreate() {
-        validate();
+        validate(true);
         Instant now = Instant.now();
         if (createdAt == null) createdAt = now;
         updatedAt = now;
@@ -67,20 +75,38 @@ public class VisitSessionItem {
 
     @PreUpdate
     protected void onUpdate() {
-        validate();
+        validate(false);
         updatedAt = Instant.now();
     }
 
-    private void validate() {
+    private void validate(boolean newItem) {
         if (session == null) throw new IllegalStateException("Visit session is required");
         if (listing == null) throw new IllegalStateException("Listing is required");
         if (position == null || position < 1) throw new IllegalStateException("Position must be positive");
         if (confirmationStatus == null) throw new IllegalStateException("Confirmation status is required");
+        validateProvenance(newItem);
         boolean hasConfirmationMetadata = availabilityConfirmedAt != null && confirmedBy != null;
         if (confirmationStatus == VisitSessionItemConfirmationStatus.CONFIRMED && !hasConfirmationMetadata)
             throw new IllegalStateException("Confirmed items require confirmation actor and timestamp");
         if ((availabilityConfirmedAt == null) != (confirmedBy == null))
             throw new IllegalStateException("Confirmation actor and timestamp must be provided together");
+    }
+
+    private void validateProvenance(boolean newItem) {
+        if (sourceRequest == null && derivedFromRequest == null && origin == null) {
+            if (newItem) throw new IllegalStateException("New visit session items require provenance");
+            return;
+        }
+
+        boolean directRequest = sourceRequest != null
+                && derivedFromRequest == null
+                && origin == VisitSessionItemOrigin.TENANT_REQUESTED;
+        boolean derivedRequest = sourceRequest == null
+                && derivedFromRequest != null
+                && (origin == VisitSessionItemOrigin.OE_ADDED
+                    || origin == VisitSessionItemOrigin.LESSOR_SUGGESTED);
+        if (!directRequest && !derivedRequest)
+            throw new IllegalStateException("Visit session item provenance is inconsistent");
     }
 
     public Long getId() { return id; }
@@ -93,6 +119,10 @@ public class VisitSessionItem {
     public void setPosition(Integer position) { this.position = position; }
     public PropertyVisitRequest getSourceRequest() { return sourceRequest; }
     public void setSourceRequest(PropertyVisitRequest sourceRequest) { this.sourceRequest = sourceRequest; }
+    public PropertyVisitRequest getDerivedFromRequest() { return derivedFromRequest; }
+    public void setDerivedFromRequest(PropertyVisitRequest derivedFromRequest) { this.derivedFromRequest = derivedFromRequest; }
+    public VisitSessionItemOrigin getOrigin() { return origin; }
+    public void setOrigin(VisitSessionItemOrigin origin) { this.origin = origin; }
     public VisitSessionItemConfirmationStatus getConfirmationStatus() { return confirmationStatus; }
     public void setConfirmationStatus(VisitSessionItemConfirmationStatus confirmationStatus) { this.confirmationStatus = confirmationStatus; }
     public Instant getAvailabilityConfirmedAt() { return availabilityConfirmedAt; }

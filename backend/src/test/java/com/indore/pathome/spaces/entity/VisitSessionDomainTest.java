@@ -56,6 +56,8 @@ class VisitSessionDomainTest {
         item.setSession(new VisitSession());
         item.setListing(mock(Listing.class));
         item.setPosition(1);
+        item.setSourceRequest(new PropertyVisitRequest());
+        item.setOrigin(VisitSessionItemOrigin.TENANT_REQUESTED);
         assertEquals(VisitSessionItemConfirmationStatus.PENDING, item.getConfirmationStatus());
         assertDoesNotThrow(item::onCreate);
 
@@ -64,5 +66,66 @@ class VisitSessionDomainTest {
         item.setPosition(1);
         item.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
         assertThrows(IllegalStateException.class, item::onCreate);
+    }
+
+    @Test
+    void itemAcceptsEachTruthfulProvenanceCombination() {
+        VisitSessionItem direct = itemWithProvenance(
+                new PropertyVisitRequest(), null, VisitSessionItemOrigin.TENANT_REQUESTED);
+        VisitSessionItem oeAdded = itemWithProvenance(
+                null, new PropertyVisitRequest(), VisitSessionItemOrigin.OE_ADDED);
+        VisitSessionItem lessorSuggested = itemWithProvenance(
+                null, new PropertyVisitRequest(), VisitSessionItemOrigin.LESSOR_SUGGESTED);
+
+        assertDoesNotThrow(direct::onCreate);
+        assertDoesNotThrow(oeAdded::onCreate);
+        assertDoesNotThrow(lessorSuggested::onCreate);
+    }
+
+    @Test
+    void newItemsRejectUnknownOrContradictoryProvenanceButLegacyRowsCanBeUpdated() {
+        VisitSessionItem unknownNewItem = itemWithProvenance(null, null, null);
+        VisitSessionItem missingDirectRequest = itemWithProvenance(null, null, VisitSessionItemOrigin.TENANT_REQUESTED);
+        VisitSessionItem missingDerivedRequest = itemWithProvenance(null, null, VisitSessionItemOrigin.OE_ADDED);
+        VisitSessionItem lessorWithoutDerivedRequest = itemWithProvenance(null, null, VisitSessionItemOrigin.LESSOR_SUGGESTED);
+        VisitSessionItem bothRequests = itemWithProvenance(
+                new PropertyVisitRequest(), new PropertyVisitRequest(), VisitSessionItemOrigin.OE_ADDED);
+        VisitSessionItem derivedAsDirect = itemWithProvenance(
+                null, new PropertyVisitRequest(), VisitSessionItemOrigin.TENANT_REQUESTED);
+        VisitSessionItem directAsDerived = itemWithProvenance(
+                new PropertyVisitRequest(), null, VisitSessionItemOrigin.OE_ADDED);
+
+        assertThrows(IllegalStateException.class, unknownNewItem::onCreate);
+        assertThrows(IllegalStateException.class, missingDirectRequest::onCreate);
+        assertThrows(IllegalStateException.class, missingDerivedRequest::onCreate);
+        assertThrows(IllegalStateException.class, lessorWithoutDerivedRequest::onCreate);
+        assertThrows(IllegalStateException.class, bothRequests::onCreate);
+        assertThrows(IllegalStateException.class, derivedAsDirect::onCreate);
+        assertThrows(IllegalStateException.class, directAsDerived::onCreate);
+
+        VisitSessionItem legacyItem = itemWithProvenance(null, null, null);
+        assertDoesNotThrow(legacyItem::onUpdate);
+    }
+
+    @Test
+    void itemExposesIndependentRequestProvenanceAndOrigin() {
+        PropertyVisitRequest request = new PropertyVisitRequest();
+        VisitSessionItem item = itemWithProvenance(null, request, VisitSessionItemOrigin.LESSOR_SUGGESTED);
+
+        assertNull(item.getSourceRequest());
+        assertSame(request, item.getDerivedFromRequest());
+        assertEquals(VisitSessionItemOrigin.LESSOR_SUGGESTED, item.getOrigin());
+    }
+
+    private static VisitSessionItem itemWithProvenance(
+            PropertyVisitRequest source, PropertyVisitRequest derived, VisitSessionItemOrigin origin) {
+        VisitSessionItem item = new VisitSessionItem();
+        item.setSession(new VisitSession());
+        item.setListing(mock(Listing.class));
+        item.setPosition(1);
+        item.setSourceRequest(source);
+        item.setDerivedFromRequest(derived);
+        item.setOrigin(origin);
+        return item;
     }
 }
