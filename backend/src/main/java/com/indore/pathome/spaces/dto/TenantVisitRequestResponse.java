@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.dto;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
 
 /** Only tenant-facing facts already recorded by the visit-request domain. */
 public record TenantVisitRequestResponse(
@@ -15,5 +16,9 @@ public record TenantVisitRequestResponse(
         String coverImageUrl,
         String preferredVisitTiming,
         String status,
-        LocalDateTime requestedAt
+        LocalDateTime requestedAt,
+        Instant availabilityStartAt,
+        Instant availabilityEndAt,
+        String availabilityZoneId,
+        Instant preferredAt
 ) {}

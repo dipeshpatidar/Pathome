@@ -293,15 +293,34 @@ public class VisitOperationsService {
         if (command.status() != VisitSessionItemConfirmationStatus.CONFIRMED
                 && command.status() != VisitSessionItemConfirmationStatus.UNAVAILABLE)
             throw new IllegalArgumentException("Availability must be CONFIRMED or UNAVAILABLE");
-        if (item.getConfirmationStatus() == command.status()) return operationsView(session);
+        if (command.status() == VisitSessionItemConfirmationStatus.UNAVAILABLE
+                && command.hasAnyAvailabilityField())
+            throw new IllegalArgumentException("Unavailable properties cannot carry an availability window");
+        if (command.hasAnyAvailabilityField() && (command.status() != VisitSessionItemConfirmationStatus.CONFIRMED
+                || command.availabilitySource() == null))
+            throw new IllegalArgumentException("A confirmed property window requires a confirmation source");
+        if (item.getConfirmationStatus() == command.status() && !command.hasAnyAvailabilityField())
+            return operationsView(session);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         requireDraft(session);
-        if (item.getConfirmationStatus() != VisitSessionItemConfirmationStatus.PENDING)
+        if (item.getConfirmationStatus() != VisitSessionItemConfirmationStatus.PENDING
+                && item.getConfirmationStatus() != command.status())
             throw new VisitOperationsConflictException("Availability cannot be changed after it has been recorded");
+
+        SchedulingWindowValidator.Window propertyWindow = command.hasAnyAvailabilityField()
+                ? SchedulingWindowValidator.required(command.availabilityStartAt(), command.availabilityEndAt(),
+                    command.availabilityZoneId(), Instant.now(), true)
+                : null;
 
         item.setConfirmationStatus(command.status());
         item.setAvailabilityConfirmedAt(Instant.now());
         item.setConfirmedBy(actor);
+        if (propertyWindow != null) {
+            item.setAvailabilityStartAt(propertyWindow.startsAt());
+            item.setAvailabilityEndAt(propertyWindow.endsAt());
+            item.setAvailabilityZoneId(propertyWindow.zoneId());
+            item.setAvailabilitySource(command.availabilitySource());
+        }
         if (command.status() == VisitSessionItemConfirmationStatus.UNAVAILABLE
                 && item.getSourceRequest() != null) {
             PropertyVisitRequest request = requests.findLockedById(item.getSourceRequest().getId())
@@ -729,7 +748,9 @@ public class VisitOperationsService {
                 item.getDerivedFromRequest() == null ? null : item.getDerivedFromRequest().getId(),
                 item.getOrigin(), item.getConfirmationStatus(), item.getAvailabilityConfirmedAt(),
                 item.getRemovedAt(), item.getRemovedBy() == null ? null : item.getRemovedBy().getId(),
-                item.getRemovalReason());
+                item.getRemovalReason(), item.getAvailabilityStartAt(), item.getAvailabilityEndAt(),
+                item.getAvailabilityZoneId(), item.getAvailabilitySource(),
+                item.getConfirmedBy() == null ? null : item.getConfirmedBy().getId());
     }
 
     private GroundVisitSessionView groundView(VisitSession session, List<VisitSessionItem> sessionItems) {

@@ -20,6 +20,10 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
     @Query("select r from PropertyVisitRequest r where r.id = :id")
     Optional<PropertyVisitRequest> findLockedById(@Param("id") Long id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from PropertyVisitRequest r where r.id = :id and r.tenant.id = :tenantId")
+    Optional<PropertyVisitRequest> findLockedByIdAndTenantId(@Param("id") Long id, @Param("tenantId") Long tenantId);
+
     List<PropertyVisitRequest> findBySessionIdOrderByCreatedAtAscIdAsc(Long sessionId);
 
     interface OperationsQueueRow {

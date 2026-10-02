@@ -294,6 +294,54 @@ class VisitOperationsServiceTest {
     }
 
     @Test
+    void operationsRecordsPropertyWindowAndAuthenticatedChannelWithoutSchedulingSession() {
+        User actor = user(9L, Role.ROLE_ADMIN);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        VisitSessionItem pending = item(700L, session, listing(101L, "Example City"),
+                VisitSessionItemConfirmationStatus.PENDING, null);
+        when(authorization.requireOperations(9L)).thenReturn(actor);
+        when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
+        when(items.findBySessionIdAndId(500L, 700L)).thenReturn(Optional.of(pending));
+        when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of(pending));
+
+        OperationsVisitSessionView response = service.setAvailability(9L, 500L, 700L,
+                new VisitSessionAvailabilityCommand(0L, VisitSessionItemConfirmationStatus.CONFIRMED,
+                        java.time.OffsetDateTime.parse("2099-10-02T13:00:00+05:30"),
+                        java.time.OffsetDateTime.parse("2099-10-02T17:00:00+05:30"),
+                        "Asia/Kolkata", PropertyAvailabilitySource.WHATSAPP));
+
+        assertEquals(VisitSessionItemConfirmationStatus.CONFIRMED, pending.getConfirmationStatus());
+        assertEquals(Instant.parse("2099-10-02T07:30:00Z"), pending.getAvailabilityStartAt());
+        assertEquals(Instant.parse("2099-10-02T11:30:00Z"), pending.getAvailabilityEndAt());
+        assertEquals("Asia/Kolkata", pending.getAvailabilityZoneId());
+        assertEquals(PropertyAvailabilitySource.WHATSAPP, pending.getAvailabilitySource());
+        assertSame(actor, pending.getConfirmedBy());
+        assertNull(pending.getLessorConfirmationReference());
+        assertNull(session.getScheduledAt());
+        assertEquals(Instant.parse("2099-10-02T07:30:00Z"), response.items().get(0).propertyAvailabilityStartAt());
+        assertEquals(9L, response.items().get(0).availabilityConfirmedByUserId());
+    }
+
+    @Test
+    void invalidPropertyAvailabilityDoesNotPartiallyConfirmItem() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        VisitSessionItem pending = item(700L, session, listing(101L, "Example City"),
+                VisitSessionItemConfirmationStatus.PENDING, null);
+        when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
+        when(items.findBySessionIdAndId(500L, 700L)).thenReturn(Optional.of(pending));
+
+        assertThrows(IllegalArgumentException.class, () -> service.setAvailability(9L, 500L, 700L,
+                new VisitSessionAvailabilityCommand(0L, VisitSessionItemConfirmationStatus.CONFIRMED,
+                        java.time.OffsetDateTime.parse("2099-10-02T17:00:00+05:30"),
+                        java.time.OffsetDateTime.parse("2099-10-02T13:00:00+05:30"),
+                        "Asia/Kolkata", PropertyAvailabilitySource.PHONE)));
+
+        assertEquals(VisitSessionItemConfirmationStatus.PENDING, pending.getConfirmationStatus());
+        assertNull(pending.getAvailabilityConfirmedAt());
+        verify(entityManager, never()).flush();
+    }
+
+    @Test
     void removalSoftDeletesAndRetainsItemProvenanceAndActor() {
         User actor = user(9L, Role.ROLE_ADMIN);
         VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);

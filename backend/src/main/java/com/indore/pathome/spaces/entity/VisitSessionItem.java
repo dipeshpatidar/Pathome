@@ -46,6 +46,19 @@ public class VisitSessionItem {
     @Column(name = "availability_confirmed_at")
     private Instant availabilityConfirmedAt;
 
+    @Column(name = "availability_start_at")
+    private Instant availabilityStartAt;
+
+    @Column(name = "availability_end_at")
+    private Instant availabilityEndAt;
+
+    @Column(name = "availability_zone_id", length = 64)
+    private String availabilityZoneId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "availability_source", length = 24)
+    private PropertyAvailabilitySource availabilitySource;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "confirmed_by_user_id")
     private User confirmedBy;
@@ -94,6 +107,15 @@ public class VisitSessionItem {
             throw new IllegalStateException("Confirmed items require confirmation actor and timestamp");
         if ((availabilityConfirmedAt == null) != (confirmedBy == null))
             throw new IllegalStateException("Confirmation actor and timestamp must be provided together");
+        boolean hasAvailabilityWindow = availabilityStartAt != null || availabilityEndAt != null
+                || availabilityZoneId != null || availabilitySource != null;
+        if (hasAvailabilityWindow && (availabilityStartAt == null || availabilityEndAt == null
+                || availabilityZoneId == null || availabilitySource == null
+                || !availabilityStartAt.isBefore(availabilityEndAt)
+                || confirmationStatus != VisitSessionItemConfirmationStatus.CONFIRMED
+                || !hasConfirmationMetadata)) {
+            throw new IllegalStateException("Property availability requires a valid confirmed window and actor");
+        }
     }
 
     private void validateProvenance(boolean newItem) {
@@ -131,6 +153,14 @@ public class VisitSessionItem {
     public void setConfirmationStatus(VisitSessionItemConfirmationStatus confirmationStatus) { this.confirmationStatus = confirmationStatus; }
     public Instant getAvailabilityConfirmedAt() { return availabilityConfirmedAt; }
     public void setAvailabilityConfirmedAt(Instant availabilityConfirmedAt) { this.availabilityConfirmedAt = availabilityConfirmedAt; }
+    public Instant getAvailabilityStartAt() { return availabilityStartAt; }
+    public void setAvailabilityStartAt(Instant availabilityStartAt) { this.availabilityStartAt = availabilityStartAt; }
+    public Instant getAvailabilityEndAt() { return availabilityEndAt; }
+    public void setAvailabilityEndAt(Instant availabilityEndAt) { this.availabilityEndAt = availabilityEndAt; }
+    public String getAvailabilityZoneId() { return availabilityZoneId; }
+    public void setAvailabilityZoneId(String availabilityZoneId) { this.availabilityZoneId = availabilityZoneId; }
+    public PropertyAvailabilitySource getAvailabilitySource() { return availabilitySource; }
+    public void setAvailabilitySource(PropertyAvailabilitySource availabilitySource) { this.availabilitySource = availabilitySource; }
     public User getConfirmedBy() { return confirmedBy; }
     public void setConfirmedBy(User confirmedBy) { this.confirmedBy = confirmedBy; }
     public User getRemovedBy() { return removedBy; }

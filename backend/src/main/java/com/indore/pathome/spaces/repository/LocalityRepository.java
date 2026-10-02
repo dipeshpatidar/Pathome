@@ -17,9 +17,13 @@ public interface LocalityRepository extends JpaRepository<Locality, Long> {
     List<Locality> findAllBySectorNameIgnoreCase(String sectorName);
     List<Locality> findTop8BySectorNameIgnoreCaseOrderByCityAsc(String sectorName);
     List<Locality> findByCityIgnoreCase(String city);
+    java.util.Optional<Locality> findFirstByCityIgnoreCaseOrderByCityAscIdAsc(String city);
 
     @Query("SELECT DISTINCT l.city FROM Locality l WHERE l.city IS NOT NULL")
     List<String> findDistinctCities();
+
+    @Query("SELECT DISTINCT l.city FROM Locality l WHERE lower(l.city) = lower(:city)")
+    Optional<String> findCanonicalCity(@Param("city") String city);
 
     @Query(value = "SELECT l.* FROM localities l WHERE lower(l.city) = lower(:city) " +
             "AND (lower(l.sector_name) LIKE lower(concat(:term, '%')) " +

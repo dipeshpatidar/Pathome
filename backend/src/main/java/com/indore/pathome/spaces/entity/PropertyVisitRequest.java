@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.entity;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 
 /**
@@ -44,6 +45,18 @@ public class PropertyVisitRequest {
     @Column(name = "preferred_visit_timing", length = 240)
     private String preferredVisitTiming;
 
+    @Column(name = "availability_start_at")
+    private Instant availabilityStartAt;
+
+    @Column(name = "availability_end_at")
+    private Instant availabilityEndAt;
+
+    @Column(name = "availability_zone_id", length = 64)
+    private String availabilityZoneId;
+
+    @Column(name = "preferred_at")
+    private Instant preferredAt;
+
     @Column(name = "tenant_note", length = 2000)
     private String tenantNote;
 
@@ -78,6 +91,14 @@ public class PropertyVisitRequest {
     public void setMoveInTiming(String moveInTiming) { this.moveInTiming = moveInTiming; }
     public String getPreferredVisitTiming() { return preferredVisitTiming; }
     public void setPreferredVisitTiming(String preferredVisitTiming) { this.preferredVisitTiming = preferredVisitTiming; }
+    public Instant getAvailabilityStartAt() { return availabilityStartAt; }
+    public void setAvailabilityStartAt(Instant availabilityStartAt) { this.availabilityStartAt = availabilityStartAt; }
+    public Instant getAvailabilityEndAt() { return availabilityEndAt; }
+    public void setAvailabilityEndAt(Instant availabilityEndAt) { this.availabilityEndAt = availabilityEndAt; }
+    public String getAvailabilityZoneId() { return availabilityZoneId; }
+    public void setAvailabilityZoneId(String availabilityZoneId) { this.availabilityZoneId = availabilityZoneId; }
+    public Instant getPreferredAt() { return preferredAt; }
+    public void setPreferredAt(Instant preferredAt) { this.preferredAt = preferredAt; }
     public String getTenantNote() { return tenantNote; }
     public void setTenantNote(String tenantNote) { this.tenantNote = tenantNote; }
     public String getStatus() { return status.name(); }

@@ -42,6 +42,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.util.*;
 import java.time.LocalDate;
@@ -371,7 +373,7 @@ public class PropertyControllerTest {
         tenant.setEmail("tenant@example.com");
         tenant.setRole(Role.ROLE_TENANT);
         when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
-        when(userRepository.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
+        when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
         when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.empty());
         when(propertyVisitRequestRepository.saveAndFlush(any())).thenAnswer(invocation -> {
             var saved = invocation.getArgument(0, com.indore.pathome.spaces.entity.PropertyVisitRequest.class);
@@ -381,14 +383,22 @@ public class PropertyControllerTest {
 
         var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
                 BigDecimal.valueOf(20000), BigDecimal.valueOf(28000), "Vijay Nagar", "Within a month",
-                "Saturday afternoon", "Parking preferred"),
-                new UsernamePasswordAuthenticationToken("tenant@example.com", null,
-                        List.of(new SimpleGrantedAuthority("ROLE_TENANT"))));
+                "Saturday afternoon", "Parking preferred",
+                java.time.OffsetDateTime.parse("2099-10-02T13:00:00+05:30"),
+                java.time.OffsetDateTime.parse("2099-10-02T17:00:00+05:30"), "Asia/Kolkata",
+                java.time.OffsetDateTime.parse("2099-10-02T14:00:00+05:30")),
+                authenticatedAs(8L, "different-name@example.test"));
 
         assertEquals(201, response.getStatusCode().value());
         assertEquals("RECEIVED", response.getBody().status());
         assertTrue(response.getBody().message().contains("before confirming"));
-        verify(propertyVisitRequestRepository).saveAndFlush(any());
+        var saved = org.mockito.ArgumentCaptor.forClass(PropertyVisitRequest.class);
+        verify(propertyVisitRequestRepository).saveAndFlush(saved.capture());
+        assertEquals(8L, saved.getValue().getTenant().getId());
+        assertEquals(java.time.Instant.parse("2099-10-02T07:30:00Z"), saved.getValue().getAvailabilityStartAt());
+        assertEquals(java.time.Instant.parse("2099-10-02T08:30:00Z"), saved.getValue().getPreferredAt());
+        assertNull(saved.getValue().getSession());
+        verify(userRepository, never()).findByEmail(anyString());
     }
 
     @Test
@@ -404,17 +414,23 @@ public class PropertyControllerTest {
         existing.setListing(listing);
         existing.setTenant(tenant);
         when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
-        when(userRepository.findByEmail("tenant@example.com")).thenReturn(Optional.of(tenant));
+        when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
         when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.of(existing));
 
         var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
                 null, null, null, null, "Saturday afternoon", null),
-                new UsernamePasswordAuthenticationToken("tenant@example.com", null,
-                        List.of(new SimpleGrantedAuthority("ROLE_TENANT"))));
+                authenticatedAs(8L, "different-name@example.test"));
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(15L, response.getBody().requestId());
         verify(propertyVisitRequestRepository, never()).saveAndFlush(any());
+    }
+
+    private static UsernamePasswordAuthenticationToken authenticatedAs(Long userId, String name) {
+        var authentication = new UsernamePasswordAuthenticationToken(name, null,
+                List.of(new SimpleGrantedAuthority("ROLE_TENANT")));
+        authentication.setDetails(new PathomeAuthenticationDetails(new MockHttpServletRequest(), userId));
+        return authentication;
     }
 
     @Test

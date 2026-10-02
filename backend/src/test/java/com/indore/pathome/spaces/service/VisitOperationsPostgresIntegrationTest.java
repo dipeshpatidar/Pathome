@@ -141,6 +141,30 @@ class VisitOperationsPostgresIntegrationTest {
     }
 
     @Test
+    void reservationProjectionExposesExistingPackage2bBookingFields() {
+        Actors actors = actors();
+        Long sessionId = draftSession(actors, "Reservation projection");
+        Instant start = Instant.parse("2099-10-05T11:00:00Z");
+        operations.schedule(actors.admin().getId(), sessionId,
+                new ScheduleVisitSessionCommand(0L, start, "Asia/Kolkata", actors.ground().getId(), 45));
+
+        List<com.indore.pathome.spaces.dto.GroundExecutiveReservation> reservations =
+                sessions.findActiveReservationsOverlapping(actors.ground().getId(),
+                        List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED),
+                        start.plusSeconds(10 * 60L), start.plusSeconds(60 * 60L));
+
+        assertEquals(1, reservations.size());
+        assertEquals(sessionId, reservations.get(0).sessionId());
+        assertEquals(actors.ground().getId(), reservations.get(0).groundExecutiveUserId());
+        assertEquals(start, reservations.get(0).reservedStartAt());
+        assertEquals(start.plusSeconds(45 * 60L), reservations.get(0).reservedEndAt());
+        assertEquals(VisitSessionStatus.SCHEDULED, reservations.get(0).status());
+        assertTrue(sessions.findActiveReservationsOverlapping(actors.ground().getId(),
+                List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED),
+                start.plusSeconds(45 * 60L), start.plusSeconds(60 * 60L)).isEmpty());
+    }
+
+    @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void realScheduleTransactionRollbackSuppressesNotificationsAndCommitPersistsThem() {
         Actors actors = actors();

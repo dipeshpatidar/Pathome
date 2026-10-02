@@ -2,6 +2,8 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.AvailabilityStatus;
 import com.indore.pathome.spaces.dto.CreatePropertyVisitRequest;
+import com.indore.pathome.spaces.service.SchedulingWindowValidator;
+import com.indore.pathome.spaces.security.PathomeAuthenticationIdentity;
 import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.dto.PropertyVisitRequestAcknowledgement;
 import com.indore.pathome.spaces.dto.PublicDiscoveryPage;
@@ -628,7 +630,8 @@ public class PropertyController {
         if (listing == null || listing.getStatus() != ListingStatus.ACTIVE) {
             return ResponseEntity.notFound().build();
         }
-        User tenant = userRepository.findByEmail(authentication.getName())
+        Long tenantId = PathomeAuthenticationIdentity.requireUserId(authentication);
+        User tenant = userRepository.findById(tenantId)
                 .orElseThrow(() -> new AccessDeniedException("Tenant account is unavailable"));
         if (tenant.getRole() != Role.ROLE_TENANT) {
             throw new AccessDeniedException("Only tenant accounts can request a visit");
@@ -637,6 +640,9 @@ public class PropertyController {
             throw new IllegalArgumentException("Visit request details are required");
         }
         validateVisitRequest(request);
+        var availabilityWindow = SchedulingWindowValidator.optional(request.availabilityStartAt(),
+                request.availabilityEndAt(), request.availabilityZoneId(), request.preferredAt(),
+                java.time.Instant.now(), true);
 
         Optional<PropertyVisitRequest> existing = propertyVisitRequestRepository
                 .findByTenantIdAndListingId(tenant.getId(), listing.getId());
@@ -653,6 +659,12 @@ public class PropertyController {
         visitRequest.setMoveInTiming(normalizeOptionalText(request.moveInTiming(), MAX_MOVE_IN_TIMING_LENGTH, "Move-in timing"));
         visitRequest.setPreferredVisitTiming(normalizeRequiredText(
                 request.preferredVisitTiming(), MAX_PREFERRED_VISIT_TIMING_LENGTH, "Preferred visit timing"));
+        availabilityWindow.ifPresent(window -> {
+            visitRequest.setAvailabilityStartAt(window.startsAt());
+            visitRequest.setAvailabilityEndAt(window.endsAt());
+            visitRequest.setAvailabilityZoneId(window.zoneId());
+            visitRequest.setPreferredAt(window.preferredAt());
+        });
         visitRequest.setTenantNote(normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note"));
         try {
             PropertyVisitRequest saved = propertyVisitRequestRepository.saveAndFlush(visitRequest);

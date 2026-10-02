@@ -55,7 +55,9 @@ public class TenantVisitRequestHistoryService {
                     listing.getPropertyType() == null ? null : listing.getPropertyType().name(), listing.getBhkCount(),
                     listing.getCity(), listing.getSector(), listing.getStatus() == ListingStatus.ACTIVE,
                     coverByListing.get(listing.getId()),
-                    request.getPreferredVisitTiming(), request.getStatus(), request.getCreatedAt());
+                    request.getPreferredVisitTiming(), request.getStatus(), request.getCreatedAt(),
+                    request.getAvailabilityStartAt(), request.getAvailabilityEndAt(),
+                    request.getAvailabilityZoneId(), request.getPreferredAt());
         }).toList();
         return new TenantVisitRequestPage(userId, items, result.getTotalElements(), page, result.hasNext());
     }

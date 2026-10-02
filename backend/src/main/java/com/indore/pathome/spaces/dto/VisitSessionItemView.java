@@ -20,4 +20,9 @@ public record VisitSessionItemView(
         Instant availabilityConfirmedAt,
         Instant removedAt,
         Long removedByUserId,
-        String removalReason) {}
+        String removalReason,
+        Instant propertyAvailabilityStartAt,
+        Instant propertyAvailabilityEndAt,
+        String propertyAvailabilityZoneId,
+        com.indore.pathome.spaces.entity.PropertyAvailabilitySource propertyAvailabilitySource,
+        Long availabilityConfirmedByUserId) {}
