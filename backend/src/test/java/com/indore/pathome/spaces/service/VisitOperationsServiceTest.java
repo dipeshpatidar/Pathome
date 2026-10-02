@@ -32,6 +32,8 @@ class VisitOperationsServiceTest {
     private VisitOperationsAuthorizationService authorization;
     private ApplicationEventPublisher events;
     private EntityManager entityManager;
+    private VisitSchedulingRecommendationService recommendations;
+    private VisitSchedulingDecisionRepository decisions;
     private VisitOperationsService service;
 
     @BeforeEach
@@ -46,8 +48,10 @@ class VisitOperationsServiceTest {
         authorization = mock(VisitOperationsAuthorizationService.class);
         events = mock(ApplicationEventPublisher.class);
         entityManager = mock(EntityManager.class);
+        recommendations = mock(VisitSchedulingRecommendationService.class);
+        decisions = mock(VisitSchedulingDecisionRepository.class);
         service = new VisitOperationsService(requests, sessions, users, visitPolicies, items, listings, localities,
-                authorization, events, entityManager);
+                authorization, events, entityManager, recommendations, decisions);
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
         when(users.findLockedById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
         when(users.findById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));

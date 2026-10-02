@@ -240,6 +240,27 @@ class VisitSessionMigrationPostgresTest {
                 execute(connection, "INSERT INTO ground_executive_coverage "
                         + "(employee_profile_id, city, locality_id, created_by_user_id) "
                         + "VALUES (1, 'Example Market', 1, 1)");
+
+                migrate(url, username, password, schema, "38");
+                connection.setSchema(schema);
+                assertEquals(1, count(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema = '" + schema + "' AND table_name = 'visit_scheduling_decisions'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM pg_indexes WHERE schemaname = '" + schema
+                        + "' AND indexname = 'idx_visit_scheduling_decision_session_created'"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_scheduling_decisions (session_id, session_version_before, recommendation_generated_at, "
+                                + "policy_version, recommended_ground_executive_user_id, recommended_scheduled_at, "
+                                + "selected_ground_executive_user_id, selected_scheduled_at, duration_minutes, "
+                                + "approved_by_user_id, approved_at, was_override, override_reason, location_assessment, travel_confidence) "
+                                + "VALUES (500, 0, CURRENT_TIMESTAMP, '2cb-v1', 3, CURRENT_TIMESTAMP, 3, CURRENT_TIMESTAMP, "
+                                + "30, 1, CURRENT_TIMESTAMP, TRUE, NULL, 'UNAVAILABLE', 'UNKNOWN')"));
+                execute(connection, "INSERT INTO visit_scheduling_decisions (session_id, session_version_before, "
+                        + "recommendation_generated_at, policy_version, recommended_ground_executive_user_id, "
+                        + "recommended_scheduled_at, selected_ground_executive_user_id, selected_scheduled_at, "
+                        + "duration_minutes, approved_by_user_id, approved_at, was_override, location_assessment, travel_confidence) "
+                        + "VALUES (500, 0, CURRENT_TIMESTAMP, '2cb-v1', 3, CURRENT_TIMESTAMP, 3, CURRENT_TIMESTAMP, "
+                        + "30, 1, CURRENT_TIMESTAMP, FALSE, 'UNAVAILABLE', 'UNKNOWN')");
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_scheduling_decisions WHERE session_id = 500"));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }

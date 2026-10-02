@@ -18,6 +18,9 @@ import java.util.Optional;
 
 @Repository
 public interface ListingRepository extends JpaRepository<Listing, Long> {
+    @Query(value = "select id from listings where id = :id for update", nativeQuery = true)
+    Optional<Long> lockForSchedulingById(@Param("id") Long id);
+
     Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
     Optional<Listing> findByIdAndStatus(Long id, ListingStatus status);
 

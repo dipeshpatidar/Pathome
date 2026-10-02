@@ -27,6 +27,8 @@ public interface VisitSessionItemRepository extends JpaRepository<VisitSessionIt
 
     boolean existsBySessionIdAndListingId(Long sessionId, Long listingId);
 
+    long countBySessionIdAndRemovedAtIsNull(Long sessionId);
+
     @Query("select coalesce(max(i.position), 0) from VisitSessionItem i where i.session.id = :sessionId")
     int findMaximumPosition(@Param("sessionId") Long sessionId);
 }

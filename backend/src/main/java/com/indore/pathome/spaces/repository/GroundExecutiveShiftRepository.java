@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 
 public interface GroundExecutiveShiftRepository extends JpaRepository<GroundExecutiveShift, Long> {
@@ -15,6 +16,12 @@ public interface GroundExecutiveShiftRepository extends JpaRepository<GroundExec
     List<GroundExecutiveShift> findOverlappingWindow(@Param("profileId") Long profileId,
                                                       @Param("windowStart") Instant windowStart,
                                                       @Param("windowEnd") Instant windowEnd);
+
+    @Query("select s from GroundExecutiveShift s where s.schedulingProfile.employeeProfileId in :profileIds "
+            + "and s.startsAt < :windowEnd and s.endsAt > :windowStart order by s.schedulingProfile.employeeProfileId, s.startsAt, s.id")
+    List<GroundExecutiveShift> findOverlappingForProfiles(@Param("profileIds") Collection<Long> profileIds,
+                                                          @Param("windowStart") Instant windowStart,
+                                                          @Param("windowEnd") Instant windowEnd);
 
     @Query("select (count(s) > 0) from GroundExecutiveShift s "
             + "where s.schedulingProfile.employeeProfileId = :profileId "

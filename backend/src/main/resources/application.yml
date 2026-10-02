@@ -40,6 +40,26 @@ cloudinary:
   api-secret: ${CLOUDINARY_API_SECRET}
 
 pathome:
+  scheduling:
+    recommendation:
+      version: ${PATHOME_SCHEDULING_POLICY_VERSION:2cb-v1}
+      candidate-limit: ${PATHOME_SCHEDULING_CANDIDATE_LIMIT:5}
+      candidate-step-minutes: ${PATHOME_SCHEDULING_CANDIDATE_STEP_MINUTES:15}
+      maximum-candidate-starts: ${PATHOME_SCHEDULING_MAX_CANDIDATE_STARTS:256}
+      maximum-planning-window-days: ${PATHOME_SCHEDULING_MAX_PLANNING_DAYS:14}
+      maximum-ground-executives: ${PATHOME_SCHEDULING_MAX_GES:100}
+      maximum-itinerary-stops: ${PATHOME_SCHEDULING_MAX_STOPS:20}
+      maximum-reservation-rows: ${PATHOME_SCHEDULING_MAX_RESERVATIONS:5000}
+      stop-dwell-minutes: ${PATHOME_SCHEDULING_STOP_DWELL_MINUTES:15}
+      same-locality-travel-minutes: ${PATHOME_SCHEDULING_SAME_LOCALITY_MINUTES:5}
+      same-city-travel-minutes: ${PATHOME_SCHEDULING_SAME_CITY_MINUTES:20}
+      unknown-travel-minutes: ${PATHOME_SCHEDULING_UNKNOWN_TRAVEL_MINUTES:45}
+      travel-buffer-minutes: ${PATHOME_SCHEDULING_TRAVEL_BUFFER_MINUTES:10}
+      maximum-location-age-seconds: ${PATHOME_SCHEDULING_MAX_LOCATION_AGE_SECONDS:90}
+      maximum-location-accuracy-meters: ${PATHOME_SCHEDULING_MAX_LOCATION_ACCURACY_METERS:100}
+      maximum-location-future-relevance-minutes: ${PATHOME_SCHEDULING_LOCATION_RELEVANCE_MINUTES:120}
+      coordinate-detour-factor: ${PATHOME_SCHEDULING_COORDINATE_DETOUR_FACTOR:1.5}
+      conservative-travel-speed-kph: ${PATHOME_SCHEDULING_CONSERVATIVE_SPEED_KPH:15.0}
   guest:
     allowed-origins: ${PATHOME_GUEST_ALLOWED_ORIGINS:}
     retention-days: ${PATHOME_GUEST_RETENTION_DAYS:15}

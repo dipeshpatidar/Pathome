@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 
 public interface GroundExecutiveUnavailabilityRepository extends JpaRepository<GroundExecutiveUnavailability, Long> {
@@ -15,6 +16,12 @@ public interface GroundExecutiveUnavailabilityRepository extends JpaRepository<G
     List<GroundExecutiveUnavailability> findOverlappingWindow(@Param("profileId") Long profileId,
                                                                @Param("windowStart") Instant windowStart,
                                                                @Param("windowEnd") Instant windowEnd);
+
+    @Query("select u from GroundExecutiveUnavailability u where u.schedulingProfile.employeeProfileId in :profileIds "
+            + "and u.startsAt < :windowEnd and u.endsAt > :windowStart order by u.schedulingProfile.employeeProfileId, u.startsAt, u.id")
+    List<GroundExecutiveUnavailability> findOverlappingForProfiles(@Param("profileIds") Collection<Long> profileIds,
+                                                                   @Param("windowStart") Instant windowStart,
+                                                                   @Param("windowEnd") Instant windowEnd);
 
     @Query("select (count(u) > 0) from GroundExecutiveUnavailability u "
             + "where u.schedulingProfile.employeeProfileId = :profileId "

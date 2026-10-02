@@ -26,6 +26,10 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
 
     List<PropertyVisitRequest> findBySessionIdOrderByCreatedAtAscIdAsc(Long sessionId);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from PropertyVisitRequest r where r.session.id = :sessionId order by r.id")
+    List<PropertyVisitRequest> findLockedBySessionIdOrderByIdAsc(@Param("sessionId") Long sessionId);
+
     interface OperationsQueueRow {
         Long getId();
         String getStatus();

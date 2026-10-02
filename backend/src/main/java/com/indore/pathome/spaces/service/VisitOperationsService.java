@@ -38,6 +38,8 @@ public class VisitOperationsService {
     private final VisitOperationsAuthorizationService authorization;
     private final ApplicationEventPublisher events;
     private final EntityManager entityManager;
+    private final VisitSchedulingRecommendationService recommendations;
+    private final VisitSchedulingDecisionRepository decisions;
 
     public VisitOperationsService(PropertyVisitRequestRepository requests,
                                   VisitSessionRepository sessions,
@@ -48,7 +50,9 @@ public class VisitOperationsService {
                                   LocalityRepository localities,
                                   VisitOperationsAuthorizationService authorization,
                                   ApplicationEventPublisher events,
-                                  EntityManager entityManager) {
+                                  EntityManager entityManager,
+                                  VisitSchedulingRecommendationService recommendations,
+                                  VisitSchedulingDecisionRepository decisions) {
         this.requests = requests;
         this.sessions = sessions;
         this.users = users;
@@ -59,6 +63,65 @@ public class VisitOperationsService {
         this.authorization = authorization;
         this.events = events;
         this.entityManager = entityManager;
+        this.recommendations = recommendations;
+        this.decisions = decisions;
+    }
+
+    @Transactional(readOnly = true)
+    public VisitSchedulingRecommendationView recommend(Long actorId, Long sessionId, RecommendationRequest command) {
+        return recommendations.recommend(actorId, sessionId, command);
+    }
+
+    @Transactional
+    public VisitSchedulingApprovalView approveRecommendation(Long actorId, Long sessionId,
+            ApproveVisitRecommendationCommand command) {
+        User actor = authorization.requireOperations(actorId);
+        requireCommand(command);
+        if (command.expectedSessionVersion() == null)
+            throw new IllegalArgumentException("Expected Visit Session version is required");
+        if (command.groundExecutiveUserId() == null || command.groundExecutiveUserId() <= 0)
+            throw new IllegalArgumentException("Ground Executive user ID must be positive");
+        if (command.scheduledAt() == null) throw new IllegalArgumentException("Scheduled time is required");
+        if (command.overrideReason() != null && command.overrideReason().length() > 500)
+            throw new IllegalArgumentException("Override reason must be 500 characters or fewer");
+
+        VisitSession session = lockSession(sessionId);
+        requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
+        if (session.getStatus() != VisitSessionStatus.DRAFT)
+            throw new VisitOperationsConflictException("Only draft sessions can use recommendation approval");
+        lockGroundExecutives(List.of(command.groundExecutiveUserId()));
+        VisitSchedulingRecommendationService.ApprovalAssessment assessment = recommendations.validateApproval(
+                session, command.expectedSessionVersion(), command.groundExecutiveUserId(),
+                command.scheduledAt(), command.zoneId());
+        String reason = command.overrideReason() == null ? null : command.overrideReason().trim();
+        if (assessment.override() && (reason == null || reason.isBlank()))
+            throw new IllegalArgumentException("An override reason is required when selecting a different candidate");
+        if (!assessment.override() && reason != null && !reason.isBlank())
+            throw new IllegalArgumentException("Override reason is only allowed when selecting a different candidate");
+
+        ScheduleVisitSessionCommand booking = new ScheduleVisitSessionCommand(command.expectedSessionVersion(),
+                command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
+        OperationsVisitSessionView scheduled = schedule(actorId, sessionId, booking);
+
+        VisitSchedulingDecision decision = new VisitSchedulingDecision();
+        decision.setSession(session);
+        decision.setSessionVersionBefore(command.expectedSessionVersion());
+        decision.setRecommendationGeneratedAt(assessment.validatedAt());
+        decision.setPolicyVersion(assessment.policyVersion());
+        decision.setRecommendedGroundExecutive(users.getReferenceById(assessment.topGeId()));
+        decision.setRecommendedScheduledAt(assessment.topStart());
+        decision.setSelectedGroundExecutive(users.getReferenceById(assessment.selectedGeId()));
+        decision.setSelectedScheduledAt(assessment.selectedStart());
+        decision.setDurationMinutes(assessment.durationMinutes());
+        decision.setApprovedBy(actor);
+        decision.setApprovedAt(Instant.now());
+        decision.setOverride(assessment.override());
+        decision.setOverrideReason(assessment.override() ? reason : null);
+        decision.setLocationAssessment(assessment.locationAssessment());
+        decision.setTravelConfidence(assessment.travelConfidence());
+        decisions.saveAndFlush(decision);
+        return new VisitSchedulingApprovalView(scheduled, decision.getId(), assessment.override(),
+                assessment.topGeId(), assessment.topStart());
     }
 
     @Transactional(readOnly = true)

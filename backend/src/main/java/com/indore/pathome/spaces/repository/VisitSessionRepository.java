@@ -51,4 +51,40 @@ public interface VisitSessionRepository extends JpaRepository<VisitSession, Long
             @Param("windowStart") Instant windowStart,
             @Param("windowEnd") Instant windowEnd);
 
+    @Query("select s from VisitSession s where s.representative.id in :representativeIds "
+            + "and s.status in :activeStatuses and s.scheduledAt < :windowEnd "
+            + "and s.reservedEndAt > :windowStart order by s.representative.id, s.scheduledAt, s.id")
+    List<VisitSession> findActiveItinerariesForRepresentatives(
+            @Param("representativeIds") Collection<Long> representativeIds,
+            @Param("activeStatuses") Collection<VisitSessionStatus> activeStatuses,
+            @Param("windowStart") Instant windowStart,
+            @Param("windowEnd") Instant windowEnd,
+            org.springframework.data.domain.Pageable pageable);
+
+    @Query("select s from VisitSession s where s.representative.id in :representativeIds "
+            + "and s.status in :activeStatuses and s.reservedEndAt <= :windowStart "
+            + "and not exists (select nearer.id from VisitSession nearer "
+            + "where nearer.representative.id = s.representative.id and nearer.status in :activeStatuses "
+            + "and nearer.reservedEndAt <= :windowStart and (nearer.reservedEndAt > s.reservedEndAt "
+            + "or (nearer.reservedEndAt = s.reservedEndAt and nearer.scheduledAt > s.scheduledAt) "
+            + "or (nearer.reservedEndAt = s.reservedEndAt and nearer.scheduledAt = s.scheduledAt "
+            + "and nearer.id > s.id))) "
+            + "order by s.representative.id, s.reservedEndAt desc, s.scheduledAt desc, s.id desc")
+    List<VisitSession> findNearestActiveReservationsBefore(
+            @Param("representativeIds") Collection<Long> representativeIds,
+            @Param("activeStatuses") Collection<VisitSessionStatus> activeStatuses,
+            @Param("windowStart") Instant windowStart);
+
+    @Query("select s from VisitSession s where s.representative.id in :representativeIds "
+            + "and s.status in :activeStatuses and s.scheduledAt >= :windowEnd "
+            + "and not exists (select nearer.id from VisitSession nearer "
+            + "where nearer.representative.id = s.representative.id and nearer.status in :activeStatuses "
+            + "and nearer.scheduledAt >= :windowEnd and (nearer.scheduledAt < s.scheduledAt "
+            + "or (nearer.scheduledAt = s.scheduledAt and nearer.id < s.id))) "
+            + "order by s.representative.id, s.scheduledAt, s.id")
+    List<VisitSession> findNearestActiveReservationsAfter(
+            @Param("representativeIds") Collection<Long> representativeIds,
+            @Param("activeStatuses") Collection<VisitSessionStatus> activeStatuses,
+            @Param("windowEnd") Instant windowEnd);
+
 }
