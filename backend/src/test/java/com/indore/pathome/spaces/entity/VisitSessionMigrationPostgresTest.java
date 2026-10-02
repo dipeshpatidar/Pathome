@@ -13,7 +13,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Runs V33 and V34 against a disposable PostgreSQL schema when local DB access is explicitly enabled. */
+/** Runs the visit-session migrations against a disposable PostgreSQL schema when local DB access is explicitly enabled. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_VISIT_SESSION_SCHEMA_TEST", matches = "true")
 class VisitSessionMigrationPostgresTest {
     @Test
@@ -142,6 +142,42 @@ class VisitSessionMigrationPostgresTest {
 
                 assertEquals(1, count(connection, "SELECT count(*) FROM pg_indexes "
                         + "WHERE schemaname = '" + schema + "' AND indexname = 'idx_visit_session_item_derived_request'"));
+
+                migrate(url, username, password, schema, "36");
+                connection.setSchema(schema);
+                execute(connection, "UPDATE visit_session_items SET removed_at = CURRENT_TIMESTAMP, "
+                        + "removal_reason = 'migration preservation check', removed_by_user_id = 1 "
+                        + "WHERE session_id = 500 AND listing_id = 101");
+                assertEquals("1", text(connection,
+                        "SELECT removed_by_user_id::text FROM visit_session_items WHERE session_id = 500 AND listing_id = 101"));
+                assertEquals("23503", sqlStateForRejectedInsert(connection,
+                        "UPDATE visit_session_items SET removed_by_user_id = 999 WHERE session_id = 500 AND listing_id = 101"));
+                assertEquals("TENANT_REQUESTED", text(connection,
+                        "SELECT origin FROM visit_session_items WHERE session_id = 500 AND listing_id = 101"));
+
+                execute(connection, "UPDATE visit_sessions SET status = 'SCHEDULED', scheduled_at = '2099-10-02T11:00:00Z', "
+                        + "zone_id = 'Asia/Kolkata', representative_user_id = 1, assigned_at = CURRENT_TIMESTAMP, "
+                        + "duration_snapshot_minutes = 30, reserved_end_at = '2099-10-02T11:30:00Z' WHERE id = 500");
+                assertEquals("23P01", sqlStateForRejectedInsert(connection,
+                        "UPDATE visit_sessions SET status = 'SCHEDULED', scheduled_at = '2099-10-02T11:15:00Z', "
+                                + "zone_id = 'Asia/Kolkata', representative_user_id = 1, assigned_at = CURRENT_TIMESTAMP, "
+                                + "duration_snapshot_minutes = 30, reserved_end_at = '2099-10-02T11:45:00Z' WHERE id = 501"));
+                execute(connection, "UPDATE visit_sessions SET status = 'SCHEDULED', scheduled_at = '2099-10-02T12:00:00Z', "
+                        + "zone_id = 'Asia/Kolkata', representative_user_id = 1, assigned_at = CURRENT_TIMESTAMP, "
+                        + "duration_snapshot_minutes = 30, reserved_end_at = '2099-10-02T12:30:00Z' WHERE id = 501");
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "UPDATE visit_sessions SET representative_user_id = NULL, assigned_at = NULL, "
+                                + "duration_snapshot_minutes = 0 WHERE id = 500"));
+                execute(connection, "UPDATE visit_sessions SET status = 'CANCELLED' WHERE id = 500");
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "UPDATE visit_sessions SET status = 'SCHEDULED', scheduled_at = '2099-10-02T11:00:00Z', "
+                                + "zone_id = 'Asia/Kolkata', representative_user_id = 1, assigned_at = CURRENT_TIMESTAMP, "
+                                + "duration_snapshot_minutes = 30, reserved_end_at = '2099-10-02T11:31:00Z' WHERE id = 502"));
+                execute(connection, "UPDATE visit_sessions SET status = 'SCHEDULED', scheduled_at = '2099-10-02T11:00:00Z', "
+                        + "zone_id = 'Asia/Kolkata', representative_user_id = 1, assigned_at = CURRENT_TIMESTAMP, "
+                        + "duration_snapshot_minutes = 30, reserved_end_at = '2099-10-02T11:30:00Z' WHERE id = 502");
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions WHERE id = 500 AND status = 'CANCELLED' "
+                        + "AND reserved_end_at IS NOT NULL"));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }

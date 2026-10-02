@@ -56,6 +56,14 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 
+    @ExceptionHandler(VisitOperationsConflictException.class)
+    public ResponseEntity<ErrorResponseDTO> handleVisitOperationsConflict(
+            VisitOperationsConflictException ex, HttpServletRequest request) {
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.CONFLICT.value(), "Conflict", ex.getMessage(), request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponseDTO> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         log.warn("Invalid Argument Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI());

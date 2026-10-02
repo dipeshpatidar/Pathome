@@ -50,6 +50,10 @@ public class VisitSessionItem {
     @JoinColumn(name = "confirmed_by_user_id")
     private User confirmedBy;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "removed_by_user_id")
+    private User removedBy;
+
     @Column(name = "lessor_confirmation_reference", length = 255)
     private String lessorConfirmationReference;
 
@@ -129,6 +133,8 @@ public class VisitSessionItem {
     public void setAvailabilityConfirmedAt(Instant availabilityConfirmedAt) { this.availabilityConfirmedAt = availabilityConfirmedAt; }
     public User getConfirmedBy() { return confirmedBy; }
     public void setConfirmedBy(User confirmedBy) { this.confirmedBy = confirmedBy; }
+    public User getRemovedBy() { return removedBy; }
+    public void setRemovedBy(User removedBy) { this.removedBy = removedBy; }
     public String getLessorConfirmationReference() { return lessorConfirmationReference; }
     public void setLessorConfirmationReference(String lessorConfirmationReference) { this.lessorConfirmationReference = lessorConfirmationReference; }
     public Instant getRemovedAt() { return removedAt; }

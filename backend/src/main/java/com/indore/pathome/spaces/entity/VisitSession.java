@@ -3,12 +3,14 @@ package com.indore.pathome.spaces.entity;
 import jakarta.persistence.*;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 @Entity
 @Table(name = "visit_sessions", indexes = {
         @Index(name = "idx_visit_session_tenant_history", columnList = "tenant_id, created_at, id"),
         @Index(name = "idx_visit_session_status_schedule", columnList = "status, scheduled_at"),
-        @Index(name = "idx_visit_session_rep_schedule", columnList = "representative_user_id, status, scheduled_at")
+        @Index(name = "idx_visit_session_rep_schedule", columnList = "representative_user_id, status, scheduled_at"),
+        @Index(name = "idx_visit_session_ge_reservation", columnList = "representative_user_id, scheduled_at, reserved_end_at")
 })
 public class VisitSession {
     @Id
@@ -39,6 +41,9 @@ public class VisitSession {
 
     @Column(name = "scheduled_at")
     private Instant scheduledAt;
+
+    @Column(name = "reserved_end_at")
+    private Instant reservedEndAt;
 
     @Column(name = "zone_id", length = 64)
     private String zoneId;
@@ -98,6 +103,16 @@ public class VisitSession {
         if (zoneId != null) java.time.ZoneId.of(zoneId);
         if ((representative == null) != (assignedAt == null))
             throw new IllegalStateException("Representative and assignment timestamp must be provided together");
+        if (reservedEndAt != null && (scheduledAt == null || !reservedEndAt.isAfter(scheduledAt)))
+            throw new IllegalStateException("Reserved end must follow the scheduled start");
+        if ((status == VisitSessionStatus.SCHEDULED || status == VisitSessionStatus.STARTED)
+                && (scheduledAt == null || representative == null || assignedAt == null
+                    || durationSnapshotMinutes == null || durationSnapshotMinutes <= 0
+                    || reservedEndAt == null))
+            throw new IllegalStateException("Scheduled sessions require an assigned representative and positive reservation");
+        if ((status == VisitSessionStatus.SCHEDULED || status == VisitSessionStatus.STARTED)
+                && !reservedEndAt.equals(scheduledAt.plus(durationSnapshotMinutes, ChronoUnit.MINUTES)))
+            throw new IllegalStateException("Reservation end must match the planned duration");
     }
 
     public Long getId() { return id; }
@@ -116,6 +131,8 @@ public class VisitSession {
     public void setCanonicalLocality(Locality canonicalLocality) { this.canonicalLocality = canonicalLocality; }
     public Instant getScheduledAt() { return scheduledAt; }
     public void setScheduledAt(Instant scheduledAt) { this.scheduledAt = scheduledAt; }
+    public Instant getReservedEndAt() { return reservedEndAt; }
+    public void setReservedEndAt(Instant reservedEndAt) { this.reservedEndAt = reservedEndAt; }
     public String getZoneId() { return zoneId; }
     public void setZoneId(String zoneId) { this.zoneId = zoneId; }
     public User getRepresentative() { return representative; }

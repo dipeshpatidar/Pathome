@@ -8,5 +8,6 @@ import java.util.Optional;
 
 @Repository
 public interface EmployeeProfileRepository extends JpaRepository<EmployeeProfile, Long> {
+    Optional<EmployeeProfile> findByUserId(Long userId);
     Optional<EmployeeProfile> findByAssignedSectorAndRoleType(String assignedSector, String roleType);
 }
