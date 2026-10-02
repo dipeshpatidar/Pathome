@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
  */
 @Entity
 @Table(name = "property_visit_requests", indexes = {
-        @Index(name = "idx_property_visit_request_tenant", columnList = "tenant_id"),
+        @Index(name = "idx_property_visit_request_tenant_history", columnList = "tenant_id, created_at, id"),
         @Index(name = "idx_property_visit_request_listing", columnList = "listing_id"),
         @Index(name = "idx_property_visit_request_status_created", columnList = "status, created_at")
 }, uniqueConstraints = @UniqueConstraint(
@@ -47,8 +47,17 @@ public class PropertyVisitRequest {
     @Column(name = "tenant_note", length = 2000)
     private String tenantNote;
 
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 40)
-    private String status = "RECEIVED";
+    private VisitRequestStatus status = VisitRequestStatus.RECEIVED;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "session_id")
+    private VisitSession session;
+
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
@@ -71,8 +80,14 @@ public class PropertyVisitRequest {
     public void setPreferredVisitTiming(String preferredVisitTiming) { this.preferredVisitTiming = preferredVisitTiming; }
     public String getTenantNote() { return tenantNote; }
     public void setTenantNote(String tenantNote) { this.tenantNote = tenantNote; }
-    public String getStatus() { return status; }
-    public void setStatus(String status) { this.status = status; }
+    public String getStatus() { return status.name(); }
+    public void setStatus(String status) { this.status = VisitRequestStatus.valueOf(status); }
+    public VisitRequestStatus getStatusValue() { return status; }
+    public void setStatus(VisitRequestStatus status) { this.status = status; }
+    public VisitSession getSession() { return session; }
+    public void setSession(VisitSession session) { this.session = session; }
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

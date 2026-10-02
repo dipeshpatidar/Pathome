@@ -1,0 +1,139 @@
+package com.indore.pathome.spaces.entity;
+
+import jakarta.persistence.*;
+
+import java.time.Instant;
+
+@Entity
+@Table(name = "visit_sessions", indexes = {
+        @Index(name = "idx_visit_session_tenant_history", columnList = "tenant_id, created_at, id"),
+        @Index(name = "idx_visit_session_status_schedule", columnList = "status, scheduled_at"),
+        @Index(name = "idx_visit_session_rep_schedule", columnList = "representative_user_id, status, scheduled_at")
+})
+public class VisitSession {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "tenant_id", nullable = false)
+    private User tenant;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 24)
+    private VisitSessionStatus status = VisitSessionStatus.DRAFT;
+
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
+
+    @Column(nullable = false, length = 160)
+    private String city;
+
+    @Column(name = "area_name", length = 160)
+    private String areaName;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "canonical_locality_id")
+    private Locality canonicalLocality;
+
+    @Column(name = "scheduled_at")
+    private Instant scheduledAt;
+
+    @Column(name = "zone_id", length = 64)
+    private String zoneId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "representative_user_id")
+    private User representative;
+
+    @Column(name = "assigned_at")
+    private Instant assignedAt;
+
+    @Column(name = "started_at")
+    private Instant startedAt;
+
+    @Column(name = "expires_at")
+    private Instant expiresAt;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
+    @Column(name = "duration_snapshot_minutes")
+    private Integer durationSnapshotMinutes;
+
+    @Column(name = "entitlement_consumed_at")
+    private Instant entitlementConsumedAt;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt = Instant.now();
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt = Instant.now();
+
+    @PrePersist
+    protected void onCreate() {
+        validate();
+        Instant now = Instant.now();
+        if (createdAt == null) createdAt = now;
+        updatedAt = now;
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        validate();
+        updatedAt = Instant.now();
+    }
+
+    private void validate() {
+        if (tenant == null) throw new IllegalStateException("Visit session tenant is required");
+        if (status == null) throw new IllegalStateException("Visit session status is required");
+        if (city == null || city.isBlank()) throw new IllegalStateException("Visit session city is required");
+        if (durationSnapshotMinutes != null && durationSnapshotMinutes < 0)
+            throw new IllegalStateException("Duration snapshot cannot be negative");
+        if (startedAt != null && expiresAt != null && expiresAt.isBefore(startedAt))
+            throw new IllegalStateException("Visit session expiry cannot precede its start");
+        if ((scheduledAt == null) != (zoneId == null))
+            throw new IllegalStateException("Scheduled timestamp and timezone must be provided together");
+        if (zoneId != null) java.time.ZoneId.of(zoneId);
+        if ((representative == null) != (assignedAt == null))
+            throw new IllegalStateException("Representative and assignment timestamp must be provided together");
+    }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public User getTenant() { return tenant; }
+    public void setTenant(User tenant) { this.tenant = tenant; }
+    public VisitSessionStatus getStatus() { return status; }
+    public void setStatus(VisitSessionStatus status) { this.status = status; }
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
+    public String getCity() { return city; }
+    public void setCity(String city) { this.city = city; }
+    public String getAreaName() { return areaName; }
+    public void setAreaName(String areaName) { this.areaName = areaName; }
+    public Locality getCanonicalLocality() { return canonicalLocality; }
+    public void setCanonicalLocality(Locality canonicalLocality) { this.canonicalLocality = canonicalLocality; }
+    public Instant getScheduledAt() { return scheduledAt; }
+    public void setScheduledAt(Instant scheduledAt) { this.scheduledAt = scheduledAt; }
+    public String getZoneId() { return zoneId; }
+    public void setZoneId(String zoneId) { this.zoneId = zoneId; }
+    public User getRepresentative() { return representative; }
+    public void setRepresentative(User representative) { this.representative = representative; }
+    public Instant getAssignedAt() { return assignedAt; }
+    public void setAssignedAt(Instant assignedAt) { this.assignedAt = assignedAt; }
+    public Instant getStartedAt() { return startedAt; }
+    public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }
+    public Instant getExpiresAt() { return expiresAt; }
+    public void setExpiresAt(Instant expiresAt) { this.expiresAt = expiresAt; }
+    public Instant getCompletedAt() { return completedAt; }
+    public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+    public Integer getDurationSnapshotMinutes() { return durationSnapshotMinutes; }
+    public void setDurationSnapshotMinutes(Integer durationSnapshotMinutes) { this.durationSnapshotMinutes = durationSnapshotMinutes; }
+    public Instant getEntitlementConsumedAt() { return entitlementConsumedAt; }
+    public void setEntitlementConsumedAt(Instant entitlementConsumedAt) { this.entitlementConsumedAt = entitlementConsumedAt; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+    public Instant getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+}
