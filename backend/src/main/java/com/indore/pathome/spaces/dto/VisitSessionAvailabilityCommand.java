@@ -1,12 +1,15 @@
 package com.indore.pathome.spaces.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.indore.pathome.spaces.entity.VisitSessionItemConfirmationStatus;
 import com.indore.pathome.spaces.entity.PropertyAvailabilitySource;
 import java.time.OffsetDateTime;
 public record VisitSessionAvailabilityCommand(
         Long expectedSessionVersion,
         VisitSessionItemConfirmationStatus status,
+        @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
         OffsetDateTime availabilityStartAt,
+        @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
         OffsetDateTime availabilityEndAt,
         String availabilityZoneId,
         PropertyAvailabilitySource availabilitySource) {

@@ -285,7 +285,7 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
             </>}
           </div>
 
-          {isStarted && <GroundVisitOutcomePanel key={`${user?.id ?? 'signed-out'}-${visit.sessionId}`} sessionId={visit.sessionId} />}
+          {isStarted && <GroundVisitOutcomePanel key={`${user?.id ?? 'signed-out'}-${visit.sessionId}`} sessionId={visit.sessionId} onFinalized={() => void refreshBoth()} />}
 
           {contact && <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-3 text-sm text-slate-200">
             <p className="font-semibold">{contact.tenantName || 'Tenant'}</p>

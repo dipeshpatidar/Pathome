@@ -195,7 +195,7 @@ public class VisitOperationsService {
             session.setCity(location.city());
             session.setAreaName(requestedListing.getSector());
             session.setCanonicalLocality(location.locality());
-            sessions.save(session);
+            session = sessions.save(session);
         } else {
             if (command.expectedSessionVersion() == null)
                 throw new IllegalArgumentException("Expected session version is required when attaching a request");

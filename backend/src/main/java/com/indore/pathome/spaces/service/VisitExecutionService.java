@@ -11,6 +11,7 @@ import com.indore.pathome.spaces.repository.GroundExecutiveSchedulingProfileRepo
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.AccessDeniedException;
@@ -34,6 +35,7 @@ import java.util.function.Supplier;
 public class VisitExecutionService {
     private static final Logger log = LoggerFactory.getLogger(VisitExecutionService.class);
     private static final int MAX_ETA_MINUTES = 24 * 60;
+    private static final int MAX_EXECUTION_REPAIR_RETRIES = 2;
     private final VisitSessionRepository sessions;
     private final UserRepository users;
     private final EmployeeProfileRepository employees;
@@ -993,7 +995,8 @@ public class VisitExecutionService {
     }
 
     private <T> T executeRepairWithRetry(Supplier<T> operation) {
-        int attempts = properties.getRepairRetries() + 1;
+        int attempts = Math.min(properties.getRepairRetries(), MAX_EXECUTION_REPAIR_RETRIES) + 1;
+        boolean lockContention = false;
         for (int attempt = 0; attempt < attempts; attempt++) {
             try {
                 return repairTransaction.execute(status -> operation.get());
@@ -1002,9 +1005,27 @@ public class VisitExecutionService {
             } catch (DataIntegrityViolationException conflict) {
                 if (!isReservationOverlap(conflict)) throw conflict;
                 log.warn("Rolling back concurrent GE reservation overlap attempt {} of {}", attempt + 1, attempts);
+            } catch (RuntimeException failure) {
+                if (!isRetryableLockFailure(failure)) throw failure;
+                lockContention = true;
+                log.warn("Rolling back transient visit lock failure on attempt {} of {}", attempt + 1, attempts);
             }
         }
+        if (lockContention)
+            throw new VisitOperationsConflictException(
+                    "The visit could not be safely updated while another execution was in progress. Retry the operation.");
         throw new VisitOperationsConflictException("Downstream visit state kept changing during repair; Operations state was preserved. Retry the operation.");
+    }
+
+    private boolean isRetryableLockFailure(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof PessimisticLockingFailureException) return true;
+            if (cause instanceof java.sql.SQLException sql) {
+                String state = sql.getSQLState();
+                if ("40P01".equals(state) || "55P03".equals(state)) return true;
+            }
+        }
+        return false;
     }
 
     private boolean isReservationOverlap(Throwable failure) {

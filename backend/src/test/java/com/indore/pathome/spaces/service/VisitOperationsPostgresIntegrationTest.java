@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.dto.RecommendationRequest;
 import com.indore.pathome.spaces.dto.RecommendationStatus;
 import com.indore.pathome.spaces.dto.ApproveVisitRecommendationCommand;
 import com.indore.pathome.spaces.dto.VisitOtpStartCommand;
+import com.indore.pathome.spaces.dto.VisitExecutionView;
 import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
 import com.indore.pathome.spaces.dto.CompleteVisitSessionWithOutcomesCommand;
 import com.indore.pathome.spaces.dto.CorrectVisitOutcomeCommand;
@@ -23,6 +24,7 @@ import com.indore.pathome.spaces.service.field.FieldResourceKey;
 import com.indore.pathome.spaces.service.field.LocationAssessment;
 import com.indore.pathome.spaces.service.field.LocationSnapshot;
 import com.indore.pathome.spaces.service.field.LocationSnapshotProvider;
+import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 
 import java.math.BigDecimal;
 import java.sql.DriverManager;
@@ -56,10 +59,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 @DataJpaTest
@@ -108,7 +114,7 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private VisitOperationsService operations;
     @Autowired private VisitSessionRepository sessions;
     @Autowired private UserRepository users;
-    @Autowired private EmployeeProfileRepository employees;
+    @SpyBean private EmployeeProfileRepository employees;
     @Autowired private ListingRepository listings;
     @Autowired private PropertyVisitRequestRepository requests;
     @Autowired private VisitSessionItemRepository items;
@@ -706,6 +712,206 @@ class VisitOperationsPostgresIntegrationTest {
                         + "and event_type='OUTCOME_SCOPE_CAPTURED'", Integer.class, scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
                 Integer.class, "VISIT_STARTED:" + scenario.sessionId() + ":" + operationId));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void concurrentLateStartAndDownstreamStartRetryDeadlockInFreshTransaction() throws Exception {
+        RecommendationScenario current = recommendationScenario(false);
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant scheduleAnchor = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        Instant currentStart = scheduleAnchor.minus(Duration.ofMinutes(currentPlan.durationMinutes() + 10L));
+        Instant downstreamStart = scheduleAnchor.plus(Duration.ofMinutes(10));
+        Instant reservationSetup = scheduleAnchor.plus(Duration.ofMinutes(30));
+        scheduleForExecution(current, current.geA(), reservationSetup, currentPlan.durationMinutes(), true);
+        scheduleForExecution(downstream, current.geA(),
+                reservationSetup.plus(Duration.ofMinutes(currentPlan.durationMinutes() + 30L)),
+                downstreamPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(),
+                Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(downstream.tenant().getId(), downstream.sessionId(),
+                Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        execution.markArrived(downstream.geA().getId(), downstream.sessionId());
+        var currentCode = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        var downstreamCode = execution.issueStartCode(downstream.tenant().getId(), downstream.sessionId());
+        scheduleForExecution(current, current.geA(), currentStart, currentPlan.durationMinutes(), true);
+        scheduleForExecution(downstream, downstream.geA(), downstreamStart, downstreamPlan.durationMinutes(), true);
+        UUID currentOperation = UUID.randomUUID();
+        UUID downstreamOperation = UUID.randomUUID();
+
+        CountDownLatch currentOwnsGeLock = new CountDownLatch(1);
+        CountDownLatch allowCurrentPastGeLock = new CountDownLatch(1);
+        CountDownLatch downstreamOwnsSessionBeforeGeLock = new CountDownLatch(1);
+        CountDownLatch allowDownstreamGeLockAttempt = new CountDownLatch(1);
+        AtomicBoolean pausedCurrent = new AtomicBoolean();
+        AtomicBoolean pausedDownstream = new AtomicBoolean();
+        AtomicInteger currentGeLockCalls = new AtomicInteger();
+        AtomicInteger downstreamGeLockCalls = new AtomicInteger();
+
+        // The repository is a JDK proxy, so coordinate its lock with an equivalent real PostgreSQL row lock.
+        // The service, transaction boundaries, visit rows, and all other repositories remain real.
+        doAnswer(invocation -> {
+            String threadName = Thread.currentThread().getName();
+            if (threadName.equals("p5-late-start")) {
+                currentGeLockCalls.incrementAndGet();
+                jdbc.queryForObject("select id from employee_profiles where user_id=? for no key update",
+                        Long.class, current.geA().getId());
+                if (pausedCurrent.compareAndSet(false, true)) {
+                    currentOwnsGeLock.countDown();
+                    if (!allowCurrentPastGeLock.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("Timed out coordinating late START after GE lock");
+                }
+                return employees.findByUserId(current.geA().getId());
+            }
+            if (threadName.equals("p5-downstream-start")) {
+                downstreamGeLockCalls.incrementAndGet();
+                if (pausedDownstream.compareAndSet(false, true)) {
+                    // startAttempt has already locked Visit B before asking for the GE lock.
+                    downstreamOwnsSessionBeforeGeLock.countDown();
+                    if (!allowDownstreamGeLockAttempt.await(10, TimeUnit.SECONDS))
+                        throw new IllegalStateException("Timed out coordinating downstream START before GE lock");
+                }
+                jdbc.queryForObject("select id from employee_profiles where user_id=? for no key update",
+                        Long.class, current.geA().getId());
+                return employees.findByUserId(current.geA().getId());
+            }
+            return invocation.callRealMethod();
+        }).when(employees).findLockedByUserId(eq(current.geA().getId()));
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var lateStart = pool.submit(() -> startNamed("p5-late-start", current.geA().getId(), current.sessionId(),
+                    new VisitOtpStartCommand(currentCode.generation(), currentCode.code(), currentOperation)));
+            boolean acquiredCurrentLock = currentOwnsGeLock.await(8, TimeUnit.SECONDS);
+            assertTrue(acquiredCurrentLock, "late START must acquire the GE lock first; completed=" + lateStart.isDone()
+                    + (lateStart.isDone() ? ", result=" + lateStart.get(1, TimeUnit.SECONDS) : ""));
+
+            var downstreamStartAttempt = pool.submit(() -> startNamed("p5-downstream-start", current.geA().getId(),
+                    downstream.sessionId(), new VisitOtpStartCommand(downstreamCode.generation(), downstreamCode.code(),
+                            downstreamOperation)));
+            assertTrue(downstreamOwnsSessionBeforeGeLock.await(8, TimeUnit.SECONDS),
+                    "downstream START must hold its own session row before requesting the GE lock");
+
+            allowCurrentPastGeLock.countDown();
+            boolean waitingOnSession = awaitPostgresLockWait("visit_sessions", 8);
+            assertTrue(waitingOnSession,
+                    "late START must reach and wait on the downstream session row while holding the GE lock; activity="
+                            + postgresActivityForTests() + ", lateResult="
+                            + (lateStart.isDone() ? lateStart.get(1, TimeUnit.SECONDS) : "running"));
+            allowDownstreamGeLockAttempt.countDown();
+
+            ConcurrentStartResult currentResult = lateStart.get(20, TimeUnit.SECONDS);
+            ConcurrentStartResult downstreamResult = downstreamStartAttempt.get(20, TimeUnit.SECONDS);
+            assertNoUnhandledStartFailure(currentResult);
+            assertNoUnhandledStartFailure(downstreamResult);
+            assertTrue(currentGeLockCalls.get() + downstreamGeLockCalls.get() >= 3,
+                    "a deadlock loser must retry the full attempt after PostgreSQL aborts its transaction");
+
+            VisitSession currentSession = sessions.findById(current.sessionId()).orElseThrow();
+            VisitSession downstreamSession = sessions.findById(downstream.sessionId()).orElseThrow();
+            long startedCount = List.of(currentSession, downstreamSession).stream()
+                    .filter(session -> session.getStatus() == VisitSessionStatus.STARTED).count();
+            assertEquals(1, startedCount, "the GE lock must permit at most one active START");
+            assertEquals(current.geA().getId(), currentSession.getRepresentative().getId());
+            assertEquals(current.geA().getId(), downstreamSession.getRepresentative().getId());
+            assertNotNull(execution.getAssignedExecution(current.geA().getId(), current.sessionId()));
+            assertNotNull(execution.getAssignedExecution(current.geA().getId(), downstream.sessionId()));
+            assertThrows(EntityNotFoundException.class,
+                    () -> execution.getAssignedExecution(current.geB().getId(), current.sessionId()));
+            assertThrows(EntityNotFoundException.class,
+                    () -> execution.getAssignedExecution(current.geB().getId(), downstream.sessionId()));
+
+            assertStartSideEffectsMatchState(currentSession, currentOperation);
+            assertStartSideEffectsMatchState(downstreamSession, downstreamOperation);
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id in (?,?) "
+                            + "and event_type='CONSUME'", Integer.class, current.sessionId(), downstream.sessionId()));
+            assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id in (?,?) "
+                            + "and event_type='RELEASE'", Integer.class, current.sessionId(), downstream.sessionId()));
+            assertNoV36Overlaps();
+        } finally {
+            allowCurrentPastGeLock.countDown();
+            allowDownstreamGeLockAttempt.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private ConcurrentStartResult startNamed(String threadName, Long geId, Long sessionId, VisitOtpStartCommand command) {
+        Thread.currentThread().setName(threadName);
+        try {
+            return new ConcurrentStartResult(execution.start(geId, sessionId, command), null);
+        } catch (RuntimeException failure) {
+            return new ConcurrentStartResult(null, failure);
+        }
+    }
+
+    private void assertNoUnhandledStartFailure(ConcurrentStartResult result) {
+        assertNotEquals(result.view() == null, result.failure() == null,
+                "each concurrent START must return either a state or a captured failure");
+        if (result.failure() != null)
+            assertInstanceOf(VisitOperationsConflictException.class, result.failure(),
+                    "only a truthful domain conflict is acceptable after bounded START retries; actual="
+                            + result.failure());
+        if (result.view() != null)
+            assertTrue(List.of(VisitSessionStatus.STARTED, VisitSessionStatus.REPAIR_REQUIRED,
+                            VisitSessionStatus.SCHEDULED).contains(result.view().status()),
+                    "retry must return a valid current execution state");
+    }
+
+    private boolean awaitPostgresLockWait(String queryFragment, int timeoutSeconds) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        while (System.nanoTime() < deadline) {
+            Integer waiting = jdbc.queryForObject("select count(*) from pg_stat_activity where datname=current_database() "
+                            + "and pid<>pg_backend_pid() and wait_event_type='Lock' and query ilike ?",
+                    Integer.class, "%" + queryFragment + "%");
+            if (waiting != null && waiting > 0) return true;
+            Thread.sleep(10);
+        }
+        return false;
+    }
+
+    private List<String> postgresActivityForTests() {
+        return jdbc.query("select wait_event_type || ':' || coalesce(wait_event,'') || ':' || query "
+                        + "from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid() "
+                        + "and state='active' and query ilike '%visit_%'",
+                (rs, row) -> rs.getString(1));
+    }
+
+    private void assertStartSideEffectsMatchState(VisitSession session, UUID operationId) {
+        boolean started = session.getStatus() == VisitSessionStatus.STARTED;
+        if (started) assertEquals(operationId, session.getStartOperationId());
+        assertEquals(started ? 1 : 0, jdbc.queryForObject(
+                "select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, session.getId()));
+        assertEquals(started ? 1 : 0, jdbc.queryForObject(
+                "select count(*) from visit_execution_events where session_id=? and idempotency_key=?",
+                Integer.class, session.getId(), "START:" + operationId));
+        assertEquals(started ? 1 : 0, jdbc.queryForObject(
+                "select count(*) from visit_session_outcome_reports where session_id=? and scope_source='OTP_START'",
+                Integer.class, session.getId()));
+        assertEquals(started ? 1 : 0, jdbc.queryForObject(
+                "select count(*) from visit_execution_events where session_id=? and event_type='OUTCOME_SCOPE_CAPTURED'",
+                Integer.class, session.getId()));
+        if (started) {
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                    Integer.class, "VISIT_STARTED:" + session.getId() + ":" + operationId));
+        } else {
+            assertNull(session.getEntitlementConsumedAt());
+            assertTrue(entitlements.hasReservation(session.getId()));
+        }
+        assertEquals(started ? 1 : 0,
+                jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
+                        Integer.class, "START:" + operationId));
+        if (!started)
+            assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                    Integer.class, "VISIT_STARTED:" + session.getId() + ":" + operationId));
     }
 
     @Test
@@ -2680,6 +2886,8 @@ class VisitOperationsPostgresIntegrationTest {
 
     private record LateStartPair(RecommendationScenario current, RecommendationScenario downstream,
             com.indore.pathome.spaces.dto.VisitStartCodeView startCode, Instant downstreamStart) {}
+
+    private record ConcurrentStartResult(VisitExecutionView view, RuntimeException failure) {}
 
     private String start(CountDownLatch ready, CountDownLatch gate, Long geId, Long sessionId,
             VisitOtpStartCommand command) {

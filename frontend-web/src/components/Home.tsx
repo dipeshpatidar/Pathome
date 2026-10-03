@@ -1352,7 +1352,7 @@ export const Home: React.FC = () => {
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
         {!isPropertyRoute && !isLessorRoute && role === 'EMPLOYEE' && (
           <motion.div 
-            key="employee-crm-view"
+            key={`employee-crm-view-${user?.id ?? 'signed-out'}`}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -16 }}
@@ -1365,7 +1365,7 @@ export const Home: React.FC = () => {
       {/* MASTER ADMIN CONSOLE & SUB-ADMIN OVERLAY */}
         {!isPropertyRoute && !isLessorRoute && (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN') && (
           <motion.div 
-            key="master-admin-view"
+            key={`master-admin-view-${user?.id ?? 'signed-out'}`}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -16 }}
