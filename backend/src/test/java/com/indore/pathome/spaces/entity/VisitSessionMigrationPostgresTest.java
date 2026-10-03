@@ -36,7 +36,7 @@ class VisitSessionMigrationPostgresTest {
                 execute(connection, "CREATE SCHEMA " + schema);
                 connection.setSchema(schema);
                 execute(connection, "CREATE TABLE " + schema + ".users (id BIGINT PRIMARY KEY, role VARCHAR(40) NOT NULL DEFAULT 'ROLE_TENANT', free_visits_remaining INTEGER NOT NULL DEFAULT 5)");
-                execute(connection, "CREATE TABLE " + schema + ".listings (id BIGINT PRIMARY KEY)");
+                execute(connection, "CREATE TABLE " + schema + ".listings (id BIGINT PRIMARY KEY, title TEXT, address TEXT, city TEXT, sector TEXT)");
                 execute(connection, "CREATE TABLE " + schema + ".localities (id BIGINT PRIMARY KEY, "
                         + "city VARCHAR(160) NOT NULL, sector_name VARCHAR(160) NOT NULL)");
                 execute(connection, "CREATE TABLE " + schema + ".employee_profiles (id BIGINT PRIMARY KEY, "
@@ -53,7 +53,15 @@ class VisitSessionMigrationPostgresTest {
                 execute(connection, "UPDATE " + schema + ".users SET role='ROLE_ADMIN' WHERE id=5");
                 execute(connection, "INSERT INTO " + schema + ".localities (id, city, sector_name) "
                         + "VALUES (1, 'Example Market', 'Canonical Area')");
-                execute(connection, "INSERT INTO " + schema + ".listings (id) VALUES (101), (102), (103), (104), (105), (106), (107), (108)");
+                execute(connection, "INSERT INTO " + schema + ".listings (id,title,address,city,sector) VALUES "
+                        + "(101,'Property 101','Address 101','Sample City','North'), "
+                        + "(102,'Property 102','Address 102','Sample City','North'), "
+                        + "(103,'Property 103','Address 103','Sample City','North'), "
+                        + "(104,'Property 104','Address 104','Sample City','North'), "
+                        + "(105,'Property 105','Address 105','Sample City','North'), "
+                        + "(106,'Property 106','Address 106','Sample City','North'), "
+                        + "(107,'Property 107','Address 107','Sample City','North'), "
+                        + "(108,'Property 108','Address 108','Sample City','North')");
                 execute(connection, "INSERT INTO " + schema + ".property_visit_requests (tenant_id, listing_id) VALUES (1, 101)");
 
                 migrate(url, username, password, schema, "33");
@@ -407,6 +415,68 @@ class VisitSessionMigrationPostgresTest {
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=702 and event_type='RESERVE'", Integer.class));
                 assertEquals("REPAIR_REQUIRED", text(connection, "SELECT status FROM visit_sessions WHERE id=703"));
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key='ENTITLEMENT_REPAIR_TENANT:703'", Integer.class));
+
+                // V41 preserves pre-migration completion as unknown and snapshots active scope without outcomes.
+                execute(connection, "UPDATE visit_sessions SET status='COMPLETED', completed_at=CURRENT_TIMESTAMP, "
+                        + "finished_at=CURRENT_TIMESTAMP WHERE id=601");
+                execute(connection, "UPDATE visit_sessions SET started_at=CURRENT_TIMESTAMP-INTERVAL '2 hours' WHERE id=600");
+                execute(connection, "INSERT INTO visit_session_items "
+                        + "(session_id,listing_id,position,confirmation_status,availability_confirmed_at,confirmed_by_user_id) "
+                        + "VALUES (600,105,1,'CONFIRMED',CURRENT_TIMESTAMP,1), "
+                        + "(600,106,2,'PENDING',NULL,NULL), "
+                        + "(600,108,3,'CONFIRMED',CURRENT_TIMESTAMP,1)");
+                execute(connection, "UPDATE visit_session_items SET removed_at=CURRENT_TIMESTAMP, "
+                        + "removed_by_user_id=1, removal_reason='Removed before Package 4 rollout' "
+                        + "WHERE session_id=600 AND listing_id=108");
+
+                migrate(url, username, password, schema, "41");
+                connection.setSchema(schema);
+                assertEquals("LEGACY_UNRECORDED", text(connection,
+                        "SELECT state FROM visit_session_outcome_reports WHERE session_id=601"));
+                assertEquals("LEGACY_COMPLETED", text(connection,
+                        "SELECT scope_source FROM visit_session_outcome_reports WHERE session_id=601"));
+                assertEquals(0, count(connection,
+                        "SELECT count(*) FROM visit_session_item_outcomes WHERE session_id=601"));
+                assertEquals("OPEN", text(connection,
+                        "SELECT state FROM visit_session_outcome_reports WHERE session_id=600"));
+                assertEquals("MIGRATED_ACTIVE", text(connection,
+                        "SELECT scope_source FROM visit_session_outcome_reports WHERE session_id=600"));
+                assertEquals(1, count(connection,
+                        "SELECT count(*) FROM visit_session_outcome_reports r JOIN visit_sessions s ON s.id=r.session_id "
+                                + "WHERE r.session_id=600 AND r.scope_captured_at>s.started_at"));
+                assertEquals(1, count(connection,
+                        "SELECT count(*) FROM visit_session_item_outcomes WHERE session_id=600 AND outcome_state='UNRECORDED'"));
+                assertEquals("Property 105", text(connection,
+                        "SELECT title_snapshot FROM visit_session_item_outcomes WHERE session_id=600"));
+                assertEquals(0, count(connection,
+                        "SELECT count(*) FROM visit_session_item_outcomes WHERE session_id=600 AND item_id IN "
+                                + "(SELECT id FROM visit_session_items WHERE listing_id IN (106,108))"));
+                assertEquals(1, count(connection,
+                        "SELECT count(*) FROM visit_execution_events WHERE session_id=600 "
+                                + "AND event_type='OUTCOME_SCOPE_CAPTURED' AND reason_code='MIGRATED_ACTIVE_SCOPE'"));
+                assertEquals("23505", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_outcome_reports(session_id,state,scope_source,scope_captured_at) "
+                                + "VALUES (601,'LEGACY_UNRECORDED','LEGACY_COMPLETED',NULL)"));
+                assertEquals("23505", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_item_outcomes SELECT * FROM visit_session_item_outcomes WHERE session_id=600"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_item_outcomes "
+                                + "(item_id,session_id,position_snapshot,listing_id_snapshot,title_snapshot,address_snapshot,city_snapshot,sector_snapshot,"
+                                + "outcome_state,skip_reason,recorded_by_user_id,recorded_at) "
+                                + "SELECT i.id,i.session_id,i.position,i.listing_id,l.title,l.address,l.city,l.sector,'SKIPPED',NULL,1,CURRENT_TIMESTAMP "
+                                + "FROM visit_session_items i JOIN listings l ON l.id=i.listing_id "
+                                + "WHERE i.session_id=600 AND i.listing_id=106"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_session_item_outcomes "
+                                + "(item_id,session_id,position_snapshot,listing_id_snapshot,title_snapshot,address_snapshot,city_snapshot,sector_snapshot,"
+                                + "outcome_state,skip_reason,recorded_by_user_id,recorded_at) "
+                                + "SELECT i.id,i.session_id,i.position,i.listing_id,l.title,l.address,l.city,l.sector,'SKIPPED','OTHER',1,CURRENT_TIMESTAMP "
+                                + "FROM visit_session_items i JOIN listings l ON l.id=i.listing_id "
+                                + "WHERE i.session_id=600 AND i.listing_id=106"));
+                migrate(url, username, password, schema, "41");
+                connection.setSchema(schema);
+                assertEquals(1, count(connection,
+                        "SELECT count(*) FROM visit_session_item_outcomes WHERE session_id=600"));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }
@@ -419,7 +489,8 @@ class VisitSessionMigrationPostgresTest {
                 .baselineOnMigrate(true).baselineVersion("32")
                 .target(target).locations("classpath:db/migration").load().migrate();
         assertTrue(result.success);
-        assertEquals(target, result.targetSchemaVersion);
+        if (result.targetSchemaVersion == null) assertEquals(0, result.migrationsExecuted);
+        else assertEquals(target, result.targetSchemaVersion.toString());
     }
 
     private static void execute(Connection connection, String sql) throws SQLException {

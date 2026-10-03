@@ -45,13 +45,15 @@ public class VisitExecutionService {
     private final VisitOtpCrypto otpCrypto;
     private final JdbcTemplate jdbc;
     private final VisitSchedulingRecommendationService recommendations;
+    private final VisitSessionOutcomeService outcomes;
     private final TransactionTemplate repairTransaction;
 
     public VisitExecutionService(VisitSessionRepository sessions, UserRepository users, EmployeeProfileRepository employees,
             GroundExecutiveSchedulingProfileRepository schedulingProfiles,
             VisitOperationsAuthorizationService authorization, VisitEntitlementStore entitlements,
             VisitExecutionProperties properties, VisitOtpDeliveryProvider delivery, VisitOtpCrypto otpCrypto, JdbcTemplate jdbc,
-            VisitSchedulingRecommendationService recommendations, PlatformTransactionManager transactionManager) {
+            VisitSchedulingRecommendationService recommendations, VisitSessionOutcomeService outcomes,
+            PlatformTransactionManager transactionManager) {
         this.sessions = sessions;
         this.users = users;
         this.employees = employees;
@@ -63,6 +65,7 @@ public class VisitExecutionService {
         this.otpCrypto = otpCrypto;
         this.jdbc = jdbc;
         this.recommendations = recommendations;
+        this.outcomes = outcomes;
         this.repairTransaction = new TransactionTemplate(transactionManager);
         this.repairTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -445,6 +448,7 @@ public class VisitExecutionService {
                 java.sql.Timestamp.from(now), challenge.id());
         audit(sessionId, groundExecutiveId, "STARTED", "OTP_VERIFIED", "START:" + command.operationId());
         sessions.saveAndFlush(session);
+        outcomes.captureSuccessfulStart(session, groundExecutiveId, command.operationId());
         repairDownstream(downstream, command.operationId(), sessionId, groundExecutiveId, expectedEnd);
         enqueue(session.getTenant().getId(), "TENANT", "VISIT_STARTED:" + sessionId + ":" + command.operationId(),
                 "Visit started", "Your visit has started.", "VISIT_STARTED");

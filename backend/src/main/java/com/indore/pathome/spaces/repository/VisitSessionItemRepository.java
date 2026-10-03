@@ -18,6 +18,10 @@ public interface VisitSessionItemRepository extends JpaRepository<VisitSessionIt
     List<VisitSessionItem> findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(Long sessionId);
 
     @EntityGraph(attributePaths = "listing")
+    List<VisitSessionItem> findBySessionIdAndRemovedAtIsNullAndConfirmationStatusOrderByPositionAsc(
+            Long sessionId, com.indore.pathome.spaces.entity.VisitSessionItemConfirmationStatus confirmationStatus);
+
+    @EntityGraph(attributePaths = "listing")
     List<VisitSessionItem> findBySessionIdInAndRemovedAtIsNullOrderBySessionIdAscPositionAsc(Collection<Long> sessionIds);
 
     @EntityGraph(attributePaths = "listing")

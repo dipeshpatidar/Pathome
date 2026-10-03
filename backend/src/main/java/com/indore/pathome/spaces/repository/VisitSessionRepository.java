@@ -45,6 +45,8 @@ public interface VisitSessionRepository extends JpaRepository<VisitSession, Long
 
     Page<VisitSession> findByTenantIdOrderByCreatedAtDescIdDesc(Long tenantId, Pageable pageable);
 
+    Optional<VisitSession> findByIdAndTenantId(Long id, Long tenantId);
+
     Page<VisitSession> findByStatusOrderByScheduledAtAsc(VisitSessionStatus status, Pageable pageable);
 
     long countByRepresentativeIdAndStatus(Long representativeId, VisitSessionStatus status);

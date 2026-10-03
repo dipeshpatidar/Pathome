@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.dto.RecommendationRequest;
 import com.indore.pathome.spaces.dto.RecommendationStatus;
 import com.indore.pathome.spaces.dto.ApproveVisitRecommendationCommand;
 import com.indore.pathome.spaces.dto.VisitOtpStartCommand;
+import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
 import com.indore.pathome.spaces.dto.GroundVisitContactCommand;
 import com.indore.pathome.spaces.dto.GroundVisitMoreTimeCommand;
 import com.indore.pathome.spaces.dto.RescheduleVisitSessionCommand;
@@ -64,6 +65,7 @@ import static org.mockito.Mockito.when;
         VisitSessionNotificationListener.class, NotificationService.class, VisitSchedulingRecommendationService.class,
         ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class,
         VisitExecutionService.class, VisitExecutionProperties.class, VisitEntitlementStore.class,
+        VisitSessionOutcomeService.class,
         VisitEntitlementOperationsService.class, VisitNoShowSettlementWorker.class,
         VisitOtpCrypto.class, InAppVisitOtpDeliveryProvider.class, VisitNotificationOutboxWorker.class,
         VisitRepairOperationsService.class})
@@ -113,6 +115,7 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private VisitSchedulingDecisionRepository decisions;
     @Autowired private VisitSchedulingRecommendationService recommendations;
     @Autowired private VisitExecutionService execution;
+    @Autowired private VisitSessionOutcomeService outcomeService;
     @Autowired private VisitEntitlementStore entitlements;
     @Autowired private VisitEntitlementOperationsService entitlementOperations;
     @Autowired private VisitRepairOperationsService repairOperations;
@@ -675,6 +678,9 @@ class VisitOperationsPostgresIntegrationTest {
             executor.shutdownNow();
         }
 
+        assertEquals(VisitSessionStatus.STARTED,
+                execution.start(scenario.geA().getId(), scenario.sessionId(), command).status());
+
         VisitSession started = sessions.findById(scenario.sessionId()).orElseThrow();
         assertEquals(VisitSessionStatus.STARTED, started.getStatus());
         assertEquals(operationId, started.getStartOperationId());
@@ -682,8 +688,224 @@ class VisitOperationsPostgresIntegrationTest {
                 Integer.class, "CONSUME:" + scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
                 Integer.class, "START:" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_session_outcome_reports where session_id=? and state='OPEN'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(jdbc.queryForObject("select count(*) from visit_session_items where session_id=? "
+                        + "and removed_at is null and confirmation_status='CONFIRMED'", Integer.class, scenario.sessionId()),
+                jdbc.queryForObject("select count(*) from visit_session_item_outcomes where session_id=?", Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type='OUTCOME_SCOPE_CAPTURED'", Integer.class, scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
                 Integer.class, "VISIT_STARTED:" + scenario.sessionId() + ":" + operationId));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void outcomeScopeFailureRollsBackStartAndEntitlementConsumption() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+
+        jdbc.execute("CREATE FUNCTION fail_outcome_scope_insert() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN RAISE EXCEPTION 'forced outcome-scope failure'; END $$");
+        jdbc.execute("CREATE TRIGGER fail_outcome_scope BEFORE INSERT ON visit_session_item_outcomes "
+                + "FOR EACH ROW EXECUTE FUNCTION fail_outcome_scope_insert()");
+        try {
+            assertThrows(RuntimeException.class, () -> execution.start(scenario.geA().getId(), scenario.sessionId(),
+                    new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID())));
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS fail_outcome_scope ON visit_session_item_outcomes");
+            jdbc.execute("DROP FUNCTION IF EXISTS fail_outcome_scope_insert()");
+        }
+
+        assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+        assertTrue(entitlements.hasReservation(scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_session_outcome_reports where session_id=?",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_session_item_outcomes where session_id=?",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type in ('STARTED','OUTCOME_SCOPE_CAPTURED')", Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_start_challenges where session_id=? and consumed_at is null",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void itemOutcomeWritesAreIdempotentAndDirectFinishLeavesReportOpenUntilFinalized() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        addPreStartNonExecutionItems(scenario);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals(VisitSessionStatus.STARTED, execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID())).status());
+
+        var initial = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
+        assertEquals(2, initial.items().size());
+        assertTrue(initial.items().stream().allMatch(item -> item.outcome() == VisitSessionItemOutcomeState.UNRECORDED));
+        assertThrows(AccessDeniedException.class,
+                () -> outcomeService.getGroundOutcomeReport(scenario.geB().getId(), scenario.sessionId()));
+        User otherTenant = user("outcome-other-tenant", Role.ROLE_TENANT);
+        assertThrows(jakarta.persistence.EntityNotFoundException.class,
+                () -> outcomeService.getTenantOutcomeReport(otherTenant.getId(), scenario.sessionId()));
+        var first = initial.items().get(0);
+        String capturedTitle = first.title();
+        Listing editedListing = items.findBySessionIdOrderByPositionAsc(scenario.sessionId()).stream()
+                .filter(item -> item.getId().equals(first.itemId())).findFirst().orElseThrow().getListing();
+        editedListing.setTitle("Changed after START");
+        editedListing.setStatus(ListingStatus.CLOSED);
+        listings.saveAndFlush(editedListing);
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_session_item_outcomes where session_id=?",
+                Integer.class, scenario.sessionId()));
+        assertEquals(capturedTitle, outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId())
+                .items().stream().filter(item -> item.itemId().equals(first.itemId())).findFirst().orElseThrow().title());
+        var firstCommand = new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
+                null, null, initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID());
+        assertThrows(IllegalArgumentException.class, () -> outcomeService.recordItemOutcome(
+                scenario.geA().getId(), scenario.sessionId(), first.itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED, null, null,
+                        initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID())));
+        var afterFirst = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(),
+                first.itemId(), firstCommand);
+        outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), first.itemId(), firstCommand);
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeService.recordItemOutcome(
+                scenario.geA().getId(), scenario.sessionId(), first.itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
+                        VisitSessionItemSkipReason.TENANT_DECLINED, null, initial.sessionVersion(),
+                        initial.reportVersion(), firstCommand.operationId())));
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeService.recordItemOutcome(
+                scenario.geA().getId(), scenario.sessionId(), first.itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
+                        null, null, initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID())));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and idempotency_key like ?", Integer.class, scenario.sessionId(),
+                "ITEM_OUTCOME:" + scenario.sessionId() + ":" + first.itemId() + ":%"));
+
+        var finished = execution.finish(scenario.geA().getId(), scenario.sessionId());
+        assertEquals(VisitSessionStatus.COMPLETED, finished.status());
+        assertEquals("OPEN", jdbc.queryForObject("select state from visit_session_outcome_reports where session_id=?",
+                String.class, scenario.sessionId()));
+        var pendingTenantView = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals("DETAILS_PENDING", pendingTenantView.lifecycle());
+        assertTrue(pendingTenantView.properties().isEmpty());
+
+        VisitSession currentSession = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeService.finalizeReport(
+                scenario.geA().getId(), scenario.sessionId(), currentSession.getVersion(),
+                afterFirst.reportVersion(), UUID.randomUUID()));
+        var second = afterFirst.items().stream().filter(item -> !item.itemId().equals(first.itemId())).findFirst().orElseThrow();
+        var skipped = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), second.itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
+                        VisitSessionItemSkipReason.OTHER, "Access was not available", currentSession.getVersion(),
+                        afterFirst.reportVersion(), UUID.randomUUID()));
+        var finalized = outcomeService.finalizeReport(scenario.geA().getId(), scenario.sessionId(),
+                currentSession.getVersion(), skipped.reportVersion(), UUID.randomUUID());
+        assertEquals(VisitSessionOutcomeReportState.FINALIZED, finalized.reportState());
+        assertEquals("PARTLY_VIEWED", finalized.summary());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        var tenantView = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals("PARTIALLY_COMPLETED", tenantView.lifecycle());
+        assertEquals(2, tenantView.properties().size());
+        assertEquals(VisitSessionItemSkipReason.OTHER,
+                tenantView.properties().stream().filter(item -> item.outcome() == VisitSessionItemOutcomeState.SKIPPED)
+                        .findFirst().orElseThrow().skipReason());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type='OUTCOME_REPORT_FINALIZED'", Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void successfulStartCapturesFourConfirmedItemsAndExcludesPreStartRemoval() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        addTwoPreStartConfirmedItems(scenario);
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, 180, true);
+        Long removedItemId = addPreStartNonExecutionItems(scenario);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+
+        assertEquals(VisitSessionStatus.STARTED, execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID())).status());
+        assertEquals(4, jdbc.queryForObject("select count(*) from visit_session_item_outcomes where session_id=?",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_session_item_outcomes where item_id=?",
+                Integer.class, removedItemId));
+        assertEquals(4, jdbc.queryForObject("select count(*) from visit_session_items where session_id=? "
+                        + "and removed_at is null and confirmation_status='CONFIRMED'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void zeroViewedReportFinalizesTruthfullyWithoutChangingEntitlementAndAppearsInOperationsQueue() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+
+        var report = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
+        for (var item : report.items()) {
+            report = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), item.itemId(),
+                    new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
+                            VisitSessionItemSkipReason.PROPERTY_UNAVAILABLE, null, report.sessionVersion(),
+                            report.reportVersion(), UUID.randomUUID()));
+        }
+        execution.finish(scenario.geA().getId(), scenario.sessionId());
+        VisitSession current = sessions.findById(scenario.sessionId()).orElseThrow();
+        var finalized = outcomeService.finalizeReport(scenario.geA().getId(), scenario.sessionId(),
+                current.getVersion(), report.reportVersion(), UUID.randomUUID());
+
+        assertEquals("NONE_VIEWED", finalized.summary());
+        assertEquals("NO_PROPERTIES_VIEWED", outcomeService.getTenantOutcomeReport(
+                scenario.tenant().getId(), scenario.sessionId()).lifecycle());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? "
+                        + "and event_type in ('RELEASE','RESTORE','FORFEIT_NO_SHOW')", Integer.class, scenario.sessionId()));
+
+        var queue = outcomeService.listOperationsOutcomeExceptions(scenario.admin().getId(),
+                Instant.now().plusSeconds(1), 0, 20);
+        var exception = queue.getContent().stream().filter(item -> item.sessionId().equals(scenario.sessionId()))
+                .findFirst().orElseThrow();
+        assertEquals(2L, exception.itemCount());
+        assertEquals(0L, exception.unrecordedCount());
+        assertEquals(0L, exception.visitedCount());
+        assertThrows(AccessDeniedException.class, () -> outcomeService.listOperationsOutcomeExceptions(
+                scenario.tenant().getId(), Instant.now().plusSeconds(1), 0, 20));
     }
 
     @Test
@@ -2087,6 +2309,64 @@ class VisitOperationsPostgresIntegrationTest {
                 }
             }
             sessions.saveAndFlush(session);
+        });
+    }
+
+    private Long addPreStartNonExecutionItems(RecommendationScenario scenario) {
+        return new TransactionTemplate(transactionManager).execute(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            Listing removedListing = recommendationListing("Removed before START", scenario.locality(), 22.721, 75.881);
+            int position = items.findBySessionIdOrderByPositionAsc(session.getId()).stream()
+                    .mapToInt(VisitSessionItem::getPosition).max().orElse(0) + 1;
+            VisitSessionItem removed = new VisitSessionItem();
+            removed.setSession(session);
+            removed.setListing(removedListing);
+            removed.setPosition(position);
+            PropertyVisitRequest source = requests.findBySessionIdOrderByCreatedAtAscIdAsc(session.getId()).get(0);
+            removed.setDerivedFromRequest(source);
+            removed.setOrigin(VisitSessionItemOrigin.OE_ADDED);
+            removed.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
+            removed.setAvailabilityConfirmedAt(Instant.now());
+            removed.setConfirmedBy(scenario.admin());
+            removed.setRemovedAt(Instant.now());
+            removed.setRemovedBy(scenario.admin());
+            removed.setRemovalReason("Removed before execution");
+            return items.saveAndFlush(removed).getId();
+        });
+    }
+
+    private void addTwoPreStartConfirmedItems(RecommendationScenario scenario) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            Instant desiredAt = scenario.desiredAt();
+            Instant tenantStart = desiredAt.minus(Duration.ofHours(1));
+            Instant tenantEnd = desiredAt.plus(Duration.ofHours(4));
+            for (PropertyVisitRequest existing : requests.findLockedBySessionIdOrderByIdAsc(session.getId())) {
+                existing.setAvailabilityStartAt(tenantStart);
+                existing.setAvailabilityEndAt(tenantEnd);
+            }
+            for (VisitSessionItem existing : items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(session.getId())) {
+                existing.setAvailabilityStartAt(tenantStart);
+                existing.setAvailabilityEndAt(tenantEnd);
+            }
+            for (int index = 0; index < 2; index++) {
+                int position = index + 3;
+                Listing listing = recommendationListing("Additional confirmed property " + index,
+                        scenario.locality(), 22.74 + index * 0.001, 75.90 + index * 0.001);
+                PropertyVisitRequest request = new PropertyVisitRequest();
+                request.setTenant(scenario.tenant());
+                request.setListing(listing);
+                request.setSession(session);
+                request.setStatus(VisitRequestStatus.COORDINATING);
+                request.setAvailabilityStartAt(tenantStart);
+                request.setAvailabilityEndAt(tenantEnd);
+                request.setAvailabilityZoneId("Asia/Kolkata");
+                request.setPreferredAt(desiredAt);
+                request.setVersion(null);
+                request = requests.saveAndFlush(request);
+                items.saveAndFlush(confirmedItem(session, listing, request, scenario.locality(), scenario.admin(),
+                        desiredAt.minusSeconds(30 * 60L), desiredAt.plusSeconds(90 * 60L), position));
+            }
         });
     }
 

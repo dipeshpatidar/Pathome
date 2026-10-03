@@ -58,6 +58,7 @@ class VisitExecutionServiceTest {
                 authorization, mock(VisitEntitlementStore.class),
                 new VisitExecutionProperties(), mock(VisitOtpDeliveryProvider.class), mock(VisitOtpCrypto.class),
                 mock(JdbcTemplate.class), mock(VisitSchedulingRecommendationService.class),
+                mock(VisitSessionOutcomeService.class),
                 mock(org.springframework.transaction.PlatformTransactionManager.class));
 
         var contact = service.getTenantContact(9L, 77L);
