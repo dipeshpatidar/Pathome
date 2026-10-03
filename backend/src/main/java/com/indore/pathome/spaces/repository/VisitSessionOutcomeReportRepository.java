@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.repository;
 
 import com.indore.pathome.spaces.entity.VisitSessionOutcomeReport;
 import com.indore.pathome.spaces.dto.VisitSessionOutcomeExceptionView;
+import com.indore.pathome.spaces.dto.GroundPendingVisitOutcomeView;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,6 +22,19 @@ public interface VisitSessionOutcomeReportRepository extends JpaRepository<Visit
     Optional<VisitSessionOutcomeReport> findLockedBySessionId(@Param("sessionId") Long sessionId);
 
     List<VisitSessionOutcomeReport> findAllBySessionIdIn(Collection<Long> sessionIds);
+
+    @Query("select new com.indore.pathome.spaces.dto.GroundPendingVisitOutcomeView("
+            + "s.id, s.status, s.scheduledAt, s.finishedAt, s.city, "
+            + "(select count(o) from VisitSessionItemOutcome o where o.sessionId = s.id "
+            + "and o.outcomeState = com.indore.pathome.spaces.entity.VisitSessionItemOutcomeState.UNRECORDED), "
+            + "(select count(o) from VisitSessionItemOutcome o where o.sessionId = s.id)) "
+            + "from VisitSessionOutcomeReport r join r.session s "
+            + "where r.state = com.indore.pathome.spaces.entity.VisitSessionOutcomeReportState.OPEN "
+            + "and s.status = com.indore.pathome.spaces.entity.VisitSessionStatus.COMPLETED "
+            + "and s.representative.id = :groundExecutiveId "
+            + "order by s.finishedAt desc, s.id desc")
+    Page<GroundPendingVisitOutcomeView> findGroundPendingOutcomes(
+            @Param("groundExecutiveId") Long groundExecutiveId, Pageable pageable);
 
     @Query("select new com.indore.pathome.spaces.dto.VisitSessionOutcomeExceptionView("
             + "r.sessionId, r.state, s.status, r.scopeCapturedAt, r.updatedAt, "

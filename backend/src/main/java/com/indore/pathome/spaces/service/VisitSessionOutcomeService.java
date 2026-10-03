@@ -2,6 +2,8 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.GroundVisitSessionItemOutcomeView;
 import com.indore.pathome.spaces.dto.GroundVisitSessionOutcomeView;
+import com.indore.pathome.spaces.dto.CompleteVisitSessionWithOutcomesCommand;
+import com.indore.pathome.spaces.dto.GroundPendingVisitOutcomeView;
 import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
 import com.indore.pathome.spaces.dto.TenantVisitSessionItemOutcomeView;
 import com.indore.pathome.spaces.dto.TenantVisitSessionOutcomeView;
@@ -28,6 +30,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -153,6 +156,7 @@ public class VisitSessionOutcomeService {
 
         VisitSessionItemOutcome outcome = outcomes.findLockedByItemIdAndSessionId(itemId, sessionId)
                 .orElseThrow(() -> new VisitOperationsConflictException("Property is not part of the captured visit scope"));
+        requireExpectedVersion(outcome.getVersion(), command.expectedItemVersion(), "Property outcome");
         String note = normalizePrivateNote(command.privateNote());
         outcome.record(command.outcome(), command.skipReason(), note,
                 users.getReferenceById(groundExecutiveId), Instant.now());
@@ -162,6 +166,79 @@ public class VisitSessionOutcomeService {
         insertItemOutcomeEvent(sessionId, groundExecutiveId, itemId, command, requestHash, eventKey);
         entityManager.flush();
         return groundView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<GroundPendingVisitOutcomeView> listGroundPendingOutcomes(Long groundExecutiveId, int page, int size) {
+        authorization.requireGroundExecutive(groundExecutiveId);
+        if (page < 0 || page > 10000 || size < 1 || size > 20)
+            throw new IllegalArgumentException("Pending outcome page is outside the supported range");
+        return reports.findGroundPendingOutcomes(groundExecutiveId, PageRequest.of(page, size));
+    }
+
+    /** Locks session, report, then scoped items and validates the complete combined action before Package 3 finish. */
+    @Transactional
+    public GroundVisitSessionOutcomeView prepareCombinedCompletion(Long groundExecutiveId, Long sessionId,
+            CompleteVisitSessionWithOutcomesCommand command) {
+        authorization.requireGroundExecutive(groundExecutiveId);
+        validateCombinedCommand(sessionId, command);
+        VisitSession session = sessions.findLockedById(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        requireCurrentGroundExecutive(session, groundExecutiveId);
+        VisitSessionOutcomeReport report = reports.findLockedBySessionId(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Outcome report not found"));
+        String eventKey = "OUTCOME_REPORT_FINALIZED:" + sessionId + ":" + command.operationId();
+        String requestHash = combinedRequestHash(sessionId, command);
+        IdempotentEvent prior = findIdempotentEvent(eventKey);
+        if (prior != null) {
+            if (!Objects.equals(prior.actorId(), groundExecutiveId) || !Objects.equals(prior.requestHash(), requestHash))
+                throw new VisitOperationsConflictException("This completion operation ID was already used with different data");
+            return groundView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId));
+        }
+        requireOpen(report);
+        if (session.getStatus() != VisitSessionStatus.STARTED && session.getStatus() != VisitSessionStatus.COMPLETED)
+            throw new VisitOperationsConflictException("Only a started or finished visit can submit outcomes");
+        requireExpectedVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
+        requireExpectedVersion(report.getVersion(), command.expectedReportVersion(), "Outcome report");
+        List<VisitSessionItemOutcome> rows = outcomes.findLockedBySessionIdOrderByItemId(sessionId);
+        requireCompleteOutcomeSet(rows);
+        return groundView(session, report, rows);
+    }
+
+    /** Called only after the outer completion transaction has validated and, when needed, finished the visit. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public GroundVisitSessionOutcomeView finalizeCombinedCompletion(Long groundExecutiveId, Long sessionId,
+            CompleteVisitSessionWithOutcomesCommand command) {
+        authorization.requireGroundExecutive(groundExecutiveId);
+        VisitSession session = sessions.findLockedById(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        requireCurrentGroundExecutive(session, groundExecutiveId);
+        VisitSessionOutcomeReport report = reports.findLockedBySessionId(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Outcome report not found"));
+        String eventKey = "OUTCOME_REPORT_FINALIZED:" + sessionId + ":" + command.operationId();
+        String requestHash = combinedRequestHash(sessionId, command);
+        IdempotentEvent prior = findIdempotentEvent(eventKey);
+        if (prior != null) {
+            if (!Objects.equals(prior.actorId(), groundExecutiveId) || !Objects.equals(prior.requestHash(), requestHash))
+                throw new VisitOperationsConflictException("This completion operation ID was already used with different data");
+            return groundView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId));
+        }
+        requireOpen(report);
+        if (session.getStatus() != VisitSessionStatus.COMPLETED)
+            throw new VisitOperationsConflictException("The physical visit must be finished before outcomes are finalized");
+        requireExpectedVersion(report.getVersion(), command.expectedReportVersion(), "Outcome report");
+        List<VisitSessionItemOutcome> rows = outcomes.findLockedBySessionIdOrderByItemId(sessionId);
+        requireCompleteOutcomeSet(rows);
+        report.markFinalized(users.getReferenceById(groundExecutiveId), Instant.now());
+        report.touch();
+        reports.flush();
+        jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,reason_code,metadata,idempotency_key) "
+                        + "values (?,?, 'OUTCOME_REPORT_FINALIZED',NULL, "
+                        + "jsonb_build_object('itemCount',?,'operationId',?,'requestHash',?,'completionMode','COMBINED'), ?) "
+                        + "on conflict (idempotency_key) do nothing",
+                sessionId, groundExecutiveId, rows.size(), command.operationId().toString(), requestHash, eventKey);
+        entityManager.flush();
+        return groundView(session, report, rows);
     }
 
     @Transactional
@@ -253,7 +330,7 @@ public class VisitSessionOutcomeService {
                 new GroundVisitSessionItemOutcomeView(row.getItemId(), row.getListingIdSnapshot(),
                         row.getPositionSnapshot(), row.getTitleSnapshot(), row.getAddressSnapshot(),
                         row.getCitySnapshot(), row.getSectorSnapshot(), row.getOutcomeState(),
-                        row.getSkipReason(), row.getPrivateNote(), row.getRecordedAt())).toList();
+                        row.getSkipReason(), row.getPrivateNote(), row.getRecordedAt(), row.getVersion())).toList();
         return new GroundVisitSessionOutcomeView(session.getId(), session.getStatus().name(), session.getVersion(),
                 report.getState(), report.getVersion(), report.getScopeCapturedAt(), summary(report, rows), itemViews);
     }
@@ -315,8 +392,9 @@ public class VisitSessionOutcomeService {
     private void validateRecordCommand(Long sessionId, Long itemId, RecordVisitSessionItemOutcomeCommand command) {
         if (sessionId == null || sessionId <= 0 || itemId == null || itemId <= 0 || command == null
                 || command.operationId() == null || command.expectedSessionVersion() == null
-                || command.expectedReportVersion() == null || command.expectedSessionVersion() < 0
-                || command.expectedReportVersion() < 0)
+                || command.expectedReportVersion() == null || command.expectedItemVersion() == null
+                || command.expectedSessionVersion() < 0 || command.expectedReportVersion() < 0
+                || command.expectedItemVersion() < 0)
             throw new IllegalArgumentException("Session, property, expected versions, and operation ID are required");
         if (command.outcome() != VisitSessionItemOutcomeState.VISITED
                 && command.outcome() != VisitSessionItemOutcomeState.SKIPPED)
@@ -364,7 +442,7 @@ public class VisitSessionOutcomeService {
     private String requestHash(Long sessionId, Long itemId, RecordVisitSessionItemOutcomeCommand command) {
         return hash(sessionId + "|" + itemId + "|" + command.outcome() + "|" + command.skipReason()
                 + "|" + command.privateNote() + "|" + command.expectedSessionVersion()
-                + "|" + command.expectedReportVersion());
+                + "|" + command.expectedReportVersion() + "|" + command.expectedItemVersion());
     }
 
     private String hash(String value) {
@@ -378,7 +456,7 @@ public class VisitSessionOutcomeService {
 
     private void requireCurrentGroundExecutive(VisitSession session, Long groundExecutiveId) {
         if (session.getRepresentative() == null || !groundExecutiveId.equals(session.getRepresentative().getId()))
-            throw new AccessDeniedException("This Ground Executive is no longer assigned to the Visit Session");
+            throw new EntityNotFoundException("Visit Session not found");
     }
 
     private void requireOpen(VisitSessionOutcomeReport report) {
@@ -389,6 +467,22 @@ public class VisitSessionOutcomeService {
     private void requireExpectedVersion(Long actual, Long expected, String resource) {
         if (actual == null || !actual.equals(expected))
             throw new VisitOperationsConflictException(resource + " changed; refresh before retrying");
+    }
+
+    private void validateCombinedCommand(Long sessionId, CompleteVisitSessionWithOutcomesCommand command) {
+        if (sessionId == null || sessionId <= 0 || command == null || command.operationId() == null
+                || command.expectedSessionVersion() == null || command.expectedSessionVersion() < 0
+                || command.expectedReportVersion() == null || command.expectedReportVersion() < 0)
+            throw new IllegalArgumentException("Session, expected versions, and completion operation are required");
+    }
+
+    private String combinedRequestHash(Long sessionId, CompleteVisitSessionWithOutcomesCommand command) {
+        return hash(sessionId + "|combined|" + command.expectedSessionVersion() + "|" + command.expectedReportVersion());
+    }
+
+    private void requireCompleteOutcomeSet(List<VisitSessionItemOutcome> rows) {
+        if (rows.isEmpty() || rows.stream().anyMatch(row -> row.getOutcomeState() == VisitSessionItemOutcomeState.UNRECORDED))
+            throw new VisitOperationsConflictException("Every captured property must have an outcome before finalization");
     }
 
     private void requireTenant(Long tenantId) {

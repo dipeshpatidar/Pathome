@@ -11,4 +11,5 @@ public record RecordVisitSessionItemOutcomeCommand(
         String privateNote,
         Long expectedSessionVersion,
         Long expectedReportVersion,
+        Long expectedItemVersion,
         UUID operationId) {}

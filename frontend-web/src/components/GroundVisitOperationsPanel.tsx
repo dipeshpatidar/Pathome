@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, Clock3, LoaderCircle, MapPin, Phone, RefreshCw, ShieldCheck } from 'lucide-react';
 import { UserProfile } from '../types';
 import { boundedVisitPage, operationalVisitTime, visitStartFeedback } from '../utils/visitExecutionPresentation';
+import { physicalFinishAvailable } from '../utils/visitOutcomePresentation';
+import { GroundVisitOutcomePanel } from './GroundVisitOutcomePanel';
 import {
   createVisitOperationId,
+  GroundPendingVisitOutcome,
   GroundVisitSession,
   GroundVisitStartCodeStatus,
   GroundVisitTenantContact,
@@ -16,6 +19,11 @@ const dateText = operationalVisitTime;
 
 export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
   const [sessions, setSessions] = useState<GroundVisitSession[]>([]);
+  const [pendingOutcomes, setPendingOutcomes] = useState<GroundPendingVisitOutcome[]>([]);
+  const [pendingState, setPendingState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [pendingPage, setPendingPage] = useState(0);
+  const [pendingTotalPages, setPendingTotalPages] = useState(0);
+  const [openPending, setOpenPending] = useState<Record<number, boolean>>({});
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
@@ -50,6 +58,20 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
     }
   }, [user?.id, page]);
 
+  const loadPending = useCallback(async (signal?: AbortSignal) => {
+    if (!user?.id) { setPendingOutcomes([]); setPendingState('ready'); return; }
+    setPendingState('loading');
+    try {
+      const result = await visitExecutionService.listPendingOutcomes(pendingPage, signal);
+      if (signal?.aborted) return;
+      setPendingOutcomes(Array.isArray(result.content) ? result.content : []);
+      setPendingTotalPages(result.totalPages);
+      setPendingState('ready');
+    } catch {
+      if (!signal?.aborted) setPendingState('error');
+    }
+  }, [user?.id, pendingPage]);
+
   useEffect(() => {
     const controller = new AbortController();
     setContacts({});
@@ -62,9 +84,11 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
     setMoreTimeOperationIds({});
     setFeedback({});
     setStartNotice(null);
+    setOpenPending({});
     void load(controller.signal);
+    void loadPending(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [load, loadPending]);
 
   const run = async (sessionId: number, action: () => Promise<unknown>, success: string): Promise<boolean> => {
     setBusy(sessionId);
@@ -73,6 +97,7 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
       await action();
       setFeedback(current => ({ ...current, [sessionId]: success }));
       await load();
+      await loadPending();
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Visit update failed. Please retry.');
@@ -81,6 +106,8 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
       setBusy(null);
     }
   };
+
+  const refreshBoth = async () => { await load(); await loadPending(); };
 
   const requestMoreTime = async (sessionId: number) => {
     const operationId = moreTimeOperationIds[sessionId] || createVisitOperationId();
@@ -177,19 +204,51 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
         </h2>
         <p className="mt-1 text-xs leading-5 text-slate-400">Arrival is an operational report. A tenant code is required to start a visit.</p>
       </div>
-      <button type="button" onClick={() => void load()} disabled={state === 'loading'} className={buttonClass}>
+      <button type="button" onClick={() => void refreshBoth()} disabled={state === 'loading' || pendingState === 'loading'} className={buttonClass}>
         {state === 'loading' ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-4 w-4" aria-hidden="true" />}
         Refresh visits
       </button>
     </div>
     {error && <div role="alert" className="flex gap-2 rounded-xl border border-rose-500/30 bg-rose-950/30 p-3 text-sm text-rose-200"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><p>{error}</p></div>}
     {startNotice && <p role="status" aria-live="polite" className="rounded-xl border border-amber-500/30 bg-amber-950/30 p-3 text-sm text-amber-100">{startNotice}</p>}
+    <section aria-labelledby="pending-outcomes-title" className="space-y-3 rounded-2xl border border-amber-500/20 bg-slate-900/70 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 id="pending-outcomes-title" className="text-sm font-bold text-white">Pending outcomes</h3>
+          <p className="mt-1 text-xs text-slate-400">Finished visits assigned to you with details still to submit.</p>
+        </div>
+        {pendingState === 'loading' && <span role="status" className="text-xs text-slate-400">Loading…</span>}
+      </div>
+      {pendingState === 'error' && <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-rose-200">
+        <span>Pending reports could not be loaded.</span><button type="button" onClick={() => void loadPending()} className={buttonClass}>Retry</button>
+      </div>}
+      {pendingState === 'ready' && pendingOutcomes.length === 0 && <p role="status" className="text-sm text-slate-300">No finished visits need outcome details.</p>}
+      {pendingState === 'ready' && pendingOutcomes.map(item => <article key={item.sessionId} className="min-w-0 rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="font-semibold text-white">Visit {item.sessionId}{item.city ? ` · ${item.city}` : ''}</p>
+            <p className="mt-1 text-xs text-slate-300">Finished {dateText(item.finishedAt || item.scheduledAt, null)}</p>
+            <p className="mt-1 text-xs text-amber-200">{item.pendingPropertyCount} of {item.totalPropertyCount} properties still need details</p>
+          </div>
+          <button type="button" className={buttonClass} aria-expanded={Boolean(openPending[item.sessionId])}
+            onClick={() => setOpenPending(current => ({ ...current, [item.sessionId]: !current[item.sessionId] }))}>
+            {openPending[item.sessionId] ? 'Close report' : 'Complete report'}
+          </button>
+        </div>
+        {openPending[item.sessionId] && <div className="mt-3"><GroundVisitOutcomePanel key={`${user?.id ?? 'signed-out'}-${item.sessionId}`} sessionId={item.sessionId} compact onFinalized={() => void refreshBoth()} /></div>}
+      </article>)}
+      {pendingState === 'ready' && pendingTotalPages > 1 && <nav aria-label="Pending outcome pages" className="flex items-center justify-between gap-3 text-sm text-slate-200">
+        <button type="button" className={buttonClass} disabled={pendingPage === 0} onClick={() => setPendingPage(value => value - 1)}>Previous</button>
+        <span>Page {pendingPage + 1} of {pendingTotalPages}</span>
+        <button type="button" className={buttonClass} disabled={pendingPage + 1 >= pendingTotalPages} onClick={() => setPendingPage(value => value + 1)}>Next</button>
+      </nav>}
+    </section>
     {state === 'loading' && <div role="status" className="rounded-2xl border border-slate-800 bg-slate-900 p-5 text-sm text-slate-300">Loading assigned visits…</div>}
     {state === 'ready' && sessions.length === 0 && <div role="status" className="rounded-2xl border border-slate-800 bg-slate-900 p-5 text-sm text-slate-300">No visits are assigned to you right now.</div>}
     {state === 'error' && <button type="button" onClick={() => void load()} className={buttonClass}>Retry loading visits</button>}
     {state === 'ready' && sessions.map(visit => {
       const firstStop = visit.items?.[0];
-      const isStarted = visit.status === 'STARTED';
+      const isStarted = physicalFinishAvailable(visit.status);
       const inProgress = busy === visit.sessionId;
       const contact = contacts[visit.sessionId];
       const phoneHref = contact?.tenantPhone?.trim().replace(/[^+\d]/g, '');
@@ -220,11 +279,13 @@ export const GroundVisitOperationsPanel: React.FC<Props> = ({ user }) => {
               <button type="button" disabled={inProgress} onClick={() => void loadCodeStatus(visit.sessionId)} className={buttonClass}><ShieldCheck className="h-4 w-4" aria-hidden="true" />Check code status</button>
               {visit.arrivedAt && <button type="button" disabled={inProgress} onClick={() => void run(visit.sessionId, () => visitExecutionService.markProvisionalNoShow(visit.sessionId), 'Provisional no-show recorded with a dispute window.')} className={buttonClass}>Provisional no-show</button>}
             </>}
-            {isStarted && <>
+          {isStarted && <>
               <button type="button" disabled={inProgress} onClick={() => void requestMoreTime(visit.sessionId)} className={buttonClass}>Need 30 more minutes</button>
               <button type="button" disabled={inProgress} onClick={() => void run(visit.sessionId, () => visitExecutionService.finish(visit.sessionId), 'Visit finished.')} className={buttonClass}>Finish visit</button>
             </>}
           </div>
+
+          {isStarted && <GroundVisitOutcomePanel key={`${user?.id ?? 'signed-out'}-${visit.sessionId}`} sessionId={visit.sessionId} />}
 
           {contact && <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-3 text-sm text-slate-200">
             <p className="font-semibold">{contact.tenantName || 'Tenant'}</p>

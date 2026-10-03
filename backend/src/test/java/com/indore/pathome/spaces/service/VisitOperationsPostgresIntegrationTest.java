@@ -6,6 +6,7 @@ import com.indore.pathome.spaces.dto.RecommendationStatus;
 import com.indore.pathome.spaces.dto.ApproveVisitRecommendationCommand;
 import com.indore.pathome.spaces.dto.VisitOtpStartCommand;
 import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
+import com.indore.pathome.spaces.dto.CompleteVisitSessionWithOutcomesCommand;
 import com.indore.pathome.spaces.dto.GroundVisitContactCommand;
 import com.indore.pathome.spaces.dto.GroundVisitMoreTimeCommand;
 import com.indore.pathome.spaces.dto.RescheduleVisitSessionCommand;
@@ -66,6 +67,7 @@ import static org.mockito.Mockito.when;
         ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class,
         VisitExecutionService.class, VisitExecutionProperties.class, VisitEntitlementStore.class,
         VisitSessionOutcomeService.class,
+        VisitSessionOutcomeCompletionService.class,
         VisitEntitlementOperationsService.class, VisitNoShowSettlementWorker.class,
         VisitOtpCrypto.class, InAppVisitOtpDeliveryProvider.class, VisitNotificationOutboxWorker.class,
         VisitRepairOperationsService.class})
@@ -116,6 +118,7 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private VisitSchedulingRecommendationService recommendations;
     @Autowired private VisitExecutionService execution;
     @Autowired private VisitSessionOutcomeService outcomeService;
+    @Autowired private VisitSessionOutcomeCompletionService outcomeCompletionService;
     @Autowired private VisitEntitlementStore entitlements;
     @Autowired private VisitEntitlementOperationsService entitlementOperations;
     @Autowired private VisitRepairOperationsService repairOperations;
@@ -765,8 +768,13 @@ class VisitOperationsPostgresIntegrationTest {
         var initial = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
         assertEquals(2, initial.items().size());
         assertTrue(initial.items().stream().allMatch(item -> item.outcome() == VisitSessionItemOutcomeState.UNRECORDED));
-        assertThrows(AccessDeniedException.class,
+        assertThrows(jakarta.persistence.EntityNotFoundException.class,
                 () -> outcomeService.getGroundOutcomeReport(scenario.geB().getId(), scenario.sessionId()));
+        assertThrows(jakarta.persistence.EntityNotFoundException.class, () -> outcomeService.recordItemOutcome(
+                scenario.geB().getId(), scenario.sessionId(), initial.items().get(0).itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
+                        null, null, initial.sessionVersion(), initial.reportVersion(),
+                        initial.items().get(0).itemVersion(), UUID.randomUUID())));
         User otherTenant = user("outcome-other-tenant", Role.ROLE_TENANT);
         assertThrows(jakarta.persistence.EntityNotFoundException.class,
                 () -> outcomeService.getTenantOutcomeReport(otherTenant.getId(), scenario.sessionId()));
@@ -782,11 +790,16 @@ class VisitOperationsPostgresIntegrationTest {
         assertEquals(capturedTitle, outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId())
                 .items().stream().filter(item -> item.itemId().equals(first.itemId())).findFirst().orElseThrow().title());
         var firstCommand = new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
-                null, null, initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID());
+                null, null, initial.sessionVersion(), initial.reportVersion(), first.itemVersion(), UUID.randomUUID());
         assertThrows(IllegalArgumentException.class, () -> outcomeService.recordItemOutcome(
                 scenario.geA().getId(), scenario.sessionId(), first.itemId(),
                 new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED, null, null,
-                        initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID())));
+                        initial.sessionVersion(), initial.reportVersion(), first.itemVersion(), UUID.randomUUID())));
+        assertThrows(IllegalArgumentException.class, () -> outcomeService.recordItemOutcome(
+                scenario.geA().getId(), scenario.sessionId(), first.itemId(),
+                new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
+                        VisitSessionItemSkipReason.OTHER, null, initial.sessionVersion(), initial.reportVersion(),
+                        first.itemVersion(), UUID.randomUUID())));
         var afterFirst = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(),
                 first.itemId(), firstCommand);
         outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), first.itemId(), firstCommand);
@@ -794,11 +807,11 @@ class VisitOperationsPostgresIntegrationTest {
                 scenario.geA().getId(), scenario.sessionId(), first.itemId(),
                 new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
                         VisitSessionItemSkipReason.TENANT_DECLINED, null, initial.sessionVersion(),
-                        initial.reportVersion(), firstCommand.operationId())));
+                        initial.reportVersion(), first.itemVersion(), firstCommand.operationId())));
         assertThrows(VisitOperationsConflictException.class, () -> outcomeService.recordItemOutcome(
                 scenario.geA().getId(), scenario.sessionId(), first.itemId(),
                 new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
-                        null, null, initial.sessionVersion(), initial.reportVersion(), UUID.randomUUID())));
+                        null, null, initial.sessionVersion(), initial.reportVersion(), first.itemVersion(), UUID.randomUUID())));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
                         + "and idempotency_key like ?", Integer.class, scenario.sessionId(),
                 "ITEM_OUTCOME:" + scenario.sessionId() + ":" + first.itemId() + ":%"));
@@ -819,7 +832,7 @@ class VisitOperationsPostgresIntegrationTest {
         var skipped = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), second.itemId(),
                 new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
                         VisitSessionItemSkipReason.OTHER, "Access was not available", currentSession.getVersion(),
-                        afterFirst.reportVersion(), UUID.randomUUID()));
+                        afterFirst.reportVersion(), second.itemVersion(), UUID.randomUUID()));
         var finalized = outcomeService.finalizeReport(scenario.geA().getId(), scenario.sessionId(),
                 currentSession.getVersion(), skipped.reportVersion(), UUID.randomUUID());
         assertEquals(VisitSessionOutcomeReportState.FINALIZED, finalized.reportState());
@@ -834,6 +847,131 @@ class VisitOperationsPostgresIntegrationTest {
                         .findFirst().orElseThrow().skipReason());
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
                         + "and event_type='OUTCOME_REPORT_FINALIZED'", Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void combinedCompletionRejectsMissingItemsThenFinishesAndFinalizesAtomically() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+
+        var report = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
+        var incomplete = new CompleteVisitSessionWithOutcomesCommand(report.sessionVersion(), report.reportVersion(), UUID.randomUUID());
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeCompletionService.complete(
+                scenario.geA().getId(), scenario.sessionId(), incomplete));
+        assertEquals(VisitSessionStatus.STARTED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+        assertEquals("OPEN", jdbc.queryForObject("select state from visit_session_outcome_reports where session_id=?",
+                String.class, scenario.sessionId()));
+
+        for (var item : report.items()) {
+            report = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), item.itemId(),
+                    new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.VISITED,
+                            null, null, report.sessionVersion(), report.reportVersion(), item.itemVersion(), UUID.randomUUID()));
+        }
+        var command = new CompleteVisitSessionWithOutcomesCommand(report.sessionVersion(), report.reportVersion(), UUID.randomUUID());
+        jdbc.execute("create function reject_outcome_finalize_for_test() returns trigger language plpgsql as $$ "
+                + "begin if NEW.event_type='OUTCOME_REPORT_FINALIZED' then raise exception 'forced finalization failure'; "
+                + "end if; return NEW; end; $$");
+        jdbc.execute("create trigger reject_outcome_finalize_for_test before insert on visit_execution_events "
+                + "for each row execute function reject_outcome_finalize_for_test()");
+        try {
+            assertThrows(RuntimeException.class, () -> outcomeCompletionService.complete(
+                    scenario.geA().getId(), scenario.sessionId(), command));
+        } finally {
+            jdbc.execute("drop trigger if exists reject_outcome_finalize_for_test on visit_execution_events");
+            jdbc.execute("drop function if exists reject_outcome_finalize_for_test()");
+        }
+        assertEquals(VisitSessionStatus.STARTED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='VISIT_FINISHED'",
+                Integer.class, scenario.sessionId()));
+        assertEquals("OPEN", jdbc.queryForObject("select state from visit_session_outcome_reports where session_id=?",
+                String.class, scenario.sessionId()));
+        var completed = outcomeCompletionService.complete(scenario.geA().getId(), scenario.sessionId(), command);
+        assertEquals("COMPLETED", completed.sessionState());
+        assertEquals(VisitSessionOutcomeReportState.FINALIZED, completed.reportState());
+        assertEquals("ALL_VIEWED", completed.summary());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='VISIT_FINISHED'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='OUTCOME_REPORT_FINALIZED'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? "
+                + "and event_type in ('RELEASE','RESTORE','FORFEIT_NO_SHOW')", Integer.class, scenario.sessionId()));
+        assertEquals(VisitSessionOutcomeReportState.FINALIZED,
+                outcomeCompletionService.complete(scenario.geA().getId(), scenario.sessionId(), command).reportState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='OUTCOME_REPORT_FINALIZED'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void pendingQueueAndOutcomeWritesFollowCurrentAssignmentAfterReassignment() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+        execution.finish(scenario.geA().getId(), scenario.sessionId());
+
+        var oldGeQueue = outcomeService.listGroundPendingOutcomes(scenario.geA().getId(), 0, 20);
+        assertTrue(oldGeQueue.getContent().stream().anyMatch(item -> item.sessionId().equals(scenario.sessionId())
+                && item.pendingPropertyCount() == 2L && item.totalPropertyCount() == 2L));
+        assertFalse(outcomeService.listGroundPendingOutcomes(scenario.geB().getId(), 0, 20).getContent().stream()
+                .anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
+
+        // Simulate an authoritative assignment change after the former GE has loaded the report.
+        jdbc.update("update visit_sessions set representative_user_id=? where id=?",
+                scenario.geB().getId(), scenario.sessionId());
+        assertThrows(jakarta.persistence.EntityNotFoundException.class, () -> outcomeService.getGroundOutcomeReport(
+                scenario.geA().getId(), scenario.sessionId()));
+        var current = outcomeService.getGroundOutcomeReport(scenario.geB().getId(), scenario.sessionId());
+        assertEquals(2, current.items().size());
+        assertThrows(jakarta.persistence.EntityNotFoundException.class, () -> outcomeService.recordItemOutcome(scenario.geA().getId(),
+                scenario.sessionId(), current.items().get(0).itemId(), new RecordVisitSessionItemOutcomeCommand(
+                        VisitSessionItemOutcomeState.VISITED, null, null, current.sessionVersion(),
+                        current.reportVersion(), current.items().get(0).itemVersion(), UUID.randomUUID())));
+        assertFalse(outcomeService.listGroundPendingOutcomes(scenario.geA().getId(), 0, 20).getContent().stream()
+                .anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
+        var currentQueue = outcomeService.listGroundPendingOutcomes(scenario.geB().getId(), 0, 20);
+        assertTrue(currentQueue.getContent().stream().anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
+        var updated = current;
+        for (var item : current.items()) {
+            updated = outcomeService.recordItemOutcome(scenario.geB().getId(), scenario.sessionId(), item.itemId(),
+                    new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
+                            VisitSessionItemSkipReason.TENANT_DECLINED, null, updated.sessionVersion(),
+                            updated.reportVersion(), item.itemVersion(), UUID.randomUUID()));
+        }
+        var finalized = outcomeCompletionService.complete(scenario.geB().getId(), scenario.sessionId(),
+                new CompleteVisitSessionWithOutcomesCommand(updated.sessionVersion(), updated.reportVersion(), UUID.randomUUID()));
+        assertEquals("NONE_VIEWED", finalized.summary());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='VISIT_FINISHED'",
+                Integer.class, scenario.sessionId()));
+        assertFalse(outcomeService.listGroundPendingOutcomes(scenario.geB().getId(), 0, 20).getContent().stream()
+                .anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
     }
 
     @Test
@@ -882,7 +1020,7 @@ class VisitOperationsPostgresIntegrationTest {
             report = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), item.itemId(),
                     new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
                             VisitSessionItemSkipReason.PROPERTY_UNAVAILABLE, null, report.sessionVersion(),
-                            report.reportVersion(), UUID.randomUUID()));
+                            report.reportVersion(), item.itemVersion(), UUID.randomUUID()));
         }
         execution.finish(scenario.geA().getId(), scenario.sessionId());
         VisitSession current = sessions.findById(scenario.sessionId()).orElseThrow();

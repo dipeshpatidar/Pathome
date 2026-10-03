@@ -79,6 +79,52 @@ export interface TenantVisitStartCode {
   deliveryChannel: string;
 }
 
+export interface GroundVisitOutcomeItem {
+  itemId: number;
+  listingId: number;
+  position: number;
+  title: string;
+  address: string;
+  city: string;
+  sector: string;
+  outcome: 'UNRECORDED' | 'VISITED' | 'SKIPPED';
+  skipReason: 'PROPERTY_UNAVAILABLE' | 'ACCESS_DENIED' | 'TENANT_DECLINED' | 'TENANT_LEFT_EARLY' | 'PROPERTY_MISMATCH' | 'OTHER' | null;
+  privateNote: string | null;
+  recordedAt: string | null;
+  itemVersion: number;
+}
+
+export interface GroundVisitOutcomeReport {
+  sessionId: number;
+  sessionState: string;
+  sessionVersion: number;
+  reportState: 'OPEN' | 'FINALIZED' | 'LEGACY_UNRECORDED';
+  reportVersion: number;
+  scopeCapturedAt: string | null;
+  summary: 'ALL_VIEWED' | 'PARTLY_VIEWED' | 'NONE_VIEWED' | null;
+  items: GroundVisitOutcomeItem[];
+}
+
+export interface GroundPendingVisitOutcome {
+  sessionId: number;
+  sessionState: string;
+  scheduledAt: string | null;
+  finishedAt: string | null;
+  city: string | null;
+  pendingPropertyCount: number;
+  totalPropertyCount: number;
+}
+
+export interface RecordGroundVisitOutcomeCommand {
+  outcome: 'VISITED' | 'SKIPPED';
+  skipReason: GroundVisitOutcomeItem['skipReason'];
+  privateNote: string | null;
+  expectedSessionVersion: number;
+  expectedReportVersion: number;
+  expectedItemVersion: number;
+  operationId: string;
+}
+
 const token = (): string => {
   const value = localStorage.getItem('pathome_auth_token');
   if (!value) throw new ApiRequestError('Please sign in to continue.', 401);
@@ -133,6 +179,24 @@ export const visitExecutionService = {
   },
   finish(sessionId: number) {
     return request<VisitExecutionView>(`/ground/visit-sessions/${sessionId}/finish`, { method: 'POST' });
+  },
+  getOutcomeReport(sessionId: number) {
+    return request<GroundVisitOutcomeReport>(`/ground/visit-sessions/${sessionId}/outcome-report`);
+  },
+  recordOutcome(sessionId: number, itemId: number, command: RecordGroundVisitOutcomeCommand) {
+    return request<GroundVisitOutcomeReport>(`/ground/visit-sessions/${sessionId}/items/${itemId}/outcome`, {
+      method: 'PUT', body: JSON.stringify(command)
+    });
+  },
+  completeWithOutcomes(sessionId: number, command: Omit<RecordGroundVisitOutcomeCommand, 'outcome' | 'skipReason' | 'privateNote' | 'expectedItemVersion'>) {
+    return request<GroundVisitOutcomeReport>(`/ground/visit-sessions/${sessionId}/complete-with-outcomes`, {
+      method: 'POST', body: JSON.stringify(command)
+    });
+  },
+  listPendingOutcomes(page = 0, signal?: AbortSignal) {
+    return request<{ content: GroundPendingVisitOutcome[]; totalPages: number; totalElements: number }>(
+      `/ground/visit-sessions/pending-outcomes?page=${page}&size=20`, { signal }
+    );
   },
   listTenant(page = 0, signal?: AbortSignal) {
     return request<{ sessions: VisitExecutionView[]; page: number; size: number; totalPages: number }>(

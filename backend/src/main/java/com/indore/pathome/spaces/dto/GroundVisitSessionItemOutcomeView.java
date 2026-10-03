@@ -16,4 +16,5 @@ public record GroundVisitSessionItemOutcomeView(
         VisitSessionItemOutcomeState outcome,
         VisitSessionItemSkipReason skipReason,
         String privateNote,
-        Instant recordedAt) {}
+        Instant recordedAt,
+        Long itemVersion) {}
