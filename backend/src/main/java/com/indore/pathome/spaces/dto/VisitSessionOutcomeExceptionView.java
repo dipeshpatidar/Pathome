@@ -9,8 +9,11 @@ public record VisitSessionOutcomeExceptionView(
         Long sessionId,
         VisitSessionOutcomeReportState reportState,
         VisitSessionStatus sessionState,
+        String city,
+        Instant finishedAt,
         Instant scopeCapturedAt,
         Instant lastUpdatedAt,
+        Instant overdueSince,
         Long itemCount,
         Long unrecordedCount,
         Long visitedCount) {}

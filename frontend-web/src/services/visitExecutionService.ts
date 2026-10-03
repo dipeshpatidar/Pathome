@@ -125,6 +125,113 @@ export interface RecordGroundVisitOutcomeCommand {
   operationId: string;
 }
 
+export interface TenantVisitOutcomeProperty {
+  position: number;
+  title: string;
+  address: string;
+  city: string;
+  sector: string;
+  outcome: 'PENDING' | 'VIEWED' | 'NOT_VIEWED';
+  reasonLabel: string | null;
+  attribution: 'GE_REPORTED' | 'OPERATIONS_UPDATED' | null;
+  correctedAt: string | null;
+}
+
+export interface TenantVisitOutcome {
+  sessionId: number;
+  lifecycle: string;
+  outcomeSummary: 'ALL_VIEWED' | 'PARTLY_VIEWED' | 'NONE_VIEWED' | 'RESULTS_NOT_RECORDED' | null;
+  outcomeReportAvailable: boolean;
+  scheduledAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  city: string;
+  locality: string | null;
+  totalProperties: number | null;
+  viewedProperties: number | null;
+  lastUpdatedAt: string | null;
+  properties: TenantVisitOutcomeProperty[];
+}
+
+export interface TenantVisitOutcomeHistoryPage {
+  sessions: TenantVisitOutcome[];
+  page: number;
+  size: number;
+  totalPages: number;
+  totalElements: number;
+}
+
+export interface VisitOutcomeException {
+  sessionId: number;
+  reportState: string;
+  sessionState: string;
+  city: string;
+  finishedAt: string | null;
+  scopeCapturedAt: string | null;
+  lastUpdatedAt: string;
+  overdueSince: string | null;
+  itemCount: number;
+  unrecordedCount: number;
+  visitedCount: number;
+}
+
+export interface OperationsOutcomeItem {
+  itemId: number;
+  position: number;
+  title: string;
+  address: string;
+  city: string;
+  sector: string;
+  outcome: 'UNRECORDED' | 'VISITED' | 'SKIPPED';
+  skipReason: GroundVisitOutcomeItem['skipReason'];
+  privateNote: string | null;
+  recordedAt: string | null;
+  recordedByUserId: number | null;
+  version: number;
+}
+
+export interface OperationsOutcomeAudit {
+  itemId: number;
+  previousOutcome: string;
+  previousSkipReason: string | null;
+  correctedOutcome: string;
+  correctedSkipReason: string | null;
+  correctionReason: string;
+  actorUserId: number | null;
+  correctedAt: string;
+}
+
+export interface OperationsOutcomeDetail {
+  sessionId: number;
+  physicalState: string;
+  reportState: string;
+  reportVersion: number;
+  currentGroundExecutiveUserId: number | null;
+  city: string;
+  locality: string | null;
+  scheduledAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastUpdatedAt: string;
+  summary: string | null;
+  totalProperties: number;
+  pendingProperties: number;
+  viewedProperties: number;
+  properties: OperationsOutcomeItem[];
+  correctionHistory: OperationsOutcomeAudit[];
+}
+
+export interface CorrectOperationsOutcomeCommand {
+  itemId: number;
+  outcome: 'VISITED' | 'SKIPPED';
+  skipReason: GroundVisitOutcomeItem['skipReason'];
+  privateNote: string | null;
+  correctionReason: string;
+  expectedReportVersion: number;
+  expectedItemVersion: number;
+  operationId: string;
+}
+
 const token = (): string => {
   const value = localStorage.getItem('pathome_auth_token');
   if (!value) throw new ApiRequestError('Please sign in to continue.', 401);
@@ -202,6 +309,25 @@ export const visitExecutionService = {
     return request<{ sessions: VisitExecutionView[]; page: number; size: number; totalPages: number }>(
       `/tenant/visit-sessions?page=${page}`, { signal }
     );
+  },
+  listTenantOutcomeHistory(page = 0, signal?: AbortSignal) {
+    return request<TenantVisitOutcomeHistoryPage>(`/tenant/visit-sessions/outcomes?page=${page}&size=20`, { signal });
+  },
+  getTenantOutcome(sessionId: number) {
+    return request<TenantVisitOutcome>(`/tenant/visit-sessions/${sessionId}/outcome`);
+  },
+  listOutcomeExceptions(page = 0, signal?: AbortSignal) {
+    return request<{ content: VisitOutcomeException[]; totalPages: number; totalElements: number }>(
+      `/operations/visit-outcomes/exceptions?page=${page}&size=20`, { signal }
+    );
+  },
+  getOperationsOutcome(sessionId: number) {
+    return request<OperationsOutcomeDetail>(`/operations/visit-outcomes/${sessionId}`);
+  },
+  correctOperationsOutcome(sessionId: number, command: CorrectOperationsOutcomeCommand) {
+    return request<OperationsOutcomeDetail>(`/operations/visit-outcomes/${sessionId}/corrections`, {
+      method: 'POST', body: JSON.stringify(command)
+    });
   },
   issueStartCode(sessionId: number) {
     return request<TenantVisitStartCode>(`/tenant/visit-sessions/${sessionId}/start-code`, { method: 'POST' });

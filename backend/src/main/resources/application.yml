@@ -53,6 +53,7 @@ pathome:
     tenant-dispute-window-hours: ${PATHOME_VISIT_DISPUTE_WINDOW_HOURS:24}
     silent-overrun-alert-minutes: ${PATHOME_VISIT_SILENT_OVERRUN_ALERT_MINUTES:15}
     maximum-operational-restores-per-day: ${PATHOME_VISIT_MAX_OPERATIONAL_RESTORES_PER_DAY:3}
+    incomplete-outcome-grace-minutes: ${PATHOME_VISIT_INCOMPLETE_OUTCOME_GRACE_MINUTES:60}
     otp:
       digits: 6
       validity-minutes: ${PATHOME_VISIT_OTP_VALIDITY_MINUTES:10}

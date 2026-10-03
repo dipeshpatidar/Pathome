@@ -4,7 +4,7 @@ import { ArrowRight, BedDouble, Building2, CalendarDays, Camera, ChevronLeft, Ch
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
-import { createVisitOperationId, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
+import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
@@ -23,6 +23,7 @@ import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
 import type { TenantMobileDockItem } from '../utils/tenantMobileDock';
 import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchCollisionReached, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
+import { tenantPropertyOutcomeLabel, tenantVisitOutcomeStatusLabel, tenantVisitOutcomeSummaryText } from '../utils/tenantVisitOutcomePresentation';
 import type { TenantSearchMorphOverlay } from '../utils/tenantSearchMorph';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
@@ -67,6 +68,8 @@ const emptyHistory: HistoryState = {
 
 type TenantSessionHistory = { identityKey: string | null; status: 'loading' | 'ready' | 'error'; sessions: VisitExecutionView[]; totalPages: number };
 const emptyTenantSessions: TenantSessionHistory = { identityKey: null, status: 'loading', sessions: [], totalPages: 0 };
+type TenantOutcomeHistory = { identityKey: string | null; status: 'loading' | 'ready' | 'error'; sessions: TenantVisitOutcome[] };
+const emptyTenantOutcomeHistory: TenantOutcomeHistory = { identityKey: null, status: 'loading', sessions: [] };
 
 const HERO_BHK_FILTERS = ['2 BHK', '3 BHK'] as const;
 const HERO_PROPERTY_FILTERS: { label: string; value: RentalPropertyType }[] = [
@@ -521,6 +524,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const reduceMotion = reduceMotionPreference === true;
   const [history, setHistory] = useState<HistoryState>(emptyHistory);
   const [tenantSessions, setTenantSessions] = useState<TenantSessionHistory>(emptyTenantSessions);
+  const [tenantOutcomeHistory, setTenantOutcomeHistory] = useState<TenantOutcomeHistory>(emptyTenantOutcomeHistory);
   const [tenantSessionsReload, setTenantSessionsReload] = useState(0);
   const [tenantSessionPage, setTenantSessionPage] = useState(0);
   const [tenantSessionCodes, setTenantSessionCodes] = useState<Record<number, TenantVisitStartCode>>({});
@@ -1207,9 +1211,39 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     return () => controller.abort();
   }, [user.id, tenantSessionsReload, tenantSessionPage]);
 
+  useEffect(() => {
+    const identitySession = readTenantVisitSession(user.id);
+    if (!identitySession) {
+      setTenantOutcomeHistory({ ...emptyTenantOutcomeHistory, status: 'error' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setTenantOutcomeHistory({ ...emptyTenantOutcomeHistory, identityKey: identitySession.key, status: 'loading' });
+    visitExecutionService.listTenantOutcomeHistory(tenantSessionPage, controller.signal).then(page => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identitySession)) return;
+      if (page.totalPages > 0 && tenantSessionPage >= page.totalPages) {
+        setTenantSessionPage(page.totalPages - 1);
+        return;
+      }
+      if (page.totalPages === 0 && tenantSessionPage !== 0) {
+        setTenantSessionPage(0);
+        return;
+      }
+      setTenantOutcomeHistory({ identityKey: identitySession.key, status: 'ready', sessions: Array.isArray(page.sessions) ? page.sessions : [] });
+    }).catch(() => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identitySession)) return;
+      setTenantOutcomeHistory({ ...emptyTenantOutcomeHistory, identityKey: identitySession.key, status: 'error' });
+    });
+    return () => controller.abort();
+  }, [user.id, tenantSessionsReload, tenantSessionPage]);
+
   const session = readTenantVisitSession(user.id);
   const visibleTenantSessions = !session ? { ...emptyTenantSessions, status: 'error' as const }
     : tenantSessions.identityKey === session.key ? tenantSessions : emptyTenantSessions;
+  const visibleTenantOutcomeHistory = !session ? { ...emptyTenantOutcomeHistory, status: 'error' as const }
+    : tenantOutcomeHistory.identityKey === session.key ? tenantOutcomeHistory : emptyTenantOutcomeHistory;
+  const tenantOutcomesBySession = useMemo(() => new Map(visibleTenantOutcomeHistory.sessions.map(item => [item.sessionId, item])),
+    [visibleTenantOutcomeHistory.sessions]);
   const issueVisitCode = async (sessionId: number) => {
     const requestSession = readTenantVisitSession(user.id);
     if (!requestSession) { setTenantSessionError('Please sign in again to manage this visit.'); return; }
@@ -1525,24 +1559,46 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                   <h3 id="confirmed-visit-sessions-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Visit sessions</h3>
                   <p className="mt-1 text-xs leading-5 text-slate-600">Current schedule and visit progress from Pathome.</p>
                 </div>
-                {visibleTenantSessions.status === 'error' && <button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 shrink-0 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button>}
+                {(visibleTenantSessions.status === 'error' || visibleTenantOutcomeHistory.status === 'error') && <button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 shrink-0 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button>}
               </div>
               {tenantSessionError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">{tenantSessionError}</p>}
               {visibleTenantSessions.status === 'loading' && <p role="status" className="text-sm text-slate-600">Loading visit sessions…</p>}
               {visibleTenantSessions.status === 'error' && <p role="alert" className="text-sm text-slate-600">Visit session details are unavailable right now.</p>}
+              {visibleTenantOutcomeHistory.status === 'loading' && visibleTenantSessions.status === 'ready' && <p role="status" className="text-xs text-slate-600">Loading visit outcome details…</p>}
+              {visibleTenantOutcomeHistory.status === 'error' && <p role="alert" className="text-xs text-rose-800">Visit outcome details are unavailable right now. Retry to reload your visit history.</p>}
               {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && <p role="status" className="text-sm text-slate-600">Confirmed visit sessions will appear here.</p>}
               {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.map(visit => {
+                const outcome = tenantOutcomesBySession.get(visit.sessionId);
                 const code = tenantSessionCodes[visit.sessionId];
                 const isPending = tenantSessionAction === visit.sessionId;
                 const needsTenantConfirmation = visit.tenantConfirmationState === 'PENDING';
-                const statusLabel = visit.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+                const statusLabel = tenantVisitOutcomeStatusLabel(outcome, visit.status);
                 return <article key={visit.sessionId} className="min-w-0 rounded-xl border border-emerald-100 bg-white p-3 shadow-sm sm:p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-900">{statusLabel}</span>
                     {visit.repairState === 'PROPOSED' && <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-900">Proposed time</span>}
                     {visit.repairState === 'REQUIRED' && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900">Action required</span>}
                   </div>
-                  <p className="mt-2 text-sm font-semibold text-slate-950">{visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Time under review' : visit.repairState === 'PROPOSED' ? 'Proposed visit time' : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : 'Scheduled'}{visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT' && <> · {formatVisitTime(visit.scheduledAt, visit.zoneId)}</>}</p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950">{visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Time under review' : visit.repairState === 'PROPOSED' ? 'Proposed visit time' : outcome?.outcomeReportAvailable ? tenantVisitOutcomeSummaryText(outcome) : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : visit.status === 'CANCELLED' ? 'Visit cancelled' : visit.status === 'NO_SHOW' ? 'Visit marked no-show' : visit.status === 'EXPIRED' ? 'Visit expired' : visit.status === 'COMPLETED' ? 'Visit ended; details pending' : 'Scheduled'}{visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT' && <> · {formatVisitTime(visit.scheduledAt, visit.zoneId)}</>}</p>
+                  {outcome?.outcomeReportAvailable && <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900">Visit outcomes</p>
+                      {outcome.outcomeSummary && <span className="text-xs font-semibold text-emerald-900">{outcome.outcomeSummary === 'ALL_VIEWED' ? 'All properties viewed' : outcome.outcomeSummary === 'PARTLY_VIEWED' ? 'Some properties viewed' : outcome.outcomeSummary === 'NONE_VIEWED' ? 'No properties viewed' : 'Results not recorded'}</span>}
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-slate-700">{tenantVisitOutcomeSummaryText(outcome)}</p>
+                    {outcome.properties.length > 0 && <details className="mt-2 rounded-lg border border-emerald-100 bg-white p-2.5">
+                      <summary className={`min-h-11 cursor-pointer py-2 text-xs font-semibold text-emerald-900 ${focusClass}`}>View properties in this visit</summary>
+                      <ul className="mt-1 space-y-2">
+                        {outcome.properties.map(property => <li key={`${outcome.sessionId}-${property.position}`} className="border-t border-slate-100 pt-2 first:border-0 first:pt-0">
+                          <p className="text-sm font-medium text-slate-900">{property.title}</p>
+                          <p className="text-xs text-slate-600">{[property.address, property.sector, property.city].filter(Boolean).join(' · ')}</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-800">{tenantPropertyOutcomeLabel(property)}</p>
+                          {property.reasonLabel && <p className="mt-1 text-xs leading-5 text-slate-600">{property.reasonLabel}</p>}
+                          {property.attribution === 'OPERATIONS_UPDATED' && property.correctedAt && <p className="mt-1 text-xs text-slate-500">Updated by Pathome Operations · {formatVisitTime(property.correctedAt)}</p>}
+                        </li>)}
+                      </ul>
+                    </details>}
+                  </div>}
                   {visit.arrivedAt && <p className="mt-1 text-xs text-slate-600">Ground Executive reported arrival at {formatVisitTime(visit.arrivedAt, visit.zoneId)}.</p>}
                   {visit.startedAt && <p className="mt-1 text-xs text-slate-600">Started {formatVisitTime(visit.startedAt, visit.zoneId)} · expected end {formatVisitTime(visit.expectedEndAt, visit.zoneId)}{visit.overPlannedTime ? ' · running over planned time' : ''}</p>}
                   {visit.tenantEtaAt && <p className="mt-1 text-xs text-slate-600">Your confirmed ETA: {formatVisitTime(visit.tenantEtaAt, visit.zoneId)}.</p>}

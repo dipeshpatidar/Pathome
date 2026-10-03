@@ -4,7 +4,12 @@ import com.indore.pathome.spaces.dto.GroundVisitSessionItemOutcomeView;
 import com.indore.pathome.spaces.dto.GroundVisitSessionOutcomeView;
 import com.indore.pathome.spaces.dto.CompleteVisitSessionWithOutcomesCommand;
 import com.indore.pathome.spaces.dto.GroundPendingVisitOutcomeView;
+import com.indore.pathome.spaces.dto.CorrectVisitOutcomeCommand;
+import com.indore.pathome.spaces.dto.OperationsVisitOutcomeAuditView;
+import com.indore.pathome.spaces.dto.OperationsVisitOutcomeDetailView;
+import com.indore.pathome.spaces.dto.OperationsVisitOutcomeItemView;
 import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
+import com.indore.pathome.spaces.dto.TenantVisitOutcomeHistoryPage;
 import com.indore.pathome.spaces.dto.TenantVisitSessionItemOutcomeView;
 import com.indore.pathome.spaces.dto.TenantVisitSessionOutcomeView;
 import com.indore.pathome.spaces.dto.VisitSessionOutcomeExceptionView;
@@ -20,6 +25,7 @@ import com.indore.pathome.spaces.entity.VisitSessionOutcomeReport;
 import com.indore.pathome.spaces.entity.VisitSessionOutcomeReportState;
 import com.indore.pathome.spaces.entity.VisitSessionOutcomeScopeSource;
 import com.indore.pathome.spaces.entity.VisitSessionStatus;
+import com.indore.pathome.spaces.config.VisitExecutionProperties;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.repository.VisitSessionItemOutcomeRepository;
@@ -40,6 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
@@ -62,6 +69,7 @@ public class VisitSessionOutcomeService {
     private final UserRepository users;
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
+    private final VisitExecutionProperties properties;
 
     public VisitSessionOutcomeService(VisitSessionRepository sessions,
             VisitSessionItemRepository sessionItems,
@@ -70,7 +78,8 @@ public class VisitSessionOutcomeService {
             VisitOperationsAuthorizationService authorization,
             UserRepository users,
             JdbcTemplate jdbc,
-            EntityManager entityManager) {
+            EntityManager entityManager,
+            VisitExecutionProperties properties) {
         this.sessions = sessions;
         this.sessionItems = sessionItems;
         this.reports = reports;
@@ -79,6 +88,7 @@ public class VisitSessionOutcomeService {
         this.users = users;
         this.jdbc = jdbc;
         this.entityManager = entityManager;
+        this.properties = properties;
     }
 
     /** Must join the Package 3 START transaction so START, entitlement, report and scope commit together. */
@@ -237,6 +247,7 @@ public class VisitSessionOutcomeService {
                         + "jsonb_build_object('itemCount',?,'operationId',?,'requestHash',?,'completionMode','COMBINED'), ?) "
                         + "on conflict (idempotency_key) do nothing",
                 sessionId, groundExecutiveId, rows.size(), command.operationId().toString(), requestHash, eventKey);
+        enqueueOutcomeReady(session);
         entityManager.flush();
         return groundView(session, report, rows);
     }
@@ -277,6 +288,7 @@ public class VisitSessionOutcomeService {
                         + "jsonb_build_object('itemCount',?,'operationId',?,'requestHash',?), ?) "
                         + "on conflict (idempotency_key) do nothing",
                 sessionId, groundExecutiveId, rows.size(), operationId.toString(), requestHash, eventKey);
+        enqueueOutcomeReady(session);
         entityManager.flush();
         return groundView(session, report, rows);
     }
@@ -287,41 +299,149 @@ public class VisitSessionOutcomeService {
         VisitSession session = sessions.findByIdAndTenantId(sessionId, tenantId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
         VisitSessionOutcomeReport report = reports.findById(sessionId).orElse(null);
-        List<VisitSessionItemOutcome> rows = report == null || report.getState() != VisitSessionOutcomeReportState.FINALIZED
-                ? List.of() : outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId);
-        return tenantView(session, report, rows);
+        List<VisitSessionItemOutcome> rows = report == null ? List.of()
+                : outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId);
+        Map<Long, CorrectionTime> corrections = latestCorrectionTimes(List.of(sessionId));
+        return tenantView(session, report, rows, corrections);
     }
 
     @Transactional(readOnly = true)
-    public List<TenantVisitSessionOutcomeView> listTenantOutcomeHistory(Long tenantId, int page, int size) {
+    public TenantVisitOutcomeHistoryPage listTenantOutcomeHistory(Long tenantId, int page, int size) {
         requireTenant(tenantId);
         if (page < 0 || page > 10000 || size < 1 || size > 50)
             throw new IllegalArgumentException("History page and size are outside the supported range");
         var result = sessions.findByTenantIdOrderByCreatedAtDescIdDesc(tenantId,
                 org.springframework.data.domain.PageRequest.of(page, size));
         List<VisitSession> sessionPage = result.getContent();
-        if (sessionPage.isEmpty()) return List.of();
+        if (sessionPage.isEmpty()) return new TenantVisitOutcomeHistoryPage(List.of(), result.getNumber(),
+                result.getSize(), result.getTotalPages(), result.getTotalElements());
         List<Long> ids = sessionPage.stream().map(VisitSession::getId).toList();
         Map<Long, VisitSessionOutcomeReport> reportBySession = reports.findAllBySessionIdIn(ids).stream()
                 .collect(Collectors.toMap(VisitSessionOutcomeReport::getSessionId, Function.identity()));
-        Collection<Long> finalizedIds = reportBySession.values().stream()
-                .filter(report -> report.getState() == VisitSessionOutcomeReportState.FINALIZED)
-                .map(VisitSessionOutcomeReport::getSessionId).toList();
-        Map<Long, List<VisitSessionItemOutcome>> outcomesBySession = finalizedIds.isEmpty() ? Map.of()
-                : outcomes.findBySessionIdInOrderBySessionIdAscPositionSnapshotAscItemIdAsc(finalizedIds).stream()
+        Map<Long, List<VisitSessionItemOutcome>> outcomesBySession = reportBySession.isEmpty() ? Map.of()
+                : outcomes.findBySessionIdInOrderBySessionIdAscPositionSnapshotAscItemIdAsc(ids).stream()
                     .collect(Collectors.groupingBy(VisitSessionItemOutcome::getSessionId));
-        return sessionPage.stream().map(session -> tenantView(session, reportBySession.get(session.getId()),
-                outcomesBySession.getOrDefault(session.getId(), List.of()))).toList();
+        Map<Long, CorrectionTime> corrections = latestCorrectionTimes(ids);
+        List<TenantVisitSessionOutcomeView> views = sessionPage.stream().map(session -> tenantView(session,
+                reportBySession.get(session.getId()), outcomesBySession.getOrDefault(session.getId(), List.of()),
+                corrections)).toList();
+        return new TenantVisitOutcomeHistoryPage(views, result.getNumber(), result.getSize(),
+                result.getTotalPages(), result.getTotalElements());
     }
 
     @Transactional(readOnly = true)
-    public Page<VisitSessionOutcomeExceptionView> listOperationsOutcomeExceptions(Long actorId,
-            Instant completedBefore, int page, int size) {
+    public Page<VisitSessionOutcomeExceptionView> listOperationsOutcomeExceptions(Long actorId, int page, int size) {
         authorization.requireOperations(actorId);
-        if (completedBefore == null || page < 0 || page > 10000 || size < 1 || size > 50)
-            throw new IllegalArgumentException("A completion cutoff and valid page are required");
-        return reports.findOperationsExceptions(completedBefore,
-                org.springframework.data.domain.PageRequest.of(page, size));
+        if (page < 0 || page > 10000 || size < 1 || size > 50)
+            throw new IllegalArgumentException("Valid outcome exception page and size are required");
+        Instant cutoff = Instant.now().minus(properties.getIncompleteOutcomeGraceMinutes(), ChronoUnit.MINUTES);
+        return reports.findOperationsExceptions(cutoff, PageRequest.of(page, size)).map(item -> {
+            Instant overdueSince = item.reportState() == VisitSessionOutcomeReportState.OPEN
+                    && item.finishedAt() != null
+                    ? item.finishedAt().plus(properties.getIncompleteOutcomeGraceMinutes(), ChronoUnit.MINUTES)
+                    : null;
+            return new VisitSessionOutcomeExceptionView(item.sessionId(), item.reportState(), item.sessionState(),
+                    item.city(), item.finishedAt(), item.scopeCapturedAt(), item.lastUpdatedAt(), overdueSince,
+                    item.itemCount(), item.unrecordedCount(), item.visitedCount());
+        });
+    }
+
+    @Transactional(readOnly = true)
+    public OperationsVisitOutcomeDetailView getOperationsOutcomeDetail(Long actorId, Long sessionId) {
+        authorization.requireOperations(actorId);
+        VisitSession session = sessions.findById(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        VisitSessionOutcomeReport report = reports.findById(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Outcome report not found"));
+        List<VisitSessionItemOutcome> rows = outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId);
+        return operationsView(session, report, rows, correctionHistory(sessionId));
+    }
+
+    @Transactional
+    public OperationsVisitOutcomeDetailView correctOutcome(Long actorId, Long sessionId,
+            CorrectVisitOutcomeCommand command) {
+        User actor = authorization.requireOperations(actorId);
+        validateCorrectionCommand(sessionId, command);
+        VisitSession session = sessions.findLockedById(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        if (session.getStatus() != VisitSessionStatus.COMPLETED)
+            throw new VisitOperationsConflictException("Only physically finished visits can be corrected");
+        VisitSessionOutcomeReport report = reports.findLockedBySessionId(sessionId)
+                .orElseThrow(() -> new EntityNotFoundException("Outcome report not found"));
+        if (report.getState() != VisitSessionOutcomeReportState.OPEN
+                && report.getState() != VisitSessionOutcomeReportState.FINALIZED)
+            throw new VisitOperationsConflictException("This report is not available for Operations correction");
+        if (report.getState() == VisitSessionOutcomeReportState.OPEN
+                && session.getFinishedAt() != null
+                && session.getFinishedAt().plus(properties.getIncompleteOutcomeGraceMinutes(), ChronoUnit.MINUTES)
+                        .isAfter(Instant.now()))
+            throw new VisitOperationsConflictException("This incomplete report is still within the GE completion window");
+        String eventKey = correctionEventKey(sessionId, command.itemId(), command.operationId());
+        String requestHash = correctionRequestHash(sessionId, command);
+        IdempotentEvent prior = findIdempotentEvent(eventKey);
+        if (prior != null) {
+            if (!Objects.equals(prior.actorId(), actorId) || !Objects.equals(prior.requestHash(), requestHash))
+                throw new VisitOperationsConflictException("This correction operation ID was already used with different data");
+            return operationsView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId),
+                    correctionHistory(sessionId));
+        }
+        requireExpectedVersion(report.getVersion(), command.expectedReportVersion(), "Outcome report");
+        VisitSessionItemOutcome row = outcomes.findLockedByItemIdAndSessionId(command.itemId(), sessionId)
+                .orElseThrow(() -> new VisitOperationsConflictException("Property is not part of the captured visit scope"));
+        requireExpectedVersion(row.getVersion(), command.expectedItemVersion(), "Property outcome");
+        String note = normalizePrivateNote(command.privateNote());
+        if (command.outcome() == row.getOutcomeState() && command.skipReason() == row.getSkipReason()
+                && Objects.equals(note, normalizePrivateNote(row.getPrivateNote())))
+            return operationsView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId),
+                    correctionHistory(sessionId));
+
+        VisitSessionItemOutcomeState oldOutcome = row.getOutcomeState();
+        VisitSessionItemSkipReason oldReason = row.getSkipReason();
+        String oldPrivateNote = row.getPrivateNote();
+        Instant correctedAt = Instant.now();
+        boolean tenantVisibleChanged = oldOutcome != command.outcome() || oldReason != command.skipReason();
+        if (tenantVisibleChanged) {
+            row.record(command.outcome(), command.skipReason(), note, users.getReferenceById(actorId), correctedAt);
+        } else {
+            row.updatePrivateNote(note);
+        }
+        report.touch();
+        List<VisitSessionItemOutcome> allRows = outcomes.findLockedBySessionIdOrderByItemId(sessionId);
+        boolean finalizedNow = report.getState() == VisitSessionOutcomeReportState.OPEN
+                && !allRows.isEmpty() && allRows.stream().noneMatch(item ->
+                        item.getOutcomeState() == VisitSessionItemOutcomeState.UNRECORDED);
+        if (finalizedNow) report.markFinalized(users.getReferenceById(actorId), Instant.now());
+        reports.flush();
+        outcomes.flush();
+        jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,reason_code,metadata,idempotency_key) "
+                        + "values (?,?, 'OUTCOME_ITEM_CORRECTED','OPERATIONS_CORRECTION', "
+                        + "jsonb_build_object('itemId',?,'previousOutcome',?,'previousSkipReason',CAST(? AS text),"
+                        + "'previousPrivateNote',CAST(? AS text),'correctedOutcome',?,'correctedSkipReason',CAST(? AS text),"
+                        + "'correctedPrivateNote',CAST(? AS text),'correctionReason',?,'operationId',?,'requestHash',?,'correctedAt',?),?)",
+                sessionId, actorId, command.itemId(), oldOutcome.name(), oldReason == null ? null : oldReason.name(),
+                oldPrivateNote, command.outcome().name(), command.skipReason() == null ? null : command.skipReason().name(),
+                note, command.correctionReason().strip(), command.operationId().toString(), requestHash,
+                correctedAt.toString(), eventKey);
+        if (finalizedNow) {
+            String finalizeKey = "OUTCOME_REPORT_FINALIZED:" + sessionId + ":OPS:" + command.operationId();
+            jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,reason_code,metadata,idempotency_key) "
+                            + "values (?,?, 'OUTCOME_REPORT_FINALIZED','OPERATIONS_CORRECTION', "
+                            + "jsonb_build_object('itemCount',?,'operationId',?,'completionMode','OPERATIONS_CORRECTION'), ?) "
+                            + "on conflict (idempotency_key) do nothing",
+                    sessionId, actorId, allRows.size(), command.operationId().toString(), finalizeKey);
+            enqueueOutcomeReady(session);
+        } else if (report.getState() == VisitSessionOutcomeReportState.FINALIZED
+                && tenantVisibleChanged) {
+            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) "
+                            + "values (?,?,'TENANT','VISIT_OUTCOME_UPDATED','Visit details were updated',"
+                            + "'Pathome Operations updated details for your visit. Open visit history to review the latest information.') "
+                            + "on conflict(event_key) do nothing",
+                    "VISIT_OUTCOME_UPDATED:" + sessionId + ":" + command.itemId() + ":" + command.operationId(),
+                    session.getTenant().getId());
+        }
+        entityManager.flush();
+        return operationsView(session, report, outcomes.findBySessionIdOrderByPositionSnapshotAscItemIdAsc(sessionId),
+                correctionHistory(sessionId));
     }
 
     private GroundVisitSessionOutcomeView groundView(VisitSession session, VisitSessionOutcomeReport report,
@@ -336,18 +456,153 @@ public class VisitSessionOutcomeService {
     }
 
     private TenantVisitSessionOutcomeView tenantView(VisitSession session, VisitSessionOutcomeReport report,
-            List<VisitSessionItemOutcome> rows) {
+            List<VisitSessionItemOutcome> rows, Map<Long, CorrectionTime> corrections) {
         String outcomeSummary = report == null ? null : summary(report, rows);
         boolean finalized = report != null && report.getState() == VisitSessionOutcomeReportState.FINALIZED
                 && List.of("ALL_VIEWED", "PARTLY_VIEWED", "NONE_VIEWED").contains(outcomeSummary);
-        List<TenantVisitSessionItemOutcomeView> properties = finalized ? rows.stream().map(row ->
-                new TenantVisitSessionItemOutcomeView(row.getPositionSnapshot(), row.getTitleSnapshot(),
-                        row.getAddressSnapshot(), row.getCitySnapshot(), row.getSectorSnapshot(),
-                        row.getOutcomeState(), row.getSkipReason())).toList() : List.of();
+        boolean legacy = report != null && report.getState() == VisitSessionOutcomeReportState.LEGACY_UNRECORDED;
+        List<TenantVisitSessionItemOutcomeView> properties = report != null
+                && report.getState() != VisitSessionOutcomeReportState.LEGACY_UNRECORDED
+                ? rows.stream().map(row -> tenantItemView(row, finalized, corrections.get(row.getItemId()))).toList()
+                : List.of();
+        long viewed = finalized ? rows.stream().filter(row ->
+                row.getOutcomeState() == VisitSessionItemOutcomeState.VISITED).count() : 0;
+        Instant lastUpdatedAt = report == null ? session.getExecutionStateChangedAt()
+                : tenantVisibleLastUpdatedAt(report, rows, corrections);
         return new TenantVisitSessionOutcomeView(session.getId(), tenantLifecycle(session, report, rows),
-                finalized ? outcomeSummary : null, session.getScheduledAt(), session.getStartedAt(),
-                session.getFinishedAt(), properties);
+                finalized || legacy ? outcomeSummary : null, report != null,
+                session.getScheduledAt(), session.getStartedAt(), session.getFinishedAt(), session.getCity(),
+                session.getAreaName(), report == null || report.getState() == VisitSessionOutcomeReportState.LEGACY_UNRECORDED
+                        ? null : (long) rows.size(), finalized ? viewed : null,
+                lastUpdatedAt, properties);
     }
+
+    private Instant tenantVisibleLastUpdatedAt(VisitSessionOutcomeReport report,
+            List<VisitSessionItemOutcome> rows, Map<Long, CorrectionTime> corrections) {
+        if (report == null) return null;
+        if (report.getState() == VisitSessionOutcomeReportState.OPEN) {
+            return report.getScopeCapturedAt() == null ? report.getUpdatedAt() : report.getScopeCapturedAt();
+        }
+        if (report.getState() != VisitSessionOutcomeReportState.FINALIZED || report.getFinalizedAt() == null) {
+            return report.getUpdatedAt();
+        }
+        return rows.stream().map(row -> corrections.get(row.getItemId()))
+                .filter(Objects::nonNull).map(CorrectionTime::correctedAt)
+                .filter(Objects::nonNull).reduce(report.getFinalizedAt(), (latest, at) -> at.isAfter(latest) ? at : latest);
+    }
+
+    private TenantVisitSessionItemOutcomeView tenantItemView(VisitSessionItemOutcome row, boolean finalized,
+            CorrectionTime correction) {
+        boolean operationsUpdated = finalized && correction != null && row.getRecordedAt() != null
+                && !correction.correctedAt().isBefore(row.getRecordedAt());
+        String outcome = !finalized ? "PENDING"
+                : row.getOutcomeState() == VisitSessionItemOutcomeState.VISITED ? "VIEWED" : "NOT_VIEWED";
+        return new TenantVisitSessionItemOutcomeView(row.getPositionSnapshot(), row.getTitleSnapshot(),
+                row.getAddressSnapshot(), row.getCitySnapshot(), row.getSectorSnapshot(), outcome,
+                finalized && row.getOutcomeState() == VisitSessionItemOutcomeState.SKIPPED
+                        ? tenantSafeReason(row.getSkipReason(), operationsUpdated) : null,
+                operationsUpdated ? "OPERATIONS_UPDATED" : finalized ? "GE_REPORTED" : null,
+                operationsUpdated ? correction.correctedAt() : null);
+    }
+
+    private String tenantSafeReason(VisitSessionItemSkipReason reason, boolean operationsUpdated) {
+        String detail = switch (reason) {
+            case PROPERTY_UNAVAILABLE -> "The property was reported unavailable.";
+            case TENANT_DECLINED -> "The GE reported that the tenant chose not to view this property.";
+            case TENANT_LEFT_EARLY -> "The GE reported that the visit ended before this property was viewed.";
+            case PROPERTY_MISMATCH -> "The property details were reported not to match.";
+            case ACCESS_DENIED, OTHER -> "This property was not viewed.";
+        };
+        return operationsUpdated ? "Pathome Operations updated the result: " + detail : "GE reported: " + detail;
+    }
+
+    private Map<Long, CorrectionTime> latestCorrectionTimes(Collection<Long> sessionIds) {
+        if (sessionIds == null || sessionIds.isEmpty()) return Map.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(sessionIds.size(), "?"));
+        String sql = "select distinct on ((metadata->>'itemId')::bigint) (metadata->>'itemId')::bigint as item_id, "
+                + "coalesce((metadata->>'correctedAt')::timestamptz,occurred_at) corrected_at "
+                + "from visit_execution_events where session_id in (" + placeholders + ") "
+                + "and event_type='OUTCOME_ITEM_CORRECTED' "
+                + "and ((metadata->>'previousOutcome') is distinct from (metadata->>'correctedOutcome') "
+                + "or (metadata->>'previousSkipReason') is distinct from (metadata->>'correctedSkipReason')) "
+                + "order by (metadata->>'itemId')::bigint, occurred_at desc, id desc";
+        return jdbc.query(sql, (rs, row) -> Map.entry(rs.getLong("item_id"),
+                new CorrectionTime(rs.getTimestamp("corrected_at").toInstant())), sessionIds.toArray())
+                .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    private OperationsVisitOutcomeDetailView operationsView(VisitSession session, VisitSessionOutcomeReport report,
+            List<VisitSessionItemOutcome> rows, List<OperationsVisitOutcomeAuditView> history) {
+        long pending = rows.stream().filter(row -> row.getOutcomeState() == VisitSessionItemOutcomeState.UNRECORDED).count();
+        long viewed = rows.stream().filter(row -> row.getOutcomeState() == VisitSessionItemOutcomeState.VISITED).count();
+        List<OperationsVisitOutcomeItemView> itemViews = rows.stream().map(row -> new OperationsVisitOutcomeItemView(
+                row.getItemId(), row.getPositionSnapshot(), row.getTitleSnapshot(), row.getAddressSnapshot(),
+                row.getCitySnapshot(), row.getSectorSnapshot(), row.getOutcomeState().name(),
+                row.getSkipReason() == null ? null : row.getSkipReason().name(), row.getPrivateNote(),
+                row.getRecordedAt(), row.getRecordedBy() == null ? null : row.getRecordedBy().getId(), row.getVersion())).toList();
+        return new OperationsVisitOutcomeDetailView(session.getId(), session.getStatus().name(), report.getState().name(),
+                report.getVersion(), session.getRepresentative() == null ? null : session.getRepresentative().getId(),
+                session.getCity(), session.getAreaName(), session.getScheduledAt(), session.getStartedAt(),
+                session.getFinishedAt(), report.getUpdatedAt(), summary(report, rows), rows.size(), pending, viewed,
+                itemViews, history);
+    }
+
+    private List<OperationsVisitOutcomeAuditView> correctionHistory(Long sessionId) {
+        return jdbc.query("select actor_user_id,occurred_at,metadata->>'itemId' item_id,"
+                        + "metadata->>'previousOutcome' previous_outcome,metadata->>'previousSkipReason' previous_reason,"
+                        + "metadata->>'correctedOutcome' corrected_outcome,metadata->>'correctedSkipReason' corrected_reason,"
+                        + "metadata->>'correctionReason' correction_reason from visit_execution_events "
+                        + "where session_id=? and event_type='OUTCOME_ITEM_CORRECTED' order by occurred_at desc,id desc limit 100",
+                (rs, row) -> new OperationsVisitOutcomeAuditView(
+                        rs.getObject("item_id") == null ? null : Long.valueOf(rs.getString("item_id")),
+                        rs.getString("previous_outcome"), rs.getString("previous_reason"),
+                        rs.getString("corrected_outcome"), rs.getString("corrected_reason"),
+                        rs.getString("correction_reason"),
+                        rs.getObject("actor_user_id") == null ? null : ((Number) rs.getObject("actor_user_id")).longValue(),
+                        rs.getTimestamp("occurred_at").toInstant()), sessionId);
+    }
+
+    private void validateCorrectionCommand(Long sessionId, CorrectVisitOutcomeCommand command) {
+        if (sessionId == null || sessionId <= 0 || command == null || command.itemId() == null || command.itemId() <= 0
+                || command.operationId() == null || command.expectedReportVersion() == null
+                || command.expectedReportVersion() < 0 || command.expectedItemVersion() == null
+                || command.expectedItemVersion() < 0)
+            throw new IllegalArgumentException("Session, item, versions, and correction operation are required");
+        if (command.outcome() != VisitSessionItemOutcomeState.VISITED
+                && command.outcome() != VisitSessionItemOutcomeState.SKIPPED)
+            throw new IllegalArgumentException("A corrected outcome must be Viewed or Not viewed");
+        if (command.outcome() == VisitSessionItemOutcomeState.SKIPPED && command.skipReason() == null)
+            throw new IllegalArgumentException("A not-viewed correction requires a reason");
+        if (command.outcome() == VisitSessionItemOutcomeState.VISITED && command.skipReason() != null)
+            throw new IllegalArgumentException("A viewed correction cannot have a not-viewed reason");
+        String reason = command.correctionReason() == null ? "" : command.correctionReason().strip();
+        if (reason.length() < 8 || reason.length() > 300)
+            throw new IllegalArgumentException("Correction reason must contain 8 to 300 characters");
+        String note = normalizePrivateNote(command.privateNote());
+        if (note != null && note.length() > PRIVATE_NOTE_LIMIT)
+            throw new IllegalArgumentException("Private outcome note is too long");
+        if (command.skipReason() == VisitSessionItemSkipReason.OTHER && note == null)
+            throw new IllegalArgumentException("OTHER skip reasons require an internal note");
+    }
+
+    private String correctionEventKey(Long sessionId, Long itemId, UUID operationId) {
+        return "OUTCOME_CORRECTION:" + sessionId + ":" + itemId + ":" + operationId;
+    }
+
+    private String correctionRequestHash(Long sessionId, CorrectVisitOutcomeCommand command) {
+        return hash(sessionId + "|" + command.itemId() + "|" + command.outcome() + "|" + command.skipReason()
+                + "|" + command.privateNote() + "|" + command.correctionReason() + "|"
+                + command.expectedReportVersion() + "|" + command.expectedItemVersion());
+    }
+
+    private void enqueueOutcomeReady(VisitSession session) {
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) "
+                        + "values (?,?,'TENANT','VISIT_OUTCOME_READY','Visit details are ready',"
+                        + "'Your visit details are ready to review in visit history.') on conflict(event_key) do nothing",
+                "VISIT_OUTCOME_READY:" + session.getId(), session.getTenant().getId());
+    }
+
+    private record CorrectionTime(Instant correctedAt) {}
 
     private String summary(VisitSessionOutcomeReport report, List<VisitSessionItemOutcome> rows) {
         if (report.getState() == VisitSessionOutcomeReportState.LEGACY_UNRECORDED) return "RESULTS_NOT_RECORDED";

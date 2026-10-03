@@ -7,6 +7,8 @@ import com.indore.pathome.spaces.dto.ApproveVisitRecommendationCommand;
 import com.indore.pathome.spaces.dto.VisitOtpStartCommand;
 import com.indore.pathome.spaces.dto.RecordVisitSessionItemOutcomeCommand;
 import com.indore.pathome.spaces.dto.CompleteVisitSessionWithOutcomesCommand;
+import com.indore.pathome.spaces.dto.CorrectVisitOutcomeCommand;
+import com.indore.pathome.spaces.dto.OperationsVisitOutcomeDetailView;
 import com.indore.pathome.spaces.dto.GroundVisitContactCommand;
 import com.indore.pathome.spaces.dto.GroundVisitMoreTimeCommand;
 import com.indore.pathome.spaces.dto.RescheduleVisitSessionCommand;
@@ -118,6 +120,7 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private VisitSchedulingRecommendationService recommendations;
     @Autowired private VisitExecutionService execution;
     @Autowired private VisitSessionOutcomeService outcomeService;
+    @Autowired private VisitExecutionProperties executionProperties;
     @Autowired private VisitSessionOutcomeCompletionService outcomeCompletionService;
     @Autowired private VisitEntitlementStore entitlements;
     @Autowired private VisitEntitlementOperationsService entitlementOperations;
@@ -346,8 +349,11 @@ class VisitOperationsPostgresIntegrationTest {
     void liveRepairEvaluatorAcceptsOnlyTimesInsideTenantPropertyAndShiftFeasibility() {
         RecommendationScenario scenario = recommendationScenario(false);
         when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
-        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
-                new RecommendationRequest(0L)).candidates().stream()
+        var recommendation = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L));
+        assertEquals(RecommendationStatus.LOCATION_UNAVAILABLE_FALLBACK_USED, recommendation.status());
+        assertFalse(recommendation.candidates().isEmpty(), "missing live GPS must use conservative scheduling fallback");
+        var planned = recommendation.candidates().stream()
                 .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geB().getId()))
                 .findFirst().orElseThrow();
         Instant safeShift = planned.scheduledAt().plusSeconds(5 * 60L);
@@ -768,6 +774,12 @@ class VisitOperationsPostgresIntegrationTest {
         var initial = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
         assertEquals(2, initial.items().size());
         assertTrue(initial.items().stream().allMatch(item -> item.outcome() == VisitSessionItemOutcomeState.UNRECORDED));
+        var tenantPending = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals("IN_PROGRESS", tenantPending.lifecycle());
+        assertNull(tenantPending.viewedProperties());
+        assertTrue(tenantPending.properties().stream().allMatch(item -> "PENDING".equals(item.outcome())));
+        var tenantHistory = outcomeService.listTenantOutcomeHistory(scenario.tenant().getId(), 0, 20);
+        assertTrue(tenantHistory.sessions().stream().anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
         assertThrows(jakarta.persistence.EntityNotFoundException.class,
                 () -> outcomeService.getGroundOutcomeReport(scenario.geB().getId(), scenario.sessionId()));
         assertThrows(jakarta.persistence.EntityNotFoundException.class, () -> outcomeService.recordItemOutcome(
@@ -778,6 +790,8 @@ class VisitOperationsPostgresIntegrationTest {
         User otherTenant = user("outcome-other-tenant", Role.ROLE_TENANT);
         assertThrows(jakarta.persistence.EntityNotFoundException.class,
                 () -> outcomeService.getTenantOutcomeReport(otherTenant.getId(), scenario.sessionId()));
+        assertFalse(outcomeService.listTenantOutcomeHistory(otherTenant.getId(), 0, 20).sessions().stream()
+                .anyMatch(item -> item.sessionId().equals(scenario.sessionId())));
         var first = initial.items().get(0);
         String capturedTitle = first.title();
         Listing editedListing = items.findBySessionIdOrderByPositionAsc(scenario.sessionId()).stream()
@@ -822,7 +836,8 @@ class VisitOperationsPostgresIntegrationTest {
                 String.class, scenario.sessionId()));
         var pendingTenantView = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
         assertEquals("DETAILS_PENDING", pendingTenantView.lifecycle());
-        assertTrue(pendingTenantView.properties().isEmpty());
+        assertEquals(2, pendingTenantView.properties().size());
+        assertTrue(pendingTenantView.properties().stream().allMatch(item -> "PENDING".equals(item.outcome())));
 
         VisitSession currentSession = sessions.findById(scenario.sessionId()).orElseThrow();
         assertThrows(VisitOperationsConflictException.class, () -> outcomeService.finalizeReport(
@@ -833,6 +848,8 @@ class VisitOperationsPostgresIntegrationTest {
                 new RecordVisitSessionItemOutcomeCommand(VisitSessionItemOutcomeState.SKIPPED,
                         VisitSessionItemSkipReason.OTHER, "Access was not available", currentSession.getVersion(),
                         afterFirst.reportVersion(), second.itemVersion(), UUID.randomUUID()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_OUTCOME_READY:" + scenario.sessionId()));
         var finalized = outcomeService.finalizeReport(scenario.geA().getId(), scenario.sessionId(),
                 currentSession.getVersion(), skipped.reportVersion(), UUID.randomUUID());
         assertEquals(VisitSessionOutcomeReportState.FINALIZED, finalized.reportState());
@@ -842,11 +859,201 @@ class VisitOperationsPostgresIntegrationTest {
         var tenantView = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
         assertEquals("PARTIALLY_COMPLETED", tenantView.lifecycle());
         assertEquals(2, tenantView.properties().size());
-        assertEquals(VisitSessionItemSkipReason.OTHER,
-                tenantView.properties().stream().filter(item -> item.outcome() == VisitSessionItemOutcomeState.SKIPPED)
-                        .findFirst().orElseThrow().skipReason());
+        var tenantSkipped = tenantView.properties().stream().filter(item -> "NOT_VIEWED".equals(item.outcome()))
+                .findFirst().orElseThrow();
+        assertEquals("GE reported: This property was not viewed.", tenantSkipped.reasonLabel());
+        assertEquals("GE_REPORTED", tenantSkipped.attribution());
+        assertFalse(tenantSkipped.reasonLabel().contains("Access was not available"));
+        assertFalse(java.util.Arrays.stream(tenantSkipped.getClass().getRecordComponents())
+                .anyMatch(component -> component.getName().toLowerCase().contains("note")
+                        || component.getName().toLowerCase().contains("actor")));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_OUTCOME_READY:" + scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
                         + "and event_type='OUTCOME_REPORT_FINALIZED'", Integer.class, scenario.sessionId()));
+
+        OperationsVisitOutcomeDetailView opsBefore = outcomeService.getOperationsOutcomeDetail(
+                scenario.admin().getId(), scenario.sessionId());
+        var correctionItem = finalized.items().stream().filter(item -> item.itemId().equals(second.itemId()))
+                .findFirst().orElseThrow();
+        CorrectVisitOutcomeCommand correction = new CorrectVisitOutcomeCommand(second.itemId(),
+                VisitSessionItemOutcomeState.VISITED, null, null, "Field log confirms the property was viewed",
+                finalized.reportVersion(), correctionItem.itemVersion(), UUID.randomUUID());
+        String listingStatusBeforeCorrection = jdbc.queryForObject("select l.status from listings l join visit_session_items i "
+                + "on i.listing_id=l.id where i.id=?", String.class, second.itemId());
+        assertThrows(IllegalArgumentException.class, () -> outcomeService.correctOutcome(scenario.admin().getId(),
+                scenario.sessionId(), new CorrectVisitOutcomeCommand(second.itemId(),
+                        VisitSessionItemOutcomeState.VISITED, null, null, " ",
+                        finalized.reportVersion(), correctionItem.itemVersion(), UUID.randomUUID())));
+        var corrected = outcomeService.correctOutcome(scenario.admin().getId(), scenario.sessionId(), correction);
+        assertEquals("ALL_VIEWED", corrected.summary());
+        assertEquals("SKIPPED", opsBefore.properties().stream().filter(item -> item.itemId().equals(second.itemId()))
+                .findFirst().orElseThrow().outcome());
+        assertEquals("ALL_VIEWED", outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId())
+                .outcomeSummary());
+        var correctedTenantProperty = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId())
+                .properties().stream().filter(item -> item.position() == correctionItem.position()).findFirst().orElseThrow();
+        assertEquals("VIEWED", correctedTenantProperty.outcome());
+        assertEquals("OPERATIONS_UPDATED", correctedTenantProperty.attribution());
+        assertNotNull(correctedTenantProperty.correctedAt());
+        assertEquals(1, corrected.correctionHistory().size());
+        assertEquals("SKIPPED", corrected.correctionHistory().get(0).previousOutcome());
+        assertEquals("VISITED", corrected.correctionHistory().get(0).correctedOutcome());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                + "and event_type='OUTCOME_ITEM_CORRECTED' and metadata->>'previousPrivateNote'='Access was not available'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "VISIT_OUTCOME_UPDATED:" + scenario.sessionId() + ":%"));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(listingStatusBeforeCorrection, jdbc.queryForObject("select l.status from listings l join visit_session_items i "
+                + "on i.listing_id=l.id where i.id=?", String.class, second.itemId()));
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeService.correctOutcome(
+                scenario.admin().getId(), scenario.sessionId(), new CorrectVisitOutcomeCommand(second.itemId(),
+                        VisitSessionItemOutcomeState.SKIPPED, VisitSessionItemSkipReason.PROPERTY_UNAVAILABLE, null,
+                        "Stale operator correction", correction.expectedReportVersion(), correction.expectedItemVersion(), UUID.randomUUID())));
+        assertThrows(AccessDeniedException.class, () -> outcomeService.correctOutcome(scenario.geA().getId(),
+                scenario.sessionId(), correction));
+        outcomeService.correctOutcome(scenario.admin().getId(), scenario.sessionId(), correction);
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='OUTCOME_ITEM_CORRECTED'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "VISIT_OUTCOME_UPDATED:" + scenario.sessionId() + ":%"));
+
+        jdbc.update("delete from visit_session_item_outcomes where session_id=?", scenario.sessionId());
+        jdbc.update("update visit_session_outcome_reports set state='LEGACY_UNRECORDED',scope_source='LEGACY_COMPLETED',"
+                + "scope_captured_at=null,finalized_at=null,finalized_by_user_id=null where session_id=?", scenario.sessionId());
+        var legacy = outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals("RESULTS_NOT_RECORDED", legacy.lifecycle());
+        assertEquals("RESULTS_NOT_RECORDED", legacy.outcomeSummary());
+        assertTrue(legacy.properties().isEmpty());
+        assertNull(legacy.totalProperties());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void privateNoteOnlyOperationsCorrectionPreservesTenantAttributionAndTimestamp() {
+        FinalizedOutcomeFixture fixture = finalizedOutcomeFixture();
+        var tenantBefore = outcomeService.getTenantOutcomeReport(fixture.scenario().tenant().getId(),
+                fixture.scenario().sessionId());
+        var propertyBefore = tenantBefore.properties().stream()
+                .filter(item -> "NOT_VIEWED".equals(item.outcome())).findFirst().orElseThrow();
+        assertEquals("GE_REPORTED", propertyBefore.attribution());
+
+        OperationsVisitOutcomeDetailView operationsView = outcomeService.getOperationsOutcomeDetail(
+                fixture.scenario().admin().getId(), fixture.scenario().sessionId());
+        var item = operationsView.properties().stream()
+                .filter(row -> "SKIPPED".equals(row.outcome())).findFirst().orElseThrow();
+        CorrectVisitOutcomeCommand internalOnlyCorrection = new CorrectVisitOutcomeCommand(item.itemId(),
+                VisitSessionItemOutcomeState.SKIPPED, VisitSessionItemSkipReason.PROPERTY_UNAVAILABLE,
+                "Internal access note updated", "Internal note was reconciled with the field log",
+                operationsView.reportVersion(), item.version(), UUID.randomUUID());
+
+        OperationsVisitOutcomeDetailView corrected = outcomeService.correctOutcome(
+                fixture.scenario().admin().getId(), fixture.scenario().sessionId(), internalOnlyCorrection);
+        var tenantAfter = outcomeService.getTenantOutcomeReport(fixture.scenario().tenant().getId(),
+                fixture.scenario().sessionId());
+        var propertyAfter = tenantAfter.properties().stream()
+                .filter(row -> row.position().equals(propertyBefore.position())).findFirst().orElseThrow();
+
+        assertEquals(propertyBefore.outcome(), propertyAfter.outcome());
+        assertEquals(propertyBefore.reasonLabel(), propertyAfter.reasonLabel());
+        assertEquals("GE_REPORTED", propertyAfter.attribution());
+        assertNull(propertyAfter.correctedAt());
+        assertEquals(tenantBefore.lastUpdatedAt(), tenantAfter.lastUpdatedAt());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "VISIT_OUTCOME_UPDATED:" + fixture.scenario().sessionId() + ":%"));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type='OUTCOME_ITEM_CORRECTED' and metadata->>'correctedPrivateNote'=?",
+                Integer.class, fixture.scenario().sessionId(), "Internal access note updated"));
+        assertEquals(1, corrected.correctionHistory().size());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void sameOperationIdOnDifferentItemsCreatesDistinctUpdateIntentsAndExactRetryDedupes() {
+        FinalizedOutcomeFixture fixture = finalizedOutcomeFixture();
+        Long sessionId = fixture.scenario().sessionId();
+        Long actorId = fixture.scenario().admin().getId();
+        UUID operationId = UUID.randomUUID();
+        OperationsVisitOutcomeDetailView initial = outcomeService.getOperationsOutcomeDetail(actorId, sessionId);
+        var firstItem = initial.properties().stream().filter(row -> "VISITED".equals(row.outcome()))
+                .findFirst().orElseThrow();
+        CorrectVisitOutcomeCommand firstCorrection = new CorrectVisitOutcomeCommand(firstItem.itemId(),
+                VisitSessionItemOutcomeState.SKIPPED, VisitSessionItemSkipReason.ACCESS_DENIED, null,
+                "Field evidence confirms this property was not accessible", initial.reportVersion(),
+                firstItem.version(), operationId);
+        OperationsVisitOutcomeDetailView afterFirst = outcomeService.correctOutcome(actorId, sessionId, firstCorrection);
+
+        var secondItem = afterFirst.properties().stream()
+                .filter(row -> "SKIPPED".equals(row.outcome()) && !row.itemId().equals(firstItem.itemId()))
+                .findFirst().orElseThrow();
+        CorrectVisitOutcomeCommand secondCorrection = new CorrectVisitOutcomeCommand(secondItem.itemId(),
+                VisitSessionItemOutcomeState.VISITED, null, null,
+                "Field evidence confirms this property was viewed", afterFirst.reportVersion(),
+                secondItem.version(), operationId);
+        outcomeService.correctOutcome(actorId, sessionId, secondCorrection);
+
+        String eventKeyPattern = "VISIT_OUTCOME_UPDATED:" + sessionId + ":%";
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, eventKeyPattern));
+        assertEquals(2, jdbc.queryForObject("select count(distinct event_key) from visit_notification_outbox where event_key like ?",
+                Integer.class, eventKeyPattern));
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type='OUTCOME_ITEM_CORRECTED'", Integer.class, sessionId));
+
+        outcomeService.correctOutcome(actorId, sessionId, firstCorrection);
+        assertThrows(VisitOperationsConflictException.class, () -> outcomeService.correctOutcome(actorId, sessionId,
+                new CorrectVisitOutcomeCommand(firstItem.itemId(), VisitSessionItemOutcomeState.VISITED, null, null,
+                        "Conflicting payload for the same operation", firstCorrection.expectedReportVersion(),
+                        firstCorrection.expectedItemVersion(), operationId)));
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, eventKeyPattern));
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                        + "and event_type='OUTCOME_ITEM_CORRECTED'", Integer.class, sessionId));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void materialCorrectionToOneVisitDoesNotChangeAnotherVisitHistoryTimestamp() {
+        RecommendationScenario firstScenario = recommendationScenario(false);
+        FinalizedOutcomeFixture visitA = finalizedOutcomeFixture(firstScenario);
+        RecommendationScenario secondScenario = additionalRecommendationSession(firstScenario);
+        FinalizedOutcomeFixture visitB = finalizedOutcomeFixture(secondScenario);
+        Long tenantId = firstScenario.tenant().getId();
+
+        var before = outcomeService.listTenantOutcomeHistory(tenantId, 0, 20);
+        var visitABefore = before.sessions().stream().filter(view -> view.sessionId().equals(visitA.scenario().sessionId()))
+                .findFirst().orElseThrow();
+        var visitBBefore = before.sessions().stream().filter(view -> view.sessionId().equals(visitB.scenario().sessionId()))
+                .findFirst().orElseThrow();
+
+        OperationsVisitOutcomeDetailView opsView = outcomeService.getOperationsOutcomeDetail(
+                firstScenario.admin().getId(), visitB.scenario().sessionId());
+        var item = opsView.properties().stream().filter(row -> "VISITED".equals(row.outcome()))
+                .findFirst().orElseThrow();
+        outcomeService.correctOutcome(firstScenario.admin().getId(), visitB.scenario().sessionId(),
+                new CorrectVisitOutcomeCommand(item.itemId(), VisitSessionItemOutcomeState.SKIPPED,
+                        VisitSessionItemSkipReason.ACCESS_DENIED, null,
+                        "Field review confirmed access was unavailable", opsView.reportVersion(),
+                        item.version(), UUID.randomUUID()));
+
+        var after = outcomeService.listTenantOutcomeHistory(tenantId, 0, 20);
+        var visitAAfter = after.sessions().stream().filter(view -> view.sessionId().equals(visitA.scenario().sessionId()))
+                .findFirst().orElseThrow();
+        var visitBAfter = after.sessions().stream().filter(view -> view.sessionId().equals(visitB.scenario().sessionId()))
+                .findFirst().orElseThrow();
+
+        assertEquals(visitABefore.lifecycle(), visitAAfter.lifecycle());
+        assertEquals(visitABefore.outcomeSummary(), visitAAfter.outcomeSummary());
+        assertEquals(visitABefore.properties(), visitAAfter.properties());
+        assertEquals(visitABefore.lastUpdatedAt(), visitAAfter.lastUpdatedAt());
+        assertTrue(visitBAfter.lastUpdatedAt().isAfter(visitBBefore.lastUpdatedAt()));
+        var correctedProperty = visitBAfter.properties().stream()
+                .filter(property -> property.position().equals(item.position())).findFirst().orElseThrow();
+        assertEquals("NOT_VIEWED", correctedProperty.outcome());
+        assertEquals("OPERATIONS_UPDATED", correctedProperty.attribution());
+        assertEquals(visitBAfter.lastUpdatedAt(), correctedProperty.correctedAt());
     }
 
     @Test
@@ -976,6 +1183,72 @@ class VisitOperationsPostgresIntegrationTest {
 
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void operationsQueueUsesConfiguredGraceAndCorrectionsCanCompleteOpenReport() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+        execution.finish(scenario.geA().getId(), scenario.sessionId());
+
+        assertFalse(outcomeService.listOperationsOutcomeExceptions(scenario.admin().getId(), 0, 20).getContent().stream()
+                .anyMatch(item -> item.sessionId().equals(scenario.sessionId())), "fresh OPEN reports stay in the GE grace window");
+        jdbc.update("update visit_sessions set finished_at=? where id=?",
+                java.sql.Timestamp.from(Instant.now().minus(Duration.ofMinutes(70))), scenario.sessionId());
+        var overdue = outcomeService.listOperationsOutcomeExceptions(scenario.admin().getId(), 0, 20);
+        var exception = overdue.getContent().stream().filter(item -> item.sessionId().equals(scenario.sessionId()))
+                .findFirst().orElseThrow();
+        assertEquals(60, executionProperties.getIncompleteOutcomeGraceMinutes());
+        assertEquals(2L, exception.unrecordedCount());
+        assertNotNull(exception.overdueSince());
+        assertThrows(AccessDeniedException.class,
+                () -> outcomeService.listOperationsOutcomeExceptions(scenario.geA().getId(), 0, 20));
+        User subAdmin = user("outcome-subadmin", Role.ROLE_SUB_ADMIN);
+        assertThrows(AccessDeniedException.class,
+                () -> outcomeService.getOperationsOutcomeDetail(subAdmin.getId(), scenario.sessionId()));
+        assertThrows(AccessDeniedException.class,
+                () -> outcomeService.getOperationsOutcomeDetail(scenario.tenant().getId(), scenario.sessionId()));
+
+        OperationsVisitOutcomeDetailView detail = outcomeService.getOperationsOutcomeDetail(
+                scenario.admin().getId(), scenario.sessionId());
+        var first = detail.properties().get(0);
+        var afterFirst = outcomeService.correctOutcome(scenario.admin().getId(), scenario.sessionId(),
+                new CorrectVisitOutcomeCommand(first.itemId(), VisitSessionItemOutcomeState.VISITED,
+                        null, null, "Field reconciliation confirms this property was viewed",
+                        detail.reportVersion(), first.version(), UUID.randomUUID()));
+        assertEquals("OPEN", afterFirst.reportState());
+        var remaining = afterFirst.properties().stream()
+                .filter(item -> item.outcome().equals("UNRECORDED")).findFirst().orElseThrow();
+        var finalized = outcomeService.correctOutcome(scenario.admin().getId(), scenario.sessionId(),
+                new CorrectVisitOutcomeCommand(remaining.itemId(), VisitSessionItemOutcomeState.SKIPPED,
+                        VisitSessionItemSkipReason.ACCESS_DENIED, null, "Operations reconciled the field report",
+                        afterFirst.reportVersion(), remaining.version(), UUID.randomUUID()));
+        assertEquals("FINALIZED", finalized.reportState());
+        assertEquals("PARTLY_VIEWED", finalized.summary());
+        assertEquals(0, finalized.pendingProperties());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
+                + "and event_type='OUTCOME_REPORT_FINALIZED' and reason_code='OPERATIONS_CORRECTION'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_OUTCOME_READY:" + scenario.sessionId()));
+        assertEquals("PARTLY_VIEWED", outcomeService.getTenantOutcomeReport(scenario.tenant().getId(), scenario.sessionId())
+                .outcomeSummary());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void successfulStartCapturesFourConfirmedItemsAndExcludesPreStartRemoval() {
         RecommendationScenario scenario = recommendationScenario(false);
         addTwoPreStartConfirmedItems(scenario);
@@ -1035,15 +1308,14 @@ class VisitOperationsPostgresIntegrationTest {
         assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? "
                         + "and event_type in ('RELEASE','RESTORE','FORFEIT_NO_SHOW')", Integer.class, scenario.sessionId()));
 
-        var queue = outcomeService.listOperationsOutcomeExceptions(scenario.admin().getId(),
-                Instant.now().plusSeconds(1), 0, 20);
+        var queue = outcomeService.listOperationsOutcomeExceptions(scenario.admin().getId(), 0, 20);
         var exception = queue.getContent().stream().filter(item -> item.sessionId().equals(scenario.sessionId()))
                 .findFirst().orElseThrow();
         assertEquals(2L, exception.itemCount());
         assertEquals(0L, exception.unrecordedCount());
         assertEquals(0L, exception.visitedCount());
         assertThrows(AccessDeniedException.class, () -> outcomeService.listOperationsOutcomeExceptions(
-                scenario.tenant().getId(), Instant.now().plusSeconds(1), 0, 20));
+                scenario.tenant().getId(), 0, 20));
     }
 
     @Test
@@ -3122,6 +3394,45 @@ class VisitOperationsPostgresIntegrationTest {
                 + ":v1:" + candidate.groundExecutiveUserId()).isEmpty());
     }
 
+    private FinalizedOutcomeFixture finalizedOutcomeFixture() {
+        return finalizedOutcomeFixture(recommendationScenario(false));
+    }
+
+    private FinalizedOutcomeFixture finalizedOutcomeFixture(RecommendationScenario scenario) {
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var candidate = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(item -> item.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), candidate.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant startAt = Instant.now().minusSeconds(5 * 60L)
+                .truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), startAt, candidate.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+
+        var outcomes = outcomeService.getGroundOutcomeReport(scenario.geA().getId(), scenario.sessionId());
+        for (int index = 0; index < outcomes.items().size(); index++) {
+            var item = outcomes.items().get(index);
+            boolean viewed = index == 0;
+            outcomes = outcomeService.recordItemOutcome(scenario.geA().getId(), scenario.sessionId(), item.itemId(),
+                    new RecordVisitSessionItemOutcomeCommand(viewed ? VisitSessionItemOutcomeState.VISITED
+                            : VisitSessionItemOutcomeState.SKIPPED,
+                            viewed ? null : VisitSessionItemSkipReason.PROPERTY_UNAVAILABLE, null,
+                            outcomes.sessionVersion(), outcomes.reportVersion(), item.itemVersion(), UUID.randomUUID()));
+        }
+        execution.finish(scenario.geA().getId(), scenario.sessionId());
+        VisitSession session = sessions.findById(scenario.sessionId()).orElseThrow();
+        outcomes = outcomeService.finalizeReport(scenario.geA().getId(), scenario.sessionId(),
+                session.getVersion(), outcomes.reportVersion(), UUID.randomUUID());
+        assertEquals(VisitSessionOutcomeReportState.FINALIZED, outcomes.reportState());
+        return new FinalizedOutcomeFixture(scenario, outcomes);
+    }
+
     private RecommendationScenario recommendationScenario(boolean withAmitPriorVisit) {
         User admin = user("recommend-admin", Role.ROLE_ADMIN);
         User tenant = user("recommend-tenant", Role.ROLE_TENANT);
@@ -3528,6 +3839,8 @@ class VisitOperationsPostgresIntegrationTest {
     }
 
     private record Actors(User admin, User tenant, User ground) {}
+    private record FinalizedOutcomeFixture(RecommendationScenario scenario,
+            com.indore.pathome.spaces.dto.GroundVisitSessionOutcomeView outcomes) {}
     private record RecommendationScenario(User admin, User tenant, User geA, User geB,
             Long sessionId, Instant desiredAt, Locality locality) {}
 }

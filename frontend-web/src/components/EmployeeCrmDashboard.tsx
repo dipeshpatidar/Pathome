@@ -14,6 +14,7 @@ import { UserProfile } from '../types';
 import { useNotification } from '../context/NotificationContext';
 import { GroundVisitOperationsPanel } from './GroundVisitOperationsPanel';
 import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
+import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
 
 interface EmployeeCrmDashboardProps {
   user: UserProfile | null;
@@ -41,7 +42,8 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
   });
 
   const canReviewVisitRepairs = user?.employeeRoleType?.toUpperCase() === 'WFH_ADMIN';
-  const [activeTab, setActiveTab] = useState<'visits' | 'leaves' | 'performance' | 'visit-repairs'>('visits');
+  const canReviewVisitOutcomes = user?.role === 'ADMIN' || user?.employeeRoleType?.toUpperCase() === 'WFH_ADMIN';
+  const [activeTab, setActiveTab] = useState<'visits' | 'leaves' | 'performance' | 'visit-repairs' | 'visit-outcomes'>('visits');
   const [leavesList, setLeavesList] = useState(mockMyLeaves);
   const [showLeaveForm, setShowLeaveForm] = useState(false);
   const [newLeaveType, setNewLeaveType] = useState('Casual Leave');
@@ -221,10 +223,10 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
           <button
             onClick={() => setActiveTab('visits')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 ${
+            className={`min-h-11 px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 ${
               activeTab === 'visits' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
@@ -236,9 +238,13 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
           >
             <span className="inline-flex items-center gap-2"><MapPin className="h-4 w-4" aria-hidden="true" /> Visit repairs</span>
           </button>}
+          {canReviewVisitOutcomes && <button
+            onClick={() => setActiveTab('visit-outcomes')}
+            className={`min-h-11 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${activeTab === 'visit-outcomes' ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20' : 'text-slate-400 hover:bg-slate-900 hover:text-white'}`}
+          >Visit outcome exceptions</button>}
           <button
             onClick={() => setActiveTab('leaves')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 ${
+            className={`min-h-11 px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 ${
               activeTab === 'leaves' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
@@ -249,6 +255,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
         {/* Tab Content */}
         {activeTab === 'visits' && <GroundVisitOperationsPanel user={user} />}
         {activeTab === 'visit-repairs' && canReviewVisitRepairs && <OperationsVisitRepairPanel />}
+        {activeTab === 'visit-outcomes' && canReviewVisitOutcomes && <OperationsVisitOutcomePanel />}
 
         {activeTab === 'leaves' && (
           <div className="space-y-4">

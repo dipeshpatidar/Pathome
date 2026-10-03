@@ -18,6 +18,7 @@ public class VisitExecutionProperties {
     private int tenantDisputeWindowHours = 24;
     private int silentOverrunAlertMinutes = 15;
     private int maximumOperationalRestoresPerDay = 3;
+    private int incompleteOutcomeGraceMinutes = 60;
     private final Otp otp = new Otp();
 
     public int getAutoShiftThresholdMinutes() { return autoShiftThresholdMinutes; }
@@ -44,6 +45,8 @@ public class VisitExecutionProperties {
     public void setSilentOverrunAlertMinutes(int value) { silentOverrunAlertMinutes = positive(value, "silentOverrunAlertMinutes"); }
     public int getMaximumOperationalRestoresPerDay() { return maximumOperationalRestoresPerDay; }
     public void setMaximumOperationalRestoresPerDay(int value) { maximumOperationalRestoresPerDay = positive(value, "maximumOperationalRestoresPerDay"); }
+    public int getIncompleteOutcomeGraceMinutes() { return incompleteOutcomeGraceMinutes; }
+    public void setIncompleteOutcomeGraceMinutes(int value) { incompleteOutcomeGraceMinutes = positive(value, "incompleteOutcomeGraceMinutes"); }
     public Otp getOtp() { return otp; }
 
     private static int positive(int value, String name) {
