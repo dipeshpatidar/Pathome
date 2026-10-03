@@ -2704,3 +2704,13 @@ Git: branch `feature/phase1-truthfulness-cleanup`, starting HEAD `d6956bdcc20814
 PACKAGE 3 FOLLOW-UP VERIFICATION ADDENDUM
 Date/time: 2026-10-03 13:57 IST
 Added a PostgreSQL regression for GE-recorded `TENANT_CONFIRMED` during PROVISIONAL_NO_SHOW: it follows the existing consented feasibility route, retains the entitlement hold, and cannot be forfeited by the settlement worker after the dispute deadline. Final consolidated rerun passed 66 tests (65 VisitOperationsPostgresIntegrationTest + 1 VisitSessionMigrationPostgresTest; zero failures/errors/skips). V40 also retains ambiguous stale holds and marks the account for reconciliation. `git diff --check` passed; V33–V39 remain unchanged. No commit or push.
+
+PACKAGE 3 FINAL R01/R02 FOLLOW-UP
+Date/time: 2026-10-03 14:13 IST
+Reason: Implement the authorized final focused follow-up for Sol findings R01 and R02.
+Changes: VisitExecutionService now rejects generic CONFIRM whenever tenant confirmation is PENDING, keeping ACCEPT_RESCHEDULE as the only validated path to confirm a proposed appointment. Downstream repair captures the prior confirmation state; automatic small shifts and alternate-GE reassignment preserve PENDING, clear stale confirmation metadata, and enqueue an idempotent VISIT_TIME_PROPOSED notification that states the current proposal is not confirmed. Previously confirmed small shifts remain confirmed. Focused PostgreSQL regressions cover a real Operations reschedule followed by validated acceptance, infeasibility after rescheduling, normal generic confirmation, pending downstream repair via START and NEED_MORE_TIME, alternate-GE repair, and confirmed small-shift behavior. V33–V40 were not modified.
+Files changed: backend/src/main/java/com/indore/pathome/spaces/service/VisitExecutionService.java; backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java; chat_gpt_changes.
+Verification: Focused PostgreSQL command selecting 10 VisitOperationsPostgresIntegrationTest cases passed (10 tests, zero failures/errors/skips). `mvn -q -DskipTests compile` passed. `git diff --check` passed. A diff-name check against V33–V40 returned no migration changes.
+Checks not run: Full backend suite and browser workflows were not run; the approved scope required only focused backend coverage and no UI changes.
+Security/performance: Existing authenticated tenant/GE/Operations authorization, current assignment checks, entitlement hold behavior, and idempotent outbox keys remain in place; no query or dependency changes.
+Git: feature/phase1-truthfulness-cleanup at 572b9acb12047294659f86bce53df73201bf2a78; no commit or push. Existing untracked AGENTS_PROPOSAL_REVIEW.md and AGENTS_REVIEW_REPORT.md were preserved.

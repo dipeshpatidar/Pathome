@@ -510,6 +510,7 @@ public class VisitExecutionService {
                         .thenComparing(Downstream::id)).toList()) {
             VisitSession downstream = lockedSessions.get(item.id());
             if (downstream == null) continue;
+            boolean tenantAcceptanceRequired = "PENDING".equals(downstream.getTenantConfirmationState());
             if (downstream.getStatus() == VisitSessionStatus.SCHEDULED) {
                 Long assignedGeId = downstream.getRepresentative() == null ? null : downstream.getRepresentative().getId();
                 boolean unchangedFeasible = liveRepairCandidates(downstream, List.of(item.scheduledAt()), false, assignedGeId)
@@ -593,16 +594,22 @@ public class VisitExecutionService {
                 downstream.setTenantConfirmedBy(null);
             } else {
                 downstream.setRepairState("NONE");
-                downstream.setTenantConfirmationState("CONFIRMED");
+                downstream.setTenantConfirmationState(tenantAcceptanceRequired ? "PENDING" : "CONFIRMED");
+                if (tenantAcceptanceRequired) {
+                    downstream.setTenantConfirmedAt(null);
+                    downstream.setTenantConfirmedBy(null);
+                }
             }
             sessions.saveAndFlush(downstream);
             invalidateUnconsumedChallenge(downstream.getId(), now);
-            if (material) {
-                audit(downstream.getId(), null, "VISIT_TIME_PROPOSED", "LIVE_REPAIR_MATERIAL_CHANGE",
+            if (material || tenantAcceptanceRequired) {
+                audit(downstream.getId(), null, "VISIT_TIME_PROPOSED",
+                        material ? "LIVE_REPAIR_MATERIAL_CHANGE" : "LIVE_REPAIR_PENDING_UPDATE",
                         "LIVE_REPAIR_PROPOSED:" + operationId + ":" + downstream.getId());
                 enqueue(downstream.getTenant().getId(), "TENANT", "LIVE_REPAIR_PROPOSED:" + operationId + ":" + downstream.getId(),
-                        "A new visit time needs your confirmation", "We can offer " + formatSessionTime(chosen.start(), downstream)
-                                + ". Your current visit time is not confirmed while you review this option.", "VISIT_TIME_PROPOSED");
+                        "A revised visit time needs your confirmation", "The current proposed visit is "
+                                + formatSessionTime(chosen.start(), downstream)
+                                + ". It is not confirmed; review and accept this current option in the app.", "VISIT_TIME_PROPOSED");
             } else {
                 String eventKey = (reassigned ? "LIVE_REPAIR_REASSIGNED:" : "LIVE_REPAIR_SHIFTED:")
                         + operationId + ":" + downstream.getId();
@@ -770,7 +777,7 @@ public class VisitExecutionService {
         } else {
             if (action.equals("CONFIRM") && session.getStatus() != VisitSessionStatus.SCHEDULED)
                 throw new VisitOperationsConflictException("Only a scheduled visit can be confirmed");
-            if (action.equals("CONFIRM") && "PROPOSED".equals(session.getRepairState()))
+            if (action.equals("CONFIRM") && "PENDING".equals(session.getTenantConfirmationState()))
                 throw new VisitOperationsConflictException("Accept this proposed visit time with ACCEPT_RESCHEDULE");
             if ((action.equals("ACCEPT_RESCHEDULE") || action.equals("REJECT_RESCHEDULE"))
                     && (session.getStatus() != VisitSessionStatus.SCHEDULED
