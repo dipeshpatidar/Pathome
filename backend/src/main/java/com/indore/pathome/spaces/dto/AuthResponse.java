@@ -8,6 +8,7 @@ public class AuthResponse {
     private String role;
     private Integer freeVisitsRemaining;
     private boolean hasLessorProfile;
+    private String employeeRoleType;
 
     public AuthResponse() {}
 
@@ -45,4 +46,7 @@ public class AuthResponse {
 
     public boolean isHasLessorProfile() { return hasLessorProfile; }
     public void setHasLessorProfile(boolean hasLessorProfile) { this.hasLessorProfile = hasLessorProfile; }
+
+    public String getEmployeeRoleType() { return employeeRoleType; }
+    public void setEmployeeRoleType(String employeeRoleType) { this.employeeRoleType = employeeRoleType; }
 }

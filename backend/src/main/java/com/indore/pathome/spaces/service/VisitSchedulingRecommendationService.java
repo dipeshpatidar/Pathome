@@ -75,6 +75,80 @@ public class VisitSchedulingRecommendationService {
         return evaluate(session, Instant.now(), null, false).view();
     }
 
+    /**
+     * Reuses Package 2C-B's complete itinerary evaluator for bounded live repair.
+     * The caller owns the session lock and supplies only the bounded candidate starts
+     * it is willing to consider; this method never persists a recommendation.
+     */
+    @Transactional(readOnly = true)
+    public List<LiveRepairCandidate> assessLiveRepair(VisitSession session, List<Instant> requestedStarts) {
+        return assessLiveRepair(session, requestedStarts, false);
+    }
+
+    @Transactional
+    public List<LiveRepairCandidate> assessLiveRepair(VisitSession session, List<Instant> requestedStarts,
+            boolean lockInputs) {
+        return assessLiveRepair(session, requestedStarts, lockInputs, null, Integer.MAX_VALUE);
+    }
+
+    /** Restricts live repair to the assigned GE plus the best bounded alternate GEs. */
+    @Transactional
+    public List<LiveRepairCandidate> assessLiveRepair(VisitSession session, List<Instant> requestedStarts,
+            boolean lockInputs, Long assignedGeId, int maximumAlternateGes) {
+        if (session == null || session.getId() == null || requestedStarts == null || requestedStarts.isEmpty())
+            return List.of();
+        if (session.getStatus() != VisitSessionStatus.SCHEDULED
+                && session.getStatus() != VisitSessionStatus.REPAIR_REQUIRED)
+            return List.of();
+        Evaluation evaluation = evaluate(session, Instant.now(), requestedStarts, lockInputs, session.getId(), true);
+        if (maximumAlternateGes < 0) throw new IllegalArgumentException("Alternate GE bound cannot be negative");
+        Set<Long> allowedGes = new HashSet<>();
+        if (assignedGeId != null) allowedGes.add(assignedGeId);
+        evaluation.ranked().stream().map(CandidatePlan::geId).filter(id -> !Objects.equals(id, assignedGeId))
+                .distinct().limit(maximumAlternateGes).forEach(allowedGes::add);
+        return evaluation.feasible().stream().filter(plan -> allowedGes.contains(plan.geId()))
+                .map(plan -> new LiveRepairCandidate(plan.geId(), plan.start(),
+                plan.end(), plan.durationMinutes(), plan.zoneId(), plan.travelConfidence(), plan.locationAssessment()))
+                .toList();
+    }
+
+    /** Rechecks the confirmed tenant and stop windows at the real OTP start time. */
+    @Transactional
+    public boolean actualExecutionWindowsValid(VisitSession session, Instant actualStart, Instant actualEnd) {
+        if (session == null || actualStart == null || actualEnd == null || !actualStart.isBefore(actualEnd))
+            return false;
+        List<VisitSessionItem> active = items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(session.getId());
+        if (active.isEmpty() || active.stream().anyMatch(item ->
+                item.getConfirmationStatus() != VisitSessionItemConfirmationStatus.CONFIRMED
+                        || item.getListing().getStatus() != ListingStatus.ACTIVE)) return false;
+        List<PropertyVisitRequest> direct = requests.findLockedBySessionIdOrderByIdAsc(session.getId()).stream()
+                .filter(request -> active.stream().anyMatch(item -> item.getSourceRequest() != null
+                        && Objects.equals(item.getSourceRequest().getId(), request.getId()))).toList();
+        if (direct.isEmpty() || direct.stream().anyMatch(request -> request.getAvailabilityStartAt() == null
+                || request.getAvailabilityEndAt() == null || request.getAvailabilityStartAt().isAfter(actualStart)
+                || request.getAvailabilityEndAt().isBefore(actualEnd))) return false;
+        Map<Long, Locality> localityById = loadLocalities(active.stream().map(VisitSessionItem::getListing).toList());
+        Instant stopStart = actualStart;
+        Instant lastStopEnd = actualStart;
+        for (int index = 0; index < active.size(); index++) {
+            VisitSessionItem item = active.get(index);
+            Listing listing = item.getListing();
+            listings.lockForSchedulingById(listing.getId());
+            Instant stopEnd = stopStart.plus(policy.getStopDwellMinutes(), ChronoUnit.MINUTES);
+            lastStopEnd = stopEnd;
+            if (item.getAvailabilityStartAt() == null || item.getAvailabilityEndAt() == null
+                    || item.getAvailabilityStartAt().isAfter(stopStart)
+                    || item.getAvailabilityEndAt().isBefore(stopEnd)) return false;
+            if (index + 1 < active.size()) {
+                Listing next = active.get(index + 1).getListing();
+                TravelEstimate leg = estimate(point(listing, localityById.get(listing.getCanonicalLocalityId()), "PROPERTY"),
+                        point(next, localityById.get(next.getCanonicalLocalityId()), "PROPERTY"), stopEnd);
+                stopStart = stopEnd.plus(minutes(leg.duration()), ChronoUnit.MINUTES);
+            }
+        }
+        return !lastStopEnd.isAfter(actualEnd);
+    }
+
     @Transactional
     public ApprovalAssessment validateApproval(VisitSession lockedSession, Long expectedVersion,
             Long selectedGroundExecutiveUserId, Instant selectedAt, String zoneId) {
@@ -114,8 +188,16 @@ public class VisitSchedulingRecommendationService {
 
     private Evaluation evaluate(VisitSession session, Instant now, Instant additionallyRequestedStart,
                                 boolean lockInputs) {
+        return evaluate(session, now, additionallyRequestedStart == null ? List.of() : List.of(additionallyRequestedStart),
+                lockInputs, null, false);
+    }
+
+    private Evaluation evaluate(VisitSession session, Instant now, Collection<Instant> additionallyRequestedStarts,
+                                boolean lockInputs, Long excludedSessionId, boolean allowScheduledRepair) {
         if (session.getStatus() != VisitSessionStatus.DRAFT)
-            return empty(session, now, RecommendationStatus.SESSION_NOT_SCHEDULABLE, false, "SESSION_NOT_DRAFT");
+            if (!(allowScheduledRepair && (session.getStatus() == VisitSessionStatus.SCHEDULED
+                    || session.getStatus() == VisitSessionStatus.REPAIR_REQUIRED)))
+                return empty(session, now, RecommendationStatus.SESSION_NOT_SCHEDULABLE, false, "SESSION_NOT_DRAFT");
         if (session.getId() == null || session.getVersion() == null)
             return empty(session, now, RecommendationStatus.SESSION_NOT_SCHEDULABLE, false, "SESSION_STATE_INCOMPLETE");
 
@@ -249,7 +331,7 @@ public class VisitSchedulingRecommendationService {
             throw new IllegalStateException("Maximum reservation search size must be a positive bounded value");
         ReservationNeighborhood reservationNeighborhood = loadReservationNeighborhood(
                 activeProfiles.stream().map(profile -> profile.getEmployeeProfile().getUser().getId()).toList(),
-                schedulingLookupStart, schedulingLookupEnd, maxReservations, localityById);
+                schedulingLookupStart, schedulingLookupEnd, maxReservations, localityById, excludedSessionId);
         if (!reservationNeighborhood.complete())
             return empty(session, now, RecommendationStatus.NO_FEASIBLE_TIME, true, "RESERVATION_SEARCH_BOUND_EXCEEDED");
 
@@ -257,7 +339,7 @@ public class VisitSchedulingRecommendationService {
                 plannedStops, offsets, dwell, duration,
                 shiftsByProfile.values().stream().flatMap(Collection::stream).toList(),
                 reservationNeighborhood.byGe().values().stream().flatMap(Collection::stream).toList(),
-                additionallyRequestedStart, policy.getMaximumCandidateStarts());
+                additionallyRequestedStarts, policy.getMaximumCandidateStarts());
         planningTruncated |= startSearch.truncated();
 
         List<CandidatePlan> feasible = new ArrayList<>();
@@ -442,13 +524,14 @@ public class VisitSchedulingRecommendationService {
     private CandidateStartSearch candidateStarts(Instant start, Instant end, List<Instant> preferences,
             List<Stop> stops, List<Integer> offsets, int dwell, int duration,
             List<GroundExecutiveShift> allShifts, List<ReservedVisit> allReservations,
-            Instant requested, int maximum) {
+            Collection<Instant> requestedStarts, int maximum) {
         TreeSet<Instant> values = new TreeSet<>();
         values.add(start);
         Instant latestTenantStart = end.minus(duration, ChronoUnit.MINUTES);
         if (!latestTenantStart.isBefore(start) && latestTenantStart.isBefore(end)) values.add(latestTenantStart);
         for (Instant preferred : preferences) if (!preferred.isBefore(start) && preferred.isBefore(end)) values.add(preferred);
-        if (requested != null && !requested.isBefore(start) && requested.isBefore(end)) values.add(requested);
+        if (requestedStarts != null) for (Instant requested : requestedStarts)
+            if (requested != null && !requested.isBefore(start) && requested.isBefore(end)) values.add(requested);
         for (int i = 0; i < stops.size(); i++) {
             VisitSessionItem item = stops.get(i).item();
             Instant propertyStart = item.getAvailabilityStartAt().minus(offsets.get(i), ChronoUnit.MINUTES);
@@ -476,7 +559,10 @@ public class VisitSchedulingRecommendationService {
         List<Instant> sorted = new ArrayList<>(values);
         if (sorted.size() <= maximum) return new CandidateStartSearch(List.copyOf(sorted), false);
         LinkedHashSet<Instant> bounded = new LinkedHashSet<>();
-        if (requested != null && !requested.isBefore(start) && requested.isBefore(end)) bounded.add(requested);
+        if (requestedStarts != null) for (Instant requested : requestedStarts) {
+            if (bounded.size() >= maximum) break;
+            if (requested != null && !requested.isBefore(start) && requested.isBefore(end)) bounded.add(requested);
+        }
         if (bounded.size() < maximum) bounded.add(start);
         for (Instant preferred : preferences) {
             if (bounded.size() >= maximum) break;
@@ -551,16 +637,17 @@ public class VisitSchedulingRecommendationService {
 
     private ReservationNeighborhood loadReservationNeighborhood(List<Long> representativeIds,
             Instant windowStart, Instant windowEnd, int maximumInWindowRows,
-            Map<Long, Locality> localityById) {
-        List<VisitSession> inWindow = sessions.findActiveItinerariesForRepresentatives(
+            Map<Long, Locality> localityById, Long excludedSessionId) {
+        List<VisitSession> queriedInWindow = sessions.findActiveItinerariesForRepresentatives(
                 representativeIds, ACTIVE_RESERVATION_STATUSES, windowStart, windowEnd,
-                PageRequest.of(0, maximumInWindowRows + 1));
+                excludedSessionId, PageRequest.of(0, maximumInWindowRows + 1));
+        List<VisitSession> inWindow = queriedInWindow;
         if (inWindow.size() > maximumInWindowRows) return ReservationNeighborhood.incomplete();
 
         List<VisitSession> previous = sessions.findNearestActiveReservationsBefore(
-                representativeIds, ACTIVE_RESERVATION_STATUSES, windowStart);
+                representativeIds, ACTIVE_RESERVATION_STATUSES, windowStart, excludedSessionId);
         List<VisitSession> next = sessions.findNearestActiveReservationsAfter(
-                representativeIds, ACTIVE_RESERVATION_STATUSES, windowEnd);
+                representativeIds, ACTIVE_RESERVATION_STATUSES, windowEnd, excludedSessionId);
         Map<Long, VisitSession> sessionsById = new LinkedHashMap<>();
         inWindow.forEach(value -> sessionsById.putIfAbsent(value.getId(), value));
         previous.forEach(value -> sessionsById.putIfAbsent(value.getId(), value));
@@ -723,4 +810,7 @@ public class VisitSchedulingRecommendationService {
     public record ApprovalAssessment(Long selectedGeId, Instant selectedStart, int durationMinutes,
             Long topGeId, Instant topStart, Instant validatedAt, String policyVersion, boolean override,
             String locationAssessment, String travelConfidence, RecommendationStatus recommendationStatus) {}
+
+    public record LiveRepairCandidate(Long geId, Instant start, Instant end, int durationMinutes,
+            String zoneId, String travelConfidence, String locationAssessment) {}
 }

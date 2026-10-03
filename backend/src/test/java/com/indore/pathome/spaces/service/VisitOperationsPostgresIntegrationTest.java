@@ -4,6 +4,14 @@ import com.indore.pathome.spaces.dto.ScheduleVisitSessionCommand;
 import com.indore.pathome.spaces.dto.RecommendationRequest;
 import com.indore.pathome.spaces.dto.RecommendationStatus;
 import com.indore.pathome.spaces.dto.ApproveVisitRecommendationCommand;
+import com.indore.pathome.spaces.dto.VisitOtpStartCommand;
+import com.indore.pathome.spaces.dto.GroundVisitContactCommand;
+import com.indore.pathome.spaces.dto.GroundVisitMoreTimeCommand;
+import com.indore.pathome.spaces.dto.RescheduleVisitSessionCommand;
+import com.indore.pathome.spaces.dto.VisitEntitlementRestoreCommand;
+import com.indore.pathome.spaces.dto.TenantVisitConfirmationCommand;
+import com.indore.pathome.spaces.dto.ExpectedVisitSessionVersion;
+import com.indore.pathome.spaces.config.VisitExecutionProperties;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
 import com.indore.pathome.spaces.repository.*;
@@ -43,6 +51,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -53,7 +62,11 @@ import static org.mockito.Mockito.when;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({VisitOperationsService.class, VisitOperationsAuthorizationService.class,
         VisitSessionNotificationListener.class, NotificationService.class, VisitSchedulingRecommendationService.class,
-        ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class})
+        ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class,
+        VisitExecutionService.class, VisitExecutionProperties.class, VisitEntitlementStore.class,
+        VisitEntitlementOperationsService.class, VisitNoShowSettlementWorker.class,
+        VisitOtpCrypto.class, InAppVisitOtpDeliveryProvider.class, VisitNotificationOutboxWorker.class,
+        VisitRepairOperationsService.class})
 @EnabledIfEnvironmentVariable(named = "PATHOME_VISIT_OPERATIONS_POSTGRES_TEST", matches = "true")
 class VisitOperationsPostgresIntegrationTest {
     private static final String BASE_URL = System.getenv().getOrDefault(
@@ -75,6 +88,7 @@ class VisitOperationsPostgresIntegrationTest {
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
         registry.add("spring.jpa.show-sql", () -> "false");
+        registry.add("pathome.visit.otp.hmac-secret", () -> "postgres-test-only-secret-value-32-bytes-minimum");
     }
 
     @AfterAll
@@ -97,6 +111,13 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private VisitSchedulingDecisionRepository decisions;
+    @Autowired private VisitSchedulingRecommendationService recommendations;
+    @Autowired private VisitExecutionService execution;
+    @Autowired private VisitEntitlementStore entitlements;
+    @Autowired private VisitEntitlementOperationsService entitlementOperations;
+    @Autowired private VisitRepairOperationsService repairOperations;
+    @Autowired private VisitNoShowSettlementWorker noShowSettlementWorker;
+    @Autowired private VisitNotificationOutboxWorker outboxWorker;
     @Autowired private GroundExecutiveSchedulingProfileRepository schedulingProfiles;
     @Autowired private GroundExecutiveCoverageRepository coverage;
     @Autowired private GroundExecutiveShiftRepository shifts;
@@ -115,6 +136,10 @@ class VisitOperationsPostgresIntegrationTest {
                 + "EXCLUDE USING gist (representative_user_id WITH =, "
                 + "tstzrange(scheduled_at, reserved_end_at, '[)') WITH &&) "
                 + "WHERE (status IN ('SCHEDULED', 'STARTED'))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tenant_visit_entitlement_accounts (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL UNIQUE REFERENCES users(id), available_credits INTEGER NOT NULL, reserved_credits INTEGER NOT NULL DEFAULT 0, reconciliation_required BOOLEAN NOT NULL DEFAULT FALSE, version BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS visit_entitlement_ledger (id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL REFERENCES tenant_visit_entitlement_accounts(id), user_id BIGINT NOT NULL REFERENCES users(id), session_id BIGINT REFERENCES visit_sessions(id), event_type VARCHAR(32) NOT NULL, available_delta INTEGER NOT NULL, reserved_delta INTEGER NOT NULL, actor_user_id BIGINT REFERENCES users(id), reason_code VARCHAR(64), idempotency_key VARCHAR(160) NOT NULL UNIQUE, occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS visit_start_challenges (id BIGSERIAL PRIMARY KEY, session_id BIGINT NOT NULL UNIQUE REFERENCES visit_sessions(id), tenant_id BIGINT NOT NULL REFERENCES users(id), ground_executive_user_id BIGINT NOT NULL REFERENCES users(id), generation INTEGER NOT NULL, key_id VARCHAR(64) NOT NULL, digest BYTEA NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, next_issue_allowed_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, invalidated_at TIMESTAMPTZ, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until TIMESTAMPTZ, version BIGINT NOT NULL DEFAULT 0)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS visit_execution_events (id BIGSERIAL PRIMARY KEY, session_id BIGINT NOT NULL REFERENCES visit_sessions(id), actor_user_id BIGINT REFERENCES users(id), event_type VARCHAR(40) NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, reason_code VARCHAR(64), metadata JSONB NOT NULL DEFAULT '{}'::jsonb, idempotency_key VARCHAR(160) NOT NULL UNIQUE)");
     }
 
     @Test
@@ -308,6 +333,1175 @@ class VisitOperationsPostgresIntegrationTest {
         assertEquals(1, decisions.countBySessionId(scenario.sessionId()));
         assertTrue(notifications.findByEventKey("VISIT_SESSION_SCHEDULED:" + scenario.sessionId()
                 + ":v1:" + scenario.tenant().getId()).isPresent());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void liveRepairEvaluatorAcceptsOnlyTimesInsideTenantPropertyAndShiftFeasibility() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geB().getId()))
+                .findFirst().orElseThrow();
+        Instant safeShift = planned.scheduledAt().plusSeconds(5 * 60L);
+        Instant outsideTenantWindow = scenario.desiredAt().plusSeconds(75 * 60L);
+        VisitSession scheduled = new TransactionTemplate(transactionManager).execute(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(session.getId()))
+                request.setStatus(VisitRequestStatus.SCHEDULED);
+            session.setStatus(VisitSessionStatus.SCHEDULED);
+            session.setScheduledAt(planned.scheduledAt());
+            session.setZoneId(planned.zoneId());
+            session.setRepresentative(users.getReferenceById(scenario.geB().getId()));
+            session.setAssignedAt(Instant.now());
+            session.setDurationSnapshotMinutes(planned.durationMinutes());
+            session.setReservedEndAt(planned.reservedEndAt());
+            return sessions.saveAndFlush(session);
+        });
+
+        var feasible = recommendations.assessLiveRepair(scheduled, List.of(safeShift), true);
+        assertTrue(feasible.stream().anyMatch(candidate -> candidate.geId().equals(scenario.geB().getId())
+                && candidate.start().equals(safeShift)));
+        assertTrue(recommendations.assessLiveRepair(scheduled, List.of(outsideTenantWindow), true).stream()
+                .noneMatch(candidate -> candidate.start().equals(outsideTenantWindow)));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void liveRepairEvaluatorFindsAlternateGeAtConfirmedTimeWhenOriginalGeConflicts() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        VisitSession repair = new TransactionTemplate(transactionManager).execute(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(session.getId()))
+                request.setStatus(VisitRequestStatus.SCHEDULED);
+            session.setStatus(VisitSessionStatus.REPAIR_REQUIRED);
+            session.setRepairState("REQUIRED");
+            session.setScheduledAt(planned.scheduledAt());
+            session.setZoneId(planned.zoneId());
+            session.setRepresentative(users.getReferenceById(scenario.geA().getId()));
+            session.setAssignedAt(Instant.now());
+            session.setDurationSnapshotMinutes(planned.durationMinutes());
+            session.setReservedEndAt(planned.reservedEndAt());
+            return sessions.saveAndFlush(session);
+        });
+        createNeighborReservation(scenario, scenario.geA(), "Original GE conflict", 22.72, 75.88,
+                planned.scheduledAt(), planned.durationMinutes(), VisitSessionStatus.SCHEDULED);
+
+        var candidates = recommendations.assessLiveRepair(repair, List.of(planned.scheduledAt()), true);
+
+        assertFalse(candidates.stream().anyMatch(candidate -> candidate.geId().equals(scenario.geA().getId())
+                && candidate.start().equals(planned.scheduledAt())));
+        assertTrue(candidates.stream().anyMatch(candidate -> candidate.geId().equals(scenario.geB().getId())
+                && candidate.start().equals(planned.scheduledAt())));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void concurrentOtpStartIsOneLogicalStartAndConsumesOneEntitlement() throws Exception {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var planned = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
+                        "Asia/Kolkata", null));
+        Instant lateStartSlot = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        scheduleForExecution(scenario, scenario.geA(), lateStartSlot, planned.durationMinutes(), true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        UUID operationId = UUID.randomUUID();
+        VisitOtpStartCommand command = new VisitOtpStartCommand(code.generation(), code.code(), operationId);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch gate = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> start(ready, gate, scenario.geA().getId(), scenario.sessionId(), command));
+            var second = executor.submit(() -> start(ready, gate, scenario.geA().getId(), scenario.sessionId(), command));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            gate.countDown();
+            assertEquals("STARTED", first.get(15, TimeUnit.SECONDS));
+            assertEquals("STARTED", second.get(15, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        VisitSession started = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.STARTED, started.getStatus());
+        assertEquals(operationId, started.getStartOperationId());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "CONSUME:" + scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
+                Integer.class, "START:" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_STARTED:" + scenario.sessionId() + ":" + operationId));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void staleOutboxClaimIsReclaimedAndCompetingWorkersPersistOneNotification() throws Exception {
+        User tenant = user("outbox-tenant", Role.ROLE_TENANT);
+        String eventKey = "OUTBOX_RECLAIM:" + UUID.randomUUID();
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,state,attempts,claimed_at) values (?,?, 'TENANT','TEST','Retry test','Durable retry test','PROCESSING',1,?)",
+                eventKey, tenant.getId(), java.sql.Timestamp.from(Instant.now().minus(Duration.ofMinutes(10))));
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch gate = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> deliverOutbox(ready, gate));
+            var second = executor.submit(() -> deliverOutbox(ready, gate));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            gate.countDown();
+            first.get(15, TimeUnit.SECONDS);
+            second.get(15, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertEquals("SENT", jdbc.queryForObject("select state from visit_notification_outbox where event_key=?",
+                String.class, eventKey));
+        assertEquals(2, jdbc.queryForObject("select attempts from visit_notification_outbox where event_key=?",
+                Integer.class, eventKey));
+        assertTrue(notifications.findByEventKey(eventKey).isPresent());
+        assertEquals(1, jdbc.queryForObject("select count(*) from system_notifications where event_key=?",
+                Integer.class, eventKey));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void outboxRetryAfterNotificationCommitBeforeAcknowledgementDoesNotDuplicateDelivery() {
+        User tenant = user("outbox-crash-tenant", Role.ROLE_TENANT);
+        String eventKey = "OUTBOX_CRASH:" + UUID.randomUUID();
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,state,attempts,claimed_at,available_at) values (?,?, 'TENANT','TEST','Crash recovery','Deliver once','QUEUED',0,null,?)",
+                eventKey, tenant.getId(), java.sql.Timestamp.from(Instant.parse("2000-01-01T00:00:00Z")));
+        outboxWorker.deliverBatch();
+        assertEquals(1, jdbc.queryForObject("select count(*) from system_notifications where event_key=?",
+                Integer.class, eventKey));
+        jdbc.update("update visit_notification_outbox set state='PROCESSING',claimed_at=? where event_key=?",
+                java.sql.Timestamp.from(Instant.now().minus(Duration.ofMinutes(10))), eventKey);
+        outboxWorker.deliverBatch();
+        assertEquals("SENT", jdbc.queryForObject("select state from visit_notification_outbox where event_key=?",
+                String.class, eventKey));
+        assertEquals(1, jdbc.queryForObject("select count(*) from system_notifications where event_key=?",
+                Integer.class, eventKey));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void provisionalNoShowRequiresSpacedUnansweredContactEvidenceAndKeepsDisputeWindow() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        var plan = operations.recommend(scenario.admin().getId(), scenario.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(scenario.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant scheduledAt = Instant.now().minus(Duration.ofMinutes(20));
+        scheduleForExecution(scenario, scenario.geA(), scheduledAt, plan.durationMinutes(), false);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId()));
+        assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus(),
+                "arrival without contact evidence must not create a no-show state");
+
+        Instant firstAttempt = Instant.now().minus(Duration.ofMinutes(10));
+        Instant secondAttempt = firstAttempt.plus(Duration.ofMinutes(5));
+        jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,occurred_at,reason_code,metadata,idempotency_key) values (?,?,'CONTACT_ATTEMPT',?,'TENANT_UNREACHABLE','{\"outcome\":\"NO_ANSWER\"}'::jsonb,?)",
+                scenario.sessionId(), scenario.geA().getId(), java.sql.Timestamp.from(firstAttempt), "NO_ANSWER:" + UUID.randomUUID());
+        jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,occurred_at,reason_code,metadata,idempotency_key) values (?,?,'CONTACT_ATTEMPT',?,'TENANT_UNREACHABLE','{\"outcome\":\"NO_ANSWER\"}'::jsonb,?)",
+                scenario.sessionId(), scenario.geA().getId(), java.sql.Timestamp.from(secondAttempt), "NO_ANSWER:" + UUID.randomUUID());
+
+        var result = execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId());
+        VisitSession noShowReview = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.PROVISIONAL_NO_SHOW, result.status());
+        assertTrue(noShowReview.getNoShowDisputeUntil().isAfter(Instant.now()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='FORFEIT_NO_SHOW'",
+                Integer.class, scenario.sessionId()));
+
+        jdbc.update("update visit_sessions set no_show_dispute_until=? where id=?",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(1)), scenario.sessionId());
+        noShowSettlementWorker.settleBatch();
+        VisitSession finalized = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.NO_SHOW, finalized.getStatus());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='FORFEIT_NO_SHOW'",
+                Integer.class, scenario.sessionId()));
+        Integer availableBeforeRestore = jdbc.queryForObject(
+                "select available_credits from tenant_visit_entitlement_accounts where user_id=?", Integer.class,
+                scenario.tenant().getId());
+        var restore = new VisitEntitlementRestoreCommand(finalized.getVersion(),
+                "APPROVED_OPERATIONAL_EXCEPTION", UUID.randomUUID());
+        entitlementOperations.restoreInterruptedSession(scenario.admin().getId(), scenario.sessionId(), restore);
+        entitlementOperations.restoreInterruptedSession(scenario.admin().getId(), scenario.sessionId(), restore);
+        assertEquals(availableBeforeRestore + 1, jdbc.queryForObject(
+                "select available_credits from tenant_visit_entitlement_accounts where user_id=?", Integer.class,
+                scenario.tenant().getId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='OE_OPERATIONAL_RESTORE'",
+                Integer.class, scenario.sessionId()));
+        assertThrows(VisitOperationsConflictException.class, () -> entitlementOperations.restoreInterruptedSession(
+                scenario.admin().getId(), scenario.sessionId(), new VisitEntitlementRestoreCommand(
+                        finalized.getVersion(), "APPROVED_OPERATIONAL_EXCEPTION", UUID.randomUUID())));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void pendingAppointmentCannotIssueCodeStartOrBecomeNoShowUntilTenantAccepts() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        Instant slot = Instant.now().minus(Duration.ofMinutes(20));
+        scheduleForExecution(scenario, scenario.geA(), slot, 45, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        VisitSession beforeReschedule = sessions.findById(scenario.sessionId()).orElseThrow();
+        operations.reschedule(scenario.admin().getId(), scenario.sessionId(),
+                new RescheduleVisitSessionCommand(beforeReschedule.getVersion(),
+                        Instant.now().plus(Duration.ofMinutes(1)), "Asia/Kolkata"));
+        assertEquals("PENDING", sessions.findById(scenario.sessionId()).orElseThrow().getTenantConfirmationState());
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId()));
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.start(scenario.geA().getId(), scenario.sessionId(),
+                        new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID())));
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        VisitSession pending = sessions.findById(scenario.sessionId()).orElseThrow();
+        execution.confirmTenant(scenario.tenant().getId(), scenario.sessionId(),
+                new TenantVisitConfirmationCommand("ACCEPT_RESCHEDULE", null, UUID.randomUUID(), pending.getVersion()));
+        jdbc.update("update visit_start_challenges set next_issue_allowed_at=? where session_id=?",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(1)), scenario.sessionId());
+        var acceptedCode = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        assertEquals(VisitSessionStatus.STARTED, execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(acceptedCode.generation(), acceptedCode.code(), UUID.randomUUID())).status());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void actualStartOutsideConfirmedWindowRoutesToRepairWithoutConsumingCredit() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        Instant slot = Instant.now().minus(Duration.ofMinutes(5));
+        scheduleForExecution(scenario, scenario.geA(), slot, 45, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        setExactAvailability(scenario, slot, Instant.now().plus(Duration.ofMinutes(5)));
+        var result = execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, result.status());
+        assertEquals("REPAIR_REQUIRED", result.resultCode());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void actualExecutionWindowHonorsExactOpeningAndClosingBoundaries() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        Instant opening = Instant.now().plus(Duration.ofMinutes(10)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant closing = opening.plus(Duration.ofMinutes(90));
+        scheduleForExecution(scenario, scenario.geA(), opening, 90, true);
+        setExactAvailability(scenario, opening, closing);
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(scenario.sessionId())) {
+                request.setAvailabilityStartAt(opening.minus(Duration.ofHours(1)));
+                request.setAvailabilityEndAt(closing.plus(Duration.ofHours(1)));
+            }
+            VisitSessionItem firstStop = items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(scenario.sessionId()).get(0);
+            firstStop.setAvailabilityEndAt(opening.plus(Duration.ofMinutes(recommendationPolicy.getStopDwellMinutes())));
+        });
+        VisitSession session = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertTrue(recommendations.actualExecutionWindowsValid(session, opening, closing));
+        assertFalse(recommendations.actualExecutionWindowsValid(session,
+                opening.minusSeconds(1), closing.minusSeconds(1)));
+        assertFalse(recommendations.actualExecutionWindowsValid(session,
+                opening.plusSeconds(1), closing.plusSeconds(1)));
+        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            for (VisitSessionItem item : items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(scenario.sessionId())) {
+                item.setAvailabilityStartAt(opening.minus(Duration.ofHours(1)));
+                item.setAvailabilityEndAt(closing.plus(Duration.ofHours(1)));
+            }
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(scenario.sessionId())) {
+                request.setAvailabilityStartAt(opening);
+                request.setAvailabilityEndAt(closing);
+            }
+        });
+        assertTrue(recommendations.actualExecutionWindowsValid(session, opening, closing));
+        assertFalse(recommendations.actualExecutionWindowsValid(session,
+                opening.minusSeconds(1), closing.minusSeconds(1)));
+        assertFalse(recommendations.actualExecutionWindowsValid(session,
+                opening.plusSeconds(1), closing.plusSeconds(1)));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void activeStartedVisitCannotRestoreUntilInterruptionIsDocumented() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        scheduleForExecution(scenario, scenario.geA(), Instant.now().minus(Duration.ofMinutes(5)), 90, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        var code = execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        execution.start(scenario.geA().getId(), scenario.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+        VisitSession started = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.STARTED, started.getStatus());
+        assertThrows(VisitOperationsConflictException.class, () -> entitlementOperations.restoreInterruptedSession(
+                scenario.admin().getId(), scenario.sessionId(), new VisitEntitlementRestoreCommand(
+                        started.getVersion(), "GE_FAILURE", UUID.randomUUID())));
+        UUID interruptionId = UUID.randomUUID();
+        var interruption = new VisitEntitlementRestoreCommand(started.getVersion(), "GE_FAILURE", interruptionId);
+        entitlementOperations.documentInterruption(scenario.admin().getId(), scenario.sessionId(), interruption);
+        entitlementOperations.documentInterruption(scenario.admin().getId(), scenario.sessionId(), interruption);
+        VisitSession interrupted = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.INTERRUPTED, interrupted.getStatus());
+        Integer balanceBeforeRestore = jdbc.queryForObject(
+                "select available_credits from tenant_visit_entitlement_accounts where user_id=?",
+                Integer.class, scenario.tenant().getId());
+        UUID restorationId = UUID.randomUUID();
+        var restoration = new VisitEntitlementRestoreCommand(interrupted.getVersion(), "GE_FAILURE", restorationId);
+        entitlementOperations.restoreInterruptedSession(scenario.admin().getId(), scenario.sessionId(), restoration);
+        entitlementOperations.restoreInterruptedSession(scenario.admin().getId(), scenario.sessionId(), restoration);
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='OE_OPERATIONAL_RESTORE'",
+                Integer.class, scenario.sessionId()));
+        assertEquals(balanceBeforeRestore + 1, jdbc.queryForObject(
+                "select available_credits from tenant_visit_entitlement_accounts where user_id=?",
+                Integer.class, scenario.tenant().getId()));
+        assertThrows(VisitOperationsConflictException.class, () -> entitlementOperations.restoreInterruptedSession(
+                scenario.admin().getId(), scenario.sessionId(), new VisitEntitlementRestoreCommand(
+                        interrupted.getVersion(), "GE_FAILURE", UUID.randomUUID())));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void declinedPendingProposalClearsPendingStateOnceAndPreservesHold() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        scheduleForExecution(scenario, scenario.geA(), Instant.now().minus(Duration.ofMinutes(5)), 90, true);
+        assertTrue(entitlements.reserve(scenario.tenant().getId(), scenario.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        jdbc.update("update visit_sessions set tenant_confirmation_state='PENDING' where id=?", scenario.sessionId());
+        UUID operationId = UUID.randomUUID();
+        GroundVisitContactCommand decline = new GroundVisitContactCommand(
+                "TENANT_DECLINED_RESCHEDULE", null, "TENANT_LATE", operationId);
+        var first = execution.reportContact(scenario.geA().getId(), scenario.sessionId(), decline);
+        var repeat = execution.reportContact(scenario.geA().getId(), scenario.sessionId(), decline);
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, first.status());
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, repeat.status());
+        assertEquals("REJECTED", sessions.findById(scenario.sessionId()).orElseThrow().getTenantConfirmationState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
+                Integer.class, "CONTACT:" + scenario.sessionId() + ":" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "GE_DECLINED_RESCHEDULE:" + scenario.sessionId() + ":" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void consentedAlternateGeRescheduleLeavesFormerGeUnrelatedReservationIntact() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        Instant formerTime = Instant.now().minus(Duration.ofMinutes(5));
+        scheduleForExecution(scenario, scenario.geA(), formerTime, 45, false);
+        VisitSession unrelated = createNeighborReservation(scenario, scenario.geA(),
+                "Unrelated GE A booking", 22.72, 75.88, scenario.desiredAt(), 45, VisitSessionStatus.SCHEDULED);
+        Long unrelatedVersion = unrelated.getVersion();
+        UUID operationId = UUID.randomUUID();
+        var result = execution.reportContact(scenario.geA().getId(), scenario.sessionId(),
+                new GroundVisitContactCommand("TENANT_ACCEPTED_RESCHEDULE", scenario.desiredAt(),
+                        "TENANT_LATE", operationId));
+        VisitSession moved = sessions.findById(scenario.sessionId()).orElseThrow();
+        VisitSession undisturbed = sessions.findById(unrelated.getId()).orElseThrow();
+        assertEquals(VisitSessionStatus.SCHEDULED, result.status());
+        assertEquals(scenario.geB().getId(), moved.getRepresentative().getId());
+        assertEquals(scenario.desiredAt(), moved.getScheduledAt());
+        assertEquals(VisitSessionStatus.SCHEDULED, undisturbed.getStatus());
+        assertEquals(unrelatedVersion, undisturbed.getVersion());
+        assertEquals(scenario.geA().getId(), undisturbed.getRepresentative().getId());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='REPAIR_REQUIRED'",
+                Integer.class, unrelated.getId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "ASSISTED_RESCHEDULE_FORMER_GE:" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "ASSISTED_RESCHEDULE_NEW_GE:" + operationId));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void startCodeStatusExpiresAtServerBoundary() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        scheduleForExecution(scenario, scenario.geA(), Instant.now().minus(Duration.ofMinutes(5)), 90, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        execution.issueStartCode(scenario.tenant().getId(), scenario.sessionId());
+        assertTrue(execution.getStartCodeStatus(scenario.geA().getId(), scenario.sessionId()).challengeAvailable());
+        jdbc.update("update visit_start_challenges set expires_at=? where session_id=?",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(1)), scenario.sessionId());
+        assertFalse(execution.getStartCodeStatus(scenario.geA().getId(), scenario.sessionId()).challengeAvailable());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void legacyUnverifiedStartCanBeReopenedByOperationsWithHistoryEventPreserved() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        Instant originalStart = Instant.now().minus(Duration.ofHours(2));
+        scheduleForExecution(scenario, scenario.geA(), originalStart, 45, true);
+        jdbc.update("update visit_sessions set status='REPAIR_REQUIRED',repair_state='REQUIRED',tenant_confirmation_state='PENDING',started_at=?,execution_duration_snapshot_minutes=45,expected_end_at=? where id=?",
+                java.sql.Timestamp.from(originalStart.plus(Duration.ofMinutes(5))),
+                java.sql.Timestamp.from(originalStart.plus(Duration.ofMinutes(50))), scenario.sessionId());
+        jdbc.update("insert into visit_execution_events(session_id,event_type,reason_code,metadata,idempotency_key) values (?,'LEGACY_START_REVIEW','PRE_PACKAGE_3_START_UNVERIFIED',?::jsonb,?)",
+                scenario.sessionId(), "{\"legacyStartedAt\":\"" + originalStart.plus(Duration.ofMinutes(5)) + "\"}",
+                "LEGACY_START_REVIEW:" + scenario.sessionId());
+        VisitSession pending = sessions.findById(scenario.sessionId()).orElseThrow();
+        var reopened = repairOperations.reopen(scenario.admin().getId(), scenario.sessionId(),
+                new ExpectedVisitSessionVersion(pending.getVersion()));
+        assertNull(reopened.previouslyScheduledAt());
+        VisitSession draft = sessions.findById(scenario.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.DRAFT, draft.getStatus());
+        assertNull(draft.getStartedAt());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? and event_type='LEGACY_START_REVIEW' and metadata->>'legacyStartedAt' is not null",
+                Integer.class, scenario.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void operationsCanPageToAndReopenTheTwentyFirstRepairCase() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        long priorCases = repairOperations.list(scenario.admin().getId(), 0, 20).totalElements();
+        List<Long> ids = new ArrayList<>();
+        for (int index = 0; index < 21; index++) {
+            VisitSession repair = new VisitSession();
+            repair.setTenant(scenario.tenant());
+            repair.setCity(scenario.locality().getCity());
+            repair.setStatus(VisitSessionStatus.REPAIR_REQUIRED);
+            repair.setRepairState("REQUIRED");
+            ids.add(sessions.saveAndFlush(repair).getId());
+        }
+        var firstPage = repairOperations.list(scenario.admin().getId(), 0, 20);
+        int laterPageNumber = (int) ((priorCases + 20) / 20);
+        var laterPage = repairOperations.list(scenario.admin().getId(), laterPageNumber, 20);
+        assertEquals(20, firstPage.items().size());
+        assertTrue(laterPageNumber >= 1);
+        assertEquals(priorCases + 21, laterPage.totalElements());
+        var last = laterPage.items().stream().filter(item -> item.sessionId().equals(ids.get(20)))
+                .findFirst().orElseThrow();
+        repairOperations.reopen(scenario.admin().getId(), last.sessionId(),
+                new ExpectedVisitSessionVersion(last.version()));
+        assertEquals(VisitSessionStatus.DRAFT, sessions.findById(last.sessionId()).orElseThrow().getStatus());
+        assertEquals(priorCases + 20, repairOperations.list(scenario.admin().getId(), laterPageNumber, 20).totalElements());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void laterSuccessfulContactSupersedesOldNoAnswerEvidence() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        Instant slot = Instant.now().minus(Duration.ofMinutes(30));
+        scheduleForExecution(scenario, scenario.geA(), slot, 45, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        Instant first = Instant.now().minus(Duration.ofMinutes(12));
+        insertContactEvidence(scenario, first, "NO_ANSWER");
+        insertContactEvidence(scenario, first.plus(Duration.ofMinutes(5)), "NO_ANSWER");
+        insertContactEvidence(scenario, first.plus(Duration.ofMinutes(6)), "CONNECTED");
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId()));
+        assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='FORFEIT_NO_SHOW'",
+                Integer.class, scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void tenantConfirmationSupersedesOldUnansweredEvidenceUntilFreshAttemptsAccumulate() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        scheduleForExecution(scenario, scenario.geA(), Instant.now().minus(Duration.ofMinutes(30)), 45, true);
+        execution.markArrived(scenario.geA().getId(), scenario.sessionId());
+        Instant first = Instant.now().minus(Duration.ofMinutes(15));
+        insertContactEvidence(scenario, first, "NO_ANSWER");
+        insertContactEvidence(scenario, first.plus(Duration.ofMinutes(5)), "NO_ANSWER");
+        Instant confirmed = first.plus(Duration.ofMinutes(6));
+        jdbc.update("update visit_sessions set tenant_confirmed_at=? where id=?",
+                java.sql.Timestamp.from(confirmed), scenario.sessionId());
+        assertThrows(VisitOperationsConflictException.class,
+                () -> execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId()));
+        insertContactEvidence(scenario, confirmed.plusSeconds(30), "NO_ANSWER");
+        insertContactEvidence(scenario, confirmed.plus(Duration.ofMinutes(6)), "NO_ANSWER");
+        assertEquals(VisitSessionStatus.PROVISIONAL_NO_SHOW,
+                execution.markProvisionalNoShow(scenario.geA().getId(), scenario.sessionId()).status());
+    }
+
+    private void insertContactEvidence(RecommendationScenario scenario, Instant at, String outcome) {
+        jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,occurred_at,reason_code,metadata,idempotency_key) values (?,?,'CONTACT_ATTEMPT',?,'TENANT_UNREACHABLE',?::jsonb,?)",
+                scenario.sessionId(), scenario.geA().getId(), java.sql.Timestamp.from(at),
+                "{\"outcome\":\"" + outcome + "\"}", "EVIDENCE:" + UUID.randomUUID());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void consentedRescheduleConfirmsOnlyARevalidatedPropertyWindowTime() {
+        RecommendationScenario valid = recommendationScenario(false);
+        var validPlan = operations.recommend(valid.admin().getId(), valid.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(valid.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(valid, valid.geA(), Instant.now().minus(Duration.ofMinutes(5)),
+                validPlan.durationMinutes(), false);
+        assertTrue(entitlements.reserve(valid.tenant().getId(), valid.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        UUID validOperation = UUID.randomUUID();
+        var confirmed = execution.reportContact(valid.geA().getId(), valid.sessionId(),
+                new GroundVisitContactCommand("TENANT_ACCEPTED_RESCHEDULE", validPlan.scheduledAt(),
+                        "TENANT_LATE", validOperation));
+        assertEquals(VisitSessionStatus.SCHEDULED, confirmed.status());
+        assertEquals(validPlan.scheduledAt(), confirmed.scheduledAt());
+        assertEquals("CONFIRMED", confirmed.tenantConfirmationState());
+        assertEquals("NONE", confirmed.repairState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "ASSISTED_RESCHEDULE_CONFIRMED:" + validOperation));
+
+        RecommendationScenario shortDelay = recommendationScenario(false);
+        var shortPlan = operations.recommend(shortDelay.admin().getId(), shortDelay.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(shortDelay.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant tenMinutesLate = shortPlan.scheduledAt();
+        scheduleForExecution(shortDelay, shortDelay.geA(), tenMinutesLate.minus(Duration.ofMinutes(10)),
+                shortPlan.durationMinutes(), false);
+        assertTrue(entitlements.reserve(shortDelay.tenant().getId(), shortDelay.sessionId(),
+                Instant.now().plus(Duration.ofDays(7))));
+        var shortConfirmation = execution.reportContact(shortDelay.geA().getId(), shortDelay.sessionId(),
+                new GroundVisitContactCommand("TENANT_CONFIRMED", tenMinutesLate, "TENANT_LATE", UUID.randomUUID()));
+        assertEquals(VisitSessionStatus.SCHEDULED, shortConfirmation.status());
+        assertEquals(tenMinutesLate, shortConfirmation.scheduledAt());
+        assertEquals("CONFIRMED", shortConfirmation.tenantConfirmationState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + shortDelay.sessionId()));
+
+        RecommendationScenario longDelay = recommendationScenario(false);
+        var longPlan = operations.recommend(longDelay.admin().getId(), longDelay.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(longDelay.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(longDelay, longDelay.geA(), longPlan.scheduledAt(), longPlan.durationMinutes(), false);
+        assertTrue(entitlements.reserve(longDelay.tenant().getId(), longDelay.sessionId(),
+                Instant.now().plus(Duration.ofDays(7))));
+        Instant fortyMinutesLate = longPlan.scheduledAt().plus(Duration.ofMinutes(40));
+        var longRecovery = execution.reportContact(longDelay.geA().getId(), longDelay.sessionId(),
+                new GroundVisitContactCommand("TENANT_CONFIRMED", fortyMinutesLate, "TENANT_LATE", UUID.randomUUID()));
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, longRecovery.status());
+        assertEquals("REQUIRED", longRecovery.repairState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + longDelay.sessionId()), "material delay must retain the existing hold");
+
+        RecommendationScenario outsideProperty = recommendationScenario(false);
+        var outsidePlan = operations.recommend(outsideProperty.admin().getId(), outsideProperty.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(outsideProperty.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(outsideProperty, outsideProperty.geA(), Instant.now().minus(Duration.ofMinutes(5)),
+                outsidePlan.durationMinutes(), false);
+        assertTrue(entitlements.reserve(outsideProperty.tenant().getId(), outsideProperty.sessionId(),
+                Instant.now().plus(Duration.ofDays(7))));
+        Instant outsideConfirmedWindow = outsideProperty.desiredAt().plus(Duration.ofMinutes(100));
+        UUID invalidOperation = UUID.randomUUID();
+        var needsOperations = execution.reportContact(outsideProperty.geA().getId(), outsideProperty.sessionId(),
+                new GroundVisitContactCommand("TENANT_ACCEPTED_RESCHEDULE", outsideConfirmedWindow,
+                        "TENANT_LATE", invalidOperation));
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, needsOperations.status());
+        assertEquals("REQUIRED", needsOperations.repairState());
+        assertEquals("PENDING", needsOperations.tenantConfirmationState());
+        assertEquals(outsideConfirmedWindow, needsOperations.tenantEtaAt());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "RESCHEDULE_REPAIR_REQUIRED:" + invalidOperation));
+    }
+
+    private void deliverOutbox(CountDownLatch ready, CountDownLatch gate) {
+        ready.countDown();
+        try {
+            if (!gate.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Outbox worker gate timed out");
+            outboxWorker.deliverBatch();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void lateCurrentStartShiftsOnlyInfeasibleDownstreamAndLeavesBufferedBookingUnchanged() {
+        RecommendationScenario current = recommendationScenario(false);
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        RecommendationScenario buffered = additionalRecommendationSession(current);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(),
+                new RecommendationRequest(0L)).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant currentStart = Instant.now().minusSeconds(10 * 60L)
+                .truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        Instant downstreamStart = currentStart.plus(Duration.ofMinutes(currentPlan.durationMinutes() + 20L));
+        Instant bufferedStart = downstreamStart.plus(Duration.ofMinutes(downstreamPlan.durationMinutes() + 30L));
+        scheduleForExecution(current, current.geA(), currentStart, currentPlan.durationMinutes(), true);
+        scheduleForExecution(downstream, current.geA(), downstreamStart, downstreamPlan.durationMinutes(), true);
+        scheduleForExecution(buffered, current.geA(), bufferedStart, downstreamPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(current.tenant().getId(), downstream.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(current.tenant().getId(), buffered.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        GroundExecutiveSchedulingProfile alternateProfile = schedulingProfiles
+                .findByGroundExecutiveUserId(current.geB().getId()).orElseThrow();
+        alternateProfile.setSchedulingActive(false);
+        schedulingProfiles.saveAndFlush(alternateProfile);
+
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        UUID operationId = UUID.randomUUID();
+        var started = execution.start(current.geA().getId(), current.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), operationId));
+
+        assertEquals(VisitSessionStatus.STARTED, started.status());
+        VisitSession repaired = sessions.findById(downstream.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.SCHEDULED, repaired.getStatus());
+        assertEquals("NONE", repaired.getRepairState());
+        var unchangedCandidates = recommendations.assessLiveRepair(repaired, List.of(downstreamStart), false,
+                current.geA().getId(), 5);
+        assertFalse(unchangedCandidates.stream().anyMatch(candidate -> candidate.geId().equals(current.geA().getId())
+                && candidate.start().equals(downstreamStart)), "current GE should not retain this infeasible time: "
+                + unchangedCandidates);
+        long appliedShift = Duration.between(downstreamStart, repaired.getScheduledAt()).toMinutes();
+        assertTrue(appliedShift > 0 && appliedShift <= 10, "the downstream repair should apply a safe small shift; shift="
+                + appliedShift + ", current end=" + started.expectedEndAt() + ", downstream=" + repaired.getScheduledAt());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "LIVE_REPAIR_SHIFTED:" + operationId + ":" + downstream.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + downstream.sessionId()));
+        VisitSession bufferedSession = sessions.findById(buffered.sessionId()).orElseThrow();
+        assertEquals(bufferedStart, bufferedSession.getScheduledAt(), "a later feasible booking should remain unchanged");
+        assertEquals("NONE", bufferedSession.getRepairState());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void liveRepairReassignsHardWindowVisitAndFormerGeLosesAccess() {
+        LateStartPair pair = prepareLateStartPair(true);
+        UUID operationId = UUID.randomUUID();
+        var started = execution.start(pair.current().geA().getId(), pair.current().sessionId(),
+                new VisitOtpStartCommand(pair.startCode().generation(), pair.startCode().code(), operationId));
+        assertEquals(VisitSessionStatus.STARTED, started.status());
+
+        VisitSession repaired = sessions.findById(pair.downstream().sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.SCHEDULED, repaired.getStatus());
+        assertEquals(pair.downstream().geB().getId(), repaired.getRepresentative().getId());
+        assertEquals(pair.downstreamStart(), repaired.getScheduledAt(), "the hard property/tenant window must keep the confirmed time");
+        assertEquals("NONE", repaired.getRepairState());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "LIVE_REPAIR_REASSIGNED:" + operationId + ":" + pair.downstream().sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "LIVE_REPAIR_FORMER_GE:" + operationId + ":" + pair.downstream().sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "LIVE_REPAIR_NEW_GE:" + operationId + ":" + pair.downstream().sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + pair.downstream().sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, pair.downstream().sessionId()));
+
+        assertThrows(AccessDeniedException.class,
+                () -> execution.getTenantContact(pair.current().geA().getId(), repaired.getId()));
+        assertThrows(AccessDeniedException.class,
+                () -> execution.markArrived(pair.current().geA().getId(), repaired.getId()));
+        assertThrows(AccessDeniedException.class, () -> execution.start(pair.current().geA().getId(), repaired.getId(),
+                new VisitOtpStartCommand(1, "123456", UUID.randomUUID())));
+        assertThrows(jakarta.persistence.EntityNotFoundException.class,
+                () -> execution.getAssignedExecution(pair.current().geA().getId(), repaired.getId()));
+        assertEquals(repaired.getId(), execution.getAssignedExecution(pair.current().geB().getId(), repaired.getId()).sessionId());
+        assertEquals(repaired.getId(), execution.getTenantContact(pair.current().geB().getId(), repaired.getId()).sessionId());
+        assertNoV36Overlaps();
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, pair.current().sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void unrecoverableDownstreamIsEscalatedWithoutCancellingOrReleasingItsHold() {
+        LateStartPair pair = prepareLateStartPair(false);
+        UUID operationId = UUID.randomUUID();
+        var started = execution.start(pair.current().geA().getId(), pair.current().sessionId(),
+                new VisitOtpStartCommand(pair.startCode().generation(), pair.startCode().code(), operationId));
+        assertEquals(VisitSessionStatus.STARTED, started.status());
+
+        VisitSession unresolved = sessions.findById(pair.downstream().sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, unresolved.getStatus());
+        assertEquals("REQUIRED", unresolved.getRepairState());
+        assertEquals(pair.downstreamStart(), unresolved.getScheduledAt());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, pair.downstream().sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + pair.downstream().sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_REPAIR_REQUIRED:" + unresolved.getId() + ":" + operationId));
+        Integer operationsIntents = jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "ASSISTED_RESCHEDULE:" + unresolved.getId() + ":" + operationId + ":%");
+        Integer uniqueOperationsIntents = jdbc.queryForObject("select count(distinct event_key) from visit_notification_outbox where event_key like ?",
+                Integer.class, "ASSISTED_RESCHEDULE:" + unresolved.getId() + ":" + operationId + ":%");
+        assertNotNull(operationsIntents);
+        assertTrue(operationsIntents > 0);
+        assertEquals(operationsIntents, uniqueOperationsIntents, "Operations intent must be deduplicated per recipient");
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, pair.current().sessionId()));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void startedGroundExecutiveIsNeverDisplacedAndLateVisitMovesToAlternate() {
+        RecommendationScenario target = recommendationScenario(false);
+        RecommendationScenario active = additionalRecommendationSession(target);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var targetPlan = operations.recommend(target.admin().getId(), target.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(target.geA().getId()))
+                .findFirst().orElseThrow();
+        var activePlan = operations.recommend(active.admin().getId(), active.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(target.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant activeStart = Instant.now().minus(Duration.ofMinutes(10));
+        scheduleForExecution(active, target.geA(), activeStart, activePlan.durationMinutes(), true);
+        scheduleForExecution(target, target.geA(), target.desiredAt(), targetPlan.durationMinutes(), true);
+        execution.markArrived(active.geA().getId(), active.sessionId());
+        var activeCode = execution.issueStartCode(active.tenant().getId(), active.sessionId());
+        var activeStarted = execution.start(active.geA().getId(), active.sessionId(),
+                new VisitOtpStartCommand(activeCode.generation(), activeCode.code(), UUID.randomUUID()));
+        assertEquals(VisitSessionStatus.STARTED, activeStarted.status());
+        execution.markArrived(target.geA().getId(), target.sessionId());
+        var targetCode = execution.issueStartCode(target.tenant().getId(), target.sessionId());
+        UUID reassignmentOperation = UUID.randomUUID();
+
+        var recovered = execution.start(target.geA().getId(), target.sessionId(),
+                new VisitOtpStartCommand(targetCode.generation(), targetCode.code(), reassignmentOperation));
+        VisitSession uninterrupted = sessions.findById(active.sessionId()).orElseThrow();
+        VisitSession reassigned = sessions.findById(target.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.STARTED, uninterrupted.getStatus());
+        assertEquals(target.geA().getId(), uninterrupted.getRepresentative().getId());
+        assertEquals("ALTERNATE_GE_ASSIGNED", recovered.resultCode());
+        assertEquals(VisitSessionStatus.SCHEDULED, reassigned.getStatus());
+        assertEquals(target.geB().getId(), reassigned.getRepresentative().getId());
+        assertEquals(target.desiredAt(), reassigned.getScheduledAt());
+        assertThrows(AccessDeniedException.class, () -> execution.markArrived(target.geA().getId(), target.sessionId()));
+        assertEquals(target.sessionId(), execution.getAssignedExecution(target.geB().getId(), target.sessionId()).sessionId());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "GE_REMOVED:" + target.sessionId() + ":" + reassignmentOperation));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "GE_ASSIGNED:" + target.sessionId() + ":" + reassignmentOperation));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void startedGroundExecutiveWithoutAlternateQueuesImmediateRecoveryForLateVisit() {
+        RecommendationScenario target = recommendationScenario(false);
+        RecommendationScenario active = additionalRecommendationSession(target);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var targetPlan = operations.recommend(target.admin().getId(), target.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(target.geA().getId()))
+                .findFirst().orElseThrow();
+        var activePlan = operations.recommend(active.admin().getId(), active.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(target.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(active, target.geA(), Instant.now().minus(Duration.ofMinutes(10)), activePlan.durationMinutes(), true);
+        scheduleForExecution(target, target.geA(), target.desiredAt(), targetPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(active.tenant().getId(), active.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(target.tenant().getId(), target.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(active.geA().getId(), active.sessionId());
+        var activeCode = execution.issueStartCode(active.tenant().getId(), active.sessionId());
+        assertEquals(VisitSessionStatus.STARTED, execution.start(active.geA().getId(), active.sessionId(),
+                new VisitOtpStartCommand(activeCode.generation(), activeCode.code(), UUID.randomUUID())).status());
+
+        execution.markArrived(target.geA().getId(), target.sessionId());
+        var targetCode = execution.issueStartCode(target.tenant().getId(), target.sessionId());
+        GroundExecutiveSchedulingProfile alternate = schedulingProfiles.findByGroundExecutiveUserId(target.geB().getId()).orElseThrow();
+        alternate.setSchedulingActive(false);
+        schedulingProfiles.saveAndFlush(alternate);
+        UUID operationId = UUID.randomUUID();
+
+        var recovery = execution.start(target.geA().getId(), target.sessionId(),
+                new VisitOtpStartCommand(targetCode.generation(), targetCode.code(), operationId));
+        VisitSession undisturbed = sessions.findById(active.sessionId()).orElseThrow();
+        VisitSession assisted = sessions.findById(target.sessionId()).orElseThrow();
+        assertEquals(VisitSessionStatus.STARTED, undisturbed.getStatus());
+        assertEquals(target.geA().getId(), undisturbed.getRepresentative().getId());
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, assisted.getStatus());
+        assertEquals("REQUIRED", assisted.getRepairState());
+        assertEquals(target.desiredAt(), assisted.getScheduledAt());
+        assertEquals("REPAIR_REQUIRED", recovery.resultCode());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + target.sessionId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, target.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "ACTIVE_GE_RECOVERY:" + operationId));
+        assertTrue(jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?", Integer.class,
+                "ASSISTED_RESCHEDULE:" + target.sessionId() + ":" + operationId + ":%") > 0);
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void needMoreTimeRepairsDownstreamReservationInPostgres() {
+        RecommendationScenario current = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(current, current.geA(), Instant.now().minus(Duration.ofMinutes(10)), currentPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        UUID startOperation = UUID.randomUUID();
+        var started = execution.start(current.geA().getId(), current.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), startOperation));
+        assertEquals(VisitSessionStatus.STARTED, started.status());
+
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant oldStart = started.expectedEndAt();
+        scheduleForExecution(downstream, current.geA(), oldStart, downstreamPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(downstream.tenant().getId(), downstream.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        UUID extensionOperation = UUID.randomUUID();
+        var extended = execution.needMoreTime(current.geA().getId(), current.sessionId(),
+                new GroundVisitMoreTimeCommand(5, extensionOperation));
+        VisitSession repaired = sessions.findById(downstream.sessionId()).orElseThrow();
+        assertEquals(started.expectedEndAt().plus(Duration.ofMinutes(5)), extended.expectedEndAt());
+        assertEquals(VisitSessionStatus.SCHEDULED, repaired.getStatus());
+        assertTrue(repaired.getScheduledAt().isAfter(oldStart), "downstream reservation must move beyond the extended active visit");
+        assertEquals("NONE", repaired.getRepairState());
+        assertTrue(jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)", Integer.class,
+                "LIVE_REPAIR_SHIFTED:" + extensionOperation + ":" + repaired.getId(),
+                "LIVE_REPAIR_REASSIGNED:" + extensionOperation + ":" + repaired.getId()) >= 1);
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + repaired.getId()));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void needMoreTimeEscalatesDownstreamWhenNoFeasibleRepairExists() {
+        RecommendationScenario current = recommendationScenario(false);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        scheduleForExecution(current, current.geA(), Instant.now().minus(Duration.ofMinutes(10)), currentPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        var started = execution.start(current.geA().getId(), current.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), UUID.randomUUID()));
+        assertEquals(VisitSessionStatus.STARTED, started.status());
+
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant originalEnd = started.expectedEndAt();
+        scheduleForExecution(downstream, current.geA(), originalEnd, downstreamPlan.durationMinutes(), true);
+        setExactAvailability(downstream, originalEnd,
+                originalEnd.plus(Duration.ofMinutes(downstreamPlan.durationMinutes())));
+        assertTrue(entitlements.reserve(downstream.tenant().getId(), downstream.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        GroundExecutiveSchedulingProfile alternate = schedulingProfiles.findByGroundExecutiveUserId(current.geB().getId()).orElseThrow();
+        alternate.setSchedulingActive(false);
+        schedulingProfiles.saveAndFlush(alternate);
+
+        UUID operationId = UUID.randomUUID();
+        var extended = execution.needMoreTime(current.geA().getId(), current.sessionId(),
+                new GroundVisitMoreTimeCommand(5, operationId));
+        VisitSession unresolved = sessions.findById(downstream.sessionId()).orElseThrow();
+        assertEquals(originalEnd.plus(Duration.ofMinutes(5)), extended.expectedEndAt());
+        assertEquals(VisitSessionStatus.REPAIR_REQUIRED, unresolved.getStatus());
+        assertEquals("REQUIRED", unresolved.getRepairState());
+        assertEquals(originalEnd, unresolved.getScheduledAt());
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?", Integer.class,
+                "VISIT_REPAIR_REQUIRED:" + unresolved.getId() + ":" + operationId));
+        Integer operationsIntents = jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "ASSISTED_RESCHEDULE:" + unresolved.getId() + ":" + operationId + ":%");
+        assertNotNull(operationsIntents);
+        assertTrue(operationsIntents > 0);
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "RESERVE:" + unresolved.getId()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
+                Integer.class, unresolved.getId()));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void operationsEditBetweenPlanAndApplyRollsBackStaleAttemptAndRetriesOnce() throws Exception {
+        RecommendationScenario current = recommendationScenario(false);
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant currentStart = Instant.now().minus(Duration.ofMinutes(10));
+        Instant downstreamStart = currentStart.plus(Duration.ofMinutes(currentPlan.durationMinutes() + 20L));
+        scheduleForExecution(current, current.geA(), currentStart, currentPlan.durationMinutes(), true);
+        scheduleForExecution(downstream, current.geA(), downstreamStart, downstreamPlan.durationMinutes(), true);
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(downstream.tenant().getId(), downstream.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        VisitSession before = sessions.findById(downstream.sessionId()).orElseThrow();
+        Instant operationsTime = downstreamStart.plus(Duration.ofMinutes(20));
+
+        jdbc.execute("CREATE SEQUENCE visit_repair_retry_probe_seq START WITH 1");
+        jdbc.execute("CREATE FUNCTION visit_repair_retry_probe_fn() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN IF NEW.status='STARTED' AND OLD.status IS DISTINCT FROM 'STARTED' THEN "
+                + "PERFORM nextval('visit_repair_retry_probe_seq'); END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER visit_repair_retry_probe BEFORE UPDATE OF status ON visit_sessions "
+                + "FOR EACH ROW EXECUTE FUNCTION visit_repair_retry_probe_fn()");
+
+        CountDownLatch operationsLocked = new CountDownLatch(1);
+        CountDownLatch operationsCommit = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        AtomicReference<Throwable> operationsFailure = new AtomicReference<>();
+        try {
+            var edit = pool.submit(() -> {
+                try {
+                    new TransactionTemplate(transactionManager).executeWithoutResult(txStatus -> {
+                        VisitSession locked = sessions.findLockedById(downstream.sessionId()).orElseThrow();
+                        operationsLocked.countDown();
+                        try {
+                            if (!operationsCommit.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Operation edit gate timed out");
+                        } catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(ex);
+                        }
+                        operations.reschedule(current.admin().getId(), downstream.sessionId(),
+                                new RescheduleVisitSessionCommand(locked.getVersion(), operationsTime, "Asia/Kolkata"));
+                    });
+                } catch (Throwable error) { operationsFailure.set(error); throw error; }
+            });
+            assertTrue(operationsLocked.await(5, TimeUnit.SECONDS));
+            UUID operationId = UUID.randomUUID();
+            var start = pool.submit(() -> execution.start(current.geA().getId(), current.sessionId(),
+                    new VisitOtpStartCommand(code.generation(), code.code(), operationId)));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            boolean waitingOnPostgresLock = false;
+            while (System.nanoTime() < deadline && !waitingOnPostgresLock) {
+                Integer count = jdbc.queryForObject("select count(*) from pg_stat_activity where datname=current_database() "
+                                + "and wait_event_type='Lock' and query ilike '%visit_sessions%'", Integer.class);
+                waitingOnPostgresLock = count != null && count > 0;
+                if (!waitingOnPostgresLock) Thread.sleep(50);
+            }
+            assertTrue(waitingOnPostgresLock, "the repair apply attempt must reach PostgreSQL row-lock wait after planning");
+            operationsCommit.countDown();
+            edit.get(15, TimeUnit.SECONDS);
+            assertNull(operationsFailure.get());
+            assertEquals(VisitSessionStatus.STARTED, start.get(20, TimeUnit.SECONDS).status());
+
+            VisitSession after = sessions.findById(downstream.sessionId()).orElseThrow();
+            assertEquals(operationsTime, after.getScheduledAt(), "retry must respect the committed Operations schedule");
+            assertEquals(before.getVersion() + 1, after.getVersion(), "the stale attempt must not write a second version");
+            assertEquals(0, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key like ?",
+                    Integer.class, "REPAIR:" + operationId + ":%"));
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
+                    Integer.class, "START:" + operationId));
+            assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like 'LIVE_REPAIR_%' and event_key like ?",
+                    Integer.class, "%" + operationId + "%"), "the stale attempt must not publish repair notification intents");
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                    Integer.class, "CONSUME:" + current.sessionId()));
+            assertEquals(1, jdbc.queryForObject("select last_value from visit_repair_retry_probe_seq", Integer.class),
+                    "the stale attempt must roll back before the single successful START transition");
+            assertEquals(VisitSessionStatus.STARTED, sessions.findById(current.sessionId()).orElseThrow().getStatus());
+            assertNoV36Overlaps();
+        } finally {
+            operationsCommit.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void postgresOverlapSqlStateAtStartRollsBackAndRetriesOnce() {
+        RecommendationScenario current = recommendationScenario(false);
+        Instant plannedStart = Instant.now().minus(Duration.ofMinutes(10));
+        int duration = 60;
+        scheduleForExecution(current, current.geA(), plannedStart, duration, true);
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+
+        jdbc.execute("CREATE SEQUENCE visit_start_overlap_pause_seq START WITH 1");
+        jdbc.execute("CREATE FUNCTION visit_start_overlap_pause_fn() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN IF NEW.id=" + current.sessionId() + " AND NEW.status='STARTED' AND OLD.status<>'STARTED' "
+                + "AND nextval('visit_start_overlap_pause_seq')=1 THEN RAISE EXCEPTION USING ERRCODE='23P01', "
+                + "MESSAGE='simulated concurrent GE reservation'; END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER visit_start_overlap_pause BEFORE UPDATE OF status ON visit_sessions "
+                + "FOR EACH ROW EXECUTE FUNCTION visit_start_overlap_pause_fn()");
+        UUID operationId = UUID.randomUUID();
+        assertEquals(VisitSessionStatus.STARTED, execution.start(current.geA().getId(), current.sessionId(),
+                new VisitOtpStartCommand(code.generation(), code.code(), operationId)).status());
+        assertEquals(2, jdbc.queryForObject("select last_value from visit_start_overlap_pause_seq", Integer.class));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                Integer.class, "CONSUME:" + current.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where idempotency_key=?",
+                Integer.class, "START:" + operationId));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                Integer.class, "VISIT_STARTED:" + current.sessionId() + ":" + operationId));
+        assertNoV36Overlaps();
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void concurrentBookingCannotPreemptAValidStartAfterTheGeIsLocked() throws Exception {
+        RecommendationScenario current = recommendationScenario(false);
+        RecommendationScenario future = additionalRecommendationSession(current);
+        Instant plannedStart = Instant.now().minus(Duration.ofMinutes(10));
+        scheduleForExecution(current, current.geA(), plannedStart, 60, true);
+        Instant futureStart = plannedStart.plus(Duration.ofMinutes(120));
+        scheduleForExecution(future, current.geA(), futureStart, 60, true);
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var code = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        jdbc.execute("CREATE FUNCTION visit_start_lock_pause_fn() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN IF NEW.session_id=" + current.sessionId() + " AND NEW.event_type='CONSUME' "
+                + "THEN PERFORM pg_sleep(2); END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER visit_start_lock_pause AFTER INSERT ON visit_entitlement_ledger "
+                + "FOR EACH ROW EXECUTE FUNCTION visit_start_lock_pause_fn()");
+        var pool = Executors.newSingleThreadExecutor();
+        UUID operationId = UUID.randomUUID();
+        try {
+            var start = pool.submit(() -> execution.start(current.geA().getId(), current.sessionId(),
+                    new VisitOtpStartCommand(code.generation(), code.code(), operationId)));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            boolean planned = false;
+            while (System.nanoTime() < deadline && !planned) {
+                Integer sleeping = jdbc.queryForObject("select count(*) from pg_stat_activity where datname=current_database() "
+                        + "and wait_event='PgSleep' and query ilike '%visit_entitlement_ledger%'", Integer.class);
+                planned = sleeping != null && sleeping > 0;
+                if (!planned) Thread.sleep(20);
+            }
+            assertTrue(planned);
+            Instant conflictingStart = plannedStart.plus(Duration.ofMinutes(62));
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> jdbc.update(
+                    "update visit_sessions set scheduled_at=?,reserved_end_at=?,version=version+1 where id=?",
+                    java.sql.Timestamp.from(conflictingStart),
+                    java.sql.Timestamp.from(conflictingStart.plus(Duration.ofMinutes(60))), future.sessionId()));
+            assertEquals(VisitSessionStatus.STARTED, start.get(15, TimeUnit.SECONDS).status());
+            assertEquals(futureStart, sessions.findById(future.sessionId()).orElseThrow().getScheduledAt());
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where idempotency_key=?",
+                    Integer.class, "CONSUME:" + current.sessionId()));
+            assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
+                    Integer.class, "VISIT_STARTED:" + current.sessionId() + ":" + operationId));
+            assertNoV36Overlaps();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private LateStartPair prepareLateStartPair(boolean alternateAvailable) {
+        RecommendationScenario current = recommendationScenario(false);
+        RecommendationScenario downstream = additionalRecommendationSession(current);
+        when(locations.latestFor(any(), any())).thenReturn(java.util.Optional.empty());
+        var currentPlan = operations.recommend(current.admin().getId(), current.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        var downstreamPlan = operations.recommend(downstream.admin().getId(), downstream.sessionId(), new RecommendationRequest(0L))
+                .candidates().stream().filter(candidate -> candidate.groundExecutiveUserId().equals(current.geA().getId()))
+                .findFirst().orElseThrow();
+        Instant currentStart = Instant.now().minus(Duration.ofMinutes(10));
+        Instant downstreamStart = currentStart.plus(Duration.ofMinutes(currentPlan.durationMinutes() + 20L));
+        scheduleForExecution(current, current.geA(), currentStart, currentPlan.durationMinutes(), true);
+        scheduleForExecution(downstream, current.geA(), downstreamStart, downstreamPlan.durationMinutes(), true);
+        setExactAvailability(downstream, downstreamStart, downstreamStart.plus(Duration.ofMinutes(downstreamPlan.durationMinutes())));
+        assertTrue(entitlements.reserve(current.tenant().getId(), current.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        assertTrue(entitlements.reserve(downstream.tenant().getId(), downstream.sessionId(), Instant.now().plus(Duration.ofDays(7))));
+        execution.markArrived(downstream.geA().getId(), downstream.sessionId());
+        if (!alternateAvailable) {
+            GroundExecutiveSchedulingProfile profile = schedulingProfiles.findByGroundExecutiveUserId(current.geB().getId()).orElseThrow();
+            profile.setSchedulingActive(false);
+            schedulingProfiles.saveAndFlush(profile);
+        }
+        execution.markArrived(current.geA().getId(), current.sessionId());
+        var startCode = execution.issueStartCode(current.tenant().getId(), current.sessionId());
+        return new LateStartPair(current, downstream, startCode, downstreamStart);
+    }
+
+    private void setExactAvailability(RecommendationScenario scenario, Instant start, Instant end) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(txStatus -> {
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(scenario.sessionId())) {
+                request.setAvailabilityStartAt(start);
+                request.setAvailabilityEndAt(end);
+            }
+            for (VisitSessionItem item : items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(scenario.sessionId())) {
+                item.setAvailabilityStartAt(start);
+                item.setAvailabilityEndAt(end);
+            }
+            requests.flush();
+            items.flush();
+        });
+    }
+
+    private void assertNoV36Overlaps() {
+        Integer conflicts = jdbc.queryForObject("select count(*) from visit_sessions a join visit_sessions b "
+                + "on a.id<b.id and a.representative_user_id=b.representative_user_id "
+                + "and tstzrange(a.scheduled_at,a.reserved_end_at,'[)') && tstzrange(b.scheduled_at,b.reserved_end_at,'[)') "
+                + "where a.status in ('SCHEDULED','STARTED') and b.status in ('SCHEDULED','STARTED')", Integer.class);
+        assertEquals(0, conflicts);
+    }
+
+    private record LateStartPair(RecommendationScenario current, RecommendationScenario downstream,
+            com.indore.pathome.spaces.dto.VisitStartCodeView startCode, Instant downstreamStart) {}
+
+    private String start(CountDownLatch ready, CountDownLatch gate, Long geId, Long sessionId,
+            VisitOtpStartCommand command) {
+        ready.countDown();
+        try {
+            if (!gate.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("OTP start gate timed out");
+            return execution.start(geId, sessionId, command).status().name();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private void scheduleForExecution(RecommendationScenario scenario, User ground, Instant start,
+            int durationMinutes, boolean widenAvailability) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            session.setStatus(VisitSessionStatus.SCHEDULED);
+            session.setScheduledAt(start);
+            session.setZoneId("Asia/Kolkata");
+            session.setRepresentative(users.getReferenceById(ground.getId()));
+            session.setAssignedAt(Instant.now());
+            session.setDurationSnapshotMinutes(durationMinutes);
+            session.setReservedEndAt(start.plus(Duration.ofMinutes(durationMinutes)));
+            session.setTenantConfirmationState("CONFIRMED");
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(session.getId())) {
+                request.setStatus(VisitRequestStatus.SCHEDULED);
+                if (widenAvailability) {
+                    request.setAvailabilityStartAt(Instant.now().minus(Duration.ofHours(1)));
+                    request.setAvailabilityEndAt(Instant.now().plus(Duration.ofHours(4)));
+                }
+            }
+            if (widenAvailability) {
+                for (VisitSessionItem item : items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(session.getId())) {
+                    item.setAvailabilityStartAt(Instant.now().minus(Duration.ofHours(1)));
+                    item.setAvailabilityEndAt(Instant.now().plus(Duration.ofHours(4)));
+                }
+            }
+            sessions.saveAndFlush(session);
+        });
     }
 
     @Test
@@ -534,11 +1728,15 @@ class VisitOperationsPostgresIntegrationTest {
         assertTrue(areaResult.candidates().get(0).reasons().contains(
                 com.indore.pathome.spaces.dto.RecommendationReason.LOCALITY_COVERAGE_MATCH));
 
-        RecommendationScenario workloadScenario = recommendationScenario(false);
+        Instant nextDayWorkloadSlot = Instant.now().atZone(java.time.ZoneId.of("Asia/Kolkata"))
+                .plusDays(1).withHour(10).withMinute(0).withSecond(0).withNano(0).toInstant();
+        RecommendationScenario workloadScenario = withRecommendationWindow(
+                recommendationScenario(false), nextDayWorkloadSlot);
         createFutureWorkloadReservation(workloadScenario);
         var workloadResult = operations.recommend(workloadScenario.admin().getId(), workloadScenario.sessionId(),
                 new RecommendationRequest(0L));
-        assertEquals(workloadScenario.geB().getId(), workloadResult.candidates().get(0).groundExecutiveUserId());
+        assertEquals(workloadScenario.geB().getId(), workloadResult.candidates().get(0).groundExecutiveUserId(),
+                workloadResult.candidates().toString());
         var higherWorkloadGe = workloadResult.candidates().stream()
                 .filter(candidate -> candidate.groundExecutiveUserId().equals(workloadScenario.geA().getId()))
                 .findFirst().orElseThrow();
@@ -735,12 +1933,12 @@ class VisitOperationsPostgresIntegrationTest {
         List<Long> geIds = List.of(scenario.geA().getId(), scenario.geB().getId());
         List<VisitSession> inWindow = sessions.findActiveItinerariesForRepresentatives(geIds,
                 List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED), windowStart, windowEnd,
-                PageRequest.of(0, 20));
+                null, PageRequest.of(0, 20));
 
         List<VisitSession> previous = sessions.findNearestActiveReservationsBefore(geIds,
-                List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED), windowStart);
+                List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED), windowStart, null);
         List<VisitSession> next = sessions.findNearestActiveReservationsAfter(geIds,
-                List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED), windowEnd);
+                List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED), windowEnd, null);
 
         assertTrue(inWindow.isEmpty());
         assertEquals(2, previous.size());
@@ -1084,12 +2282,12 @@ class VisitOperationsPostgresIntegrationTest {
         future.setCity(scenario.locality().getCity());
         future.setCanonicalLocality(scenario.locality());
         future.setStatus(VisitSessionStatus.SCHEDULED);
-        future.setScheduledAt(scenario.desiredAt().plusSeconds(120 * 60L));
+        future.setScheduledAt(scenario.desiredAt().plusSeconds(70 * 60L));
         future.setZoneId("Asia/Kolkata");
         future.setRepresentative(scenario.geA());
         future.setAssignedAt(Instant.now());
         future.setDurationSnapshotMinutes(30);
-        future.setReservedEndAt(scenario.desiredAt().plusSeconds(150 * 60L));
+        future.setReservedEndAt(scenario.desiredAt().plusSeconds(100 * 60L));
         future = sessions.saveAndFlush(future);
         PropertyVisitRequest request = new PropertyVisitRequest();
         request.setTenant(scenario.tenant());
@@ -1107,6 +2305,28 @@ class VisitOperationsPostgresIntegrationTest {
         item.setAvailabilityConfirmedAt(Instant.now());
         item.setConfirmedBy(scenario.admin());
         items.saveAndFlush(item);
+    }
+
+    private RecommendationScenario withRecommendationWindow(RecommendationScenario scenario, Instant preferredAt) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession session = sessions.findLockedById(scenario.sessionId()).orElseThrow();
+            for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(session.getId())) {
+                request.setAvailabilityStartAt(preferredAt.minus(Duration.ofMinutes(15)));
+                request.setAvailabilityEndAt(preferredAt.plus(Duration.ofMinutes(120)));
+                request.setPreferredAt(preferredAt);
+            }
+            for (VisitSessionItem item : items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(session.getId())) {
+                item.setAvailabilityStartAt(preferredAt.minus(Duration.ofMinutes(30)));
+                item.setAvailabilityEndAt(preferredAt.plus(Duration.ofMinutes(90)));
+            }
+            for (Long geId : List.of(scenario.geA().getId(), scenario.geB().getId())) {
+                GroundExecutiveSchedulingProfile profile = schedulingProfiles.findByGroundExecutiveUserId(geId).orElseThrow();
+                saveShift(profile, scenario.admin(), preferredAt.minus(Duration.ofHours(4)),
+                        preferredAt.plus(Duration.ofHours(4)));
+            }
+        });
+        return new RecommendationScenario(scenario.admin(), scenario.tenant(), scenario.geA(), scenario.geB(),
+                scenario.sessionId(), preferredAt, scenario.locality());
     }
 
     private Duration oldReservationLookupMargin() {

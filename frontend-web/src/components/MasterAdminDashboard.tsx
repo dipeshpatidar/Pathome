@@ -34,7 +34,8 @@ import {
   MicOff,
   RefreshCw,
   AlertTriangle,
-  AlertCircle
+  AlertCircle,
+  Wrench
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { failedUploadService } from '../services/failedUploadService';
@@ -51,6 +52,7 @@ import { BhkDemandGaugeGrid } from './analytics/BhkDemandGaugeGrid';
 import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
 import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 import { FailedUploadsPanel } from './FailedUploadsPanel';
+import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
 import { DraftManagementBar } from './DraftManagementBar';
 import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
 import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
@@ -58,6 +60,7 @@ import { draftService, DraftMedia, DraftDetail } from '../services/draftService'
 interface MasterAdminDashboardProps {
   activeTab: string;
   setActiveAdminTab?: (tab: string) => void;
+  canReviewVisitRepairs?: boolean;
 }
 
 const mockGroundBoys = [
@@ -202,7 +205,7 @@ const mockLeaveRequests = [
   { id: "LV-302", empId: "EMP-101", empName: "Rahul Verma", leaveType: "Medical Leave", startDate: "20 Sep 2026", endDate: "21 Sep 2026", reason: "Health Checkup", status: "APPROVED" }
 ];
 
-export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab }) => {
+export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false }) => {
   const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
 
   const [internalTab, setInternalTab] = useState<string>(() => {
@@ -1670,6 +1673,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     { id: 'crm', label: 'Staff CRM & Telemetry', badge: `${employees.length} Staff`, icon: Users, color: 'text-indigo-600' },
     { id: 'approval', label: 'Approvals Queue', badge: `${cashbacks.filter(c => c.status === 'PENDING').length} New`, icon: CheckSquare, color: 'text-amber-600' },
     { id: 'learning', label: 'Learning review', badge: 'Private', icon: ShieldCheck, color: 'text-emerald-600' },
+    ...(canReviewVisitRepairs ? [{ id: 'visit-repairs', label: 'Visit repairs', badge: 'Operations', icon: Wrench, color: 'text-amber-600' }] : []),
     { id: 'config', label: 'Listing settings', badge: 'Ready', icon: SlidersHorizontal, color: 'text-purple-600' },
     { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' },
     { id: 'failed-uploads', label: 'Failed Uploads', badge: failedUploadsCount > 0 ? `${failedUploadsCount} Issue${failedUploadsCount > 1 ? 's' : ''}` : 'Clear', icon: AlertTriangle, color: 'text-rose-600' }
@@ -2196,6 +2200,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           )}
 
           {activeTab === 'learning' && <ParserLearningReviewPanel />}
+
+          {canReviewVisitRepairs && activeTab === 'visit-repairs' && <OperationsVisitRepairPanel />}
 
           {activeTab === 'failed-uploads' && (
             <FailedUploadsPanel onCountChange={refreshFailedUploadsCount} />

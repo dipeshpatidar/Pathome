@@ -69,6 +69,28 @@ class VisitSessionDomainTest {
     }
 
     @Test
+    void startedVisitUsesActualExecutionEndWhilePreservingPlannedDurationSnapshot() {
+        Instant scheduled = Instant.parse("2026-10-02T10:00:00Z");
+        VisitSession session = new VisitSession();
+        session.setTenant(new User());
+        session.setCity("Sample City");
+        session.setStatus(VisitSessionStatus.STARTED);
+        session.setScheduledAt(scheduled);
+        session.setZoneId("UTC");
+        session.setRepresentative(new User());
+        session.setAssignedAt(scheduled.minusSeconds(300));
+        session.setDurationSnapshotMinutes(60);
+        session.setReservedEndAt(scheduled.plusSeconds(90 * 60L));
+        session.setStartedAt(scheduled.plusSeconds(30 * 60L));
+        session.setExecutionDurationSnapshotMinutes(60);
+        session.setExpectedEndAt(scheduled.plusSeconds(90 * 60L));
+
+        assertDoesNotThrow(session::onCreate);
+        session.setReservedEndAt(session.getExpectedEndAt().plusSeconds(60));
+        assertThrows(IllegalStateException.class, session::onCreate);
+    }
+
+    @Test
     void sessionItemStartsUnconfirmedAndRequiresPositivePositionAndConfirmationFacts() {
         VisitSessionItem item = new VisitSessionItem();
         item.setSession(new VisitSession());

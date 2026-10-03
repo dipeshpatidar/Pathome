@@ -1,6 +1,14 @@
 package com.indore.pathome.spaces.entity;
 
 import org.flywaydb.core.Flyway;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import com.indore.pathome.spaces.config.VisitExecutionProperties;
+import com.indore.pathome.spaces.service.VisitEntitlementStore;
+import com.indore.pathome.spaces.service.VisitSilentOverrunAlertWorker;
+import com.indore.pathome.spaces.service.VisitEntitlementReservationWorker;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -27,7 +35,7 @@ class VisitSessionMigrationPostgresTest {
             try {
                 execute(connection, "CREATE SCHEMA " + schema);
                 connection.setSchema(schema);
-                execute(connection, "CREATE TABLE " + schema + ".users (id BIGINT PRIMARY KEY)");
+                execute(connection, "CREATE TABLE " + schema + ".users (id BIGINT PRIMARY KEY, role VARCHAR(40) NOT NULL DEFAULT 'ROLE_TENANT', free_visits_remaining INTEGER NOT NULL DEFAULT 5)");
                 execute(connection, "CREATE TABLE " + schema + ".listings (id BIGINT PRIMARY KEY)");
                 execute(connection, "CREATE TABLE " + schema + ".localities (id BIGINT PRIMARY KEY, "
                         + "city VARCHAR(160) NOT NULL, sector_name VARCHAR(160) NOT NULL)");
@@ -41,7 +49,8 @@ class VisitSessionMigrationPostgresTest {
                         + "move_in_timing VARCHAR(160), preferred_visit_timing VARCHAR(240), tenant_note VARCHAR(2000), "
                         + "status VARCHAR(40) NOT NULL DEFAULT 'RECEIVED', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
                         + "CONSTRAINT uk_property_visit_request_tenant_listing UNIQUE (tenant_id, listing_id))");
-                execute(connection, "INSERT INTO " + schema + ".users (id) VALUES (1), (2), (3)");
+                execute(connection, "INSERT INTO " + schema + ".users (id) VALUES (1), (2), (3), (5)");
+                execute(connection, "UPDATE " + schema + ".users SET role='ROLE_ADMIN' WHERE id=5");
                 execute(connection, "INSERT INTO " + schema + ".localities (id, city, sector_name) "
                         + "VALUES (1, 'Example Market', 'Canonical Area')");
                 execute(connection, "INSERT INTO " + schema + ".listings (id) VALUES (101), (102), (103), (104), (105), (106), (107), (108)");
@@ -261,6 +270,96 @@ class VisitSessionMigrationPostgresTest {
                         + "VALUES (500, 0, CURRENT_TIMESTAMP, '2cb-v1', 3, CURRENT_TIMESTAMP, 3, CURRENT_TIMESTAMP, "
                         + "30, 1, CURRENT_TIMESTAMP, FALSE, 'UNAVAILABLE', 'UNKNOWN')");
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_scheduling_decisions WHERE session_id = 500"));
+
+                // All four shapes are valid under V36; V39 must classify unverifiable
+                // historical STARTED rows without inventing a credit consumption.
+                execute(connection, "INSERT INTO users(id,role) VALUES (4,'ROLE_GROUND_BOY')");
+                execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at,started_at) VALUES "
+                        + "(580,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '8 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '9 hours',30,CURRENT_TIMESTAMP-INTERVAL '7 hours 30 minutes',NULL),"
+                        + "(581,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '6 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '7 hours',30,CURRENT_TIMESTAMP-INTERVAL '5 hours 30 minutes',CURRENT_TIMESTAMP-INTERVAL '5 hours'),"
+                        + "(582,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '4 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '5 hours',30,CURRENT_TIMESTAMP-INTERVAL '3 hours 30 minutes',CURRENT_TIMESTAMP-INTERVAL '3 hours 55 minutes'),"
+                        + "(583,2,'STARTED',0,'Other City',CURRENT_TIMESTAMP-INTERVAL '2 hours','UTC',4,CURRENT_TIMESTAMP-INTERVAL '3 hours',30,CURRENT_TIMESTAMP-INTERVAL '1 hour 30 minutes',CURRENT_TIMESTAMP-INTERVAL '1 hour 55 minutes')");
+                migrate(url, username, password, schema, "39");
+                connection.setSchema(schema);
+                assertEquals(4, count(connection, "SELECT count(*) FROM visit_sessions WHERE id BETWEEN 580 AND 583 AND status='REPAIR_REQUIRED' AND repair_state='REQUIRED'"));
+                assertEquals(4, count(connection, "SELECT count(*) FROM visit_execution_events WHERE event_type='LEGACY_START_REVIEW'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_execution_events WHERE session_id=581 AND metadata->>'legacyStartedAt' IS NOT NULL AND metadata->>'legacyReservedEndAt' IS NOT NULL"));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_sessions WHERE id BETWEEN 580 AND 583 AND status='STARTED'"));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id BETWEEN 580 AND 583 AND event_type='CONSUME'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions WHERE id=580 AND started_at IS NULL AND expected_end_at IS NULL"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions WHERE id=581 AND started_at IS NOT NULL AND expected_end_at>started_at"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM information_schema.tables WHERE table_schema='" + schema
+                        + "' AND table_name='tenant_visit_entitlement_accounts'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM information_schema.tables WHERE table_schema='" + schema
+                        + "' AND table_name='visit_start_challenges'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM information_schema.tables WHERE table_schema='" + schema
+                        + "' AND table_name='visit_notification_outbox'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM pg_indexes WHERE schemaname='" + schema
+                        + "' AND indexname='uk_visit_session_one_active_per_ge'"));
+
+                execute(connection, "INSERT INTO users(id,role) VALUES (4,'ROLE_GROUND_BOY') ON CONFLICT DO NOTHING");
+                execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,started_at,duration_snapshot_minutes,reserved_end_at,execution_duration_snapshot_minutes,expected_end_at) VALUES "
+                        + "(600,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '5 minutes','UTC',3,CURRENT_TIMESTAMP-INTERVAL '10 minutes',CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '60 minutes',60,CURRENT_TIMESTAMP+INTERVAL '60 minutes'),"
+                        + "(601,2,'STARTED',0,'Other City',CURRENT_TIMESTAMP-INTERVAL '5 minutes','UTC',4,CURRENT_TIMESTAMP-INTERVAL '10 minutes',CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '60 minutes',60,CURRENT_TIMESTAMP+INTERVAL '60 minutes')");
+                assertEquals(2, count(connection, "SELECT count(*) FROM visit_sessions WHERE id IN (600,601) AND status='STARTED'"));
+                assertEquals("23P01", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,started_at,duration_snapshot_minutes,reserved_end_at,execution_duration_snapshot_minutes,expected_end_at) VALUES "
+                                + "(602,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '5 minutes','UTC',3,CURRENT_TIMESTAMP-INTERVAL '10 minutes',CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '60 minutes',60,CURRENT_TIMESTAMP+INTERVAL '60 minutes')"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at,execution_duration_snapshot_minutes,expected_end_at) VALUES "
+                                + "(603,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '5 minutes','UTC',3,CURRENT_TIMESTAMP-INTERVAL '10 minutes',30,CURRENT_TIMESTAMP+INTERVAL '60 minutes',60,CURRENT_TIMESTAMP+INTERVAL '60 minutes')"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions WHERE id=600 AND reserved_end_at=expected_end_at"));
+
+                DriverManagerDataSource dataSource = new DriverManagerDataSource();
+                dataSource.setDriverClassName("org.postgresql.Driver");
+                dataSource.setUrl(url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema);
+                dataSource.setUsername(username);
+                dataSource.setPassword(password);
+                JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+                VisitEntitlementStore entitlementStore = new VisitEntitlementStore(jdbc, new VisitExecutionProperties());
+                TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+                execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at) VALUES "
+                        + "(700,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '1 day','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '1 day 30 minutes'),"
+                        + "(701,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '2 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '2 days 30 minutes')");
+                tx.executeWithoutResult(status -> {
+                    entitlementStore.reserve(1L, 700L, java.time.Instant.now().plusSeconds(7 * 86400L));
+                    entitlementStore.reserve(1L, 700L, java.time.Instant.now().plusSeconds(7 * 86400L));
+                    entitlementStore.consume(1L, 700L, 3L);
+                    entitlementStore.consume(1L, 700L, 3L);
+                });
+                assertEquals(4, jdbc.queryForObject("select available_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class));
+                assertEquals(0, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class));
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=700 and event_type='RESERVE'", Integer.class));
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=700 and event_type='CONSUME'", Integer.class));
+                assertThrows(RuntimeException.class, () -> tx.executeWithoutResult(status -> {
+                    entitlementStore.reserve(1L, 701L, java.time.Instant.now().plusSeconds(7 * 86400L));
+                    throw new IllegalStateException("force rollback");
+                }));
+                assertEquals(4, jdbc.queryForObject("select available_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class));
+                assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=701", Integer.class));
+
+                execute(connection, "UPDATE visit_sessions SET scheduled_at=CURRENT_TIMESTAMP-INTERVAL '120 minutes', "
+                        + "started_at=CURRENT_TIMESTAMP-INTERVAL '90 minutes', "
+                        + "expected_end_at=CURRENT_TIMESTAMP-INTERVAL '16 minutes', reserved_end_at=CURRENT_TIMESTAMP-INTERVAL '16 minutes' WHERE id=600");
+                VisitSilentOverrunAlertWorker overrunWorker = new VisitSilentOverrunAlertWorker(jdbc, new VisitExecutionProperties());
+                tx.executeWithoutResult(status -> overrunWorker.enqueueDueAlerts());
+                tx.executeWithoutResult(status -> overrunWorker.enqueueDueAlerts());
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=600 and event_type='SILENT_OVERRUN_ALERT'", Integer.class));
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key='SILENT_OVERRUN:600:5'", Integer.class));
+
+                execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at) VALUES "
+                        + "(702,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '10 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '10 days 30 minutes'),"
+                        + "(703,2,'SCHEDULED',0,'Other City',CURRENT_TIMESTAMP+INTERVAL '6 days','UTC',4,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '6 days 30 minutes')");
+                assertFalse(entitlementStore.reserve(1L, 702L, java.time.Instant.now().plusSeconds(7 * 86400L)));
+                assertEquals(0, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=702 and event_type='RESERVE'", Integer.class));
+                execute(connection, "UPDATE visit_sessions SET scheduled_at=CURRENT_TIMESTAMP+INTERVAL '6 days', "
+                        + "reserved_end_at=CURRENT_TIMESTAMP+INTERVAL '6 days 30 minutes' WHERE id=702");
+                execute(connection, "UPDATE tenant_visit_entitlement_accounts SET available_credits=0 WHERE user_id=2");
+                VisitEntitlementReservationWorker reservationWorker = new VisitEntitlementReservationWorker(jdbc, entitlementStore, new VisitExecutionProperties());
+                tx.executeWithoutResult(status -> reservationWorker.reserveDueBatch());
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=702 and event_type='RESERVE'", Integer.class));
+                assertEquals("REPAIR_REQUIRED", text(connection, "SELECT status FROM visit_sessions WHERE id=703"));
+                assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key='ENTITLEMENT_REPAIR_TENANT:703'", Integer.class));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }

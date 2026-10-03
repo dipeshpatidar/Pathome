@@ -2,28 +2,22 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Calendar,
-  Clock,
   CheckCircle2,
   FileText,
   MapPin,
   ShieldAlert,
   Award,
-  Phone,
   Check,
   UserCheck
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { useNotification } from '../context/NotificationContext';
+import { GroundVisitOperationsPanel } from './GroundVisitOperationsPanel';
+import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
 
 interface EmployeeCrmDashboardProps {
   user: UserProfile | null;
 }
-
-const mockAssignedVisits = [
-  { id: "VST-901", tenantName: "Aman Gupta", tenantPhone: "+91 98260 12345", propertyTitle: "Luxury 3 BHK Flat (Vijay Nagar)", visitTime: "Today, 4:00 PM", status: "SCHEDULED", securityOtp: "849201" },
-  { id: "VST-902", tenantName: "Priya Sharma", tenantPhone: "+91 98930 67890", propertyTitle: "Furnished 2 BHK Flat (Nipania)", visitTime: "Today, 6:30 PM", status: "PENDING_OTP", securityOtp: "992104" },
-  { id: "VST-903", tenantName: "Rohan Mehta", tenantPhone: "+91 94253 11223", propertyTitle: "Executive Villa (Old Palasia)", visitTime: "Tomorrow, 11:00 AM", status: "UPCOMING", securityOtp: "110293" },
-];
 
 const mockMyLeaves = [
   { id: "LV-101", leaveType: "Casual Leave", startDate: "18 Sep 2026", endDate: "19 Sep 2026", reason: "Personal Work", status: "APPROVED" },
@@ -46,7 +40,8 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
     time: '09:15 AM IST'
   });
 
-  const [activeTab, setActiveTab] = useState<'visits' | 'leaves' | 'performance'>('visits');
+  const canReviewVisitRepairs = user?.employeeRoleType?.toUpperCase() === 'WFH_ADMIN';
+  const [activeTab, setActiveTab] = useState<'visits' | 'leaves' | 'performance' | 'visit-repairs'>('visits');
   const [leavesList, setLeavesList] = useState(mockMyLeaves);
   const [showLeaveForm, setShowLeaveForm] = useState(false);
   const [newLeaveType, setNewLeaveType] = useState('Casual Leave');
@@ -233,8 +228,14 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
               activeTab === 'visits' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <MapPin className="w-4 h-4" /> My Escort Visits ({mockAssignedVisits.length})
+            <MapPin className="w-4 h-4" /> My Escort Visits
           </button>
+          {canReviewVisitRepairs && <button
+            onClick={() => setActiveTab('visit-repairs')}
+            className={`min-h-11 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${activeTab === 'visit-repairs' ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20' : 'text-slate-400 hover:bg-slate-900 hover:text-white'}`}
+          >
+            <span className="inline-flex items-center gap-2"><MapPin className="h-4 w-4" aria-hidden="true" /> Visit repairs</span>
+          </button>}
           <button
             onClick={() => setActiveTab('leaves')}
             className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 ${
@@ -246,44 +247,8 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
         </div>
 
         {/* Tab Content */}
-        {activeTab === 'visits' && (
-          <div className="space-y-4">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Clock className="w-4 h-4 text-indigo-400" /> Today's Assigned Field Escort Schedule
-            </h2>
-            <div className="grid grid-cols-1 gap-4">
-              {mockAssignedVisits.map((visit) => (
-                <div key={visit.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 hover:border-slate-700 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-white text-base">{visit.propertyTitle}</span>
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                        {visit.visitTime}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 flex items-center gap-2">
-                      <span>Tenant: <strong className="text-slate-200">{visit.tenantName}</strong></span> •
-                      <span className="flex items-center gap-1"><Phone className="w-3 h-3 text-indigo-400" /> {visit.tenantPhone}</span>
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
-                      <span className="text-slate-500">Security OTP: </span>
-                      <span className="font-mono font-bold text-cyan-400">{visit.securityOtp}</span>
-                    </div>
-                    <button 
-                      onClick={() => notifyInfo('Tenant contact', `${visit.tenantName}: ${visit.tenantPhone}`)}
-                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5"
-                    >
-                      <Phone className="w-3.5 h-3.5" /> Call Tenant
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {activeTab === 'visits' && <GroundVisitOperationsPanel user={user} />}
+        {activeTab === 'visit-repairs' && canReviewVisitRepairs && <OperationsVisitRepairPanel />}
 
         {activeTab === 'leaves' && (
           <div className="space-y-4">

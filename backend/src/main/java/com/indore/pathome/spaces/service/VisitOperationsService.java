@@ -436,7 +436,8 @@ public class VisitOperationsService {
         session.setStatus(VisitSessionStatus.SCHEDULED);
         touch(session);
         flushBookingOrConflict();
-        publishSessionEvent(session, VisitSessionNotificationEvent.Type.SCHEDULED, null);
+        publishSessionEvent(session, "PENDING".equals(session.getTenantConfirmationState())
+                ? VisitSessionNotificationEvent.Type.RESCHEDULED : VisitSessionNotificationEvent.Type.SCHEDULED, null);
         return operationsView(session);
     }
 
@@ -461,6 +462,9 @@ public class VisitOperationsService {
         rejectOverlappingReservation(session.getRepresentative().getId(), session.getId(), command.scheduledAt(), reservedEnd);
         applySchedule(session, command.scheduledAt(), command.zoneId());
         session.setReservedEndAt(reservedEnd);
+        session.setTenantConfirmationState("PENDING");
+        session.setTenantConfirmedAt(null);
+        session.setTenantConfirmedBy(null);
         validateSessionLocations(session, activeItems(sessionId));
         touch(session);
         flushBookingOrConflict();
@@ -529,8 +533,9 @@ public class VisitOperationsService {
         User ground = authorization.requireGroundExecutive(groundUserId);
         validatePage(page, size);
         int actualSize = size == 0 ? DEFAULT_PAGE_SIZE : size;
-        Page<VisitSession> result = sessions.findByRepresentativeIdAndStatusOrderByScheduledAtAscIdAsc(
-                ground.getId(), VisitSessionStatus.SCHEDULED, PageRequest.of(page, actualSize));
+        Page<VisitSession> result = sessions.findByRepresentativeIdAndStatusInOrderByScheduledAtAscIdAsc(
+                ground.getId(), List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED,
+                        VisitSessionStatus.PROVISIONAL_NO_SHOW), PageRequest.of(page, actualSize));
         List<Long> ids = result.getContent().stream().map(VisitSession::getId).toList();
         Map<Long, List<VisitSessionItem>> itemsBySession = ids.isEmpty() ? Map.of()
                 : items.findBySessionIdInAndRemovedAtIsNullOrderBySessionIdAscPositionAsc(ids).stream()
@@ -548,7 +553,8 @@ public class VisitOperationsService {
         if (sessionId == null || sessionId <= 0) throw new IllegalArgumentException("Visit Session ID must be positive");
         VisitSession session = sessions.findById(sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
-        if (session.getStatus() != VisitSessionStatus.SCHEDULED || session.getRepresentative() == null
+        if (!List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED,
+                VisitSessionStatus.PROVISIONAL_NO_SHOW).contains(session.getStatus()) || session.getRepresentative() == null
                 || !Objects.equals(session.getRepresentative().getId(), ground.getId()))
             throw new EntityNotFoundException("Visit Session not found");
         List<VisitSessionItem> active = items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(sessionId).stream()
@@ -825,9 +831,14 @@ public class VisitOperationsService {
                     listing.getAddress(), resolveLocation(listing, localityById).city(), listing.getSector(), item.getPosition(),
                     item.getAvailabilityConfirmedAt());
         }).toList();
+        Instant now = Instant.now();
         return new GroundVisitSessionView(session.getId(), session.getStatus(), session.getVersion(),
                 session.getCity(), session.getScheduledAt(), session.getReservedEndAt(),
-                session.getDurationSnapshotMinutes(), session.getZoneId(), itemViews);
+                session.getDurationSnapshotMinutes(), session.getZoneId(), session.getArrivedAt(), session.getStartedAt(),
+                session.getExpectedEndAt(), session.getFinishedAt(), session.getTenantEtaAt(),
+                session.getTenantConfirmationState(), session.getRepairState(),
+                session.getStatus() == VisitSessionStatus.STARTED && session.getExpectedEndAt() != null
+                        && now.isAfter(session.getExpectedEndAt()), itemViews);
     }
 
     private OperationsVisitRequestItem requestItem(PropertyVisitRequest request) {

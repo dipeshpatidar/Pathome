@@ -40,6 +40,28 @@ cloudinary:
   api-secret: ${CLOUDINARY_API_SECRET}
 
 pathome:
+  visit:
+    auto-shift-threshold-minutes: ${PATHOME_VISIT_AUTO_SHIFT_THRESHOLD_MINUTES:10}
+    reservation-horizon-days: ${PATHOME_VISIT_RESERVATION_HORIZON_DAYS:7}
+    repair-horizon-hours: ${PATHOME_VISIT_REPAIR_HORIZON_HOURS:4}
+    maximum-downstream-sessions: ${PATHOME_VISIT_MAX_DOWNSTREAM_SESSIONS:3}
+    repair-retries: ${PATHOME_VISIT_REPAIR_RETRIES:2}
+    alternate-ge-candidates: ${PATHOME_VISIT_ALTERNATE_GE_CANDIDATES:5}
+    tenant-no-show-grace-minutes: ${PATHOME_VISIT_NO_SHOW_GRACE_MINUTES:15}
+    minimum-contact-attempts: ${PATHOME_VISIT_MIN_CONTACT_ATTEMPTS:2}
+    contact-attempt-spacing-minutes: ${PATHOME_VISIT_CONTACT_SPACING_MINUTES:5}
+    tenant-dispute-window-hours: ${PATHOME_VISIT_DISPUTE_WINDOW_HOURS:24}
+    silent-overrun-alert-minutes: ${PATHOME_VISIT_SILENT_OVERRUN_ALERT_MINUTES:15}
+    maximum-operational-restores-per-day: ${PATHOME_VISIT_MAX_OPERATIONAL_RESTORES_PER_DAY:3}
+    otp:
+      digits: 6
+      validity-minutes: ${PATHOME_VISIT_OTP_VALIDITY_MINUTES:10}
+      regeneration-cooldown-seconds: ${PATHOME_VISIT_OTP_REGEN_COOLDOWN_SECONDS:30}
+      maximum-attempts: ${PATHOME_VISIT_OTP_MAX_ATTEMPTS:5}
+      key-id: ${PATHOME_VISIT_OTP_HMAC_KEY_ID:primary}
+      hmac-secret: ${PATHOME_VISIT_OTP_HMAC_SECRET:}
+      previous-key-id: ${PATHOME_VISIT_OTP_HMAC_PREVIOUS_KEY_ID:}
+      previous-hmac-secret: ${PATHOME_VISIT_OTP_HMAC_PREVIOUS_SECRET:}
   scheduling:
     recommendation:
       version: ${PATHOME_SCHEDULING_POLICY_VERSION:2cb-v1}

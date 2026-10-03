@@ -14,4 +14,12 @@ public record GroundVisitSessionView(
         Instant reservedEndAt,
         Integer durationMinutes,
         String zoneId,
+        Instant arrivedAt,
+        Instant startedAt,
+        Instant expectedEndAt,
+        Instant finishedAt,
+        Instant tenantEtaAt,
+        String tenantConfirmationState,
+        String repairState,
+        boolean overPlannedTime,
         List<GroundVisitSessionItemView> items) {}

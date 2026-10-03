@@ -6,6 +6,7 @@ import com.indore.pathome.spaces.dto.RegisterRequest;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.LessorProfileRepository;
+import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
 import org.springframework.http.HttpStatus;
@@ -25,13 +26,15 @@ public class AuthController {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtils jwtUtils;
     private final LessorProfileRepository lessorProfileRepository;
+    private final EmployeeProfileRepository employeeProfileRepository;
 
     public AuthController(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtUtils jwtUtils,
-                          LessorProfileRepository lessorProfileRepository) {
+                          LessorProfileRepository lessorProfileRepository, EmployeeProfileRepository employeeProfileRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtils = jwtUtils;
         this.lessorProfileRepository = lessorProfileRepository;
+        this.employeeProfileRepository = employeeProfileRepository;
     }
 
     /**
@@ -70,9 +73,10 @@ public class AuthController {
 
         String token = jwtUtils.generateToken(user.getId(), user.getEmail(), user.getRole().name());
 
-        return ResponseEntity.ok(new AuthResponse(
-                token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining(), false
-        ));
+        AuthResponse response = new AuthResponse(
+                token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining(), false);
+        employeeProfileRepository.findByUserId(user.getId()).ifPresent(profile -> response.setEmployeeRoleType(profile.getRoleType()));
+        return ResponseEntity.ok(response);
     }
 
     private ResponseEntity<Map<String, String>> duplicateEmailResponse() {
@@ -98,8 +102,9 @@ public class AuthController {
 
         boolean hasLessorProfile = lessorProfileRepository.existsByLinkedUserId(user.getId());
 
-        return ResponseEntity.ok(new AuthResponse(
-                token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining(), hasLessorProfile
-        ));
+        AuthResponse response = new AuthResponse(
+                token, user.getId(), user.getEmail(), user.getFullName(), user.getRole().name(), user.getFreeVisitsRemaining(), hasLessorProfile);
+        employeeProfileRepository.findByUserId(user.getId()).ifPresent(profile -> response.setEmployeeRoleType(profile.getRoleType()));
+        return ResponseEntity.ok(response);
     }
 }

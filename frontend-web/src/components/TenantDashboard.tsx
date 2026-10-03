@@ -4,6 +4,7 @@ import { ArrowRight, BedDouble, Building2, CalendarDays, Camera, ChevronLeft, Ch
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
+import { createVisitOperationId, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
@@ -64,6 +65,9 @@ const emptyHistory: HistoryState = {
   identityKey: null, status: 'loading', requests: [], totalCount: 0, page: 0, hasMore: false
 };
 
+type TenantSessionHistory = { identityKey: string | null; status: 'loading' | 'ready' | 'error'; sessions: VisitExecutionView[]; totalPages: number };
+const emptyTenantSessions: TenantSessionHistory = { identityKey: null, status: 'loading', sessions: [], totalPages: 0 };
+
 const HERO_BHK_FILTERS = ['2 BHK', '3 BHK'] as const;
 const HERO_PROPERTY_FILTERS: { label: string; value: RentalPropertyType }[] = [
   { label: 'Flat', value: 'FLAT' },
@@ -86,6 +90,13 @@ const formatRequestedDate = (value: string | null | undefined): string | null =>
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null :
     new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }).format(date);
+};
+
+const formatVisitTime = (value: string | null | undefined, zoneId?: string | null): string => {
+  if (!value) return 'Time unavailable';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Time unavailable'
+    : `${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', ...(zoneId ? { timeZone: zoneId } : {}) }).format(date)}${zoneId ? ` · ${zoneId}` : ''}`;
 };
 
 const PropertyImage: React.FC<{ src?: string | null; alt: string; editorialHover?: boolean; premiumCardHover?: boolean }> = ({ src, alt, editorialHover = false, premiumCardHover = false }) => {
@@ -509,6 +520,12 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const reduceMotionPreference = useReducedMotion();
   const reduceMotion = reduceMotionPreference === true;
   const [history, setHistory] = useState<HistoryState>(emptyHistory);
+  const [tenantSessions, setTenantSessions] = useState<TenantSessionHistory>(emptyTenantSessions);
+  const [tenantSessionsReload, setTenantSessionsReload] = useState(0);
+  const [tenantSessionPage, setTenantSessionPage] = useState(0);
+  const [tenantSessionCodes, setTenantSessionCodes] = useState<Record<number, TenantVisitStartCode>>({});
+  const [tenantSessionAction, setTenantSessionAction] = useState<number | null>(null);
+  const [tenantSessionError, setTenantSessionError] = useState<string | null>(null);
   const [loadMorePending, setLoadMorePending] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const [reload, setReload] = useState(0);
@@ -1166,7 +1183,60 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     return () => { controller.abort(); pageRequestRef.current?.abort(); };
   }, [user.id, reload]);
 
+  useEffect(() => {
+    const identitySession = readTenantVisitSession(user.id);
+    setTenantSessionCodes({});
+    setTenantSessionError(null);
+    if (!identitySession) {
+      setTenantSessions({ ...emptyTenantSessions, status: 'error' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setTenantSessions({ ...emptyTenantSessions, identityKey: identitySession.key, status: 'loading' });
+    visitExecutionService.listTenant(tenantSessionPage, controller.signal).then(page => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identitySession)) return;
+      if (page.totalPages > 0 && tenantSessionPage >= page.totalPages) {
+        setTenantSessionPage(page.totalPages - 1);
+        return;
+      }
+      setTenantSessions({ identityKey: identitySession.key, status: 'ready', sessions: Array.isArray(page.sessions) ? page.sessions : [], totalPages: page.totalPages });
+    }).catch(() => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identitySession)) return;
+      setTenantSessions({ ...emptyTenantSessions, identityKey: identitySession.key, status: 'error' });
+    });
+    return () => controller.abort();
+  }, [user.id, tenantSessionsReload, tenantSessionPage]);
+
   const session = readTenantVisitSession(user.id);
+  const visibleTenantSessions = !session ? { ...emptyTenantSessions, status: 'error' as const }
+    : tenantSessions.identityKey === session.key ? tenantSessions : emptyTenantSessions;
+  const issueVisitCode = async (sessionId: number) => {
+    const requestSession = readTenantVisitSession(user.id);
+    if (!requestSession) { setTenantSessionError('Please sign in again to manage this visit.'); return; }
+    setTenantSessionAction(sessionId);
+    setTenantSessionError(null);
+    try {
+      const code = await visitExecutionService.issueStartCode(sessionId);
+      if (!isCurrentTenantVisitSession(requestSession)) return;
+      setTenantSessionCodes(current => ({ ...current, [sessionId]: code }));
+    } catch (error) {
+      setTenantSessionError(error instanceof Error ? error.message : 'Could not prepare a visit start code. Please retry.');
+    } finally { setTenantSessionAction(null); }
+  };
+  const confirmVisitChange = async (sessionId: number, action: 'ACCEPT_RESCHEDULE' | 'REJECT_RESCHEDULE' | 'DISPUTE_NO_SHOW', expectedSessionVersion: number) => {
+    const requestSession = readTenantVisitSession(user.id);
+    if (!requestSession) { setTenantSessionError('Please sign in again to manage this visit.'); return; }
+    setTenantSessionAction(sessionId);
+    setTenantSessionError(null);
+    try {
+      await visitExecutionService.confirmTenant(sessionId, action, createVisitOperationId(), expectedSessionVersion);
+      if (!isCurrentTenantVisitSession(requestSession)) return;
+      setTenantSessionCodes(current => { const next = { ...current }; delete next[sessionId]; return next; });
+      setTenantSessionsReload(value => value + 1);
+    } catch (error) {
+      setTenantSessionError(error instanceof Error ? error.message : 'Could not record your visit response. Please retry.');
+    } finally { setTenantSessionAction(null); }
+  };
   const visibleHistory: HistoryState = !session ? { ...emptyHistory, status: 'error' } :
     session.key === history.identityKey ? history : emptyHistory;
   const view = tenantVisitView(visibleHistory.status, visibleHistory.requests);
@@ -1449,6 +1519,60 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               <ChevronRight size={17} className="shrink-0 text-emerald-800 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
             </summary>
             <div className="space-y-3 border-t border-emerald-950/10 p-3">
+            <section aria-labelledby="confirmed-visit-sessions-title" className="space-y-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/60 p-3 sm:p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 id="confirmed-visit-sessions-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Visit sessions</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">Current schedule and visit progress from Pathome.</p>
+                </div>
+                {visibleTenantSessions.status === 'error' && <button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 shrink-0 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button>}
+              </div>
+              {tenantSessionError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">{tenantSessionError}</p>}
+              {visibleTenantSessions.status === 'loading' && <p role="status" className="text-sm text-slate-600">Loading visit sessions…</p>}
+              {visibleTenantSessions.status === 'error' && <p role="alert" className="text-sm text-slate-600">Visit session details are unavailable right now.</p>}
+              {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && <p role="status" className="text-sm text-slate-600">Confirmed visit sessions will appear here.</p>}
+              {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.map(visit => {
+                const code = tenantSessionCodes[visit.sessionId];
+                const isPending = tenantSessionAction === visit.sessionId;
+                const needsTenantConfirmation = visit.tenantConfirmationState === 'PENDING';
+                const statusLabel = visit.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+                return <article key={visit.sessionId} className="min-w-0 rounded-xl border border-emerald-100 bg-white p-3 shadow-sm sm:p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-900">{statusLabel}</span>
+                    {visit.repairState === 'PROPOSED' && <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-900">Proposed time</span>}
+                    {visit.repairState === 'REQUIRED' && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900">Action required</span>}
+                  </div>
+                  <p className="mt-2 text-sm font-semibold text-slate-950">{visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Time under review' : visit.repairState === 'PROPOSED' ? 'Proposed visit time' : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : 'Scheduled'}{visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT' && <> · {formatVisitTime(visit.scheduledAt, visit.zoneId)}</>}</p>
+                  {visit.arrivedAt && <p className="mt-1 text-xs text-slate-600">Ground Executive reported arrival at {formatVisitTime(visit.arrivedAt, visit.zoneId)}.</p>}
+                  {visit.startedAt && <p className="mt-1 text-xs text-slate-600">Started {formatVisitTime(visit.startedAt, visit.zoneId)} · expected end {formatVisitTime(visit.expectedEndAt, visit.zoneId)}{visit.overPlannedTime ? ' · running over planned time' : ''}</p>}
+                  {visit.tenantEtaAt && <p className="mt-1 text-xs text-slate-600">Your confirmed ETA: {formatVisitTime(visit.tenantEtaAt, visit.zoneId)}.</p>}
+                  {visit.repairState === 'PROPOSED' && <p className="mt-2 rounded-lg bg-sky-50 p-2 text-xs leading-5 text-sky-950">This time is proposed and will be confirmed only after you accept it.</p>}
+                  {visit.repairState === 'REQUIRED' && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-950">Your earlier visit time can no longer be confirmed. Operations is arranging a safe option and will update you.</p>}
+                  {visit.status === 'DRAFT' && visit.repairState === 'NONE' && <p className="mt-2 rounded-lg bg-slate-50 p-2 text-xs leading-5 text-slate-700">A visit time is not confirmed yet. You can request a start code after a time is scheduled.</p>}
+                  {needsTenantConfirmation && (visit.repairState === 'NONE' || visit.repairState === 'PROPOSED') && <div className="mt-3 space-y-2">
+                    <p className="text-xs leading-5 text-slate-700">{visit.repairState === 'PROPOSED' ? 'A safe visit time is proposed. Confirm it only if it works for you.' : 'Operations proposed a time change. Confirm it only if the proposed visit time works for you.'}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'ACCEPT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Confirm proposed time</button>
+                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'REJECT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60 ${focusClass}`}>I can’t make this time</button>
+                    </div>
+                  </div>}
+                  {visit.status === 'PROVISIONAL_NO_SHOW' && <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'DISPUTE_NO_SHOW', visit.version)} className={`mt-3 min-h-11 rounded-xl border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-60 ${focusClass}`}>Dispute provisional no-show</button>}
+                  {visit.status === 'SCHEDULED' && !needsTenantConfirmation && visit.repairState === 'NONE' && <div className="mt-3">
+                    {code ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3" role="status" aria-live="polite">
+                      <p className="text-xs font-semibold text-emerald-950">Your one-time visit start code</p>
+                      <p className="mt-1 font-mono text-2xl font-bold tracking-[0.28em] text-emerald-900" aria-label="Visit start code">{code.code}</p>
+                      <p className="mt-1 text-xs text-emerald-900">Share this code with your assigned Ground Executive. It expires {formatVisitTime(code.expiresAt)}. This code is shown only in your signed-in Pathome account.</p>
+                      <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`mt-2 min-h-11 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline disabled:opacity-50 ${focusClass}`}>Get a new code</button>
+                    </div> : <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Get visit start code</button>}
+                  </div>}
+                </article>;
+              })}
+              {visibleTenantSessions.status === 'ready' && visibleTenantSessions.totalPages > 1 && <nav aria-label="Visit session pages" className="flex items-center justify-between gap-3 text-sm text-slate-700">
+                <button type="button" disabled={tenantSessionPage === 0} onClick={() => setTenantSessionPage(value => value - 1)} className={`min-h-11 rounded-lg px-3 font-semibold disabled:opacity-50 ${focusClass}`}>Previous</button>
+                <span>Page {tenantSessionPage + 1} of {visibleTenantSessions.totalPages}</span>
+                <button type="button" disabled={tenantSessionPage + 1 >= visibleTenantSessions.totalPages} onClick={() => setTenantSessionPage(value => value + 1)} className={`min-h-11 rounded-lg px-3 font-semibold disabled:opacity-50 ${focusClass}`}>Next</button>
+              </nav>}
+            </section>
             {view === 'loading' && <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1" role="status" aria-live="polite" aria-label="Loading your visit requests">
               {[0, 1].map(index => <div key={index} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm sm:flex sm:h-48">
                 <div className="aspect-[16/9] bg-slate-200 motion-safe:animate-pulse sm:aspect-auto sm:w-[38%] sm:shrink-0" /><div className="p-5 sm:flex-1"><div className="h-4 w-24 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-5 h-5 w-4/5 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /></div>

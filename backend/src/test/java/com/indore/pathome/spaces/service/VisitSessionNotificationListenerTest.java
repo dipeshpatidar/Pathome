@@ -49,6 +49,9 @@ class VisitSessionNotificationListenerTest {
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("41"),
                 eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
                 eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_ASSIGNED:500:v6:41"));
+        verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
+                eq("Ground Executive updated"), contains("different Ground Executive"), isNull(),
+                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_REASSIGNED:500:v6:10"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session reassigned"), contains("no longer assigned"), isNull(),
                 eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_REASSIGNED_FROM:500:v6:40"));

@@ -70,6 +70,52 @@ public class VisitSession {
     @Column(name = "entitlement_consumed_at")
     private Instant entitlementConsumedAt;
 
+    @Column(name = "arrived_at")
+    private Instant arrivedAt;
+
+    @Column(name = "execution_duration_snapshot_minutes")
+    private Integer executionDurationSnapshotMinutes;
+
+    @Column(name = "expected_end_at")
+    private Instant expectedEndAt;
+
+    @Column(name = "finished_at")
+    private Instant finishedAt;
+
+    @Column(name = "tenant_eta_at")
+    private Instant tenantEtaAt;
+
+    @Column(name = "tenant_confirmation_state", nullable = false, length = 24)
+    private String tenantConfirmationState = "NOT_REQUIRED";
+
+    @Column(name = "tenant_confirmed_at")
+    private Instant tenantConfirmedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_confirmed_by_user_id")
+    private User tenantConfirmedBy;
+
+    @Column(name = "repair_state", nullable = false, length = 24)
+    private String repairState = "NONE";
+
+    @Column(name = "repair_operation_id")
+    private java.util.UUID repairOperationId;
+
+    @Column(name = "provisional_no_show_at")
+    private Instant provisionalNoShowAt;
+
+    @Column(name = "no_show_dispute_until")
+    private Instant noShowDisputeUntil;
+
+    @Column(name = "start_operation_id")
+    private java.util.UUID startOperationId;
+
+    @Column(name = "needs_more_time_at")
+    private Instant needsMoreTimeAt;
+
+    @Column(name = "execution_state_changed_at")
+    private Instant executionStateChangedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
@@ -110,9 +156,13 @@ public class VisitSession {
                     || durationSnapshotMinutes == null || durationSnapshotMinutes <= 0
                     || reservedEndAt == null))
             throw new IllegalStateException("Scheduled sessions require an assigned representative and positive reservation");
-        if ((status == VisitSessionStatus.SCHEDULED || status == VisitSessionStatus.STARTED)
+        if (status == VisitSessionStatus.SCHEDULED
                 && !reservedEndAt.equals(scheduledAt.plus(durationSnapshotMinutes, ChronoUnit.MINUTES)))
             throw new IllegalStateException("Reservation end must match the planned duration");
+        if (status == VisitSessionStatus.STARTED && (startedAt == null || executionDurationSnapshotMinutes == null
+                || executionDurationSnapshotMinutes <= 0 || expectedEndAt == null
+                || !reservedEndAt.equals(expectedEndAt)))
+            throw new IllegalStateException("Started sessions require an execution end reservation");
     }
 
     public Long getId() { return id; }
@@ -153,4 +203,34 @@ public class VisitSession {
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public Instant getArrivedAt() { return arrivedAt; }
+    public void setArrivedAt(Instant arrivedAt) { this.arrivedAt = arrivedAt; }
+    public Integer getExecutionDurationSnapshotMinutes() { return executionDurationSnapshotMinutes; }
+    public void setExecutionDurationSnapshotMinutes(Integer value) { this.executionDurationSnapshotMinutes = value; }
+    public Instant getExpectedEndAt() { return expectedEndAt; }
+    public void setExpectedEndAt(Instant expectedEndAt) { this.expectedEndAt = expectedEndAt; }
+    public Instant getFinishedAt() { return finishedAt; }
+    public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
+    public Instant getTenantEtaAt() { return tenantEtaAt; }
+    public void setTenantEtaAt(Instant tenantEtaAt) { this.tenantEtaAt = tenantEtaAt; }
+    public String getTenantConfirmationState() { return tenantConfirmationState; }
+    public void setTenantConfirmationState(String value) { this.tenantConfirmationState = value; }
+    public Instant getTenantConfirmedAt() { return tenantConfirmedAt; }
+    public void setTenantConfirmedAt(Instant value) { this.tenantConfirmedAt = value; }
+    public User getTenantConfirmedBy() { return tenantConfirmedBy; }
+    public void setTenantConfirmedBy(User value) { this.tenantConfirmedBy = value; }
+    public String getRepairState() { return repairState; }
+    public void setRepairState(String value) { this.repairState = value; }
+    public java.util.UUID getRepairOperationId() { return repairOperationId; }
+    public void setRepairOperationId(java.util.UUID value) { this.repairOperationId = value; }
+    public Instant getProvisionalNoShowAt() { return provisionalNoShowAt; }
+    public void setProvisionalNoShowAt(Instant value) { this.provisionalNoShowAt = value; }
+    public Instant getNoShowDisputeUntil() { return noShowDisputeUntil; }
+    public void setNoShowDisputeUntil(Instant value) { this.noShowDisputeUntil = value; }
+    public java.util.UUID getStartOperationId() { return startOperationId; }
+    public void setStartOperationId(java.util.UUID value) { this.startOperationId = value; }
+    public Instant getNeedsMoreTimeAt() { return needsMoreTimeAt; }
+    public void setNeedsMoreTimeAt(Instant value) { this.needsMoreTimeAt = value; }
+    public Instant getExecutionStateChangedAt() { return executionStateChangedAt; }
+    public void setExecutionStateChangedAt(Instant value) { this.executionStateChangedAt = value; }
 }

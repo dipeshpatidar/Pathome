@@ -96,7 +96,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           role: normalizeRole(data.role),
           freeVisitsUsed: 0,
           walletBalance: 0,
-          hasLessorProfile: Boolean(data.hasLessorProfile)
+          hasLessorProfile: Boolean(data.hasLessorProfile),
+          employeeRoleType: typeof data.employeeRoleType === 'string' ? data.employeeRoleType : undefined
         });
       } else {
         const text = await res.text();

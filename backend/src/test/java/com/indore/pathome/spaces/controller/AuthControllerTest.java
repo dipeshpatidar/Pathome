@@ -5,7 +5,9 @@ import com.indore.pathome.spaces.dto.LoginRequest;
 import com.indore.pathome.spaces.dto.RegisterRequest;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
+import com.indore.pathome.spaces.entity.EmployeeProfile;
 import com.indore.pathome.spaces.repository.LessorProfileRepository;
+import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,12 +42,15 @@ class AuthControllerTest {
     @Mock
     private LessorProfileRepository lessorProfileRepository;
 
+    @Mock
+    private EmployeeProfileRepository employeeProfileRepository;
+
     private AuthController authController;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        authController = new AuthController(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository);
+        authController = new AuthController(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository);
     }
 
     @Test
@@ -98,7 +103,7 @@ class AuthControllerTest {
             Map<String, String> body = (Map<String, String>) response.getBody();
             assertEquals("EMAIL_REQUIRED", body.get("error"));
         }
-        verifyNoInteractions(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository);
+        verifyNoInteractions(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository);
     }
 
     @Test
@@ -279,6 +284,29 @@ class AuthControllerTest {
         AuthResponse authResponse = (AuthResponse) response.getBody();
         assertTrue(authResponse.isHasLessorProfile());
         verify(lessorProfileRepository).existsByLinkedUserId(7L);
+    }
+
+    @Test
+    @DisplayName("Login returns server-backed employee capability for the existing CRM navigation")
+    void loginReturnsEmployeeRoleTypeFromProfile() {
+        User user = new User();
+        user.setId(12L);
+        user.setEmail("operations@example.com");
+        user.setPasswordHash("hashed-pw");
+        user.setRole(Role.ROLE_GROUND_BOY);
+        when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("Password123", "hashed-pw")).thenReturn(true);
+        EmployeeProfile profile = new EmployeeProfile();
+        profile.setRoleType("WFH_ADMIN");
+        when(employeeProfileRepository.findByUserId(12L)).thenReturn(Optional.of(profile));
+
+        LoginRequest request = new LoginRequest();
+        request.setEmail(user.getEmail());
+        request.setPassword("Password123");
+
+        AuthResponse response = (AuthResponse) authController.loginUser(request).getBody();
+        assertNotNull(response);
+        assertEquals("WFH_ADMIN", response.getEmployeeRoleType());
     }
 
     @Test

@@ -7,5 +7,8 @@ public enum VisitSessionStatus {
     COMPLETED,
     EXPIRED,
     CANCELLED,
-    NO_SHOW
+    NO_SHOW,
+    PROVISIONAL_NO_SHOW,
+    REPAIR_REQUIRED,
+    INTERRUPTED
 }

@@ -1371,7 +1371,8 @@ export const Home: React.FC = () => {
             exit={{ opacity: 0, y: -16 }}
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
-            <MasterAdminDashboard activeTab={activeAdminTab} setActiveAdminTab={setActiveAdminTab} />
+            <MasterAdminDashboard activeTab={activeAdminTab} setActiveAdminTab={setActiveAdminTab}
+              canReviewVisitRepairs={user?.role === 'SUPER_ADMIN'} />
           </motion.div>
         )}
 

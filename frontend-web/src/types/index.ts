@@ -69,6 +69,7 @@ export interface UserProfile {
   walletBalance: number;
   avatarUrl?: string;
   department?: string;
+  employeeRoleType?: string;
   permissions?: string[];
   hasLessorProfile?: boolean;
 }
