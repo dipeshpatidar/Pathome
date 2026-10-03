@@ -24,8 +24,21 @@ public class VisitEntitlementStore {
 
     @Transactional
     public boolean reserve(Long userId, Long sessionId, Instant horizon) {
+        return reserve(userId, sessionId, horizon, false);
+    }
+
+    /** Allows a credit hold after the booked interval only when no-show evidence is being finalized. */
+    @Transactional
+    public boolean reserveForNoShow(Long userId, Long sessionId, Instant horizon) {
+        return reserve(userId, sessionId, horizon, true);
+    }
+
+    private boolean reserve(Long userId, Long sessionId, Instant horizon, boolean allowExpiredInterval) {
         if (jdbc.queryForObject("select count(*) from visit_sessions where id=? and tenant_id=? and status='SCHEDULED' and scheduled_at <= ?",
                 Integer.class, sessionId, userId, Timestamp.from(horizon)) == 0) return false;
+        if (!allowExpiredInterval && jdbc.queryForObject(
+                "select count(*) from visit_sessions where id=? and tenant_id=? and status='SCHEDULED' and reserved_end_at > current_timestamp",
+                Integer.class, sessionId, userId) == 0) return false;
         long accountId = lockOrCreateAccount(userId);
         String key = "RESERVE:" + sessionId;
         if (ledgerExists(key)) return !ledgerExists("RELEASE:" + sessionId);

@@ -87,8 +87,9 @@ public class VisitOperationsService {
 
         VisitSession session = lockSession(sessionId);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
-        if (session.getStatus() != VisitSessionStatus.DRAFT)
-            throw new VisitOperationsConflictException("Only draft sessions can use recommendation approval");
+        boolean repairApproval = session.getStatus() == VisitSessionStatus.REPAIR_REQUIRED;
+        if (session.getStatus() != VisitSessionStatus.DRAFT && !repairApproval)
+            throw new VisitOperationsConflictException("Only draft or repair-required sessions can use recommendation approval");
         lockGroundExecutives(List.of(command.groundExecutiveUserId()));
         VisitSchedulingRecommendationService.ApprovalAssessment assessment = recommendations.validateApproval(
                 session, command.expectedSessionVersion(), command.groundExecutiveUserId(),
@@ -99,7 +100,18 @@ public class VisitOperationsService {
         if (!assessment.override() && reason != null && !reason.isBlank())
             throw new IllegalArgumentException("Override reason is only allowed when selecting a different candidate");
 
-        ScheduleVisitSessionCommand booking = new ScheduleVisitSessionCommand(command.expectedSessionVersion(),
+        if (repairApproval) {
+            // This state change is transaction-local. Any scheduling or persistence
+            // failure rolls the repair case back without dropping it from the queue.
+            session.setStatus(VisitSessionStatus.DRAFT);
+            session.setRepairState("NONE");
+            session.setRepairOperationId(null);
+            session.setTenantConfirmationState("PENDING");
+            session.setTenantConfirmedAt(null);
+            session.setTenantConfirmedBy(null);
+            entityManager.flush();
+        }
+        ScheduleVisitSessionCommand booking = new ScheduleVisitSessionCommand(session.getVersion(),
                 command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
         OperationsVisitSessionView scheduled = schedule(actorId, sessionId, booking);
 

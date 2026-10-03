@@ -72,7 +72,8 @@ public class VisitSchedulingRecommendationService {
         VisitSession session = sessions.findById(sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
         requireVersion(session, command.expectedSessionVersion());
-        return evaluate(session, Instant.now(), null, false).view();
+        boolean repairPreview = session.getStatus() == VisitSessionStatus.REPAIR_REQUIRED;
+        return evaluate(session, Instant.now(), null, false, null, repairPreview).view();
     }
 
     /**
@@ -154,8 +155,9 @@ public class VisitSchedulingRecommendationService {
             Long selectedGroundExecutiveUserId, Instant selectedAt, String zoneId) {
         if (lockedSession == null) throw new IllegalArgumentException("Visit Session is required");
         requireVersion(lockedSession, expectedVersion);
-        if (lockedSession.getStatus() != VisitSessionStatus.DRAFT)
-            throw new VisitOperationsConflictException("Only draft sessions can use recommendation approval");
+        boolean repairApproval = lockedSession.getStatus() == VisitSessionStatus.REPAIR_REQUIRED;
+        if (lockedSession.getStatus() != VisitSessionStatus.DRAFT && !repairApproval)
+            throw new VisitOperationsConflictException("Only draft or repair-required sessions can use recommendation approval");
         if (selectedGroundExecutiveUserId == null || selectedGroundExecutiveUserId <= 0 || selectedAt == null)
             throw new IllegalArgumentException("Ground Executive and visit time are required");
         validateZone(zoneId);
@@ -171,7 +173,7 @@ public class VisitSchedulingRecommendationService {
         authorization.requireGroundExecutiveTarget(selectedGroundExecutiveUserId);
 
         Instant now = Instant.now();
-        Evaluation evaluation = evaluate(lockedSession, now, selectedAt, true);
+        Evaluation evaluation = evaluate(lockedSession, now, List.of(selectedAt), true, null, repairApproval);
         CandidatePlan selected = evaluation.feasible().stream()
                 .filter(plan -> plan.geId().equals(selectedGroundExecutiveUserId)
                         && plan.start().equals(selectedAt)
@@ -311,6 +313,16 @@ public class VisitSchedulingRecommendationService {
         if (activeProfiles.size() > policy.getMaximumGroundExecutives()) {
             activeProfiles = activeProfiles.subList(0, policy.getMaximumGroundExecutives());
             planningTruncated = true;
+        }
+        // A repair proposal must always be checked against its currently assigned GE,
+        // even when that GE falls outside the bounded recommendation page.
+        if (allowScheduledRepair && session.getRepresentative() != null
+                && activeProfiles.stream().noneMatch(profile -> Objects.equals(
+                        profile.getEmployeeProfile().getUser().getId(), session.getRepresentative().getId()))) {
+            profiles.findByGroundExecutiveUserId(session.getRepresentative().getId())
+                    .filter(GroundExecutiveSchedulingProfile::isSchedulingActive)
+                    .filter(profile -> "GROUND_BOY".equalsIgnoreCase(profile.getEmployeeProfile().getRoleType()))
+                    .ifPresent(activeProfiles::add);
         }
         List<Long> profileIds = activeProfiles.stream().map(GroundExecutiveSchedulingProfile::getEmployeeProfileId).toList();
         Map<Long, List<GroundExecutiveCoverage>> coverageByProfile = coverage.findBySchedulingProfileEmployeeProfileIdIn(profileIds)

@@ -274,6 +274,7 @@ class VisitSessionMigrationPostgresTest {
                 // All four shapes are valid under V36; V39 must classify unverifiable
                 // historical STARTED rows without inventing a credit consumption.
                 execute(connection, "INSERT INTO users(id,role) VALUES (4,'ROLE_GROUND_BOY')");
+                execute(connection, "INSERT INTO users(id,role,free_visits_remaining) VALUES (6,'ROLE_TENANT',1),(7,'ROLE_TENANT',1),(8,'ROLE_TENANT',1)");
                 execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at,started_at) VALUES "
                         + "(580,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '8 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '9 hours',30,CURRENT_TIMESTAMP-INTERVAL '7 hours 30 minutes',NULL),"
                         + "(581,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '6 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '7 hours',30,CURRENT_TIMESTAMP-INTERVAL '5 hours 30 minutes',CURRENT_TIMESTAMP-INTERVAL '5 hours'),"
@@ -296,6 +297,60 @@ class VisitSessionMigrationPostgresTest {
                         + "' AND table_name='visit_notification_outbox'"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM pg_indexes WHERE schemaname='" + schema
                         + "' AND indexname='uk_visit_session_one_active_per_ge'"));
+                DriverManagerDataSource dataSource = new DriverManagerDataSource();
+                dataSource.setDriverClassName("org.postgresql.Driver");
+                dataSource.setUrl(url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema);
+                dataSource.setUsername(username);
+                dataSource.setPassword(password);
+                JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+                VisitEntitlementStore entitlementStore = new VisitEntitlementStore(jdbc, new VisitExecutionProperties());
+                TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+
+                // V40 must free only the unused stale hold, preserve consumed history,
+                // and leave multiple stale rows out of the due-reservation worker.
+                execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at) VALUES "
+                        + "(710,6,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '3 hours','UTC',3,CURRENT_TIMESTAMP-INTERVAL '4 hours',30,CURRENT_TIMESTAMP-INTERVAL '2 hours 30 minutes'),"
+                        + "(711,6,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '3 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '3 days 30 minutes'),"
+                        + "(712,6,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '4 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '4 days 30 minutes'),"
+                        + "(713,6,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '5 days','UTC',3,CURRENT_TIMESTAMP-INTERVAL '6 days',30,CURRENT_TIMESTAMP-INTERVAL '4 days 23 hours 30 minutes'),"
+                        + "(714,7,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '2 days','UTC',3,CURRENT_TIMESTAMP-INTERVAL '3 days',30,CURRENT_TIMESTAMP-INTERVAL '1 day 23 hours 30 minutes'),"
+                        + "(715,8,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '10 days','UTC',3,CURRENT_TIMESTAMP-INTERVAL '11 days',30,CURRENT_TIMESTAMP-INTERVAL '9 days 23 hours 30 minutes')");
+                execute(connection, "INSERT INTO visit_entitlement_ledger(account_id,user_id,session_id,event_type,available_delta,reserved_delta,reason_code,idempotency_key) "
+                        + "SELECT id,6,710,'RESERVE',-1,1,'SCHEDULE_CONFIRMED','RESERVE:710' FROM tenant_visit_entitlement_accounts WHERE user_id=6");
+                execute(connection, "UPDATE tenant_visit_entitlement_accounts SET available_credits=0,reserved_credits=1 WHERE user_id=6");
+                execute(connection, "INSERT INTO visit_entitlement_ledger(account_id,user_id,session_id,event_type,available_delta,reserved_delta,reason_code,idempotency_key) "
+                        + "SELECT id,7,714,'RESERVE',-1,1,'SCHEDULE_CONFIRMED','RESERVE:714' FROM tenant_visit_entitlement_accounts WHERE user_id=7");
+                execute(connection, "INSERT INTO visit_entitlement_ledger(account_id,user_id,session_id,event_type,available_delta,reserved_delta,reason_code,idempotency_key) "
+                        + "SELECT id,7,714,'CONSUME',0,-1,'OTP_START','CONSUME:714' FROM tenant_visit_entitlement_accounts WHERE user_id=7");
+                execute(connection, "UPDATE tenant_visit_entitlement_accounts SET available_credits=0,reserved_credits=0 WHERE user_id=7");
+                execute(connection, "INSERT INTO visit_entitlement_ledger(account_id,user_id,session_id,event_type,available_delta,reserved_delta,reason_code,idempotency_key) "
+                        + "SELECT id,8,715,'RESERVE',-1,1,'SCHEDULE_CONFIRMED','RESERVE:715' FROM tenant_visit_entitlement_accounts WHERE user_id=8");
+                execute(connection, "UPDATE tenant_visit_entitlement_accounts SET available_credits=0,reserved_credits=1 WHERE user_id=8");
+                execute(connection, "UPDATE users SET free_visits_remaining=0 WHERE id=8");
+                execute(connection, "INSERT INTO visit_execution_events(session_id,event_type,reason_code,idempotency_key) "
+                        + "VALUES (715,'CONTACT_ATTEMPT','NO_ANSWER','AMBIGUOUS_STALE_HOLD:715')");
+
+                migrate(url, username, password, schema, "40");
+                connection.setSchema(schema);
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=710 AND event_type='RELEASE' AND reason_code='V40_STALE_HISTORICAL_SCHEDULED'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=714 AND event_type='CONSUME'"));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=714 AND event_type='RELEASE'"));
+                assertEquals(1, jdbc.queryForObject("select available_credits from tenant_visit_entitlement_accounts where user_id=6", Integer.class));
+                assertEquals(0, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=6", Integer.class));
+                assertEquals(1, jdbc.queryForObject("select free_visits_remaining from users where id=6", Integer.class));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=715 AND event_type='RELEASE'"));
+                assertTrue(jdbc.queryForObject("select reconciliation_required from tenant_visit_entitlement_accounts where user_id=8", Boolean.class));
+                assertEquals(1, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=8", Integer.class));
+
+                VisitEntitlementReservationWorker historicalWorker = new VisitEntitlementReservationWorker(
+                        jdbc, entitlementStore, new VisitExecutionProperties());
+                tx.executeWithoutResult(status -> historicalWorker.reserveDueBatch());
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=711 AND event_type='RESERVE'"));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=712 AND event_type='RESERVE'"));
+                assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=713 AND event_type='RESERVE'"));
+                assertEquals(1, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=6", Integer.class));
+                tx.executeWithoutResult(status -> historicalWorker.reserveDueBatch());
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=711 AND event_type='RESERVE'"));
 
                 execute(connection, "INSERT INTO users(id,role) VALUES (4,'ROLE_GROUND_BOY') ON CONFLICT DO NOTHING");
                 execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,started_at,duration_snapshot_minutes,reserved_end_at,execution_duration_snapshot_minutes,expected_end_at) VALUES "
@@ -310,14 +365,6 @@ class VisitSessionMigrationPostgresTest {
                                 + "(603,1,'STARTED',0,'One City',CURRENT_TIMESTAMP-INTERVAL '5 minutes','UTC',3,CURRENT_TIMESTAMP-INTERVAL '10 minutes',30,CURRENT_TIMESTAMP+INTERVAL '60 minutes',60,CURRENT_TIMESTAMP+INTERVAL '60 minutes')"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions WHERE id=600 AND reserved_end_at=expected_end_at"));
 
-                DriverManagerDataSource dataSource = new DriverManagerDataSource();
-                dataSource.setDriverClassName("org.postgresql.Driver");
-                dataSource.setUrl(url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema);
-                dataSource.setUsername(username);
-                dataSource.setPassword(password);
-                JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-                VisitEntitlementStore entitlementStore = new VisitEntitlementStore(jdbc, new VisitExecutionProperties());
-                TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
                 execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at) VALUES "
                         + "(700,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '1 day','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '1 day 30 minutes'),"
                         + "(701,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '2 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '2 days 30 minutes')");

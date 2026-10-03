@@ -170,6 +170,26 @@ public class VisitExecutionService {
                 + (command.tenantEtaAt() == null ? "null" : "\"" + command.tenantEtaAt() + "\"") + "}";
         jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,reason_code,metadata,idempotency_key) values (?,?,'CONTACT_ATTEMPT',?,?::jsonb,?)",
                 sessionId, groundExecutiveId, reason, metadata, contactKey);
+        if (session.getStatus() == VisitSessionStatus.PROVISIONAL_NO_SHOW
+                && List.of("CONNECTED", "BUSY", "TENANT_DECLINED_RESCHEDULE").contains(outcome)) {
+            // A live response supersedes the unanswered evidence, but it does not
+            // establish that the visit happened or that a new time is feasible.
+            session.setStatus(VisitSessionStatus.REPAIR_REQUIRED);
+            session.setTenantConfirmationState("PENDING");
+            session.setRepairState("REQUIRED");
+            session.setRepairOperationId(command.operationId());
+            session.setNoShowDisputeUntil(null);
+            session.setExecutionStateChangedAt(now);
+            invalidateUnconsumedChallenge(sessionId, now);
+            audit(sessionId, groundExecutiveId, "NO_SHOW_SUPERSEDED_BY_CONTACT", outcome,
+                    "NO_SHOW_CONTACT_RECOVERED:" + sessionId + ":" + command.operationId());
+            enqueue(session.getTenant().getId(), "TENANT", "NO_SHOW_CONTACT_RECOVERED:" + sessionId + ":" + command.operationId(),
+                    "Visit needs a new confirmation", "Your response was recorded and the provisional no-show review stopped. The visit has not started; Operations will confirm the next safe step.",
+                    "VISIT_REPAIR_REQUIRED");
+            enqueueOperations(sessionId, groundExecutiveId, command.operationId(),
+                    "The tenant responded during provisional no-show review; confirm the next safe visit state.");
+            return executionView(session, "NO_SHOW_SUPERSEDED");
+        }
         if (outcome.equals("TENANT_ACCEPTED_RESCHEDULE")) {
             if (command.tenantEtaAt() == null)
                 throw new IllegalArgumentException("Tenant-confirmed ETA is required to record reschedule consent");
@@ -734,6 +754,7 @@ public class VisitExecutionService {
         if (command.confirmedEtaAt() != null && (command.confirmedEtaAt().isBefore(now)
                 || command.confirmedEtaAt().isAfter(now.plus(Duration.ofMinutes(MAX_ETA_MINUTES)))))
             throw new IllegalArgumentException("Confirmed ETA must be within the next 24 hours");
+        boolean proposalRejectedAsStale = false;
         if (action.equals("DISPUTE_NO_SHOW")) {
             if (session.getStatus() != VisitSessionStatus.PROVISIONAL_NO_SHOW || session.getNoShowDisputeUntil() == null
                     || now.isAfter(session.getNoShowDisputeUntil()))
@@ -749,39 +770,76 @@ public class VisitExecutionService {
         } else {
             if (action.equals("CONFIRM") && session.getStatus() != VisitSessionStatus.SCHEDULED)
                 throw new VisitOperationsConflictException("Only a scheduled visit can be confirmed");
+            if (action.equals("CONFIRM") && "PROPOSED".equals(session.getRepairState()))
+                throw new VisitOperationsConflictException("Accept this proposed visit time with ACCEPT_RESCHEDULE");
             if ((action.equals("ACCEPT_RESCHEDULE") || action.equals("REJECT_RESCHEDULE"))
                     && (session.getStatus() != VisitSessionStatus.SCHEDULED
                         || !"PENDING".equals(session.getTenantConfirmationState()) || session.getScheduledAt() == null))
                 throw new VisitOperationsConflictException("There is no proposed visit time waiting for your response");
-            session.setTenantConfirmationState(action.equals("REJECT_RESCHEDULE") ? "REJECTED" : "CONFIRMED");
-            session.setTenantConfirmedAt(now);
-            session.setTenantConfirmedBy(session.getTenant());
-            if (action.equals("ACCEPT_RESCHEDULE")) {
-                session.setRepairState("NONE");
-                session.setRepairOperationId(null);
-            }
-            if (command.confirmedEtaAt() != null) session.setTenantEtaAt(command.confirmedEtaAt());
-            if (action.equals("REJECT_RESCHEDULE")) {
+            if (action.equals("ACCEPT_RESCHEDULE") && !proposedScheduleStillFeasible(session, now)) {
                 session.setStatus(VisitSessionStatus.REPAIR_REQUIRED);
                 session.setRepairState("REQUIRED");
-                UUID repairOperationId = UUID.randomUUID();
-                session.setRepairOperationId(repairOperationId);
-                enqueueOperations(sessionId, tenantId, repairOperationId,
-                        "Visit Session " + sessionId + " has a tenant-rejected proposed time and needs a new option.");
-                enqueue(tenantId, "TENANT", "RESCHEDULE_REJECTED:" + sessionId + ":" + command.operationId(),
-                        "Another visit time will be reviewed", "You declined the proposed time. Operations will check another safe option.", "RESCHEDULE_REJECTED");
+                session.setTenantConfirmationState("PENDING");
+                session.setRepairOperationId(command.operationId());
+                invalidateUnconsumedChallenge(sessionId, now);
+                enqueueOperations(sessionId, tenantId, command.operationId(),
+                        "A tenant accepted a proposed visit time that is no longer feasible; prepare a current safe option.");
+                enqueue(tenantId, "TENANT", "RESCHEDULE_REVALIDATION_FAILED:" + sessionId + ":" + command.operationId(),
+                        "Visit time needs another review", "The proposed time is no longer available. Your visit credit remains held while Operations checks another safe option.",
+                        "VISIT_REPAIR_REQUIRED");
+                proposalRejectedAsStale = true;
+            } else {
+                session.setTenantConfirmationState(action.equals("REJECT_RESCHEDULE") ? "REJECTED" : "CONFIRMED");
+                session.setTenantConfirmedAt(now);
+                session.setTenantConfirmedBy(session.getTenant());
+                if (action.equals("ACCEPT_RESCHEDULE")) {
+                    session.setRepairState("NONE");
+                    session.setRepairOperationId(null);
+                }
+                if (command.confirmedEtaAt() != null) session.setTenantEtaAt(command.confirmedEtaAt());
+                if (action.equals("REJECT_RESCHEDULE")) {
+                    session.setStatus(VisitSessionStatus.REPAIR_REQUIRED);
+                    session.setRepairState("REQUIRED");
+                    UUID repairOperationId = UUID.randomUUID();
+                    session.setRepairOperationId(repairOperationId);
+                    enqueueOperations(sessionId, tenantId, repairOperationId,
+                            "Visit Session " + sessionId + " has a tenant-rejected proposed time and needs a new option.");
+                    enqueue(tenantId, "TENANT", "RESCHEDULE_REJECTED:" + sessionId + ":" + command.operationId(),
+                            "Another visit time will be reviewed", "You declined the proposed time. Operations will check another safe option.", "RESCHEDULE_REJECTED");
+                }
             }
         }
         session.setExecutionStateChangedAt(now);
         audit(sessionId, tenantId, "TENANT_" + action, null,
                 idempotencyKey);
-        if (!action.equals("DISPUTE_NO_SHOW") && !action.equals("REJECT_RESCHEDULE"))
+        if (!action.equals("DISPUTE_NO_SHOW") && !action.equals("REJECT_RESCHEDULE") && !proposalRejectedAsStale)
             enqueue(tenantId, "TENANT", "TENANT_CONFIRMATION:" + sessionId + ":" + command.operationId(),
                     action.equals("ACCEPT_RESCHEDULE") ? "Visit time confirmed" : "Visit update received",
                     action.equals("ACCEPT_RESCHEDULE") ? "Your new visit time is confirmed for "
                             + formatSessionTime(session.getScheduledAt(), session) + "." : "Your visit update has been recorded.",
                     action.equals("ACCEPT_RESCHEDULE") ? "VISIT_RESCHEDULED" : "TENANT_CONFIRMATION");
-        return executionView(session);
+        return proposalRejectedAsStale ? executionView(session, "REPAIR_REQUIRED") : executionView(session);
+    }
+
+    private boolean proposedScheduleStillFeasible(VisitSession session, Instant now) {
+        Long geId = session.getRepresentative() == null ? null : session.getRepresentative().getId();
+        if (geId == null || session.getScheduledAt() == null || !session.getScheduledAt().isAfter(now)
+                || session.getReservedEndAt() == null || session.getDurationSnapshotMinutes() == null
+                || session.getDurationSnapshotMinutes() <= 0 || !lockSchedulingProfiles(List.of(geId))) return false;
+        var employee = employees.findLockedByUserId(geId)
+                .filter(profile -> "GROUND_BOY".equalsIgnoreCase(profile.getRoleType())).orElse(null);
+        if (employee == null) return false;
+        try {
+            authorization.requireGroundExecutiveTarget(geId);
+        } catch (AccessDeniedException unavailable) {
+            return false;
+        }
+        return recommendations.assessLiveRepair(session, List.of(session.getScheduledAt()), true, geId, 0).stream()
+                .anyMatch(candidate -> candidate.geId().equals(geId)
+                        && candidate.start().equals(session.getScheduledAt())
+                        && candidate.end().equals(session.getReservedEndAt())
+                        && candidate.durationMinutes() == session.getDurationSnapshotMinutes()
+                        && candidate.zoneId().equals(session.getZoneId()));
     }
 
     @Transactional
@@ -813,7 +871,7 @@ public class VisitExecutionService {
         Boolean spacingMet = jdbc.queryForObject("select coalesce(max(occurred_at)-min(occurred_at) >= (? * interval '1 minute'),false) from visit_execution_events where session_id=? and event_type='CONTACT_ATTEMPT' and metadata->>'outcome'='NO_ANSWER' and occurred_at>?",
                 Boolean.class, properties.getContactAttemptSpacingMinutes(), sessionId, java.sql.Timestamp.from(evidenceAfter));
         if (!Boolean.TRUE.equals(spacingMet)) throw new VisitOperationsConflictException("Contact attempts must be spaced apart");
-        if (!entitlements.reserve(session.getTenant().getId(), sessionId,
+        if (!entitlements.reserveForNoShow(session.getTenant().getId(), sessionId,
                 now.plus(Duration.ofDays(properties.getReservationHorizonDays()))))
             throw new VisitOperationsConflictException("ENTITLEMENT_UNAVAILABLE: no visit credit can be held for the attendance review");
         session.setStatus(VisitSessionStatus.PROVISIONAL_NO_SHOW);

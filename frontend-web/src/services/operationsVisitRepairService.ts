@@ -47,9 +47,8 @@ async function request<T>(path: string, body?: unknown, signal?: AbortSignal): P
 export const operationsVisitRepairService = {
   list(page = 0, signal?: AbortSignal) { return request<VisitRepairQueuePage>(`/operations/visit-repairs?page=${page}&size=20`, undefined, signal); },
   async recommendations(sessionId: number, expectedSessionVersion: number) {
-    const reopened = await request<VisitRepairItem>(`/operations/visit-repairs/${sessionId}/reopen`, { expectedSessionVersion });
     return request<VisitRecommendationView>(`/operations/visit-sessions/${sessionId}/recommendations`, {
-      expectedSessionVersion: reopened.version
+      expectedSessionVersion
     });
   },
   approve(sessionId: number, candidate: VisitRecommendationCandidate, expectedSessionVersion: number) {

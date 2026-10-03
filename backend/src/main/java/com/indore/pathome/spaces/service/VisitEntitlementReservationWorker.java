@@ -30,8 +30,8 @@ public class VisitEntitlementReservationWorker {
     public void reserveDueBatch() {
         Instant now = Instant.now();
         Instant horizon = now.plusSeconds(properties.getReservationHorizonDays() * 86400L);
-        List<Booking> due = jdbc.query("select s.id,s.tenant_id from visit_sessions s where s.status='SCHEDULED' and s.scheduled_at<=? and not exists(select 1 from visit_entitlement_ledger l where l.session_id=s.id and l.event_type='RESERVE') order by s.tenant_id,s.scheduled_at,s.id for update of s skip locked limit 50",
-                (rs, row) -> new Booking(rs.getLong("id"), rs.getLong("tenant_id")), Timestamp.from(horizon));
+        List<Booking> due = jdbc.query("select s.id,s.tenant_id from visit_sessions s where s.status='SCHEDULED' and s.scheduled_at<=? and s.reserved_end_at>? and not exists(select 1 from visit_entitlement_ledger l where l.session_id=s.id and l.event_type='RESERVE') order by s.tenant_id,s.scheduled_at,s.id for update of s skip locked limit 50",
+                (rs, row) -> new Booking(rs.getLong("id"), rs.getLong("tenant_id")), Timestamp.from(horizon), Timestamp.from(now));
         for (Booking booking : due) {
             if (!entitlements.reserve(booking.tenantId(), booking.sessionId(), horizon)) markRepairRequired(booking, now);
         }
