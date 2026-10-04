@@ -46,6 +46,90 @@
   }
 }
 
+@layer components {
+  .tenant-shell-main {
+    --tenant-cream: #fbfaf6;
+    --tenant-forest: #153c32;
+    --tenant-emerald: #0b674b;
+    --tenant-sage: #eaf1e9;
+    --tenant-sand: #c5a65d;
+    --tenant-terracotta: #b86f56;
+    --tenant-border: #e1dccd;
+    --tenant-radius: 1.125rem;
+    --tenant-rail-shadow: 0 12px 30px -24px rgba(16, 52, 39, 0.35);
+    --tenant-motion: 180ms;
+    --tenant-display-font: 'Outfit', sans-serif;
+  }
+
+  .tenant-shell-rail {
+    background-color: #fff;
+    border-color: #eeece7;
+    box-shadow: var(--tenant-rail-shadow);
+    color: #2e4436;
+  }
+
+  .tenant-shell-brand {
+    color: #2e4436;
+    border-radius: var(--tenant-radius);
+    transition: background-color var(--tenant-motion) ease;
+  }
+
+  .tenant-shell-brand:hover {
+    background-color: var(--tenant-sage);
+  }
+
+  .tenant-shell-brand:focus-visible,
+  .tenant-shell-rail-link:focus-visible {
+    outline: 3px solid #a7c5a8;
+    outline-offset: 2px;
+  }
+
+  .tenant-shell-mark {
+    background: #355c49;
+    color: #fff;
+  }
+
+  .tenant-shell-brand-dot {
+    color: #c27d5a;
+  }
+
+  .tenant-shell-section-label {
+    color: #999b93;
+  }
+
+  .tenant-shell-tagline {
+    color: #61735d;
+  }
+
+  .tenant-shell-divider {
+    background-color: #eeece7;
+  }
+
+  .tenant-shell-rail-link {
+    background-color: transparent;
+    color: #71756e;
+    transition: background-color var(--tenant-motion) ease, color var(--tenant-motion) ease;
+  }
+
+  .tenant-shell-rail-link:hover {
+    background-color: #f5f7f2;
+    color: #355c49;
+  }
+
+  .tenant-shell-rail-link.is-active {
+    background-color: #edf2ed;
+    color: #355c49;
+    font-weight: 600;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tenant-shell-brand,
+    .tenant-shell-rail-link {
+      transition-duration: 0ms;
+    }
+  }
+}
+
 @layer utilities {
   .safe-area-bottom {
     padding-bottom: max(1rem, env(safe-area-inset-bottom));

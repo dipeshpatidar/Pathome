@@ -251,7 +251,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className={`${isTenantLanding ? 'max-w-[1600px]' : 'max-w-7xl'} mx-auto flex items-center justify-between gap-1 px-2.5 min-[360px]:px-3 sm:gap-2 sm:px-6 lg:px-8 ${role === 'GUEST' ? 'h-[60px] sm:h-[68px] lg:h-[72px]' : 'h-[72px]'}`}>
 
           {/* BRANDING LOGO */}
-          <div className="flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8">
+          <div className={`flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8 ${isTenantLanding ? 'lg:hidden' : ''}`}>
             <motion.button
               type="button"
               whileHover={{ scale: 1.02 }}
@@ -331,7 +331,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </nav>
             )}
             {isTenantLanding && (
-              <nav className="hidden items-center gap-6 lg:flex xl:gap-8" aria-label="Tenant navigation">
+              <nav className="hidden items-center gap-6 lg:hidden xl:gap-8" aria-label="Tenant navigation">
                 {[
                   { label: 'Home', id: 'tenant-home-search' },
                   { label: 'Saved Homes', id: 'saved-homes-title' },
@@ -347,7 +347,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* RIGHT ACTIONS & PROFILE MENU */}
-          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+          <div className={`flex shrink-0 items-center gap-1 sm:gap-3 ${isTenantLanding ? 'lg:ml-auto' : ''}`}>
 
             {role === 'GUEST' && (
               <>

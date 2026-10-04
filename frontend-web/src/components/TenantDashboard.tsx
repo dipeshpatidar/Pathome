@@ -18,6 +18,7 @@ import { applyPersistedSavedHomeChange, mergeSavedHomes, savedHomesForPresentati
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
+import { TenantNavigationRail } from './TenantNavigationRail';
 import { quickRefineRentBounds as getQuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
@@ -1517,8 +1518,17 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   };
 
   return (
-    <>
-    <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-[calc(7.25rem+env(safe-area-inset-bottom))] text-slate-950 lg:pb-16">
+    <div className="tenant-shell-main relative min-w-0">
+    {previewPropertyId === null && !quickRefineSheetOpen && <TenantNavigationRail
+      activeItem={mobileDockActiveItem}
+      quickRefineOpen={quickRefineSheetOpen}
+      onNavigate={navigateMobileDock}
+      onOpenFilters={() => {
+        setMobileDockActiveItem('filters');
+        quickRefineOpenRef.current?.();
+      }}
+    />}
+    <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-[calc(7.25rem+env(safe-area-inset-bottom))] text-slate-950 lg:pb-16 lg:pl-[226px] min-[1101px]:pl-[258px]">
       <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-h-[45rem] min-w-0 scroll-mt-[calc(72px+env(safe-area-inset-top))] flex-col overflow-visible bg-[#082a22] text-white outline-none lg:min-h-[40rem] ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
         <img src="/assets/pathome_tenant_hero_dream_home.webp" alt="" aria-hidden="true" fetchPriority="high" decoding="async" className="pointer-events-none absolute inset-0 -z-20 h-full w-full object-cover object-[88%_center] lg:object-center" />
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(3,20,16,.56)_0%,rgba(3,24,19,.36)_32%,rgba(3,24,19,.77)_100%),linear-gradient(90deg,rgba(2,26,20,.78)_0%,rgba(4,31,24,.38)_55%,rgba(4,31,24,.04)_100%)] lg:bg-[linear-gradient(90deg,rgba(2,25,19,.96)_0%,rgba(3,32,24,.91)_27%,rgba(3,34,25,.68)_44%,rgba(4,31,23,.12)_70%,rgba(4,28,20,.02)_100%)]" aria-hidden="true" />
@@ -1913,6 +1923,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     </motion.nav>}
     {previewPropertyId !== null && <TenantPropertyQuickView key={previewPropertyId} propertyId={previewPropertyId}
       visitRequestStatus={requestStatusForProperty} onClose={closeQuickView} onRequestVisit={handleTenantRequestVisit} onViewProperty={onViewProperty} />}
-    </>
+    </div>
   );
 };
