@@ -14,7 +14,19 @@ test('alternate assignment and repair never report a started visit', () => {
   assert.doesNotMatch(visitStartFeedback('SCHEDULED', 'ALTERNATE_GE_ASSIGNED'), /Visit started/);
   assert.match(visitStartFeedback('SCHEDULED', 'ALTERNATE_GE_ASSIGNED'), /You did not start it/);
   assert.doesNotMatch(visitStartFeedback('REPAIR_REQUIRED', 'REPAIR_REQUIRED'), /Visit started/);
+  assert.doesNotMatch(visitStartFeedback('SCHEDULED', 'START_CODE_ISSUED'), /Visit started/);
+  assert.match(visitStartFeedback('SCHEDULED', 'START_CODE_ISSUED'), /visit did not start/i);
 });
+
+test('missing appointment timestamps are not replaced with fabricated times', () => {
+  assert.equal(operationalVisitTime(null, 'Asia/Kolkata'), 'Time unavailable');
+  assert.equal(operationalVisitTime('not-a-timestamp', 'Asia/Kolkata'), 'Time unavailable');
+});
+
+test.todo('pass expiry, countdown, and nextRequestAt cooldown use server timestamps without implying START');
+test.todo('ARRIVED presentation states a GE report and never implies GPS/live tracking');
+test.todo('scheduled confirmation, locality, duration, and proposal wording remain neutral when fields are absent');
+test.todo('reschedule accept/reject presentation does not invent a previous time or an unstructured reason');
 
 test('appointment formatting follows visit zone when device zone differs', () => {
   const prior = process.env.TZ;

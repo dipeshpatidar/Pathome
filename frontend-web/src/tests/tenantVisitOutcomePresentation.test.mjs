@@ -6,6 +6,7 @@ import {
   tenantVisitOutcomeStatusLabel,
   tenantVisitOutcomeSummaryText
 } from '../utils/tenantVisitOutcomePresentation.ts';
+import { tenantVisitStatusLabel } from '../utils/tenantVisitView.ts';
 
 const outcome = (overrides = {}) => ({
   sessionId: 12, lifecycle: 'DETAILS_PENDING', outcomeSummary: null, outcomeReportAvailable: true,
@@ -21,8 +22,11 @@ test('tenant history uses truthful human states for pending, legacy, and all sum
   assert.equal(tenantOutcomeSummaryLabel('ALL_VIEWED'), 'Visit completed · All homes viewed');
   assert.equal(tenantOutcomeSummaryLabel('PARTLY_VIEWED'), 'Visit completed · Some homes viewed');
   assert.equal(tenantOutcomeSummaryLabel('NONE_VIEWED'), 'Visit completed · No homes viewed');
+  assert.equal(tenantOutcomeSummaryLabel('RESULTS_NOT_RECORDED'), 'Results not recorded');
   assert.equal(tenantVisitOutcomeStatusLabel(outcome({ lifecycle: 'UPCOMING' })), 'Confirmed guided visit');
   assert.equal(tenantVisitOutcomeStatusLabel(null, 'DRAFT'), 'Visit being arranged');
+  assert.equal(tenantVisitStatusLabel('SCHEDULED'), 'Added to Visit Session');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'SCHEDULED'), 'Scheduled');
 });
 
 test('viewed counts appear only when the server marks final outcomes available', () => {
@@ -31,6 +35,20 @@ test('viewed counts appear only when the server marks final outcomes available',
   })), '1 of 3 homes viewed.');
   assert.equal(tenantVisitOutcomeSummaryText(outcome({ lifecycle: 'IN_PROGRESS', viewedProperties: null })),
     'Property results will appear after visit details are recorded.');
+  const pendingDetails = tenantVisitOutcomeSummaryText(outcome({
+    lifecycle: 'DETAILS_PENDING', totalProperties: 3, viewedProperties: null
+  }));
+  assert.equal(pendingDetails, 'Your Ground Executive is recording the visit outcome.');
+  assert.doesNotMatch(pendingDetails, /\b\d+ of \d+\b/);
+});
+
+test('NONE_VIEWED is a truthful outcome and does not imply credit restoration', () => {
+  const label = tenantOutcomeSummaryLabel('NONE_VIEWED');
+  assert.equal(label, 'Visit completed · No homes viewed');
+  assert.doesNotMatch(label, /credit|restore|refund|balance/i);
+  assert.equal(tenantVisitOutcomeSummaryText(outcome({
+    lifecycle: 'NO_PROPERTIES_VIEWED', outcomeSummary: 'NONE_VIEWED', viewedProperties: 0, totalProperties: 2
+  })), '0 of 2 homes viewed.');
 });
 
 test('tenant property labels translate pending and final states without rendering internal enums or notes', () => {
@@ -40,4 +58,10 @@ test('tenant property labels translate pending and final states without renderin
   assert.equal(tenantPropertyOutcomeLabel({ ...base, outcome: 'VIEWED' }), 'Viewed');
   assert.equal(tenantPropertyOutcomeLabel({ ...base, outcome: 'NOT_VIEWED' }), 'Not viewed');
   assert.equal(tenantVisitOutcomeStatusLabel(null, 'PROVISIONAL_NO_SHOW'), 'Under attendance review');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'SCHEDULED'), 'Scheduled');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'CANCELLED'), 'Cancelled');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'EXPIRED'), 'Expired');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'NO_SHOW'), 'No-show');
 });
+
+test.todo('outcome property order is never presented as the planned itinerary or sequence');

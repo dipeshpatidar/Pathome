@@ -3,7 +3,7 @@ import { useNavigate, useNavigationType } from 'react-router-dom';
 import {
   Bath, BedDouble, Building2, Check, ChevronDown, ChevronLeft, ChevronRight,
   Dumbbell, Image as LucideImage, LayoutDashboard, LoaderCircle, MapPin,
-  Maximize2, Minimize2, Ruler, Sofa, UtensilsCrossed,
+  Maximize2, Minimize2, Play, Ruler, Sofa, UtensilsCrossed,
   Video, WalletCards, Wind, X
 } from 'lucide-react';
 import { Property, RoomTag } from '../types';
@@ -344,6 +344,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
   const [activeMedia, setActiveMedia] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLDivElement>(null);
 
@@ -416,12 +417,14 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
   useEffect(() => {
     if (propertyId === null) {
       setProperty(null);
+      setIsVideoPlaying(false);
       setError('This property link is invalid.');
       setLoading(false);
       return;
     }
     let active = true;
     setLoading(true);
+    setIsVideoPlaying(false);
     setError(null);
     setProperty(null);
     propertyService.getPublicProperty(propertyId)
@@ -449,6 +452,12 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
     ];
   }, [property]);
 
+  const activeMediaSource = media[activeMedia]?.url;
+  const activeMediaType = media[activeMedia]?.type;
+  useEffect(() => {
+    setIsVideoPlaying(false);
+  }, [activeMediaSource, activeMediaType]);
+
   const taggedAreas = useMemo(() => getTaggedAreas(media), [media]);
 
   const openLightbox = useCallback((index: number) => {
@@ -467,6 +476,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
     if (videoRef.current) {
       videoRef.current.pause();
     }
+    setIsVideoPlaying(false);
     setActiveMedia((prev) => (media.length > 0 ? (prev - 1 + media.length) % media.length : 0));
   }, [media.length]);
 
@@ -478,6 +488,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
     if (videoRef.current) {
       videoRef.current.pause();
     }
+    setIsVideoPlaying(false);
     setActiveMedia((prev) => (media.length > 0 ? (prev + 1) % media.length : 0));
   }, [media.length]);
 
@@ -497,7 +508,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
           <section className="space-y-4 lg:col-span-7">
             {/* Stable fixed-height media container skeleton */}
-            <div className="relative flex h-[340px] sm:h-[420px] lg:h-[480px] w-full items-center justify-center overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-xl shadow-slate-900/10">
+            <div className="relative flex h-[340px] sm:h-[420px] lg:h-[480px] w-full items-center justify-center overflow-hidden rounded-[12px] border border-[#e9e7e1] bg-[#eeede8] shadow-sm">
               <div className="flex flex-col items-center gap-3">
                 <LoaderCircle className="h-7 w-7 animate-spin text-emerald-500" />
                 <span className="text-xs font-semibold text-slate-400">Loading gallery…</span>
@@ -513,7 +524,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
 
           {/* Sticky sidebar skeleton */}
           <aside className="space-y-5 lg:col-span-5">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+            <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-sm sm:p-7">
               <div className="h-3 w-28 animate-pulse rounded bg-emerald-100" />
               <div className="mt-3 h-7 w-3/4 animate-pulse rounded-lg bg-slate-200" />
               <div className="mt-3 h-4 w-1/2 animate-pulse rounded bg-slate-100" />
@@ -557,7 +568,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
           onClose={() => setLightboxOpen(false)}
         />
       )}
-      <main className="mx-auto w-full max-w-[1440px] bg-[#f7f7f2] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
+      <main className="mx-auto w-full max-w-[1440px] bg-[#f8f7f4] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
         {/* Dependable High-Contrast Floating Back Navigation */}
         <div className="mb-4 flex h-11 items-center justify-between">
           <button
@@ -593,7 +604,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
             {/* Main viewer: Fixed responsive height prevents CLS; dark containment preserves aspect ratios */}
             <div
               ref={mediaStageRef}
-              className="relative h-[300px] w-full overflow-hidden rounded-[22px] border border-[#e1e5dc] bg-[#e8e9e2] shadow-[0_18px_48px_-38px_rgba(12,43,31,.5)] sm:h-[420px] lg:h-[500px]"
+              className="relative h-[300px] w-full overflow-hidden rounded-[12px] border border-[#e9e7e1] bg-[#eeede8] shadow-[0_18px_48px_-38px_rgba(12,43,31,.5)] sm:h-[420px] lg:h-[500px]"
             >
               <div className="flex h-full w-full items-center justify-center">
                 {currentMedia ? (
@@ -617,7 +628,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                         poster={videoPoster || undefined}
                         src={currentMedia.url}
                         className="relative z-10 max-h-full w-auto max-w-full object-contain shadow-2xl"
+                        onPlay={() => setIsVideoPlaying(true)}
+                        onPause={() => setIsVideoPlaying(false)}
+                        onEnded={() => setIsVideoPlaying(false)}
                       />
+                      {!isVideoPlaying && <button type="button" aria-label="Play property video" onClick={() => { void videoRef.current?.play().catch(() => setIsVideoPlaying(false)); }} className="absolute left-1/2 top-1/2 z-20 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/70 bg-white/95 text-[#355c49] shadow-[0_8px_30px_rgba(0,0,0,.28)] transition-transform motion-safe:hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84] motion-reduce:transition-none"><Play size={22} fill="currentColor" aria-hidden="true" /></button>}
                     </div>
                   ) : (
                     /* Image: contain preserves full content. Click to expand in lightbox. */
@@ -657,6 +672,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                     if (videoRef.current) {
                       videoRef.current.pause();
                     }
+                    setIsVideoPlaying(false);
                     setActiveMedia(idx);
                   }}
                 />
@@ -703,10 +719,14 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                   <button
                     key={`${entry.url}-${index}`}
                     type="button"
-                    onClick={() => setActiveMedia(index)}
+                    onClick={() => {
+                      videoRef.current?.pause();
+                      setIsVideoPlaying(false);
+                      setActiveMedia(index);
+                    }}
                     aria-label={`Show ${entry.tagLabel ? `${entry.tagLabel} ` : ''}${entry.type === 'VIDEO' ? 'video' : 'photo'} ${index + 1}`}
                     title={entry.tagLabel || undefined}
-                    className={`relative h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 ${index === activeMedia ? 'border-emerald-600' : 'border-transparent'}`}
+                    className={`relative h-16 w-20 shrink-0 overflow-hidden rounded-md border-2 ${index === activeMedia ? 'border-emerald-600' : 'border-transparent'}`}
                   >
                     {entry.type === 'VIDEO' ? (
                       <div className="flex h-full w-full items-center justify-center bg-slate-900 text-white">
@@ -727,7 +747,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
           </section>
 
           <aside className="space-y-5 lg:col-span-5 lg:sticky lg:top-24">
-            <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-[0_18px_46px_-38px_rgba(15,45,34,.52)] sm:p-7">
+            <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_10px_28px_-22px_rgba(38,48,39,.28)] sm:p-7">
               <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-emerald-800">Explore this home</p>
               <h1 className="mt-2 font-serif text-2xl font-medium leading-tight tracking-tight text-slate-950 sm:text-3xl">{property.title}</h1>
               <p className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-600"><MapPin className="h-4 w-4 shrink-0 text-emerald-600" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Locality details available on request'}</p>
@@ -750,7 +770,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
         </div>
 
         <section className="mt-7 grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-sm lg:col-span-2">
+          <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)] lg:col-span-2">
             <h2 className="font-serif text-2xl font-medium tracking-tight text-slate-950">About this property</h2>
             {property.description && <p className="mt-3 whitespace-pre-line text-sm leading-7 text-slate-600">{property.description}</p>}
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -762,7 +782,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
               {property.furnishingStatus && <DetailFact icon={<Maximize2 />} label="Furnishing" value={property.furnishingStatus} />}
             </div>
           </div>
-          <div className="rounded-[22px] border border-[#e1e5dc] bg-[#fffefa] p-5 shadow-sm">
+          <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)]">
             <h2 className="font-serif text-xl font-medium tracking-tight text-slate-950">Preferences</h2>
             <dl className="mt-4 space-y-3 text-sm">
               {preferredTenant && <div><dt className="font-bold text-slate-500">Suitable for</dt><dd className="mt-1 capitalize text-slate-800">{preferredTenant}</dd></div>}

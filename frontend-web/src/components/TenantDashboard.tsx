@@ -19,6 +19,7 @@ import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCar
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
 import { TenantNavigationRail } from './TenantNavigationRail';
+import { TenantDiscoveryCardMedia } from './TenantDiscoveryCardMedia';
 import { quickRefineRentBounds as getQuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
@@ -213,31 +214,31 @@ const SupportingPropertyCard: React.FC<{
     : null;
   return <motion.article initial={reduceMotion || typeof IntersectionObserver === 'undefined' ? false : 'hidden'}
     whileInView="visible"
-    whileHover={reduceMotion ? undefined : { y: -6, transition: { duration: 0.32, ease: [0.16, 1, 0.3, 1] } }}
+    whileHover={reduceMotion ? undefined : { y: -2, transition: { duration: 0.24, ease: [0.16, 1, 0.3, 1] } }}
     variants={tenantCardRevealVariants}
     viewport={{ once: true, amount: 0.12 }}
     transition={{ duration: reduceMotion ? 0 : 0.56, delay: reduceMotion ? 0 : (revealIndex % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
-    className="group/available-card relative flex h-full min-w-0 flex-col pb-1 motion-reduce:transform-none">
-    <div className="group/image relative z-0 aspect-[16/10] min-w-0 overflow-hidden rounded-[24px] bg-[#e8e6df] shadow-[0_12px_28px_-20px_rgba(15,45,34,.4)]">
-      <button type="button" id={`tenant-property-${property.id}`} onClick={() => onOpenQuickView(property)} aria-label={`Quick view: ${property.title || 'property'}`} className={`relative block h-full w-full text-left ${focusClass}`}>
+    className="group/available-card relative flex h-full min-w-0 flex-col overflow-hidden rounded-[10px] border border-[#e9e7e1] bg-white shadow-[0_7px_22px_-18px_rgba(38,48,39,.3)] transition-[transform,box-shadow] duration-300 hover:shadow-[0_14px_30px_-20px_rgba(38,48,39,.34)] motion-reduce:transform-none motion-reduce:transition-none">
+    <div className="group/image relative z-0 aspect-[1.48] min-w-0 overflow-hidden bg-[#eeede8]">
+      <div className="absolute inset-0">
         <motion.div variants={tenantCardImageRevealVariants}
           transition={{ duration: reduceMotion ? 0 : 0.64, delay: reduceMotion ? 0 : (revealIndex % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
           className="absolute inset-0">
-          <PropertyImage src={property.images?.[0]} alt={property.title ? `${property.title} photo` : 'Property photo'} premiumCardHover />
+          <TenantDiscoveryCardMedia property={property} reduceMotion={reduceMotion} onOpen={() => onOpenQuickView(property)} openerId={`tenant-property-${property.id}`} />
         </motion.div>
-      </button>
+      </div>
       <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-12 -translate-x-[115%] skew-x-[-18deg] bg-[linear-gradient(110deg,transparent_18%,rgba(167,243,208,.14)_48%,transparent_78%)] transition-transform duration-[620ms] ease-[cubic-bezier(.16,1,.3,1)] group-hover/image:translate-x-[115%] motion-reduce:hidden" />
-      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute left-3 top-3 inline-flex min-h-8 items-center gap-1.5 rounded-full border border-white/15 bg-slate-900/45 px-2.5 text-[11px] font-semibold text-white/95 shadow-sm backdrop-blur-md">
-        <Camera size={14} className="shrink-0 text-white/80" aria-hidden="true" />{property._mediaCount} media
+      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute left-3 top-3 inline-flex min-h-8 items-center gap-1.5 rounded-md border border-white/70 bg-white/95 px-2.5 text-[11px] font-semibold text-[#355c49] shadow-sm backdrop-blur-sm">
+        <Camera size={14} className="shrink-0 text-[#638267]" aria-hidden="true" />{property._mediaCount} media
       </span>}
       <button type="button" onClick={() => onToggleFavorite(property)} disabled={!favoriteStateReady || favoritePending}
         aria-label={!favoriteStateReady ? `Saved state loading for ${property.title}` : favoritePending ? `${isFavorite ? 'Removing' : 'Saving'} ${property.title}` : isFavorite ? `Remove ${property.title} from saved properties` : `Save ${property.title}`}
         aria-pressed={favoriteStateReady ? isFavorite : undefined} title={isFavorite ? 'Remove from saved properties' : 'Save property'}
-        className={`absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-slate-900/45 text-white shadow-sm backdrop-blur-md transition-[transform,box-shadow,background-color] duration-300 group-hover/available-card:-translate-y-0.5 group-hover/available-card:shadow-md hover:scale-[1.04] hover:bg-slate-900/65 disabled:cursor-wait disabled:opacity-75 motion-reduce:transform-none motion-reduce:transition-none ${focusClass}`}>
-        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-emerald-300' : 'text-white'} aria-hidden="true" />}
+        className={`absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full border border-white/80 bg-white/95 text-[#355c49] shadow-sm backdrop-blur-sm transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-75 ${focusClass}`}>
+        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-[#355c49]' : 'text-[#61715d]'} aria-hidden="true" />}
       </button>
     </div>
-    <div className="relative z-10 mx-3 -mt-7 flex min-w-0 flex-1 flex-col rounded-[22px] border border-slate-200/90 bg-white p-3.5 shadow-[0_12px_28px_-12px_rgba(15,23,42,.12),0_4px_12px_-4px_rgba(15,23,42,.06)] transition-[transform,box-shadow,border-color] duration-300 ease-[cubic-bezier(.16,1,.3,1)] group-hover/available-card:-translate-y-[3px] group-hover/available-card:border-slate-300 group-hover/available-card:shadow-[0_20px_35px_-12px_rgba(15,23,42,.18),0_6px_14px_-4px_rgba(15,23,42,.08)] motion-reduce:transform-none motion-reduce:transition-none sm:mx-4 sm:-mt-9 sm:px-4 sm:pt-3.5 sm:pb-4">
+    <div className="flex min-w-0 flex-1 flex-col p-3.5 sm:p-4">
       <div className="flex min-h-5 min-w-0 items-center justify-between gap-3 text-xs font-semibold text-slate-600">
         {location ? <span className="flex min-w-0 items-center gap-1.5" title={location}>
           <MapPin className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
@@ -246,7 +247,7 @@ const SupportingPropertyCard: React.FC<{
         {area && <span className="shrink-0 tabular-nums text-slate-500">{area}</span>}
       </div>
 
-      <h3 className="mt-1.5 line-clamp-2 min-h-[2.85rem] break-words font-['Outfit',sans-serif] text-lg font-bold leading-snug text-slate-950 sm:text-xl">
+      <h3 className="mt-1.5 line-clamp-2 min-h-[2.5rem] break-words font-serif text-[17px] font-medium leading-snug tracking-tight text-[#252b25] sm:text-lg">
         <button type="button" onClick={() => onOpenQuickView(property)} className={`text-left hover:text-emerald-800 ${focusClass}`}>{property.title?.trim() || 'Property'}</button>
       </h3>
 
@@ -262,7 +263,7 @@ const SupportingPropertyCard: React.FC<{
         <div className={`grid gap-2 border-t border-slate-200/90 pt-2.5 ${deposit ? 'grid-cols-[minmax(0,1fr)_auto] items-end gap-3' : ''}`}>
           <div className="min-w-0">
             {priceLabel && <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">{priceLabel}</p>}
-            <p className="mt-0.5 break-words font-['Outfit',sans-serif] text-[clamp(1.3rem,2vw,1.65rem)] font-extrabold leading-tight tabular-nums text-slate-950">
+            <p className="mt-0.5 break-words font-serif text-[clamp(1.25rem,2vw,1.55rem)] font-semibold leading-tight tabular-nums text-[#252b25]">
               {amount !== null ? `₹${amount.toLocaleString('en-IN')}` : 'On request'}
               {isRent && amount !== null && <span className="ml-1 text-xs font-medium tracking-normal text-slate-500">/ month</span>}
             </p>
@@ -299,29 +300,29 @@ const SavedHomeCard: React.FC<{
   onOpenQuickView: (property: Property) => void;
   onRequestVisit: (property: Property) => void;
 }> = ({ property, visitRequestStatus, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, onOpenQuickView, onRequestVisit }) => (
-  <article className="group flex h-full min-h-[9.5rem] min-w-0 overflow-hidden rounded-[18px] border border-[#e6e9e2] bg-white shadow-[0_6px_24px_-21px_rgba(15,45,34,.36)] transition-[transform,box-shadow] duration-300 motion-safe:hover:-translate-y-0.5 hover:shadow-[0_15px_30px_-22px_rgba(15,45,34,.38)] motion-reduce:transform-none motion-reduce:transition-none">
-    <div className="relative min-h-[9.5rem] w-[42%] max-w-[11rem] shrink-0 overflow-hidden bg-[#e8e6df]">
+  <article className="group flex h-full min-w-0 flex-col overflow-hidden rounded-[10px] border border-[#e9e7e1] bg-white shadow-[0_7px_22px_-18px_rgba(38,48,39,.3)] transition-[transform,box-shadow] duration-300 hover:shadow-[0_14px_30px_-20px_rgba(38,48,39,.34)] motion-safe:hover:-translate-y-0.5 motion-reduce:transform-none motion-reduce:transition-none">
+    <div className="relative aspect-[1.48] min-w-0 overflow-hidden bg-[#eeede8]">
       <button type="button" onClick={() => onOpenQuickView(property)} aria-label={`Quick view: ${property.title || 'property'}`} className={`block h-full w-full ${focusClass}`}>
         <PropertyImage src={property.images?.[0]} alt={property.title ? `${property.title} photo` : 'Property photo'} editorialHover />
       </button>
-      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute bottom-2 left-2 rounded-full bg-slate-950/70 px-2 py-1 text-[9px] font-medium text-white">{property._mediaCount} media</span>}
+      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute left-3 top-3 rounded-md border border-white/70 bg-white/95 px-2.5 py-1.5 text-[10px] font-semibold text-[#355c49] shadow-sm">{property._mediaCount} media</span>}
       <button type="button" onClick={() => onToggleFavorite(property)} disabled={!favoriteStateReady || favoritePending}
         aria-label={favoritePending ? `Updating saved state for ${property.title || 'property'}` : isFavorite ? `Remove ${property.title || 'property'} from saved homes` : `Save ${property.title || 'property'}`}
         aria-pressed={favoriteStateReady ? isFavorite : undefined} title={isFavorite ? 'Remove from saved homes' : 'Save property'}
-        className={`absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-white/90 text-emerald-900 shadow-sm backdrop-blur-[2px] hover:bg-white disabled:cursor-wait disabled:opacity-75 ${focusClass}`}>
-        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-emerald-800' : 'text-slate-700'} aria-hidden="true" />}
+        className={`absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full border border-white/80 bg-white/95 text-[#355c49] shadow-sm backdrop-blur-sm hover:bg-white disabled:cursor-wait disabled:opacity-75 ${focusClass}`}>
+        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-[#355c49]' : 'text-[#61715d]'} aria-hidden="true" />}
       </button>
     </div>
-    <div className="flex min-w-0 flex-1 flex-col p-3">
+    <div className="flex min-w-0 flex-1 flex-col p-3.5 sm:p-4">
       <PropertyFacts property={property} />
-      <h3 className="mt-1 line-clamp-2 min-h-[2.2rem] break-words font-serif text-[15px] font-medium leading-[1.2] tracking-tight text-slate-950">
-        <button type="button" onClick={() => onOpenQuickView(property)} className={`text-left hover:text-emerald-800 ${focusClass}`}>{property.title?.trim() || 'Property'}</button>
+      <h3 className="mt-1 line-clamp-2 min-h-[2.5rem] break-words font-serif text-[17px] font-medium leading-snug tracking-tight text-[#252b25]">
+        <button type="button" onClick={() => onOpenQuickView(property)} className={`text-left hover:text-[#355c49] ${focusClass}`}>{property.title?.trim() || 'Property'}</button>
       </h3>
-      <p className="mt-1 truncate text-xs text-slate-600">{[property.sector, property.city].filter((part): part is string => Boolean(part?.trim())).join(', ')}</p>
+      <p className="mt-1 truncate text-xs text-[#61715d]">{[property.sector, property.city].filter((part): part is string => Boolean(part?.trim())).join(', ')}</p>
       <PropertyPrice property={property} compact />
-      <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-1 border-t border-slate-200/70 pt-1.5">
-        <button type="button" onClick={() => onOpenQuickView(property)} className={`inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-50 ${focusClass}`}>Quick view <ArrowRight size={12} aria-hidden="true" /></button>
-        <button type="button" onClick={() => onRequestVisit(property)} aria-label={`${tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'} for ${property.title || 'property'}`} className={`min-h-11 shrink-0 whitespace-nowrap rounded-full bg-emerald-800 px-2.5 text-[10px] font-semibold text-white hover:bg-emerald-900 ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
+      <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-1 border-t border-[#eeece7] pt-2">
+        <button type="button" onClick={() => onOpenQuickView(property)} className={`inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-[#355c49] hover:bg-[#f3f5f0] ${focusClass}`}>Quick view <ArrowRight size={13} aria-hidden="true" /></button>
+        <button type="button" onClick={() => onRequestVisit(property)} aria-label={`${tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'} for ${property.title || 'property'}`} className={`min-h-11 shrink-0 whitespace-nowrap rounded-md bg-[#355c49] px-3 text-xs font-semibold text-white hover:bg-[#294a3a] ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
       </div>
     </div>
   </article>
@@ -478,10 +479,10 @@ const TenantPropertyQuickView: React.FC<{
   const amenities = property?.amenities?.split(',').map(value => value.trim()).filter(Boolean) || [];
 
   return (
-    <div className="fixed inset-0 z-[110] flex justify-end" data-testid="tenant-property-quick-view">
-      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]" />
+    <div className="fixed inset-0 z-[110] flex items-end justify-center bg-transparent p-0 sm:items-center sm:p-5" data-testid="tenant-property-quick-view">
+      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-[#252b25]/45 backdrop-blur-[2px]" />
       <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="tenant-quick-view-dialog-title" tabIndex={-1}
-        className="relative z-10 flex h-full w-full min-w-0 flex-col bg-[#fffefa] shadow-2xl md:w-[min(56vw,760px)] md:border-l md:border-white/60">
+        className="relative z-10 flex h-[min(92dvh,860px)] w-full min-w-0 flex-col overflow-hidden rounded-t-[15px] border border-[#e9e7e1] bg-white shadow-[0_24px_80px_rgba(24,35,27,.22)] sm:h-[min(90dvh,820px)] sm:w-[min(680px,calc(100vw_-_2.5rem))] sm:rounded-[12px]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e5e9e1] px-4 sm:px-6">
           <h2 id="tenant-quick-view-dialog-title" className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">Property quick view</h2>
           <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close property quick view" className={`flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 hover:bg-emerald-50 ${focusClass}`}><X size={18} aria-hidden="true" /></button>
@@ -1452,26 +1453,26 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     {HERO_BHK_FILTERS.map(value => {
       const selected = searchFilters.bhk?.replace(/\s+/g, '').toUpperCase() === value.replace(/\s+/g, '').toUpperCase();
       const mobileClass = selected
-        ? 'border-emerald-200/70 bg-emerald-300/30 text-white shadow-[0_0_16px_rgba(52,211,153,.16)]'
-        : 'border-white/30 bg-slate-950/40 text-white/95 shadow-[0_1px_4px_rgba(0,0,0,.12)] backdrop-blur-sm hover:border-white/50 hover:bg-slate-900/50';
+        ? 'border-[#dce5da] bg-[#edf2ed] text-[#355c49] shadow-none'
+        : 'border-[#e9e7e1] bg-white text-[#61715d] shadow-none hover:border-[#cfd9cd] hover:bg-[#f3f5f0]';
       const desktopClass = selected
-        ? 'border-emerald-200/80 bg-emerald-300/25 text-white shadow-[0_0_20px_rgba(52,211,153,.16)]'
-        : 'border-white/25 bg-slate-950/25 text-white/90 backdrop-blur-sm hover:border-white/45 hover:bg-white/10';
+        ? 'border-[#dce5da] bg-[#edf2ed] text-[#355c49] shadow-none'
+        : 'border-[#e9e7e1] bg-white text-[#61715d] hover:border-[#cfd9cd] hover:bg-[#f3f5f0]';
       return <button key={value} type="button" aria-pressed={selected} onClick={() => toggleHeroQuickFilter('bhk', value)}
-        className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-4 text-sm font-semibold transition-[background-color,border-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 ${mobile ? 'focus-visible:ring-emerald-200' : 'focus-visible:ring-emerald-200'} motion-reduce:transition-none ${mobile ? mobileClass : desktopClass}`}>
+        className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-4 text-sm font-semibold transition-[background-color,border-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 ${mobile ? 'focus-visible:ring-[#7b9b84]' : 'focus-visible:ring-[#7b9b84]'} motion-reduce:transition-none ${mobile ? mobileClass : desktopClass}`}>
         <BedDouble size={17} aria-hidden="true" />{value}
       </button>;
     })}
     {HERO_PROPERTY_FILTERS.map(({ label, value }) => {
       const selected = searchFilters.propertyType === value;
       const mobileClass = selected
-        ? 'border-emerald-200/70 bg-emerald-300/30 text-white shadow-[0_0_16px_rgba(52,211,153,.16)]'
-        : 'border-white/30 bg-slate-950/40 text-white/95 shadow-[0_1px_4px_rgba(0,0,0,.12)] backdrop-blur-sm hover:border-white/50 hover:bg-slate-900/50';
+        ? 'border-[#dce5da] bg-[#edf2ed] text-[#355c49] shadow-none'
+        : 'border-[#e9e7e1] bg-white text-[#61715d] shadow-none hover:border-[#cfd9cd] hover:bg-[#f3f5f0]';
       const desktopClass = selected
-        ? 'border-emerald-200/80 bg-emerald-300/25 text-white shadow-[0_0_20px_rgba(52,211,153,.16)]'
-        : 'border-white/25 bg-slate-950/25 text-white/90 backdrop-blur-sm hover:border-white/45 hover:bg-white/10';
+        ? 'border-[#dce5da] bg-[#edf2ed] text-[#355c49] shadow-none'
+        : 'border-[#e9e7e1] bg-white text-[#61715d] hover:border-[#cfd9cd] hover:bg-[#f3f5f0]';
       return <button key={value} type="button" aria-pressed={selected} onClick={() => toggleHeroQuickFilter('propertyType', value)}
-        className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-4 text-sm font-semibold transition-[background-color,border-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 motion-reduce:transition-none ${mobile ? mobileClass : desktopClass}`}>
+        className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-4 text-sm font-semibold transition-[background-color,border-color,color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84] motion-reduce:transition-none ${mobile ? mobileClass : desktopClass}`}>
         {value === 'FLAT' ? <Building2 size={17} aria-hidden="true" /> : <HomeIcon size={17} aria-hidden="true" />}{label}
       </button>;
     })}
@@ -1529,35 +1530,33 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       }}
     />}
     <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-[calc(7.25rem+env(safe-area-inset-bottom))] text-slate-950 lg:pb-16 lg:pl-[226px] min-[1101px]:pl-[258px]">
-      <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-h-[45rem] min-w-0 scroll-mt-[calc(72px+env(safe-area-inset-top))] flex-col overflow-visible bg-[#082a22] text-white outline-none lg:min-h-[40rem] ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
-        <img src="/assets/pathome_tenant_hero_dream_home.webp" alt="" aria-hidden="true" fetchPriority="high" decoding="async" className="pointer-events-none absolute inset-0 -z-20 h-full w-full object-cover object-[88%_center] lg:object-center" />
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(3,20,16,.56)_0%,rgba(3,24,19,.36)_32%,rgba(3,24,19,.77)_100%),linear-gradient(90deg,rgba(2,26,20,.78)_0%,rgba(4,31,24,.38)_55%,rgba(4,31,24,.04)_100%)] lg:bg-[linear-gradient(90deg,rgba(2,25,19,.96)_0%,rgba(3,32,24,.91)_27%,rgba(3,34,25,.68)_44%,rgba(4,31,23,.12)_70%,rgba(4,28,20,.02)_100%)]" aria-hidden="true" />
+      <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-w-0 scroll-mt-[calc(72px+env(safe-area-inset-top))] flex-col overflow-visible bg-[#f8f7f4] text-[#252b25] outline-none ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
 
-        <div className="relative mx-auto flex w-full max-w-[1600px] flex-1 flex-col px-4 pb-6 pt-[calc(100px+env(safe-area-inset-top))] sm:px-7 sm:pb-7 sm:pt-[calc(108px+env(safe-area-inset-top))] lg:px-8 lg:pb-8 lg:pt-[calc(116px+env(safe-area-inset-top))]">
-          <div className="order-1 relative z-10 max-w-[56rem]">
-            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-emerald-200 sm:text-xs">Your home search</p>
-            <h1 data-tenant-nav-focus tabIndex={-1} className="mt-3 max-w-[55rem] break-words font-serif text-[clamp(2.35rem,9.5vw,4.75rem)] font-normal leading-[0.98] tracking-[-0.055em] text-[#fffaf0] focus:outline-none lg:text-[4.75rem]">
-              {firstName ? <><span className="block">Find your place,</span><span className="block text-[#54e0bd]">{firstName}.</span></> : <span className="block">Find your place.</span>}
+        <div className="relative mx-auto flex w-full max-w-[1440px] flex-col px-4 pb-4 pt-[calc(84px+env(safe-area-inset-top))] sm:px-6 sm:pb-5 sm:pt-[calc(88px+env(safe-area-inset-top))] lg:px-8 lg:pb-6 lg:pt-[calc(92px+env(safe-area-inset-top))]">
+          <div className="order-1 relative z-10 mb-5 max-w-[56rem]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#638267] sm:text-xs">Your home search</p>
+            <h1 data-tenant-nav-focus tabIndex={-1} className="mt-2 max-w-[55rem] break-words font-serif text-[clamp(2.25rem,5vw,3.25rem)] font-normal leading-[1.05] tracking-[-0.045em] text-[#252b25] focus:outline-none">
+              {firstName ? <><span className="block">Find your place,</span><span className="block text-[#355c49]">{firstName}.</span></> : <span className="block">Find your place.</span>}
             </h1>
-            <p className="mt-3 max-w-[32rem] text-[13px] leading-[1.55] text-white/90 sm:text-base">Explore homes that fit. See the details, then request a visit when one feels right.</p>
+            <p className="mt-2 max-w-[32rem] text-sm leading-6 text-[#61715d] sm:text-[15px]">Explore homes that fit. See the details, then request a visit when one feels right.</p>
           </div>
 
-          <div role="group" aria-label="Quick filters" className="order-3 mt-5 hidden max-w-[58rem] gap-2 lg:flex lg:flex-wrap lg:overflow-visible">
+          <div role="group" aria-label="Quick filters" className="order-3 mt-3 hidden max-w-[58rem] gap-2 lg:flex lg:flex-wrap lg:overflow-visible">
             {renderHeroQuickFilterControls()}
           </div>
 
-          <div aria-label="Pathome product highlights" className="order-4 mt-6 hidden max-w-[58rem] grid-cols-3 gap-6 border-t border-white/20 pt-4 lg:grid">
+          <div aria-label="Pathome product highlights" className="order-4 mt-4 hidden max-w-[58rem] grid-cols-3 gap-6 border-t border-[#e9e7e1] pt-4 lg:grid">
             {[
               { icon: HomeIcon, title: 'Clear details', copy: 'Property information in one place' },
               { icon: MapPin, title: 'Location-led search', copy: 'Find homes by city and locality' },
               { icon: CalendarDays, title: 'Visit requests', copy: 'Request a visit when a home fits' }
-            ].map(({ icon: Icon, title, copy }) => <div key={title} className="flex min-w-0 items-start gap-3 text-white/90">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-emerald-200/30 bg-slate-950/35 text-emerald-200"><Icon size={17} aria-hidden="true" /></span>
-              <span className="min-w-0 pt-0.5"><span className="block text-xs font-semibold leading-4">{title}</span><span className="mt-0.5 block max-w-[12rem] text-[11px] leading-4 text-white/70">{copy}</span></span>
+            ].map(({ icon: Icon, title, copy }) => <div key={title} className="flex min-w-0 items-start gap-3 text-[#61715d]">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#e9e7e1] bg-white text-[#638267]"><Icon size={17} aria-hidden="true" /></span>
+              <span className="min-w-0 pt-0.5"><span className="block text-xs font-semibold leading-4">{title}</span><span className="mt-0.5 block max-w-[12rem] text-[11px] leading-4 text-[#85877f]">{copy}</span></span>
             </div>)}
           </div>
 
-          <div id="tenant-search-placeholder" className="relative z-40 order-2 mt-auto w-full min-w-0 pt-7 lg:mt-6 lg:w-[min(52vw,58rem)] lg:max-w-full lg:pt-0">
+          <div id="tenant-search-placeholder" className="relative z-40 order-2 mt-0 w-full min-w-0 pt-0 lg:w-[min(58rem,100%)] lg:max-w-full">
             <CompactSearchContext appearance="tenant-hero" alwaysEditing stickyMode={stickySearchMode} beaconTop={searchBeaconTop}
               searchMorphActive={searchMorphActive} beaconAcknowledgement={beaconAcknowledgement}
               heroRevealVersion={heroSearchRevealVersion}
@@ -1572,13 +1571,13 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
             {renderHeroQuickFilterControls(true)}
           </div>
 
-          <div aria-label="Pathome promise" className="order-4 mt-3 grid w-full max-w-[58rem] grid-cols-3 items-center gap-1 border-t border-white/20 pt-3 lg:hidden">
+          <div aria-label="Pathome promise" className="order-4 mt-3 grid w-full max-w-[58rem] grid-cols-3 items-center gap-1 border-t border-[#e9e7e1] pt-3 lg:hidden">
             {[
               { icon: HomeIcon, title: 'Clear details' },
               { icon: MapPin, title: 'Location-led search' },
               { icon: CalendarDays, title: 'Visit requests' }
-            ].map(({ icon: Icon, title }) => <div key={title} className="flex min-w-0 flex-col items-center gap-1 text-center text-white/90">
-              <Icon size={16} strokeWidth={1.8} className="shrink-0 text-emerald-200" aria-hidden="true" />
+            ].map(({ icon: Icon, title }) => <div key={title} className="flex min-w-0 flex-col items-center gap-1 text-center text-[#61715d]">
+              <Icon size={16} strokeWidth={1.8} className="shrink-0 text-[#638267]" aria-hidden="true" />
               <span className="max-w-full text-[9px] font-medium leading-[1.15] tracking-[-0.01em] sm:text-[10px]">{title}</span>
             </div>)}
           </div>
@@ -1601,8 +1600,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
             <button type="button" onClick={() => setSavedHomesReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-semibold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button>
           </div>}
 
-          {savedHomesIdentityMatches && savedHomesState.status === 'loading' && visibleSavedHomes.length === 0 && <div className="grid grid-cols-1 gap-3 md:grid-cols-2" role="status" aria-label="Loading saved homes">
-            {Array.from({ length: Math.min(savedHomesVisibleLimit, 2) }, (_, index) => index).map(index => <div key={index} className="min-h-[9.5rem] rounded-[18px] border border-slate-200 bg-white motion-safe:animate-pulse" />)}
+          {savedHomesIdentityMatches && savedHomesState.status === 'loading' && visibleSavedHomes.length === 0 && <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3" role="status" aria-label="Loading saved homes">
+            {Array.from({ length: Math.min(savedHomesVisibleLimit, 2) }, (_, index) => index).map(index => <div key={index} className="aspect-[1.48] rounded-[10px] border border-[#e9e7e1] bg-white motion-safe:animate-pulse" />)}
           </div>}
 
           {savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.length === 0 && <div className="flex min-h-[4.25rem] items-center gap-3 rounded-2xl border border-[#e7eae3] bg-white/70 px-4 py-3">
@@ -1611,7 +1610,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
           </div>}
 
           {visibleSavedHomes.length > 0 && <motion.div id="tenant-saved-home-grid" layout={!reduceMotion}
-            className={`grid min-w-0 gap-3 ${savedHomesExpanded ? 'grid-cols-1 md:grid-cols-2' : hasSavedHomesStack ? 'grid-cols-1 md:grid-cols-[minmax(15rem,1fr)_minmax(15rem,1fr)_minmax(9rem,.58fr)]' : 'grid-cols-1 md:grid-cols-2'}`}
+            className={`grid min-w-0 gap-3 ${savedHomesExpanded ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3' : hasSavedHomesStack ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(9rem,.58fr)]' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3'}`}
             aria-label="Your saved homes">
             <AnimatePresence initial={false}>
               {presentedSavedHomes.map((property, index) => <motion.div key={property.id} layout={!reduceMotion}
@@ -1856,7 +1855,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               </div>
             </div>}
             {discoveryState === 'READY' && properties.length > 0 && availableProperties.length === 0 && <p className="rounded-2xl border border-[#e7eae3] bg-white/70 px-4 py-3 text-sm text-slate-600">Homes you’ve saved from this search are shown above.</p>}
-            {discoveryState === 'READY' && availableProperties.length > 0 && <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+            {discoveryState === 'READY' && availableProperties.length > 0 && <div className="grid min-w-0 gap-4 sm:grid-cols-2 min-[1400px]:grid-cols-3">
               {availableProperties.map((property, index) => {
                 const favoriteStateReady = favoriteIsReadyFor(property.id);
                 return <SupportingPropertyCard key={property.id} property={property} visitRequestStatus={requestStatusForProperty(property.id)} onRequestVisit={handleTenantRequestVisit}

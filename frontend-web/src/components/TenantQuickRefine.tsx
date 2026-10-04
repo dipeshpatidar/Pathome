@@ -106,9 +106,9 @@ const FilterOption: React.FC<{
   <button type="button" aria-pressed={selected} onClick={onClick}
       className={`min-h-11 rounded-full p-0.5 transition-transform duration-200 hover:-translate-y-px active:translate-y-0 motion-reduce:transform-none motion-reduce:transition-none ${focusClass}`}>
       <span className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-[background-color,border-color,box-shadow,color] duration-200 ${selected
-      ? 'border-[#c8a85f] bg-[#0b674b] text-[#fffdf5] shadow-[0_3px_9px_-7px_rgba(5,45,31,.7),inset_0_1px_0_rgba(255,255,255,.16)]'
+      ? 'border-[#dce5da] bg-[#edf2ed] text-[#355c49] shadow-none'
       : 'border-[#e5e3da] bg-[#fffefa] text-slate-700 hover:border-emerald-800/30 hover:bg-white'}`}>
-      <span className={selected ? 'text-[#f5e8c6]' : 'text-emerald-800'} aria-hidden="true">{icon}</span>
+      <span className={selected ? 'text-[#638267]' : 'text-emerald-800'} aria-hidden="true">{icon}</span>
       {label}
     </span>
   </button>
@@ -176,7 +176,7 @@ const BudgetSlider: React.FC<{
     <legend className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-600">Monthly rent</legend>
     <div className="mb-1 flex min-w-0 items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
       <span>₹{formatRentDisplay(bounds.min)}</span>
-      <span className="truncate rounded-full border border-[#ddcfaa] bg-[#fffaf0] px-2.5 py-1 text-[11px] font-semibold text-emerald-950 shadow-[0_3px_9px_-7px_rgba(20,60,45,.55)]" aria-live="polite">
+      <span className="truncate rounded-full border border-[#e9e7e1] bg-[#f8f7f4] px-2.5 py-1 text-[11px] font-semibold text-[#355c49]" aria-live="polite">
         {rentRangeLabel(bounds, values)}
       </span>
       <span>{maxLabel}</span>
@@ -203,42 +203,6 @@ const BudgetSlider: React.FC<{
     </div>
   </fieldset>;
 };
-
-const BotanicalSprig: React.FC<{ className: string }> = ({ className }) => <svg viewBox="0 0 180 150" aria-hidden="true" className={`pointer-events-none absolute select-none ${className}`}>
-  <g fill="none" stroke="#557d62" strokeLinecap="round" strokeWidth="1.15">
-    <path d="M9 143C43 118 69 92 91 65s41-43 76-55" />
-    <path d="M36 123C24 100 20 83 25 65M58 103C79 99 94 88 106 70M79 81C66 58 63 39 70 21M104 57C125 58 142 50 155 37M127 35C117 19 115 8 120 0" />
-  </g>
-  <g stroke="#597e62" strokeWidth=".7">
-        <path d="M25 66C7 55 3 40 8 25c14 3 23 15 17 41Z" fill="#a8b99a" fillOpacity=".55" />
-    <path d="M26 65 11 30M24 102C6 99-2 87 1 72c15 0 25 10 23 30Z" fill="#829b7d" fillOpacity=".48" />
-    <path d="M58 103c4-20 18-29 34-28-1 16-12 28-34 28Z" fill="#b4bfa0" fillOpacity=".55" />
-    <path d="M70 22C53 14 48 1 54-13c15 5 22 17 16 35Z" fill="#849b7d" fillOpacity=".52" />
-    <path d="M72 21c12-18 26-22 39-14-7 14-20 20-39 14Z" fill="#c3b184" fillOpacity=".45" />
-    <path d="M105 71c2-19 13-29 28-30 1 15-8 27-28 30Z" fill="#9eaf90" fillOpacity=".55" />
-    <path d="M106 70c14-17 28-20 40-11-8 13-21 17-40 11Z" fill="#7f9978" fillOpacity=".46" />
-    <path d="M155 37c2-17 12-26 25-26 1 14-8 24-25 26Z" fill="#aebb9e" fillOpacity=".55" />
-    <path d="M120 1c-12-14-11-26-2-36 12 8 15 20 2 36Z" fill="#81977a" fillOpacity=".45" />
-  </g>
-  <g fill="none" stroke="#6d896d" strokeLinecap="round" strokeWidth=".65" opacity=".75">
-    <path d="m25 65-13-33m12 68L5 76m53 27 27-26M70 21 57-8m49 78 25-25m24-29 17-21" />
-  </g>
-  <g fill="#bd9b52" fillOpacity=".62">
-    <circle cx="26" cy="64" r="1.8" /><circle cx="107" cy="70" r="1.65" />
-    <circle cx="155" cy="36" r="1.5" /><circle cx="71" cy="21" r="1.35" />
-  </g>
-</svg>;
-
-const BotanicalDetails: React.FC<{ mobile?: boolean }> = ({ mobile = false }) => <>
-  {mobile ? <>
-    <BotanicalSprig className="right-[-2rem] top-[-1.7rem] h-28 w-32 rotate-[16deg] opacity-35" />
-    <BotanicalSprig className="bottom-[-2rem] left-[-2.3rem] h-32 w-36 rotate-[175deg] opacity-30" />
-  </> : <>
-    <BotanicalSprig className="left-[-1.2rem] top-[-1.5rem] h-28 w-32 rotate-[-18deg] opacity-35" />
-    <BotanicalSprig className="right-[-2rem] top-[-1.7rem] h-40 w-44 rotate-[18deg] opacity-40" />
-    <BotanicalSprig className="bottom-[-2.7rem] left-[-2rem] h-44 w-48 rotate-[174deg] opacity-35" />
-  </>}
-</>;
 
 const ResultSummary: React.FC<QuickRefineBaseProps> = props => {
   const updating = props.discoveryState !== 'ERROR' && (props.discoveryState === 'LOADING'
@@ -279,11 +243,10 @@ export const TenantQuickRefinePanel: React.FC<QuickRefineBaseProps> = props => {
   };
 
   return (
-    <section aria-labelledby={`${id}-title`} className="tenant-quick-refine-panel relative isolate mt-3 hidden min-w-0 overflow-hidden rounded-[24px] border border-[#dfd5bd] bg-gradient-to-br from-[#fffdf7] via-[#fafbf5] to-[#edf4e9] p-3.5 shadow-[0_12px_30px_-27px_rgba(15,45,34,.55)] lg:flex xl:p-4">
-      <BotanicalDetails />
+    <section aria-labelledby={`${id}-title`} className="tenant-quick-refine-panel relative mt-3 hidden min-w-0 rounded-[10px] border border-[#e9e7e1] bg-white p-3.5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.25)] lg:flex xl:p-4">
       <div className="tenant-quick-refine-panel-content relative z-10">
         <div className="flex min-w-0 shrink-0 items-center gap-2.5">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#dfd3b5] bg-gradient-to-br from-[#fff9e9] to-[#edf3e9] text-emerald-900 shadow-[0_3px_8px_-6px_rgba(20,60,45,.45)]"><SlidersHorizontal size={16} aria-hidden="true" /></span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#e9e7e1] bg-[#f3f5f0] text-[#355c49]"><SlidersHorizontal size={16} aria-hidden="true" /></span>
           <div className="min-w-0 flex-1">
             <h2 id={`${id}-title`} className="whitespace-nowrap font-serif text-[17px] font-medium leading-5 tracking-tight text-slate-950">Quick Refine</h2>
             <p className="mt-0.5 min-w-0 truncate text-[11px] leading-4 text-slate-600" aria-live="polite"><ResultSummary {...props} /></p>
@@ -391,13 +354,12 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
       <div className="fixed inset-0 z-[100] flex items-end justify-center lg:hidden" role="presentation">
         <button type="button" tabIndex={-1} aria-label="Close filters" onClick={() => closeSheet(true)} className="absolute inset-0 bg-[#101b17]/45 backdrop-blur-[2px]" />
         <section ref={sheetRef} id="tenant-mobile-quick-refine" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`}
-          className="relative flex max-h-[min(92dvh,56rem)] w-full flex-col overflow-hidden rounded-t-[28px] border border-white/80 bg-gradient-to-b from-[#fffdf8] via-[#fbfcf8] to-[#f2f7f1] shadow-[0_-20px_60px_-24px_rgba(5,35,25,.4)]">
-          <BotanicalDetails mobile />
-          <div className="relative z-10 shrink-0 border-b border-emerald-950/10 px-5 pb-4 pt-3" style={{ paddingTop: 'max(.75rem, env(safe-area-inset-top))' }}>
+          className="relative flex max-h-[min(92dvh,56rem)] w-full flex-col overflow-hidden rounded-t-[15px] border border-[#e9e7e1] bg-white shadow-[0_-16px_48px_-24px_rgba(37,43,37,.3)]">
+          <div className="relative z-10 shrink-0 border-b border-[#eeece7] px-5 pb-4 pt-3" style={{ paddingTop: 'max(.75rem, env(safe-area-inset-top))' }}>
             <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-emerald-900/20" aria-hidden="true" />
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#edf4e9] text-emerald-900"><SlidersHorizontal size={18} aria-hidden="true" /></span>
+                <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#f3f5f0] text-[#355c49]"><SlidersHorizontal size={18} aria-hidden="true" /></span>
                 <div className="relative z-10"><h2 id={`${id}-title`} className="font-serif text-2xl font-medium tracking-tight text-slate-950">Quick Refine</h2>
                   <p className="mt-1 text-xs text-slate-600" aria-live="polite"><ResultSummary {...props} /></p>
                 </div>
@@ -411,7 +373,7 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
 
           <div className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5">
             <QuickRefineOptions filters={filters} onToggle={toggle} />
-            <div className="mt-5 border-t border-emerald-950/10 pt-4">
+            <div className="mt-5 border-t border-[#eeece7] pt-4">
           <BudgetSlider bounds={props.rentBounds} values={budget.values}
                 onChange={budget.change} onCommit={budget.commitPending} />
             </div>

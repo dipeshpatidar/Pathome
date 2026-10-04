@@ -22,17 +22,70 @@ echo "==========================================================================
 echo -e "${RESET}"
 
 # Requirement 1: Resolve repository root from script location, independent of caller CWD
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="${SCRIPT_DIR}"
 BACKEND_DIR="${ROOT_DIR}/backend"
 FRONTEND_DIR="${ROOT_DIR}/frontend-web"
 ENV_FILE="${ROOT_DIR}/.env.local"
 
-echo -e "[Pathome] Resolved project root: ${ROOT_DIR}"
+# Strict Worktree Validation
+EXPECTED_WORKTREE="/Users/dipeshpatidar/Documents/Pathome-tenant-ui-v0"
+if [ "${ROOT_DIR}" != "${EXPECTED_WORKTREE}" ]; then
+    echo -e "${RED}[Pathome] WRONG WORKTREE${RESET}"
+    echo -e "${RED}Expected:${RESET}"
+    echo -e "  ${EXPECTED_WORKTREE}"
+    echo -e "${RED}Actual:${RESET}"
+    echo -e "  ${ROOT_DIR}"
+    exit 1
+fi
 
-# Requirement 2: Fast failure if .env.local is missing
+# Strict Branch Validation
+EXPECTED_BRANCH="feature/tenant-ui-v0-integration"
+CURRENT_BRANCH="$(git -C "${ROOT_DIR}" branch --show-current 2>/dev/null || true)"
+if [ "${CURRENT_BRANCH}" != "${EXPECTED_BRANCH}" ]; then
+    echo -e "${RED}[Pathome] WRONG BRANCH${RESET}"
+    echo -e "${RED}Expected:${RESET}"
+    echo -e "  ${EXPECTED_BRANCH}"
+    echo -e "${RED}Actual:${RESET}"
+    echo -e "  ${CURRENT_BRANCH}"
+    exit 1
+fi
+
+# Resolve current short HEAD
+CURRENT_HEAD="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || true)"
+
+# Directory Existence Validation (Abort before checking DB or handling processes)
+if [ ! -d "${BACKEND_DIR}" ]; then
+    echo -e "${RED}[Pathome] ERROR: Backend directory not found:${RESET}"
+    echo -e "  ${BACKEND_DIR}"
+    exit 1
+fi
+
+if [ ! -d "${FRONTEND_DIR}" ]; then
+    echo -e "${RED}[Pathome] ERROR: Frontend directory not found:${RESET}"
+    echo -e "  ${FRONTEND_DIR}"
+    exit 1
+fi
+
+if [ ! -f "${FRONTEND_DIR}/package.json" ]; then
+    echo -e "${RED}[Pathome] ERROR: Frontend package.json not found:${RESET}"
+    echo -e "  ${FRONTEND_DIR}/package.json"
+    exit 1
+fi
+
+# Prominent Startup Identity Block
+echo -e "${BOLD}${CYAN}========================================================"
+echo "PATHOME UI INTEGRATION INSTANCE"
+echo "Worktree: ${ROOT_DIR}"
+echo "Branch:   ${CURRENT_BRANCH}"
+echo "HEAD:     ${CURRENT_HEAD}"
+echo "Frontend: ${FRONTEND_DIR}"
+echo "Backend:  ${BACKEND_DIR}"
+echo -e "========================================================${RESET}\n"
+
+# Requirement 2: Fast failure if .env.local is missing (no silent fallback)
 if [ ! -f "${ENV_FILE}" ]; then
-    echo -e "${RED}[Pathome] ERROR: Pathome .env.local not found.${RESET}"
+    echo -e "${RED}[Pathome] ERROR: Pathome .env.local not found at ${ENV_FILE}.${RESET}"
     echo -e "${YELLOW}Create it from .env.local.example and populate local secrets.${RESET}"
     exit 1
 fi
@@ -173,21 +226,48 @@ check_and_handle_port() {
             if [[ "${CMD}" == *"pathome-spaces-backend"* || \
                   "${CMD}" == *"PathomeSpacesApplication"* || \
                   "${CMD}" == *"com.indore.pathome"* || \
-                  "${CMD}" == *"${BACKEND_DIR}"* || \
-                  "${PROC_CWD}" == "${BACKEND_DIR}" ]]; then
+                  "${CMD}" == *"/backend"* || \
+                  "${PROC_CWD}" == *"/backend"* ]]; then
                 IS_PATHOME=true
             fi
         elif [[ "${PORT}" == "5173" ]]; then
-            if [[ "${CMD}" == *"${FRONTEND_DIR}"* || \
-                  "${PROC_CWD}" == "${FRONTEND_DIR}" || \
+            if [[ "${CMD}" == *"frontend-web"* || \
+                  "${PROC_CWD}" == *"/frontend-web"* || \
                   "${CMD}" == *"pathome-spaces-frontend-web"* ]]; then
                 IS_PATHOME=true
             fi
         fi
 
         if [ "${IS_PATHOME}" = true ]; then
-            echo -e "${YELLOW}[Pathome] Terminating stale Pathome ${SERVICE_NAME} listener (PID: ${PID})...${RESET}"
-            stop_process_tree "${PID}"
+            local RUNNING_WORKTREE=""
+            if [ -n "${PROC_CWD}" ]; then
+                local TRIMMED="${PROC_CWD%/backend}"
+                TRIMMED="${TRIMMED%/frontend-web}"
+                RUNNING_WORKTREE="${TRIMMED}"
+            fi
+
+            if [ -z "${RUNNING_WORKTREE}" ]; then
+                local EXTRACTED
+                EXTRACTED="$(echo "${CMD}" | grep -oE '/[^ ]+/(backend|frontend-web)' | head -n1 || true)"
+                if [ -n "${EXTRACTED}" ]; then
+                    local TRIMMED="${EXTRACTED%/backend}"
+                    TRIMMED="${TRIMMED%/frontend-web}"
+                    RUNNING_WORKTREE="${TRIMMED}"
+                fi
+            fi
+
+            if [ "${RUNNING_WORKTREE}" = "${ROOT_DIR}" ]; then
+                echo -e "${YELLOW}[Pathome] Terminating stale Pathome ${SERVICE_NAME} listener from current worktree (PID: ${PID})...${RESET}"
+                stop_process_tree "${PID}"
+            else
+                echo -e "${RED}[Pathome] Another Pathome worktree is currently running.${RESET}"
+                echo -e "  PID:                ${PID}"
+                echo -e "  Process CWD:        ${PROC_CWD:-unknown}"
+                echo -e "  Requested worktree: ${ROOT_DIR}"
+                echo -e "  Running worktree:   ${RUNNING_WORKTREE:-unknown}"
+                echo -e "${YELLOW}Please stop the other instance before starting the UI integration app.${RESET}"
+                exit 1
+            fi
         else
             echo -e "${RED}[Pathome] ERROR: Port ${PORT} is already in use by another process (PID: ${PID}).${RESET}"
             echo -e "${YELLOW}Please stop the conflicting process or free port ${PORT} before starting Pathome.${RESET}"

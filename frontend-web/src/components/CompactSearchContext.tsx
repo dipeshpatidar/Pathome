@@ -570,7 +570,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
             className={tenantHeroAppearance
             ? tenantSticky
                 ? `flex w-full min-w-0 items-center gap-0 rounded-[14px] border-0 bg-transparent p-0 text-slate-900 shadow-none ${isEditing ? 'ring-2 ring-emerald-700/10' : ''}`
-                : `grid w-full min-w-0 grid-cols-2 gap-x-1 gap-y-1 rounded-full border border-white/90 bg-white/95 p-[2px] text-slate-900 shadow-[0_11px_25px_rgba(0,0,0,.14)] backdrop-blur-sm sm:grid-cols-1 sm:gap-0 lg:rounded-xl lg:bg-white lg:backdrop-blur-none ${isEditing ? 'ring-2 ring-white/35' : ''}`
+                : `grid w-full min-w-0 grid-cols-2 gap-x-1 gap-y-1 rounded-[10px] border border-[#e9e7e1] bg-white p-1 text-slate-900 shadow-[0_8px_22px_-16px_rgba(38,48,39,.28)] sm:grid-cols-1 sm:gap-0 lg:rounded-[10px] ${isEditing ? 'ring-2 ring-[#7b9b84]/30' : ''}`
               : heroAppearance
                 ? `grid w-full min-w-0 grid-cols-1 gap-2 rounded-[18px] border border-white/80 bg-white p-1.5 text-slate-900 shadow-[0_16px_36px_rgba(4,26,19,.22)] ${isEditing ? 'ring-2 ring-white/35' : ''}`
                 : `w-full rounded-xl border bg-slate-950/80 backdrop-blur-md backdrop-saturate-150 p-1 shadow-[0_8px_28px_rgb(0,0,0,0.24)] ring-1 ring-white/10 text-white transition-all sm:rounded-2xl sm:backdrop-blur-xl sm:p-2 sm:shadow-[0_12px_40px_rgb(0,0,0,0.3)] ${
@@ -730,7 +730,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   placeholder={searchPlaceholder || summary || "Search locality or 2 BHK"}
                   aria-label="Search homes"
                   autoComplete="off"
-                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${tenantHeroAppearance ? 'sm:text-xs' : ''} ${heroAppearance ? 'text-slate-900 placeholder:text-slate-500' : 'text-white placeholder:text-slate-400'}`}
+                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${tenantHeroAppearance ? 'sm:text-xs' : ''} ${heroAppearance ? 'text-[#252b25] placeholder:text-[#85877f]' : 'text-white placeholder:text-slate-400'}`}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck="false"
@@ -757,23 +757,23 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
             role="listbox"
             aria-label="Rental search suggestions"
             className={tenantHeroAppearance
-              ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-[0_18px_34px_rgba(19,46,34,.17)] sm:left-[10rem] sm:right-0 sm:w-auto'
+              ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-[8px] border border-[#e9e7e1] bg-white p-1.5 text-slate-900 shadow-[0_12px_28px_rgba(38,48,39,.13)] sm:left-[10rem] sm:right-0 sm:w-auto'
               : heroAppearance
                 ? 'absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[70] max-h-[min(20rem,45dvh)] w-full overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-1.5 text-slate-900 shadow-2xl'
               : 'absolute left-0 right-0 top-[calc(100%+8px)] z-50 w-full max-h-[260px] sm:max-h-[300px] overflow-y-auto overscroll-contain rounded-2xl border border-slate-700/80 bg-slate-900/95 backdrop-blur-xl p-1.5 text-white shadow-[0_16px_50px_rgb(0,0,0,0.5)] ring-1 ring-white/10 divide-y divide-slate-800/60'}
           >
             {tenantHeroAppearance && <div aria-hidden="true" className="px-2 pb-1 pt-1 text-[9px] font-bold tracking-[0.14em] text-slate-500">SEARCH SUGGESTIONS</div>}
             {suggestionState === 'loading' && (
-              <div className={`flex items-center gap-2.5 px-3 py-3 text-xs ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>
+              <div className={`flex items-center gap-2.5 px-3 py-3 text-xs ${heroAppearance ? 'text-[#85877f]' : 'text-slate-400'}`}>
                 <div className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
                 <span>Finding places…</span>
               </div>
             )}
             {suggestionState === 'empty' && (
-              <p role="status" className={`px-3 py-3 text-xs ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>No matching homes found.</p>
+              <p role="status" className={`px-3 py-3 text-xs ${heroAppearance ? 'text-[#85877f]' : 'text-slate-400'}`}>No matching homes found.</p>
             )}
             {suggestionState === 'error' && (
-              <p role="status" className={`px-3 py-3 text-xs ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>Suggestions temporarily unavailable.</p>
+              <p role="status" className={`px-3 py-3 text-xs ${heroAppearance ? 'text-[#85877f]' : 'text-slate-400'}`}>Suggestions temporarily unavailable.</p>
             )}
             {suggestionState === 'results' && suggestions.map((item, index) => {
               const row = formatSuggestionRow(item);
@@ -789,22 +789,22 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   onMouseEnter={notifyInteraction}
                   onFocus={notifyInteraction}
                   onClick={() => chooseSuggestion(item)}
-                  className={`flex min-h-[52px] w-full min-w-0 items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 ${heroAppearance ? 'focus-visible:ring-emerald-600' : 'focus-visible:ring-emerald-500'} ${
+                  className={`flex min-h-[48px] w-full min-w-0 items-center justify-between gap-2.5 rounded-[5px] px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 ${heroAppearance ? 'focus-visible:ring-[#7b9b84]' : 'focus-visible:ring-emerald-500'} ${
                     index === activeSuggestionIndex
-                      ? heroAppearance ? 'bg-emerald-50 text-emerald-900 ring-1 ring-emerald-200' : 'bg-emerald-950/80 text-white ring-1 ring-emerald-500/30'
+                      ? heroAppearance ? 'bg-[#f0f3ee] text-[#355c49] ring-1 ring-[#dfe7dc]' : 'bg-emerald-950/80 text-white ring-1 ring-emerald-500/30'
                       : row.isAction
-                      ? heroAppearance ? 'bg-slate-50 text-slate-900 hover:bg-slate-100' : 'bg-slate-800/50 hover:bg-slate-800 text-white'
-                      : heroAppearance ? 'text-slate-900 hover:bg-slate-50' : 'hover:bg-slate-800/70 text-white'
+                      ? heroAppearance ? 'bg-[#f8f7f4] text-[#252b25] hover:bg-[#f0f3ee]' : 'bg-slate-800/50 hover:bg-slate-800 text-white'
+                      : heroAppearance ? 'text-[#252b25] hover:bg-[#f3f5f0]' : 'hover:bg-slate-800/70 text-white'
                   }`}
                 >
-                  <div className={`flex min-w-0 items-center gap-2.5 ${heroAppearance ? '[&_svg]:!text-emerald-700' : ''}`}>
+                  <div className={`flex min-w-0 items-center gap-2.5 ${heroAppearance ? '[&_svg]:!text-[#638267]' : ''}`}>
                     {row.icon}
                     <div className="min-w-0">
-                      <span className={`block truncate text-xs sm:text-sm font-semibold leading-snug ${heroAppearance ? 'text-slate-900' : 'text-white'}`}>
+                      <span className={`block truncate text-xs sm:text-sm font-semibold leading-snug ${heroAppearance ? 'text-[#252b25]' : 'text-white'}`}>
                         {row.primary}
                       </span>
                       {row.secondary && (
-                        <span className={`block truncate text-[11px] font-normal leading-tight mt-0.5 ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>
+                        <span className={`block truncate text-[11px] font-normal leading-tight mt-0.5 ${heroAppearance ? 'text-[#85877f]' : 'text-slate-400'}`}>
                           {row.secondary}
                         </span>
                       )}
@@ -812,7 +812,7 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                   </div>
 
                   {row.badge && (
-                    <span className={`shrink-0 pl-2 text-[11px] font-normal ${heroAppearance ? 'text-slate-600' : 'text-slate-400'}`}>
+                    <span className={`shrink-0 pl-2 text-[11px] font-normal ${heroAppearance ? 'text-[#85877f]' : 'text-slate-400'}`}>
                       {row.badge}
                     </span>
                   )}

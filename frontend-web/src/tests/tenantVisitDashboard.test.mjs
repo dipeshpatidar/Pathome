@@ -30,15 +30,23 @@ test('visit status uses existing RECEIVED meaning without claiming a scheduled v
   assert.equal(tenantVisitStatusLabel(null), 'Status unavailable');
 });
 
-test('active visit CTAs route to tracking and terminal requests remain requestable', () => {
+test('request-aware CTAs distinguish active request states from terminal request states', () => {
   assert.equal(tenantVisitCtaLabel('RECEIVED'), 'Visit Requested');
   assert.equal(tenantVisitCtaLabel('COORDINATING'), 'Visit Being Coordinated');
   assert.equal(tenantVisitCtaLabel('SCHEDULED'), 'View Visit');
   assert.equal(tenantVisitCtaLabel('UNKNOWN'), 'View My Visits');
   assert.equal(isActiveTenantVisitRequest('RECEIVED'), true);
+  assert.equal(isActiveTenantVisitRequest('COORDINATING'), true);
+  assert.equal(isActiveTenantVisitRequest('SCHEDULED'), true);
   assert.equal(isActiveTenantVisitRequest('UNAVAILABLE'), false);
   assert.equal(isActiveTenantVisitRequest('CANCELLED'), false);
+  assert.equal(tenantVisitCtaLabel('UNAVAILABLE'), null);
+  assert.equal(tenantVisitCtaLabel('CANCELLED'), null);
+  assert.equal(tenantVisitStatusLabel('UNAVAILABLE'), 'Owner unavailable for visits');
+  assert.equal(tenantVisitStatusLabel('CANCELLED'), 'Request cancelled');
 });
+
+test.todo('an existing terminal-request acknowledgement is not presented as a newly created request');
 
 test('compact Visit Requests summary stays truthful for loading, error, empty, and populated states', () => {
   assert.equal(tenantVisitSummary('loading', 0), 'Loading requests…');
