@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { belongsToTenantVisitSession, readTenantVisitSession, isCurrentTenantVisitSession } from '../utils/tenantVisitSession.ts';
-import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
+import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
 
 const withSession = (userId, token) => {
   const values = new Map([
@@ -22,8 +22,22 @@ test('loading, failure, empty, and populated history remain distinct', () => {
 
 test('visit status uses existing RECEIVED meaning without claiming a scheduled visit', () => {
   assert.equal(tenantVisitStatusLabel('RECEIVED'), 'Request received');
+  assert.equal(tenantVisitStatusLabel('COORDINATING'), 'Coordinating with property owner');
+  assert.equal(tenantVisitStatusLabel('SCHEDULED'), 'Added to Visit Session');
+  assert.equal(tenantVisitStatusLabel('UNAVAILABLE'), 'Owner unavailable for visits');
+  assert.equal(tenantVisitStatusLabel('CANCELLED'), 'Request cancelled');
   assert.equal(tenantVisitStatusLabel('CHANGES_REQUIRED'), 'Changes required');
   assert.equal(tenantVisitStatusLabel(null), 'Status unavailable');
+});
+
+test('active visit CTAs route to tracking and terminal requests remain requestable', () => {
+  assert.equal(tenantVisitCtaLabel('RECEIVED'), 'Visit Requested');
+  assert.equal(tenantVisitCtaLabel('COORDINATING'), 'Visit Being Coordinated');
+  assert.equal(tenantVisitCtaLabel('SCHEDULED'), 'View Visit');
+  assert.equal(tenantVisitCtaLabel('UNKNOWN'), 'View My Visits');
+  assert.equal(isActiveTenantVisitRequest('RECEIVED'), true);
+  assert.equal(isActiveTenantVisitRequest('UNAVAILABLE'), false);
+  assert.equal(isActiveTenantVisitRequest('CANCELLED'), false);
 });
 
 test('compact Visit Requests summary stays truthful for loading, error, empty, and populated states', () => {

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   applyPersistedSavedHomeChange,
   mergeSavedHomes,
-  removeSavedHomesFromDiscovery,
   savedHomesForPresentation,
   savedHomesVisibleLimitForWidth
 } from '../utils/tenantSavedHomes.ts';
@@ -24,11 +23,6 @@ test('a confirmed remove drops the property and paginated pages merge without du
   const second = property(9);
   assert.deepEqual(mergeSavedHomes([first], [first, second]), [first, second]);
   assert.deepEqual(applyPersistedSavedHomeChange([first, second], first, false), [second]);
-});
-
-test('saved properties are not repeated in the discovery grid', () => {
-  const homes = [property(8), property(9)];
-  assert.deepEqual(removeSavedHomesFromDiscovery(homes, new Set([8])), [homes[1]]);
 });
 
 test('a failed server mutation leaves the persisted snapshot unchanged', () => {

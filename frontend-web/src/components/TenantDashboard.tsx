@@ -6,7 +6,7 @@ import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
 import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
-import { appendUniqueVisitRequests, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
+import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalPropertyType, RentalSearchFilters, discoverySearchKey } from '../utils/rentalSearch';
 import { queueTenantHeroFilterScroll, resolveTenantHeroFilterScroll, type PendingTenantHeroFilterScroll } from '../utils/tenantQuickFilterScroll';
@@ -14,7 +14,7 @@ import { CompactSearchContext } from './CompactSearchContext';
 import { favoriteService } from '../services/favoriteService';
 import { propertyService } from '../services/propertyService';
 import { getMediaTagLabel } from '../utils/mediaTags';
-import { applyPersistedSavedHomeChange, mergeSavedHomes, removeSavedHomesFromDiscovery, savedHomesForPresentation, savedHomesVisibleLimitForWidth } from '../utils/tenantSavedHomes';
+import { applyPersistedSavedHomeChange, mergeSavedHomes, savedHomesForPresentation, savedHomesVisibleLimitForWidth } from '../utils/tenantSavedHomes';
 import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
@@ -23,7 +23,7 @@ import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
 import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
 import type { TenantMobileDockItem } from '../utils/tenantMobileDock';
 import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchCollisionReached, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
-import { tenantPropertyOutcomeLabel, tenantVisitOutcomeStatusLabel, tenantVisitOutcomeSummaryText } from '../utils/tenantVisitOutcomePresentation';
+import { tenantOutcomeSummaryLabel, tenantPropertyOutcomeLabel, tenantVisitOutcomeStatusLabel, tenantVisitOutcomeSummaryText } from '../utils/tenantVisitOutcomePresentation';
 import type { TenantSearchMorphOverlay } from '../utils/tenantSearchMorph';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
@@ -117,6 +117,28 @@ const PropertyImage: React.FC<{ src?: string | null; alt: string; editorialHover
 };
 
 const focusClass = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700';
+
+const TenantVisitRequestCard: React.FC<{ request: TenantVisitRequest }> = ({ request }) => {
+  const date = formatRequestedDate(request.requestedAt);
+  const location = [readText(request.sector), readText(request.city)].filter(Boolean).join(', ');
+  const title = readText(request.propertyTitle);
+  const bhk = readText(request.bhk);
+  const propertyType = readText(request.propertyType);
+  const preferredTiming = readText(request.preferredVisitTiming);
+  return <article className="min-w-0 rounded-xl border border-[#e1e5dc] bg-white p-3">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${request.status === 'RECEIVED' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-slate-100 text-slate-800'}`}>{tenantVisitStatusLabel(request.status)}</span>
+      {date && <span className="text-[11px] text-slate-600">Requested {date}</span>}
+    </div>
+    <h4 className="mt-2 break-words font-['Outfit'] text-sm font-semibold leading-snug text-slate-950">{title || 'Property'}</h4>
+    {(bhk || propertyType) && <p className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] font-semibold uppercase tracking-wide text-emerald-800">{bhk && <span className="inline-flex items-center gap-1"><BedDouble size={13} aria-hidden="true" />{bhk}</span>}{propertyType && <span>{propertyType.replace(/_/g, ' ').toLowerCase()}</span>}</p>}
+    {(location || preferredTiming) && <div className="mt-2 space-y-1 text-xs leading-5 text-slate-600">
+      {location && <p className="flex min-w-0 items-start gap-1.5"><MapPin size={14} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">{location}</span></p>}
+      {preferredTiming && <p className="flex min-w-0 items-start gap-1.5"><Clock3 size={14} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">Preferred: {preferredTiming}</span></p>}
+    </div>}
+    <div className="mt-2">{request.propertyAvailable && Number.isSafeInteger(request.propertyId) && request.propertyId > 0 ? <Link to={`/property/${request.propertyId}`} className={`inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-emerald-800 underline-offset-4 hover:underline ${focusClass}`}>View property <ArrowRight size={14} aria-hidden="true" /></Link> : <p className="text-xs text-slate-600">This property is no longer available to view.</p>}</div>
+  </article>;
+};
 const readText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const TENANT_CARD_BHK_PATTERN = /^(\d+)\s*(bhk|rk)$/i;
 const TENANT_CARD_FURNISHING_LABELS: Record<string, string> = {
@@ -165,6 +187,7 @@ const PropertyPrice: React.FC<{ property: Property; compact?: boolean }> = ({ pr
 
 const SupportingPropertyCard: React.FC<{
   property: Property;
+  visitRequestStatus: string | null;
   onRequestVisit: (property: Property) => void;
   onOpenQuickView: (property: Property) => void;
   isFavorite: boolean;
@@ -173,7 +196,7 @@ const SupportingPropertyCard: React.FC<{
   onToggleFavorite: (property: Property) => void;
   revealIndex: number;
   reduceMotion: boolean;
-}> = ({ property, onRequestVisit, onOpenQuickView, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, revealIndex, reduceMotion }) => {
+}> = ({ property, visitRequestStatus, onRequestVisit, onOpenQuickView, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, revealIndex, reduceMotion }) => {
   const isRent = property.listingType === 'RENT' && property.monthlyRent > 0;
   const isSale = property.listingType === 'SALE' && Number.isFinite(property.askingPrice) && (property.askingPrice ?? 0) > 0;
   const amount = isRent ? property.monthlyRent : isSale ? property.askingPrice! : null;
@@ -258,7 +281,7 @@ const SupportingPropertyCard: React.FC<{
           <button type="button" onClick={() => onOpenQuickView(property)} className={`group/quick inline-flex min-h-11 items-center gap-1 rounded-lg px-2.5 text-xs font-bold text-emerald-800 transition-colors duration-200 hover:bg-emerald-50 hover:text-emerald-900 ${focusClass}`}>
             <span>Quick view</span><ArrowRight size={14} className="transition-transform duration-300 group-hover/quick:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
           </button>
-          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-11 shrink-0 rounded-full bg-emerald-800 px-3.5 text-xs font-semibold text-white shadow-[0_4px_12px_-8px_rgba(5,92,66,.65)] transition-[background-color,box-shadow,transform] duration-200 group-hover/available-card:shadow-[0_7px_16px_-8px_rgba(5,92,66,.7)] hover:bg-emerald-900 hover:shadow-[0_7px_16px_-8px_rgba(5,92,66,.68)] motion-safe:active:scale-[0.99] motion-reduce:transition-none ${focusClass}`}>Request visit</button>
+          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-11 shrink-0 rounded-full bg-emerald-800 px-3.5 text-xs font-semibold text-white shadow-[0_4px_12px_-8px_rgba(5,92,66,.65)] transition-[background-color,box-shadow,transform] duration-200 group-hover/available-card:shadow-[0_7px_16px_-8px_rgba(5,92,66,.7)] hover:bg-emerald-900 hover:shadow-[0_7px_16px_-8px_rgba(5,92,66,.68)] motion-safe:active:scale-[0.99] motion-reduce:transition-none ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
         </div>
       </div>
     </div>
@@ -267,13 +290,14 @@ const SupportingPropertyCard: React.FC<{
 
 const SavedHomeCard: React.FC<{
   property: Property;
+  visitRequestStatus: string | null;
   isFavorite: boolean;
   favoriteStateReady: boolean;
   favoritePending: boolean;
   onToggleFavorite: (property: Property) => void;
   onOpenQuickView: (property: Property) => void;
   onRequestVisit: (property: Property) => void;
-}> = ({ property, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, onOpenQuickView, onRequestVisit }) => (
+}> = ({ property, visitRequestStatus, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, onOpenQuickView, onRequestVisit }) => (
   <article className="group flex h-full min-h-[9.5rem] min-w-0 overflow-hidden rounded-[18px] border border-[#e6e9e2] bg-white shadow-[0_6px_24px_-21px_rgba(15,45,34,.36)] transition-[transform,box-shadow] duration-300 motion-safe:hover:-translate-y-0.5 hover:shadow-[0_15px_30px_-22px_rgba(15,45,34,.38)] motion-reduce:transform-none motion-reduce:transition-none">
     <div className="relative min-h-[9.5rem] w-[42%] max-w-[11rem] shrink-0 overflow-hidden bg-[#e8e6df]">
       <button type="button" onClick={() => onOpenQuickView(property)} aria-label={`Quick view: ${property.title || 'property'}`} className={`block h-full w-full ${focusClass}`}>
@@ -296,7 +320,7 @@ const SavedHomeCard: React.FC<{
       <PropertyPrice property={property} compact />
       <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-1 border-t border-slate-200/70 pt-1.5">
         <button type="button" onClick={() => onOpenQuickView(property)} className={`inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-50 ${focusClass}`}>Quick view <ArrowRight size={12} aria-hidden="true" /></button>
-        <button type="button" onClick={() => onRequestVisit(property)} aria-label={`Request visit for ${property.title || 'property'}`} className={`min-h-11 shrink-0 whitespace-nowrap rounded-full bg-emerald-800 px-2.5 text-[10px] font-semibold text-white hover:bg-emerald-900 ${focusClass}`}>Request visit</button>
+        <button type="button" onClick={() => onRequestVisit(property)} aria-label={`${tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'} for ${property.title || 'property'}`} className={`min-h-11 shrink-0 whitespace-nowrap rounded-full bg-emerald-800 px-2.5 text-[10px] font-semibold text-white hover:bg-emerald-900 ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
       </div>
     </div>
   </article>
@@ -356,10 +380,11 @@ type QuickViewMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string |
 
 const TenantPropertyQuickView: React.FC<{
   propertyId: number;
+  visitRequestStatus: (propertyId: number) => string | null;
   onClose: () => void;
   onRequestVisit: (property: Property) => void;
   onViewProperty: (property: Property) => void;
-}> = ({ propertyId, onClose, onRequestVisit, onViewProperty }) => {
+}> = ({ propertyId, visitRequestStatus, onClose, onRequestVisit, onViewProperty }) => {
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -490,7 +515,7 @@ const TenantPropertyQuickView: React.FC<{
           </>}
         </div>
         {!loading && !error && property && <footer className="safe-area-bottom flex shrink-0 gap-2 border-t border-[#e5e9e1] bg-white/95 p-3 backdrop-blur sm:px-6">
-          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-12 flex-1 rounded-xl bg-emerald-800 px-3 text-sm font-bold text-white hover:bg-emerald-900 ${focusClass}`}>Request visit <ArrowRight size={15} className="ml-1 inline" aria-hidden="true" /></button>
+          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-12 flex-1 rounded-xl bg-emerald-800 px-3 text-sm font-bold text-white hover:bg-emerald-900 ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus(property.id)) ?? 'Request visit'} <ArrowRight size={15} className="ml-1 inline" aria-hidden="true" /></button>
           <button type="button" onClick={() => onViewProperty(property)} className={`min-h-12 flex-1 rounded-xl border border-emerald-800/25 bg-white px-3 text-sm font-bold text-emerald-900 hover:bg-emerald-50 ${focusClass}`}>View full property</button>
         </footer>}
       </aside>
@@ -530,6 +555,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [tenantSessionCodes, setTenantSessionCodes] = useState<Record<number, TenantVisitStartCode>>({});
   const [tenantSessionAction, setTenantSessionAction] = useState<number | null>(null);
   const [tenantSessionError, setTenantSessionError] = useState<string | null>(null);
+  const [visitClock, setVisitClock] = useState(() => Date.now());
+  const tenantSessionActionRef = useRef(false);
   const [loadMorePending, setLoadMorePending] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const [reload, setReload] = useState(0);
@@ -565,6 +592,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [heroSearchRevealVersion, setHeroSearchRevealVersion] = useState(0);
   const [mobileDockIsScrolling, setMobileDockIsScrolling] = useState(false);
   const [mobileDockActiveItem, setMobileDockActiveItem] = useState<TenantMobileDockItem>('home');
+  const [visitHistoryOpen, setVisitHistoryOpen] = useState(false);
+  const [visitSessionOpenState, setVisitSessionOpenState] = useState<Record<number, boolean>>({});
   const [quickRefineSheetOpen, setQuickRefineSheetOpen] = useState(false);
   const mobileDockSelectionPinnedRef = useRef(false);
   const heroSearchWasAwayRef = useRef(false);
@@ -574,8 +603,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const searchMorphCleanupTimerRef = useRef<number | null>(null);
   const pendingHeroFilterScrollRef = useRef<PendingTenantHeroFilterScroll | null>(null);
   const pendingHeroFilterScrollFrameRef = useRef<number | null>(null);
-  const visitHistoryDetailsRef = useRef<HTMLDetailsElement>(null);
   const quickRefineOpenRef = useRef<(() => void) | null>(null);
+  const visitHistoryDetailsRef = useRef<HTMLDetailsElement>(null);
   const savedHomesRequestRef = useRef<AbortController | null>(null);
   const savedHomesLoadingMoreRef = useRef(false);
   const favoriteMutationRef = useRef<Set<string>>(new Set());
@@ -1247,6 +1276,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const issueVisitCode = async (sessionId: number) => {
     const requestSession = readTenantVisitSession(user.id);
     if (!requestSession) { setTenantSessionError('Please sign in again to manage this visit.'); return; }
+    if (tenantSessionActionRef.current) return;
+    tenantSessionActionRef.current = true;
     setTenantSessionAction(sessionId);
     setTenantSessionError(null);
     try {
@@ -1254,12 +1285,18 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       if (!isCurrentTenantVisitSession(requestSession)) return;
       setTenantSessionCodes(current => ({ ...current, [sessionId]: code }));
     } catch (error) {
-      setTenantSessionError(error instanceof Error ? error.message : 'Could not prepare a visit start code. Please retry.');
-    } finally { setTenantSessionAction(null); }
+      if (isCurrentTenantVisitSession(requestSession))
+        setTenantSessionError(error instanceof Error ? error.message : 'Could not prepare a visit start code. Please retry.');
+    } finally {
+      tenantSessionActionRef.current = false;
+      if (isCurrentTenantVisitSession(requestSession)) setTenantSessionAction(null);
+    }
   };
   const confirmVisitChange = async (sessionId: number, action: 'ACCEPT_RESCHEDULE' | 'REJECT_RESCHEDULE' | 'DISPUTE_NO_SHOW', expectedSessionVersion: number) => {
     const requestSession = readTenantVisitSession(user.id);
     if (!requestSession) { setTenantSessionError('Please sign in again to manage this visit.'); return; }
+    if (tenantSessionActionRef.current) return;
+    tenantSessionActionRef.current = true;
     setTenantSessionAction(sessionId);
     setTenantSessionError(null);
     try {
@@ -1268,12 +1305,69 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       setTenantSessionCodes(current => { const next = { ...current }; delete next[sessionId]; return next; });
       setTenantSessionsReload(value => value + 1);
     } catch (error) {
-      setTenantSessionError(error instanceof Error ? error.message : 'Could not record your visit response. Please retry.');
-    } finally { setTenantSessionAction(null); }
+      if (isCurrentTenantVisitSession(requestSession))
+        setTenantSessionError(error instanceof Error ? error.message : 'Could not record your visit response. Please retry.');
+    } finally {
+      tenantSessionActionRef.current = false;
+      if (isCurrentTenantVisitSession(requestSession)) setTenantSessionAction(null);
+    }
   };
+  useEffect(() => {
+    const hasLiveCode = (now: number) => Object.values(tenantSessionCodes).some(code => {
+      const expiry = Date.parse(code.expiresAt);
+      return Number.isFinite(expiry) && expiry > now;
+    });
+    const now = Date.now();
+    setVisitClock(now);
+    if (!hasLiveCode(now)) return undefined;
+    const interval = window.setInterval(() => {
+      const tick = Date.now();
+      setVisitClock(tick);
+      if (!hasLiveCode(tick)) window.clearInterval(interval);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [tenantSessionCodes]);
+  useEffect(() => {
+    if (routeState.focusTenantVisits !== true) return undefined;
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById('visit-history-title');
+      target?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+      target?.focus({ preventScroll: true });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [routeState.focusTenantVisits, location.pathname, location.search, navigate]);
   const visibleHistory: HistoryState = !session ? { ...emptyHistory, status: 'error' } :
     session.key === history.identityKey ? history : emptyHistory;
   const view = tenantVisitView(visibleHistory.status, visibleHistory.requests);
+  const actionRequiredVisits = visibleTenantSessions.sessions.filter(visit =>
+    visit.status === 'PROVISIONAL_NO_SHOW'
+      || visit.status === 'SCHEDULED' && visit.tenantConfirmationState === 'PENDING'
+        && (visit.repairState === 'NONE' || visit.repairState === 'PROPOSED'));
+  const visitHistorySummary = visibleTenantSessions.sessions.length > 0 && visibleHistory.totalCount === 0
+    ? `${visibleTenantSessions.sessions.length} visit ${visibleTenantSessions.sessions.length === 1 ? 'session' : 'sessions'}`
+    : view === 'empty' && visibleTenantSessions.status === 'loading' ? 'Loading visit updates…'
+      : view === 'empty' ? 'Track requests and visit updates'
+        : tenantVisitSummary(view, visibleHistory.totalCount);
+  const currentVisits = visibleTenantSessions.sessions.filter(visit =>
+    ['DRAFT', 'SCHEDULED', 'STARTED', 'INTERRUPTED', 'PROVISIONAL_NO_SHOW', 'REPAIR_REQUIRED'].includes(visit.status));
+  const pastVisits = visibleTenantSessions.sessions.filter(visit => !currentVisits.includes(visit));
+  const coordinatingRequests = visibleHistory.requests.filter(request => request.status === 'RECEIVED' || request.status === 'COORDINATING');
+  const sessionRequests = visibleHistory.requests.filter(request => request.status === 'SCHEDULED');
+  const pastRequests = visibleHistory.requests.filter(request => request.status === 'UNAVAILABLE' || request.status === 'CANCELLED');
+  const requestStatusForProperty = (propertyId: number): string | null => {
+    if (view === 'loading' || view === 'error') return 'UNKNOWN';
+    const activeRequest = visibleHistory.requests.find(request => request.propertyId === propertyId
+      && isActiveTenantVisitRequest(request.status));
+    return activeRequest?.status ?? (visibleHistory.hasMore ? 'UNKNOWN' : null);
+  };
+  const handleTenantRequestVisit = (property: Property) => {
+    if (requestStatusForProperty(property.id)) {
+      navigateMobileDock('visits');
+      return;
+    }
+    onRequestVisit(property);
+  };
   const firstName = user.fullName?.trim().split(/\s+/)[0];
   const savedHomesIdentityMatches = Boolean(favoriteSession && savedHomesState.identityKey === favoriteSession.key);
   const visibleSavedHomes = savedHomesIdentityMatches && savedHomesState.status !== 'error'
@@ -1286,7 +1380,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       ? favoriteState.favoriteIds : []),
     ...visibleSavedHomes.map(property => property.id)
   ]);
-  const availableProperties = removeSavedHomesFromDiscovery(properties, visibleFavoriteIds);
+  const availableProperties = properties;
   const favoriteIsReadyFor = (propertyId: number): boolean => Boolean(favoriteSession && (
     isFavoriteLookupReadyFor(favoriteState, favoriteSession.key, propertyId)
       || savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.some(item => item.id === propertyId)
@@ -1307,7 +1401,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     setMobileDockActiveItem(item);
     const targetId = tenantMobileDockTarget(item);
     if (!targetId) return;
-    if (item === 'visits' && visitHistoryDetailsRef.current) visitHistoryDetailsRef.current.open = true;
     const target = document.getElementById(targetId);
     if (!target) return;
     target.scrollIntoView({
@@ -1514,9 +1607,9 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               {presentedSavedHomes.map((property, index) => <motion.div key={property.id} layout={!reduceMotion}
                 initial={reduceMotion ? false : { opacity: 0, y: 9 }} animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? undefined : { opacity: 0, y: -5 }}
                 transition={reduceMotion ? { duration: 0 } : { duration: 0.3, delay: Math.min(index, 5) * 0.055, ease: [0.16, 1, 0.3, 1] }}>
-                <SavedHomeCard property={property} isFavorite={isPropertySaved(property.id)} favoriteStateReady={favoriteIsReadyFor(property.id)}
+                <SavedHomeCard property={property} visitRequestStatus={requestStatusForProperty(property.id)} isFavorite={isPropertySaved(property.id)} favoriteStateReady={favoriteIsReadyFor(property.id)}
                   favoritePending={isFavoritePending(property.id)} onToggleFavorite={toggleFavorite}
-                  onOpenQuickView={openQuickView} onRequestVisit={onRequestVisit} />
+                  onOpenQuickView={openQuickView} onRequestVisit={handleTenantRequestVisit} />
               </motion.div>)}
               {!savedHomesExpanded && hasSavedHomesStack && <motion.div key="saved-stack" layout={!reduceMotion}
                 initial={reduceMotion ? false : { opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.98 }}
@@ -1543,21 +1636,44 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
           <div style={{ '--tenant-discovery-rail-top': tenantDiscoveryRailTop } as React.CSSProperties}
             className={`tenant-discovery-rail ${view === 'populated' ? 'order-1' : 'order-2'} min-w-0 lg:order-1`}>
           <span id="tenant-discovery-collision-sentinel" aria-hidden="true" className="pointer-events-none absolute left-0 top-0 h-px w-px" />
-          <details ref={visitHistoryDetailsRef} id="visit-history" className="group min-w-0 overflow-hidden rounded-[18px] border border-[#e3e5dc] bg-gradient-to-br from-[#fffefa] to-[#f5f8f1] shadow-[0_8px_24px_-21px_rgba(15,45,34,.5)]">
+          {actionRequiredVisits.length > 0 && !visitHistoryOpen && <section aria-labelledby="tenant-visit-action-summary-title" className="mb-3 flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
+            <div className="min-w-0"><h2 id="tenant-visit-action-summary-title" className="text-sm font-semibold text-amber-950">Action Required</h2>
+              <p className="mt-0.5 text-sm leading-5 text-amber-950">{actionRequiredVisits.length === 1 ? 'A visit needs your response.' : `${actionRequiredVisits.length} visits need your response.`}</p></div>
+            <button type="button" onClick={() => navigateMobileDock('visits')} className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-amber-950 underline underline-offset-2 hover:bg-amber-100 ${focusClass}`}>Review visits <ArrowRight size={15} aria-hidden="true" /></button>
+          </section>}
+          <details ref={visitHistoryDetailsRef} id="visit-history" onToggle={() => setVisitHistoryOpen(Boolean(visitHistoryDetailsRef.current?.open))}
+            className="group min-w-0 overflow-hidden rounded-[18px] border border-[#e3e5dc] bg-gradient-to-br from-[#fffefa] to-[#f5f8f1] shadow-[0_8px_24px_-21px_rgba(15,45,34,.5)]">
             <summary className={`flex min-h-[68px] cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 marker:hidden [&::-webkit-details-marker]:hidden ${focusClass}`}>
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#d8e7dd] bg-[#edf5ef] text-emerald-800"><CalendarDays size={19} aria-hidden="true" /></span>
               <div className="min-w-0 flex-1">
-                <h2 id="visit-history-title" data-tenant-nav-focus tabIndex={-1} onFocus={() => { if (visitHistoryDetailsRef.current) visitHistoryDetailsRef.current.open = true; }} className="scroll-mt-24 font-['Outfit'] text-sm font-semibold text-slate-950 focus:outline-none">Visit Requests</h2>
-                <p className="mt-0.5 truncate text-xs text-slate-600">{tenantVisitSummary(view, visibleHistory.totalCount)}</p>
+                <h2 id="visit-history-title" data-tenant-nav-focus tabIndex={-1} onFocus={() => {
+                  const details = visitHistoryDetailsRef.current;
+                  if (details && !details.open) {
+                    details.open = true;
+                    setVisitHistoryOpen(true);
+                  }
+                }} className="scroll-mt-24 font-['Outfit'] text-sm font-semibold text-slate-950 focus:outline-none">My Visits</h2>
+                <p className="mt-0.5 truncate text-xs text-slate-600">{visitHistorySummary}</p>
               </div>
               <ChevronRight size={17} className="shrink-0 text-emerald-800 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
             </summary>
             <div className="space-y-3 border-t border-emerald-950/10 p-3">
-            <section aria-labelledby="confirmed-visit-sessions-title" className="space-y-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/60 p-3 sm:p-4">
+            {actionRequiredVisits.length > 0 && visitHistoryOpen && <section aria-labelledby="tenant-visit-action-title" className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3.5">
+              <h3 id="tenant-visit-action-title" className="font-['Outfit'] text-sm font-semibold text-amber-950">Action Required</h3>
+              <p className="mt-1 text-sm leading-5 text-amber-950">{actionRequiredVisits.length === 1 ? 'A visit needs your response.' : `${actionRequiredVisits.length} visits need your response.`}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {actionRequiredVisits.map(visit => <a key={visit.sessionId} href={`#visit-session-${visit.sessionId}`}
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-white px-3 text-sm font-semibold text-amber-950 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700">{visit.status === 'PROVISIONAL_NO_SHOW' ? 'Review attendance' : 'Review proposed time'} <ArrowRight size={14} aria-hidden="true" /></a>)}
+              </div>
+            </section>}
+            <details className="rounded-lg text-xs text-slate-600">
+              <summary className={`min-h-11 cursor-pointer py-2 font-semibold text-emerald-900 ${focusClass}`}>How visit credits work</summary>
+              <p className="pb-2 leading-5">A Visit Session can include multiple suitable homes in the same area. Sending a request doesn’t use a visit credit. A confirmed schedule reserves one; starting with your in-person code consumes it. No homes viewed does not automatically restore it.</p>
+            </details>
+            {visibleTenantSessions.sessions.length > 0 && <section aria-labelledby="confirmed-visit-sessions-title" className="space-y-2">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 id="confirmed-visit-sessions-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Visit sessions</h3>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">Current schedule and visit progress from Pathome.</p>
                 </div>
                 {(visibleTenantSessions.status === 'error' || visibleTenantOutcomeHistory.status === 'error') && <button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 shrink-0 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button>}
               </div>
@@ -1566,28 +1682,50 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               {visibleTenantSessions.status === 'error' && <p role="alert" className="text-sm text-slate-600">Visit session details are unavailable right now.</p>}
               {visibleTenantOutcomeHistory.status === 'loading' && visibleTenantSessions.status === 'ready' && <p role="status" className="text-xs text-slate-600">Loading visit outcome details…</p>}
               {visibleTenantOutcomeHistory.status === 'error' && <p role="alert" className="text-xs text-rose-800">Visit outcome details are unavailable right now. Retry to reload your visit history.</p>}
-              {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && <p role="status" className="text-sm text-slate-600">Confirmed visit sessions will appear here.</p>}
-              {visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.map(visit => {
+              {visibleTenantSessions.status === 'ready' && (() => {
+                const renderVisitSession = (visit: VisitExecutionView) => {
                 const outcome = tenantOutcomesBySession.get(visit.sessionId);
                 const code = tenantSessionCodes[visit.sessionId];
                 const isPending = tenantSessionAction === visit.sessionId;
                 const needsTenantConfirmation = visit.tenantConfirmationState === 'PENDING';
-                const statusLabel = tenantVisitOutcomeStatusLabel(outcome, visit.status);
-                return <article key={visit.sessionId} className="min-w-0 rounded-xl border border-emerald-100 bg-white p-3 shadow-sm sm:p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-900">{statusLabel}</span>
-                    {visit.repairState === 'PROPOSED' && <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-900">Proposed time</span>}
-                    {visit.repairState === 'REQUIRED' && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900">Action required</span>}
-                  </div>
-                  <p className="mt-2 text-sm font-semibold text-slate-950">{visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Time under review' : visit.repairState === 'PROPOSED' ? 'Proposed visit time' : outcome?.outcomeReportAvailable ? tenantVisitOutcomeSummaryText(outcome) : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : visit.status === 'CANCELLED' ? 'Visit cancelled' : visit.status === 'NO_SHOW' ? 'Visit marked no-show' : visit.status === 'EXPIRED' ? 'Visit expired' : visit.status === 'COMPLETED' ? 'Visit ended; details pending' : 'Scheduled'}{visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT' && <> · {formatVisitTime(visit.scheduledAt, visit.zoneId)}</>}</p>
+                const statusLabel = visit.repairState === 'PROPOSED' ? 'New time proposed' : visit.repairState === 'REQUIRED' ? 'Schedule under review' : needsTenantConfirmation && visit.repairState === 'NONE' ? 'Confirmation needed' : tenantVisitOutcomeStatusLabel(outcome, visit.status);
+                const visitDescription = visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Schedule under review' : visit.repairState === 'PROPOSED' ? 'New time proposed' : needsTenantConfirmation ? 'Time change awaiting your response' : outcome?.lifecycle === 'RESULTS_NOT_RECORDED' ? 'Results not recorded' : outcome?.outcomeReportAvailable ? tenantVisitOutcomeSummaryText(outcome) : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : visit.status === 'CANCELLED' ? 'Visit cancelled' : visit.status === 'NO_SHOW' ? 'Visit marked no-show' : visit.status === 'EXPIRED' ? 'Visit expired' : visit.status === 'COMPLETED' ? 'Visit ended · details pending' : visit.status === 'PROVISIONAL_NO_SHOW' ? 'Attendance under review' : visit.status === 'SCHEDULED' ? 'Confirmed guided visit' : 'Scheduled';
+                const showScheduledTime = visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT';
+                const expiresAtMs = code ? Date.parse(code.expiresAt) : Number.NaN;
+                const secondsRemaining = Number.isFinite(expiresAtMs) ? Math.max(0, Math.ceil((expiresAtMs - visitClock) / 1000)) : null;
+                const codeExpired = secondsRemaining === 0;
+                const needsDefaultOpen = actionRequiredVisits.some(item => item.sessionId === visit.sessionId) || visit.status === 'STARTED';
+                return <article id={`visit-session-${visit.sessionId}`} key={visit.sessionId} className="min-w-0 scroll-mt-24">
+                  <details open={visitSessionOpenState[visit.sessionId] ?? needsDefaultOpen}
+                    onToggle={event => {
+                      const open = event.currentTarget.open;
+                      setVisitSessionOpenState(current => current[visit.sessionId] === open
+                        ? current : { ...current, [visit.sessionId]: open });
+                    }} className="group min-w-0 rounded-xl border border-emerald-100 bg-white shadow-sm">
+                  <summary className={`flex min-h-11 min-w-0 cursor-pointer items-center gap-2 p-3 ${focusClass}`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-900">{statusLabel}</span>
+                        {visit.repairState === 'PROPOSED' && <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-900">Proposed time</span>}
+                        {visit.repairState === 'REQUIRED' && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">Action required</span>}
+                      </div>
+                      <p className="mt-1 break-words text-xs font-semibold leading-4 text-slate-950">{visitDescription}{showScheduledTime && <> · {formatVisitTime(visit.scheduledAt, visit.zoneId)}</>}</p>
+                    </div>
+                    <ChevronRight size={16} className="shrink-0 text-emerald-800 transition-transform group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+                  </summary>
+                  <div className="space-y-3 border-t border-slate-100 p-3">
+                  {(() => {
+                    const locality = [outcome?.locality, outcome?.city].map(readText).filter(Boolean).join(', ');
+                    return locality ? <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-600"><MapPin size={15} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{locality}</span></p> : null;
+                  })()}
                   {outcome?.outcomeReportAvailable && <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-semibold text-slate-900">Visit outcomes</p>
-                      {outcome.outcomeSummary && <span className="text-xs font-semibold text-emerald-900">{outcome.outcomeSummary === 'ALL_VIEWED' ? 'All properties viewed' : outcome.outcomeSummary === 'PARTLY_VIEWED' ? 'Some properties viewed' : outcome.outcomeSummary === 'NONE_VIEWED' ? 'No properties viewed' : 'Results not recorded'}</span>}
+                      {outcome.outcomeSummary && <span className="text-xs font-semibold text-emerald-900">{tenantOutcomeSummaryLabel(outcome.outcomeSummary)}</span>}
                     </div>
                     <p className="mt-1 text-xs leading-5 text-slate-700">{tenantVisitOutcomeSummaryText(outcome)}</p>
                     {outcome.properties.length > 0 && <details className="mt-2 rounded-lg border border-emerald-100 bg-white p-2.5">
-                      <summary className={`min-h-11 cursor-pointer py-2 text-xs font-semibold text-emerald-900 ${focusClass}`}>View properties in this visit</summary>
+                      <summary className={`min-h-11 cursor-pointer py-2 text-xs font-semibold text-emerald-900 ${focusClass}`}>View homes in this visit</summary>
                       <ul className="mt-1 space-y-2">
                         {outcome.properties.map(property => <li key={`${outcome.sessionId}-${property.position}`} className="border-t border-slate-100 pt-2 first:border-0 first:pt-0">
                           <p className="text-sm font-medium text-slate-900">{property.title}</p>
@@ -1599,8 +1737,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                       </ul>
                     </details>}
                   </div>}
-                  {visit.arrivedAt && <p className="mt-1 text-xs text-slate-600">Ground Executive reported arrival at {formatVisitTime(visit.arrivedAt, visit.zoneId)}.</p>}
-                  {visit.startedAt && <p className="mt-1 text-xs text-slate-600">Started {formatVisitTime(visit.startedAt, visit.zoneId)} · expected end {formatVisitTime(visit.expectedEndAt, visit.zoneId)}{visit.overPlannedTime ? ' · running over planned time' : ''}</p>}
+                  {visit.arrivedAt && <p className="mt-1 text-xs font-medium text-emerald-900">Ground Executive arrived · {formatVisitTime(visit.arrivedAt, visit.zoneId)}.</p>}
+                  {visit.startedAt && <p className="mt-1 text-xs text-slate-600">Started {formatVisitTime(visit.startedAt, visit.zoneId)}{visit.expectedEndAt ? ` · expected end ${formatVisitTime(visit.expectedEndAt, visit.zoneId)}` : ''}{visit.overPlannedTime ? ' · running over planned time' : ''}</p>}
                   {visit.tenantEtaAt && <p className="mt-1 text-xs text-slate-600">Your confirmed ETA: {formatVisitTime(visit.tenantEtaAt, visit.zoneId)}.</p>}
                   {visit.repairState === 'PROPOSED' && <p className="mt-2 rounded-lg bg-sky-50 p-2 text-xs leading-5 text-sky-950">This time is proposed and will be confirmed only after you accept it.</p>}
                   {visit.repairState === 'REQUIRED' && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-950">Your earlier visit time can no longer be confirmed. Operations is arranging a safe option and will update you.</p>}
@@ -1608,78 +1746,77 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                   {needsTenantConfirmation && (visit.repairState === 'NONE' || visit.repairState === 'PROPOSED') && <div className="mt-3 space-y-2">
                     <p className="text-xs leading-5 text-slate-700">{visit.repairState === 'PROPOSED' ? 'A safe visit time is proposed. Confirm it only if it works for you.' : 'Operations proposed a time change. Confirm it only if the proposed visit time works for you.'}</p>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'ACCEPT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Confirm proposed time</button>
-                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'REJECT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60 ${focusClass}`}>I can’t make this time</button>
+                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'ACCEPT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Accept new time</button>
+                      <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'REJECT_RESCHEDULE', visit.version)} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60 ${focusClass}`}>Decline time</button>
                     </div>
                   </div>}
                   {visit.status === 'PROVISIONAL_NO_SHOW' && <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'DISPUTE_NO_SHOW', visit.version)} className={`mt-3 min-h-11 rounded-xl border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-60 ${focusClass}`}>Dispute provisional no-show</button>}
                   {visit.status === 'SCHEDULED' && !needsTenantConfirmation && visit.repairState === 'NONE' && <div className="mt-3">
-                    {code ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3" role="status" aria-live="polite">
-                      <p className="text-xs font-semibold text-emerald-950">Your one-time visit start code</p>
-                      <p className="mt-1 font-mono text-2xl font-bold tracking-[0.28em] text-emerald-900" aria-label="Visit start code">{code.code}</p>
-                      <p className="mt-1 text-xs text-emerald-900">Share this code with your assigned Ground Executive. It expires {formatVisitTime(code.expiresAt)}. This code is shown only in your signed-in Pathome account.</p>
-                      <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`mt-2 min-h-11 rounded-lg px-3 text-xs font-semibold text-emerald-900 underline disabled:opacity-50 ${focusClass}`}>Get a new code</button>
-                    </div> : <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Get visit start code</button>}
+                    {code ? <div className="rounded-2xl border border-emerald-200 bg-[#eef5ec] p-4" role="status" aria-live="polite">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-900">Your Visit Pass</p>
+                      {codeExpired ? <p className="mt-2 text-sm font-semibold text-slate-900">This code has expired. Request a fresh code when you’re with your Ground Executive.</p>
+                        : <><p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em] text-emerald-950 sm:text-4xl" aria-label="Visit start code">{code.code}</p><p className="mt-2 text-xs font-medium text-emerald-950">{secondsRemaining === null ? `Expires ${formatVisitTime(code.expiresAt)}` : `Expires in ${String(Math.floor(secondsRemaining / 60)).padStart(2, '0')}:${String(secondsRemaining % 60).padStart(2, '0')}`}</p></>}
+                      <p className="mt-2 text-sm leading-5 text-slate-700">Share this code with your Ground Executive in person to begin your visit. Showing the code does not start the visit.</p>
+                      <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`mt-2 min-h-11 rounded-lg px-3 text-sm font-semibold text-emerald-900 underline underline-offset-2 disabled:opacity-50 ${focusClass}`}>{codeExpired ? 'Request a fresh code' : 'Get a new code'}</button>
+                    </div> : <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Get visit start code</button>}
                   </div>}
+                  </div>
+                  </details>
                 </article>;
-              })}
+                };
+                return <>
+                  {currentVisits.length > 0 && <section aria-labelledby="upcoming-visit-sessions-title" className="space-y-3"><div><h4 id="upcoming-visit-sessions-title" className="text-sm font-semibold text-slate-900">Upcoming and active</h4><p className="mt-1 text-xs text-slate-600">Confirmed times, ongoing visits, and schedule updates.</p></div>{currentVisits.map(renderVisitSession)}</section>}
+                  {pastVisits.length > 0 && <section aria-labelledby="past-visit-sessions-title" className="space-y-3"><h4 id="past-visit-sessions-title" className="text-sm font-semibold text-slate-900">Past visits</h4>{pastVisits.map(renderVisitSession)}</section>}
+                </>;
+              })()}
               {visibleTenantSessions.status === 'ready' && visibleTenantSessions.totalPages > 1 && <nav aria-label="Visit session pages" className="flex items-center justify-between gap-3 text-sm text-slate-700">
                 <button type="button" disabled={tenantSessionPage === 0} onClick={() => setTenantSessionPage(value => value - 1)} className={`min-h-11 rounded-lg px-3 font-semibold disabled:opacity-50 ${focusClass}`}>Previous</button>
                 <span>Page {tenantSessionPage + 1} of {visibleTenantSessions.totalPages}</span>
                 <button type="button" disabled={tenantSessionPage + 1 >= visibleTenantSessions.totalPages} onClick={() => setTenantSessionPage(value => value + 1)} className={`min-h-11 rounded-lg px-3 font-semibold disabled:opacity-50 ${focusClass}`}>Next</button>
               </nav>}
-            </section>
-            {view === 'loading' && <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1" role="status" aria-live="polite" aria-label="Loading your visit requests">
-              {[0, 1].map(index => <div key={index} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm sm:flex sm:h-48">
-                <div className="aspect-[16/9] bg-slate-200 motion-safe:animate-pulse sm:aspect-auto sm:w-[38%] sm:shrink-0" /><div className="p-5 sm:flex-1"><div className="h-4 w-24 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-5 h-5 w-4/5 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /></div>
-              </div>)}<span className="sr-only">Loading your visit requests</span>
+            </section>}
+            {visibleTenantSessions.sessions.length === 0 && (visibleTenantSessions.status === 'loading' || visibleTenantSessions.status === 'error'
+              || visibleTenantOutcomeHistory.status === 'loading' || visibleTenantOutcomeHistory.status === 'error') && <div className="space-y-2 text-sm text-slate-600">
+              {visibleTenantSessions.status === 'loading' && <p role="status">Loading visit sessions…</p>}
+              {visibleTenantSessions.status === 'error' && <div role="alert" className="flex flex-wrap items-center gap-2"><span>Visit session details are unavailable right now.</span><button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 rounded-lg px-2 font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button></div>}
+              {visibleTenantSessions.sessions.length === 0 && visibleTenantOutcomeHistory.status === 'loading' && <p role="status">Loading visit outcome details…</p>}
+              {visibleTenantSessions.sessions.length === 0 && visibleTenantOutcomeHistory.status === 'error' && <div role="alert" className="flex flex-wrap items-center gap-2"><span>Visit outcome details are unavailable right now.</span><button type="button" onClick={() => setTenantSessionsReload(value => value + 1)} className={`min-h-11 rounded-lg px-2 font-semibold text-emerald-900 underline ${focusClass}`}>Retry</button></div>}
+            </div>}
+            {view === 'loading' && <p className="py-1 text-xs text-slate-600" role="status" aria-live="polite">Loading visit requests…</p>}
+
+            {view === 'error' && <div className="flex flex-wrap items-center gap-2 text-xs text-rose-900" role="alert">
+              <span>Visit requests are unavailable.</span>
+              <button type="button" onClick={() => setReload(value => value + 1)} className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 font-semibold underline ${focusClass}`}><RefreshCw size={14} aria-hidden="true" /> Retry</button>
             </div>}
 
-            {view === 'error' && <div className="rounded-[28px] border border-rose-200 bg-white px-5 py-8 shadow-sm sm:px-8" role="alert">
-              <h3 className="font-['Outfit'] text-xl font-semibold">Your requests are unavailable right now</h3>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Please try again. You can still explore available homes below.</p>
-              <button type="button" onClick={() => setReload(value => value + 1)} className={`mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 ${focusClass}`}><RefreshCw size={16} aria-hidden="true" /> Retry</button>
-            </div>}
-
-            {view === 'empty' && <div className="relative isolate grid gap-3 overflow-hidden rounded-[18px] border border-[#e5e8e1] bg-white p-4 shadow-[0_8px_24px_-22px_rgba(15,45,34,.35)] sm:grid-cols-[auto_1fr] sm:items-center lg:grid-cols-1 lg:justify-items-start" role="status" aria-live="polite">
-              <div className="relative flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-100 bg-[#eff5ef] text-emerald-800">
-                <CalendarDays size={23} aria-hidden="true" />
-                <span className="absolute -bottom-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-xl border-2 border-white bg-white text-emerald-800 shadow-sm"><Clock3 size={14} aria-hidden="true" /></span>
-              </div>
-              <div className="relative min-w-0"><h3 className="font-['Outfit'] text-base font-semibold tracking-tight">You haven’t requested a visit yet.</h3>
-                <p className="mt-1.5 text-sm leading-5 text-slate-600">Explore available homes and request a visit when one feels right.</p>
-                <a href="#discover-homes" className={`mt-2 inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 ${focusClass}`}>Explore homes <ArrowRight size={16} aria-hidden="true" /></a>
+            {view === 'empty' && visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && visibleTenantOutcomeHistory.status === 'ready' && visibleTenantOutcomeHistory.sessions.length === 0 && <div className="py-1" role="status" aria-live="polite">
+              <div className="relative min-w-0"><h3 className="font-['Outfit'] text-sm font-semibold tracking-tight">No visits yet</h3>
+                <p className="mt-1 text-xs leading-5 text-slate-600">Request a visit from a property to track it here.</p>
+                <a href="#discover-homes" className={`mt-1 inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 ${focusClass}`}>Explore homes <ArrowRight size={14} aria-hidden="true" /></a>
               </div>
             </div>}
 
-            {view === 'populated' && <>
-              <div className="grid min-w-0 gap-4 lg:grid-cols-1">
-                {visibleHistory.requests.map(request => {
-                  const date = formatRequestedDate(request.requestedAt);
-                  const location = [readText(request.sector), readText(request.city)].filter(Boolean).join(', ');
-                  const title = readText(request.propertyTitle);
-                  const bhk = readText(request.bhk);
-                  const propertyType = readText(request.propertyType);
-                  const preferredTiming = readText(request.preferredVisitTiming);
-                  return <article key={request.requestId} className="group min-w-0 overflow-hidden rounded-[22px] border border-[#e1e5dc] bg-white shadow-[0_12px_32px_-28px_rgba(15,45,34,.5)] transition-[transform,box-shadow] duration-200 motion-safe:hover:-translate-y-0.5 hover:shadow-[0_20px_38px_-28px_rgba(15,45,34,.48)] sm:flex lg:block">
-                    <div className="aspect-[16/9] min-w-0 bg-[#e8e6df] sm:aspect-auto sm:w-[38%] sm:shrink-0 lg:aspect-[16/9] lg:w-full"><PropertyImage src={request.coverImageUrl} alt={title ? `${title} photo` : 'Property photo'} /></div>
-                    <div className="flex min-w-0 flex-1 flex-col p-5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${request.status === 'RECEIVED' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-slate-100 text-slate-800'}`}>{tenantVisitStatusLabel(request.status)}</span>
-                        {date && <span className="text-xs text-slate-600">Requested {date}</span>}
-                      </div>
-                      <h3 className="mt-3 break-words font-serif text-lg font-medium leading-snug">{title || 'Property'}</h3>
-                      {(bhk || propertyType) && <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold uppercase tracking-wide text-emerald-800">{bhk && <span className="inline-flex items-center gap-1"><BedDouble size={15} aria-hidden="true" />{bhk}</span>}{propertyType && <span>{propertyType.replace(/_/g, ' ').toLowerCase()}</span>}</p>}
-                      {location && <p className="mt-2 flex min-w-0 items-start gap-1.5 text-sm text-slate-600"><MapPin size={16} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">{location}</span></p>}
-                      {preferredTiming && <p className="mt-2 flex min-w-0 items-start gap-1.5 text-sm text-slate-600"><Clock3 size={16} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">Preferred: {preferredTiming}</span></p>}
-                      <div className="mt-auto pt-4">{request.propertyAvailable && Number.isSafeInteger(request.propertyId) && request.propertyId > 0 ? <Link to={`/property/${request.propertyId}`} className={`inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-emerald-800 underline-offset-4 hover:underline ${focusClass}`}>View property <ArrowRight size={16} aria-hidden="true" /></Link> : <p className="text-sm text-slate-600">This property is no longer available to view.</p>}</div>
-                    </div>
-                  </article>;
-                })}
-              </div>
-              {visibleHistory.hasMore && <div className="mt-6 text-center"><button type="button" onClick={loadMore} disabled={loadMorePending} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-6 text-sm font-semibold text-slate-800 transition-colors hover:border-emerald-700 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>{loadMorePending ? <><RefreshCw size={15} className="mr-2 inline motion-safe:animate-spin" aria-hidden="true" />Loading more…</> : 'Load more requests'}</button>
-                {loadMoreError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more requests. Please try again.</p>}</div>}
-            </>}
+            {coordinatingRequests.length > 0 && <section aria-labelledby="coordinating-requests-title" className="space-y-3">
+              <div><h3 id="coordinating-requests-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Being coordinated</h3><p className="mt-0.5 text-[11px] leading-4 text-slate-600">Your preferred timing is a request. Pathome confirms availability before scheduling.</p></div>
+              <div className="space-y-2">{coordinatingRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+            </section>}
+
+            {sessionRequests.length > 0 && <details className="rounded-lg border-t border-slate-200 pt-1">
+              <summary className={`flex min-h-11 cursor-pointer items-center justify-between gap-2 py-1 text-sm font-semibold text-slate-900 ${focusClass}`}>
+                <span id="session-requests-title">Added to a Visit Session</span><span className="text-xs font-medium text-slate-600">{sessionRequests.length}</span>
+              </summary>
+              <div className="space-y-2 pb-2">{sessionRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+            </details>}
+
+            {pastRequests.length > 0 && <details className="rounded-lg border-t border-slate-200 pt-1">
+              <summary className={`flex min-h-11 cursor-pointer items-center justify-between gap-2 py-1 text-sm font-semibold text-slate-900 ${focusClass}`}>
+                <span id="past-requests-title">Past requests</span><span className="text-xs font-medium text-slate-600">{pastRequests.length}</span>
+              </summary>
+              <div className="space-y-2 pb-2">{pastRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+            </details>}
+
+            {view === 'populated' && visibleHistory.hasMore && <div className="text-center"><button type="button" onClick={loadMore} disabled={loadMorePending} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-6 text-sm font-semibold text-slate-800 transition-colors hover:border-emerald-700 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>{loadMorePending ? <><RefreshCw size={15} className="mr-2 inline motion-safe:animate-spin" aria-hidden="true" />Loading more…</> : 'Load more requests'}</button>
+              {loadMoreError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more requests. Please try again.</p>}</div>}
             </div>
           </details>
           <TenantQuickRefinePanel filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
@@ -1712,7 +1849,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
             {discoveryState === 'READY' && availableProperties.length > 0 && <div className="grid min-w-0 gap-4 sm:grid-cols-2">
               {availableProperties.map((property, index) => {
                 const favoriteStateReady = favoriteIsReadyFor(property.id);
-                return <SupportingPropertyCard key={property.id} property={property} onRequestVisit={onRequestVisit}
+                return <SupportingPropertyCard key={property.id} property={property} visitRequestStatus={requestStatusForProperty(property.id)} onRequestVisit={handleTenantRequestVisit}
                   onOpenQuickView={openQuickView} isFavorite={isPropertySaved(property.id)}
                   favoriteStateReady={favoriteStateReady} favoritePending={isFavoritePending(property.id)}
                   onToggleFavorite={toggleFavorite} revealIndex={index} reduceMotion={reduceMotion} />;
@@ -1775,7 +1912,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       })}
     </motion.nav>}
     {previewPropertyId !== null && <TenantPropertyQuickView key={previewPropertyId} propertyId={previewPropertyId}
-      onClose={closeQuickView} onRequestVisit={onRequestVisit} onViewProperty={onViewProperty} />}
+      visitRequestStatus={requestStatusForProperty} onClose={closeQuickView} onRequestVisit={handleTenantRequestVisit} onViewProperty={onViewProperty} />}
     </>
   );
 };

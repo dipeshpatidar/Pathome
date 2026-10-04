@@ -15,18 +15,20 @@ const outcome = (overrides = {}) => ({
 
 test('tenant history uses truthful human states for pending, legacy, and all summary outcomes', () => {
   assert.equal(tenantVisitOutcomeStatusLabel(outcome()), 'Visit ended · details pending');
-  assert.equal(tenantVisitOutcomeSummaryText(outcome()), 'Visit ended; details are still being completed.');
+  assert.equal(tenantVisitOutcomeSummaryText(outcome()), 'Your Ground Executive is recording the visit outcome.');
   assert.equal(tenantVisitOutcomeStatusLabel(outcome({ lifecycle: 'RESULTS_NOT_RECORDED' })), 'Results not recorded');
   assert.equal(tenantVisitOutcomeSummaryText(outcome({ lifecycle: 'RESULTS_NOT_RECORDED' })), 'Results were not recorded for this visit.');
-  assert.equal(tenantOutcomeSummaryLabel('ALL_VIEWED'), 'All properties viewed');
-  assert.equal(tenantOutcomeSummaryLabel('PARTLY_VIEWED'), 'Some properties viewed');
-  assert.equal(tenantOutcomeSummaryLabel('NONE_VIEWED'), 'No properties viewed');
+  assert.equal(tenantOutcomeSummaryLabel('ALL_VIEWED'), 'Visit completed · All homes viewed');
+  assert.equal(tenantOutcomeSummaryLabel('PARTLY_VIEWED'), 'Visit completed · Some homes viewed');
+  assert.equal(tenantOutcomeSummaryLabel('NONE_VIEWED'), 'Visit completed · No homes viewed');
+  assert.equal(tenantVisitOutcomeStatusLabel(outcome({ lifecycle: 'UPCOMING' })), 'Confirmed guided visit');
+  assert.equal(tenantVisitOutcomeStatusLabel(null, 'DRAFT'), 'Visit being arranged');
 });
 
 test('viewed counts appear only when the server marks final outcomes available', () => {
   assert.equal(tenantVisitOutcomeSummaryText(outcome({
     lifecycle: 'PARTIALLY_COMPLETED', viewedProperties: 1, totalProperties: 3
-  })), '1 of 3 properties viewed.');
+  })), '1 of 3 homes viewed.');
   assert.equal(tenantVisitOutcomeSummaryText(outcome({ lifecycle: 'IN_PROGRESS', viewedProperties: null })),
     'Property results will appear after visit details are recorded.');
 });

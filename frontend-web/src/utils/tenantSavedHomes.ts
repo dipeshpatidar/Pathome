@@ -22,7 +22,3 @@ export const applyPersistedSavedHomeChange = (
 ): Property[] => saved
   ? mergeSavedHomes([property], current)
   : current.filter(item => item.id !== property.id);
-
-export const removeSavedHomesFromDiscovery = (
-  properties: Property[], savedIds: ReadonlySet<number>
-): Property[] => properties.filter(property => !savedIds.has(property.id));

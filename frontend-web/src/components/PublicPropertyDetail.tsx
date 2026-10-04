@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Property, RoomTag } from '../types';
 import { propertyService } from '../services/propertyService';
+import { tenantVisitCtaLabel } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl, deriveVideoPosterUrl } from '../utils/mediaTransform';
 import { getMediaTagIcon, getMediaTagLabel, getTaggedAreas } from '../utils/mediaTags';
 import { resolvePropertyDetailBackTarget } from '../utils/propertyDetailRecovery';
@@ -207,7 +208,13 @@ const AreaNavigationDropdown: React.FC<AreaNavigationDropdownProps> = ({
 interface PublicPropertyDetailProps {
   propertyId: number | null;
   isAuthenticated: boolean;
+  visitRequestStatus: string | null;
+  visitRequestStatusLoading: boolean;
+  visitRequestStatusError: boolean;
+  visitRequestStatusIncomplete: boolean;
   onRequestVisit: (property: Property) => void;
+  onViewMyVisits: () => void;
+  onRetryVisitRequestStatus: () => void;
 }
 
 const formatRupees = (amount?: number | null) => amount && amount > 0 ? `₹${amount.toLocaleString('en-IN')}` : null;
@@ -325,7 +332,10 @@ const Lightbox: React.FC<{
   );
 };
 
-export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ propertyId, isAuthenticated, onRequestVisit }) => {
+export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
+  propertyId, isAuthenticated, visitRequestStatus, visitRequestStatusLoading, visitRequestStatusError, visitRequestStatusIncomplete,
+  onRequestVisit, onViewMyVisits, onRetryVisitRequestStatus
+}) => {
   const navigate = useNavigate();
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
@@ -547,7 +557,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
           onClose={() => setLightboxOpen(false)}
         />
       )}
-      <main className="mx-auto w-full max-w-[1440px] bg-[#f7f7f2] px-4 pt-3 pb-28 text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
+      <main className="mx-auto w-full max-w-[1440px] bg-[#f7f7f2] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
         {/* Dependable High-Contrast Floating Back Navigation */}
         <div className="mb-4 flex h-11 items-center justify-between">
           <button
@@ -723,8 +733,17 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
               <p className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-600"><MapPin className="h-4 w-4 shrink-0 text-emerald-600" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Locality details available on request'}</p>
               <div className="mt-5 grid grid-cols-2 gap-3 border-y border-slate-100 py-5"><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Monthly rent</p><p className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">{formatRupees(property.monthlyRent) || 'On request'}</p></div>{formatRupees(property.securityDeposit) && <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Security deposit</p><p className="mt-1 text-lg font-bold text-emerald-800">{formatRupees(property.securityDeposit)}</p></div>}</div>
               {formatRupees(property.maintenanceCharge) && <p className="mt-4 flex items-center gap-2 text-sm text-slate-600"><WalletCards className="h-4 w-4 text-emerald-600" />Maintenance: {formatRupees(property.maintenanceCharge)} / month</p>}
-              <button type="button" onClick={() => onRequestVisit(property)} className="mt-6 hidden min-h-12 w-full items-center justify-center rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 lg:flex">Request a Visit</button>
-              <p className="mt-3 text-xs leading-relaxed text-slate-500">Your request is reviewed for availability before any Visit Session is confirmed.</p>
+              <button type="button" disabled={visitRequestStatusLoading || visitRequestStatusError}
+                onClick={() => visitRequestStatus || visitRequestStatusIncomplete ? onViewMyVisits() : onRequestVisit(property)}
+                className="mt-6 hidden min-h-12 w-full items-center justify-center rounded-xl bg-emerald-800 px-4 py-3 text-sm font-semibold text-white shadow-[0_8px_20px_-10px_rgba(6,95,70,.6)] transition hover:bg-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 lg:flex">
+                {visitRequestStatusLoading ? 'Checking your visits…' : visitRequestStatusError ? 'Visit status unavailable' : visitRequestStatus ? tenantVisitCtaLabel(visitRequestStatus) ?? 'View My Visits' : visitRequestStatusIncomplete ? 'Review My Visits' : 'Request a Visit'}
+              </button>
+              {visitRequestStatusError && <button type="button" onClick={onRetryVisitRequestStatus} className="mt-2 hidden min-h-11 w-full items-center justify-center rounded-xl px-3 text-sm font-semibold text-emerald-900 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 lg:flex">Retry status check</button>}
+              {visitRequestStatus === 'RECEIVED' && <p className="mt-2 text-xs leading-relaxed text-slate-600">We’ve received your request. Availability is being checked before a visit is scheduled.</p>}
+              {visitRequestStatus === 'COORDINATING' && <p className="mt-2 text-xs leading-relaxed text-slate-600">Your visit is being coordinated with the property owner.</p>}
+              {visitRequestStatus === 'SCHEDULED' && <p className="mt-2 text-xs leading-relaxed text-slate-600">This request has been added to a Visit Session. Open My Visits to see current session details.</p>}
+              {visitRequestStatusIncomplete && <p className="mt-2 text-xs leading-relaxed text-slate-600">There are more visit requests in your account. Review My Visits before starting another request for this home.</p>}
+              {!visitRequestStatus && !visitRequestStatusLoading && !visitRequestStatusError && <p className="mt-3 text-xs leading-relaxed text-slate-500">We’ll confirm availability before a guided visit is scheduled.</p>}
               {!isAuthenticated && <p className="mt-2 text-xs leading-relaxed text-slate-500">Interested in this property? Sign in to request a visit and manage your visit requests.</p>}
             </div>
           </aside>
@@ -753,7 +772,14 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({ prop
             {amenities.length > 0 && <><h3 className="mt-6 font-['Outfit'] text-base font-black text-slate-900">Amenities</h3><div className="mt-3 flex flex-wrap gap-2">{amenities.map((amenity) => <span key={amenity} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-900">{amenity}</span>)}</div></>}
           </div>
         </section>
-        <div className="safe-area-bottom fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 p-3 backdrop-blur lg:hidden"><button type="button" onClick={() => onRequestVisit(property)} className="min-h-12 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/25">Request a Visit</button></div>
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 pt-3 pb-[calc(.75rem+env(safe-area-inset-bottom))] backdrop-blur lg:hidden">
+          <button type="button" disabled={visitRequestStatusLoading || visitRequestStatusError}
+            onClick={() => visitRequestStatus || visitRequestStatusIncomplete ? onViewMyVisits() : onRequestVisit(property)}
+            className="min-h-12 w-full rounded-xl bg-emerald-800 px-4 py-3 text-sm font-semibold text-white shadow-[0_8px_20px_-10px_rgba(6,95,70,.6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60">
+            {visitRequestStatusLoading ? 'Checking your visits…' : visitRequestStatusError ? 'Visit status unavailable' : visitRequestStatus ? tenantVisitCtaLabel(visitRequestStatus) ?? 'View My Visits' : visitRequestStatusIncomplete ? 'Review My Visits' : 'Request a Visit'}
+          </button>
+          {visitRequestStatusError && <button type="button" onClick={onRetryVisitRequestStatus} className="mt-1 min-h-11 w-full rounded-xl text-sm font-semibold text-emerald-900 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700">Retry status check</button>}
+        </div>
       </main>
     </>
   );

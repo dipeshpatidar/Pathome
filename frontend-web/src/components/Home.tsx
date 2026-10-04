@@ -18,6 +18,8 @@ import { VisitRequestModal } from './VisitRequestModal';
 import { LessorWorkspace } from './LessorWorkspace';
 import { PathomeRouteShell } from './PathomeRouteShell';
 import { lessorDraftService } from '../services/lessorDraftService';
+import { tenantVisitService } from '../services/tenantVisitService';
+import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
@@ -44,6 +46,18 @@ const VALID_ADMIN_TABS = new Set([
   'media',
   'failed-uploads'
 ]);
+
+type PropertyVisitLookup = {
+  propertyId: number | null;
+  identityKey: string | null;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  requestStatus: string | null;
+  complete: boolean;
+};
+
+const emptyPropertyVisitLookup: PropertyVisitLookup = {
+  propertyId: null, identityKey: null, status: 'idle', requestStatus: null, complete: false
+};
 
 const getInitialAdminTab = (): string => {
   try {
@@ -797,6 +811,8 @@ export const Home: React.FC = () => {
   }, []);
   const closePostProperty = useCallback(() => setShowPostPropertyModal(false), []);
   const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
+  const [propertyVisitLookup, setPropertyVisitLookup] = useState<PropertyVisitLookup>(emptyPropertyVisitLookup);
+  const [propertyVisitLookupReload, setPropertyVisitLookupReload] = useState(0);
   const discoveryRequestRef = useRef(0);
   const focusResultsAfterSearch = useRef(false);
   const discoveryAbortRef = useRef<AbortController | null>(null);
@@ -806,10 +822,56 @@ export const Home: React.FC = () => {
   const isLessorRoute = isLessorWorkspaceRoute(normalizedPathname);
   const isPublicPropertyRoute = /^\/property\/\d+$/.test(normalizedPathname);
   const publicPropertyId = isPublicPropertyRoute ? Number(normalizedPathname.split('/').pop()) : null;
+  const propertyVisitIdentity = role === 'TENANT' && user ? readTenantVisitSession(user.id) : null;
+  const currentPropertyVisitLookup = propertyVisitIdentity && propertyVisitLookup.propertyId === publicPropertyId
+    && propertyVisitLookup.identityKey === propertyVisitIdentity.key ? propertyVisitLookup : emptyPropertyVisitLookup;
   const draftSessionKey = user ? (readLessorSessionIdentity()?.key ?? 'missing-session') : 'guest';
   const currentDraftSnapshot = draftSnapshot.key === draftSessionKey ? draftSnapshot : null;
   const currentDraftCount = currentDraftSnapshot?.count ?? 0;
   const currentDraftState = currentDraftSnapshot?.state ?? 'loading';
+
+  useEffect(() => {
+    if (!isPublicPropertyRoute || !publicPropertyId || role !== 'TENANT' || !user) {
+      setPropertyVisitLookup(emptyPropertyVisitLookup);
+      return undefined;
+    }
+    const identity = readTenantVisitSession(user.id);
+    if (!identity) {
+      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: null, status: 'error', requestStatus: null, complete: false });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'loading', requestStatus: null, complete: false });
+    tenantVisitService.list(0, controller.signal).then(page => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
+      if (page.userId !== identity.userId) {
+        setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null, complete: false });
+        return;
+      }
+      const activeRequest = page.requests.find(request => request.propertyId === publicPropertyId
+        && ['RECEIVED', 'COORDINATING', 'SCHEDULED'].includes(request.status));
+      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'ready',
+        requestStatus: activeRequest?.status ?? null, complete: !page.hasMore });
+    }).catch(() => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
+      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null, complete: false });
+    });
+    return () => controller.abort();
+  }, [isPublicPropertyRoute, publicPropertyId, role, user?.id, propertyVisitLookupReload]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (/^\/property\/\d+$/.test(window.location.pathname)) setPropertyVisitLookupReload(value => value + 1);
+    };
+    window.addEventListener('pathome_visit_request_created', refresh);
+    window.addEventListener('pathome_auth_changed', refresh);
+    window.addEventListener('storage', refresh);
+    return () => {
+      window.removeEventListener('pathome_visit_request_created', refresh);
+      window.removeEventListener('pathome_auth_changed', refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
 
   const [showBackToTop, setShowBackToTop] = useState(false);
   const prevIsPropertyRoute = useRef(isPropertyRoute);
@@ -1275,6 +1337,11 @@ export const Home: React.FC = () => {
     }
   };
 
+  const handleViewMyVisits = () => {
+    setPendingVisitProperty(null);
+    navigate('/tenant', { state: { focusTenantVisits: true } });
+  };
+
   const handleLoginSuccess = (userProfile: UserProfile) => {
     localStorage.setItem('pathome_role', userProfile.role);
     localStorage.setItem('pathome_user', JSON.stringify(userProfile));
@@ -1343,7 +1410,13 @@ export const Home: React.FC = () => {
         />
 
       {isPropertyRoute && (
-        <PublicPropertyDetail propertyId={publicPropertyId} isAuthenticated={Boolean(user) && role !== 'GUEST'} onRequestVisit={handleRequestVisit} />
+        <PublicPropertyDetail propertyId={publicPropertyId} isAuthenticated={Boolean(user) && role !== 'GUEST'}
+          visitRequestStatus={currentPropertyVisitLookup.requestStatus}
+          visitRequestStatusLoading={role === 'TENANT' && currentPropertyVisitLookup.status !== 'ready' && currentPropertyVisitLookup.status !== 'error'}
+          visitRequestStatusError={currentPropertyVisitLookup.status === 'error'}
+          visitRequestStatusIncomplete={currentPropertyVisitLookup.status === 'ready' && !currentPropertyVisitLookup.complete && !currentPropertyVisitLookup.requestStatus}
+          onRequestVisit={handleRequestVisit} onViewMyVisits={handleViewMyVisits}
+          onRetryVisitRequestStatus={() => setPropertyVisitLookupReload(value => value + 1)} />
       )}
 
       {lessorWorkspace}
@@ -1380,7 +1453,7 @@ export const Home: React.FC = () => {
       {/* LOGGED IN TENANT DASHBOARD VIEW vs GUEST HOMEPAGE VIEW */}
         {!isPropertyRoute && !isLessorRoute && role === 'TENANT' && user ? (
           <motion.div
-            key={`tenant-dashboard-${draftSessionKey}`}
+            key={`tenant-dashboard-${user.id}-${draftSessionKey}`}
             initial={false}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, transition: { duration: 0 } }}
@@ -1594,9 +1667,13 @@ export const Home: React.FC = () => {
       />
 
       <VisitRequestModal
+        key={`visit-request-${user?.id ?? 'signed-out'}`}
         property={pendingVisitProperty}
         isOpen={role === 'TENANT' && !!pendingVisitProperty}
+        tenantUserId={user?.id ?? 0}
         onClose={() => setPendingVisitProperty(null)}
+        onViewMyVisits={handleViewMyVisits}
+        onKeepBrowsing={() => setPendingVisitProperty(null)}
       />
 
     </div>

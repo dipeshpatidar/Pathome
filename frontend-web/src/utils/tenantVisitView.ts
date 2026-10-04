@@ -30,6 +30,22 @@ export function appendUniqueVisitRequests(current: TenantVisitRequest[], next: T
 export function tenantVisitStatusLabel(status: string | null | undefined): string {
   if (typeof status !== 'string' || !status.trim()) return 'Status unavailable';
   if (status === 'RECEIVED') return 'Request received';
+  if (status === 'COORDINATING') return 'Coordinating with property owner';
+  if (status === 'SCHEDULED') return 'Added to Visit Session';
+  if (status === 'UNAVAILABLE') return 'Owner unavailable for visits';
+  if (status === 'CANCELLED') return 'Request cancelled';
   const readable = status.trim().replace(/[_-]+/g, ' ').toLowerCase();
   return readable.charAt(0).toUpperCase() + readable.slice(1);
+}
+
+export function tenantVisitCtaLabel(status: string | null | undefined): string | null {
+  if (status === 'UNKNOWN') return 'View My Visits';
+  if (status === 'RECEIVED') return 'Visit Requested';
+  if (status === 'COORDINATING') return 'Visit Being Coordinated';
+  if (status === 'SCHEDULED') return 'View Visit';
+  return null;
+}
+
+export function isActiveTenantVisitRequest(status: string | null | undefined): boolean {
+  return status === 'RECEIVED' || status === 'COORDINATING' || status === 'SCHEDULED';
 }
