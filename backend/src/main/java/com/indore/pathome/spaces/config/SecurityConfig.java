@@ -50,6 +50,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/v1/lessor/guest/drafts/*/claim").authenticated()
                 .requestMatchers(HttpMethod.GET, "/api/v1/tenant/visit-requests").hasRole("TENANT")
+                .requestMatchers(HttpMethod.GET, "/api/v1/tenant/visit-entitlement").hasRole("TENANT")
                 .requestMatchers("/api/v1/tenant/visit-sessions/**").hasRole("TENANT")
                 .requestMatchers("/api/v1/ground/visit-sessions/**").hasRole("GROUND_BOY")
                 .requestMatchers("/api/v1/operations/**", "/api/v1/ground/visit-sessions/**").authenticated()

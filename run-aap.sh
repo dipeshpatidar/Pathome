@@ -22,37 +22,45 @@ echo "==========================================================================
 echo -e "${RESET}"
 
 # Requirement 1: Resolve repository root from script location, independent of caller CWD
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-ROOT_DIR="${SCRIPT_DIR}"
-BACKEND_DIR="${ROOT_DIR}/backend"
-FRONTEND_DIR="${ROOT_DIR}/frontend-web"
-ENV_FILE="${ROOT_DIR}/.env.local"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PATHOME_ROOT="${SCRIPT_DIR}"
+ROOT_DIR="${PATHOME_ROOT}"
+BACKEND_DIR="${PATHOME_ROOT}/backend"
+FRONTEND_DIR="${PATHOME_ROOT}/frontend-web"
+ENV_FILE="${PATHOME_ROOT}/.env.local"
 
-# Strict Worktree Validation
-EXPECTED_WORKTREE="/Users/dipeshpatidar/Documents/Pathome-tenant-ui-b1"
-if [ "${ROOT_DIR}" != "${EXPECTED_WORKTREE}" ]; then
-    echo -e "${RED}[Pathome] WRONG WORKTREE${RESET}"
-    echo -e "${RED}Expected:${RESET}"
-    echo -e "  ${EXPECTED_WORKTREE}"
-    echo -e "${RED}Actual:${RESET}"
-    echo -e "  ${ROOT_DIR}"
+# Git Worktree Validation
+if ! git -C "${PATHOME_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo -e "${RED}[Pathome] ERROR: launcher is not inside a valid Pathome Git worktree.${RESET}"
+    echo -e "  Directory: ${PATHOME_ROOT}"
     exit 1
 fi
 
-# Strict Branch Validation
-EXPECTED_BRANCH="feature/tenant-ui-b1-integration"
-CURRENT_BRANCH="$(git -C "${ROOT_DIR}" branch --show-current 2>/dev/null || true)"
-if [ "${CURRENT_BRANCH}" != "${EXPECTED_BRANCH}" ]; then
-    echo -e "${RED}[Pathome] WRONG BRANCH${RESET}"
-    echo -e "${RED}Expected:${RESET}"
-    echo -e "  ${EXPECTED_BRANCH}"
-    echo -e "${RED}Actual:${RESET}"
-    echo -e "  ${CURRENT_BRANCH}"
+GIT_TOPLEVEL="$(git -C "${PATHOME_ROOT}" rev-parse --show-toplevel 2>/dev/null || true)"
+CANONICAL_TOPLEVEL="$(cd -- "${GIT_TOPLEVEL:-.}" && pwd -P 2>/dev/null || true)"
+
+if [ -z "${CANONICAL_TOPLEVEL}" ] || [ "${CANONICAL_TOPLEVEL}" != "${PATHOME_ROOT}" ]; then
+    echo -e "${RED}[Pathome] ERROR: launcher is not inside a valid Pathome Git worktree.${RESET}"
+    echo -e "  Detected directory: ${PATHOME_ROOT}"
+    echo -e "  Git top-level:      ${CANONICAL_TOPLEVEL:-unknown}"
     exit 1
+fi
+
+# Dynamic Branch Detection (supports detached HEAD)
+CURRENT_BRANCH="$(git -C "${PATHOME_ROOT}" branch --show-current 2>/dev/null || true)"
+if [ -z "${CURRENT_BRANCH}" ]; then
+    CURRENT_BRANCH="DETACHED HEAD"
 fi
 
 # Resolve current short HEAD
-CURRENT_HEAD="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || true)"
+CURRENT_HEAD="$(git -C "${PATHOME_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
+
+# Dynamic Worktree Status (clean vs uncommitted changes)
+if [ -n "$(git -C "${PATHOME_ROOT}" status --porcelain 2>/dev/null)" ]; then
+    WORKTREE_STATUS="uncommitted changes present"
+else
+    WORKTREE_STATUS="clean"
+fi
 
 # Directory Existence Validation (Abort before checking DB or handling processes)
 if [ ! -d "${BACKEND_DIR}" ]; then
@@ -75,13 +83,19 @@ fi
 
 # Prominent Startup Identity Block
 echo -e "${BOLD}${CYAN}========================================================"
-echo "PATHOME UI INTEGRATION INSTANCE"
-echo "Worktree: ${ROOT_DIR}"
+echo "PATHOME - YOUR DREAMS, OUR EFFORTS"
+echo "Worktree: ${PATHOME_ROOT}"
 echo "Branch:   ${CURRENT_BRANCH}"
 echo "HEAD:     ${CURRENT_HEAD}"
+echo "Status:   ${WORKTREE_STATUS}"
 echo "Frontend: ${FRONTEND_DIR}"
 echo "Backend:  ${BACKEND_DIR}"
 echo -e "========================================================${RESET}\n"
+
+if [ "${1:-}" = "--dry-run" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "--check" ]; then
+    echo -e "${GREEN}✓ Worktree and branch verified.${RESET}"
+    exit 0
+fi
 
 # Requirement 2: Fast failure if .env.local is missing (no silent fallback)
 if [ ! -f "${ENV_FILE}" ]; then
@@ -265,7 +279,7 @@ check_and_handle_port() {
                 echo -e "  Process CWD:        ${PROC_CWD:-unknown}"
                 echo -e "  Requested worktree: ${ROOT_DIR}"
                 echo -e "  Running worktree:   ${RUNNING_WORKTREE:-unknown}"
-                echo -e "${YELLOW}Please stop the other instance before starting the UI integration app.${RESET}"
+                echo -e "${YELLOW}Please stop the other instance before starting Pathome.${RESET}"
                 exit 1
             fi
         else

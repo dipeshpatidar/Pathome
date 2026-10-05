@@ -168,7 +168,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     : location.hash === '#visit-history' || location.hash.startsWith('#visit-session-') ? 'Visit requests'
       : location.hash === '#account' ? 'Your account'
         : location.hash === '#notifications' ? 'Notifications' : 'Explore homes';
-  const isLessorSurface = role === 'TENANT' && /^\/lessor(?:\/|$)/.test(location.pathname);
+  const isLessorSurface = /^\/lessor(?:\/|$)/.test(location.pathname);
+  const isDraftHub = isLessorSurface && new URLSearchParams(location.search).get('view') === 'drafts';
   const isPropertySurface = role === 'TENANT' && /^\/property(?:\/|$)/.test(location.pathname);
   const isConsumerHeader = isTenantLanding || isLessorSurface || isPropertySurface;
 
@@ -211,7 +212,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isHeroTop = isLandingHero && !isScrolled;
   return (
     <>
-      <header data-pathome-header="global" data-tenant-header={isConsumerHeader} data-consumer-section={isLessorSurface ? 'lessor' : isPropertySurface ? 'property' : isTenantLanding ? 'tenant' : undefined}
+      <header data-pathome-header="global" data-guest-lessor={isLessorSurface && role === 'GUEST'} data-tenant-header={isConsumerHeader} data-consumer-section={isLessorSurface ? 'lessor' : isPropertySurface ? 'property' : isTenantLanding ? 'tenant' : undefined}
         className={`sticky top-0 z-[100] w-full pt-[env(safe-area-inset-top)] transition-[background-color,border-color,box-shadow] duration-300 motion-reduce:transition-none ${
           isConsumerHeader
             ? 'border-b border-[#eeece7] bg-[#f8f7f4]/95 shadow-none backdrop-blur-xl'
@@ -233,17 +234,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         <div className={`${isConsumerHeader ? 'tenant-v0-header-inner max-w-[1220px]' : 'max-w-7xl'} mx-auto flex items-center justify-between gap-1 px-2.5 min-[360px]:px-3 sm:gap-2 sm:px-6 lg:px-8 ${role === 'GUEST' ? 'h-[60px] sm:h-[68px] lg:h-[72px]' : isConsumerHeader ? 'h-[63px]' : 'h-[72px]'}`}>
 
-          {(isTenantLanding || isLessorSurface) && <div className="tenant-v0-crumbs hidden items-center gap-2 lg:flex"><span>Home</span><ChevronRight size={14} aria-hidden="true" /><strong>{isLessorSurface ? hasLessorCapability === true ? 'Your listings' : 'List your property' : tenantBreadcrumb}</strong></div>}
+          {(isTenantLanding || (isLessorSurface && role !== 'GUEST')) && <div className="tenant-v0-crumbs hidden items-center gap-2 lg:flex"><span>Home</span><ChevronRight size={14} aria-hidden="true" /><strong>{isLessorSurface ? isDraftHub ? 'Your drafts' : hasLessorCapability === true ? 'Your listings' : 'List your property' : tenantBreadcrumb}</strong></div>}
 
           {/* BRANDING LOGO */}
-          <div data-tenant-header-brand={isTenantLanding || isLessorSurface || undefined} className={`flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8 ${isTenantLanding || isLessorSurface ? 'lg:hidden' : ''}`}>
+          <div data-tenant-header-brand={isTenantLanding || isLessorSurface || undefined} className={`flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8 ${isTenantLanding ? 'lg:hidden' : ''}`}>
             <motion.button
               type="button"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={() => isTenantLanding ? navigate('/tenant#tenant-home-search') : navigate(logoDestination.path)}
-              aria-label={logoDestination.label}
-              title={logoDestination.label}
+              onClick={() => isLessorSurface && role === 'GUEST' ? navigate('/') : isTenantLanding ? navigate('/tenant#tenant-home-search') : navigate(logoDestination.path)}
+              aria-label={isLessorSurface && role === 'GUEST' ? 'Pathome home' : logoDestination.label}
+              title={isLessorSurface && role === 'GUEST' ? 'Pathome home' : logoDestination.label}
               className="flex min-w-0 items-center gap-2.5 cursor-pointer text-left rounded-xl p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 bg-transparent border-none"
             >
               <div
@@ -287,10 +288,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             </motion.button>
 
             {/* Desktop Nav Links (1024px+): Spacious, deliberate layout without cramped tablet squeeze */}
-            {role === 'GUEST' && (
+            {role === 'GUEST' && !isLessorSurface && (
               <nav className="hidden lg:flex items-center gap-6" aria-label="Main Navigation">
                 <a
-                  href="#listings"
+                  href="/#homes"
                   className={`text-xs font-bold transition-colors ${
                     isHeroTop ? 'text-white/80 hover:text-white' : 'text-slate-700 hover:text-emerald-600'
                   }`}
@@ -298,7 +299,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   Rental Homes
                 </a>
                 <a
-                  href="#how-it-works"
+                  href="/#how-it-works"
                   className={`text-xs font-bold transition-colors ${
                     isHeroTop ? 'text-white/80 hover:text-white' : 'text-slate-700 hover:text-emerald-600'
                   }`}
@@ -306,7 +307,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   How It Works
                 </a>
                 <a
-                  href="#why-us"
+                  href="/#why-us"
                   className={`text-xs font-bold transition-colors ${
                     isHeroTop ? 'text-white/80 hover:text-white' : 'text-slate-700 hover:text-emerald-600'
                   }`}
@@ -326,14 +327,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <button
                   type="button"
                   onClick={onOpenPostProperty}
-                  className={`hidden h-11 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 text-xs font-bold leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:inline-flex ${
+                  className={`${isDraftHub ? 'hidden' : 'hidden lg:inline-flex'} h-11 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 text-xs font-bold leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 ${
                     isHeroTop
                       ? 'border-white/20 bg-white/10 text-emerald-300 hover:bg-white/15'
                       : 'border-emerald-200/80 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
                   }`}
                 >
                   <Building2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
-                  <span>Post Your Property</span>
+                  <span>List your property</span>
                 </button>
 
                 {/* Sign In / Register CTA */}
@@ -342,12 +343,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                   whileTap={prefersReducedMotion ? undefined : { scale: 0.985 }}
                   onClick={onOpenAuthModal}
                   aria-label="Sign in or register"
-                  className={`flex h-11 min-w-11 items-center justify-center gap-2 rounded-full border border-transparent px-0 text-xs font-extrabold transition-colors sm:rounded-xl sm:bg-emerald-600 sm:px-3 sm:text-white sm:shadow-md sm:shadow-emerald-600/20 sm:hover:bg-emerald-500 min-[640px]:px-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:border-transparent ${
+                  className={`flex h-11 min-w-11 items-center justify-center gap-2 rounded-full border border-transparent px-0 text-xs font-semibold transition-colors sm:rounded-xl sm:bg-emerald-600 sm:px-3 sm:text-white sm:hover:bg-emerald-700 min-[640px]:px-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 lg:border-transparent ${
                     isHeroTop ? 'text-white/90 hover:bg-white/10' : 'text-slate-700 hover:bg-slate-900/5'
                   }`}
                 >
                   <User className="w-3.5 h-3.5" />
-                  <span className="hidden min-[640px]:inline">Sign In / Register</span>
+                  <span className="hidden min-[640px]:inline">Sign in</span>
                 </motion.button>
 
                 {/* Tablet & Mobile Menu Toggle (<1024px) */}
@@ -398,7 +399,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {unreadCount > 0 && (
                   <span
                     aria-hidden="true"
-                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-mono font-black text-[10px] flex items-center justify-center border-2 border-slate-950 shadow-lg shadow-emerald-500/50"
+                    className="absolute -top-1 -right-1 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-white bg-[#355c49] px-1 font-sans text-[10px] font-semibold leading-none text-white shadow-sm"
                   >
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
@@ -534,7 +535,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <div className="max-w-7xl mx-auto px-4 py-4 space-y-2">
                 <a
-                  href="#listings"
+                  href="/#homes"
                   onClick={() => setMobileMenuOpen(false)}
                   className={`block px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                     isHeroTop ? 'text-white/90 hover:bg-white/10 hover:text-white' : 'text-slate-700 hover:bg-slate-100 hover:text-emerald-600'
@@ -543,7 +544,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   Rental Homes
                 </a>
                 <a
-                  href="#how-it-works"
+                  href="/#how-it-works"
                   onClick={() => setMobileMenuOpen(false)}
                   className={`block px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                     isHeroTop ? 'text-white/90 hover:bg-white/10 hover:text-white' : 'text-slate-700 hover:bg-slate-100 hover:text-emerald-600'
@@ -552,7 +553,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   How It Works
                 </a>
                 <a
-                  href="#why-us"
+                  href="/#why-us"
                   onClick={() => setMobileMenuOpen(false)}
                   className={`block px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                     isHeroTop ? 'text-white/90 hover:bg-white/10 hover:text-white' : 'text-slate-700 hover:bg-slate-100 hover:text-emerald-600'

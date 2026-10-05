@@ -16,6 +16,8 @@ import { PropertyDetailErrorState } from './PropertyDetailErrorState';
 import { favoriteService } from '../services/favoriteService';
 import { notifyTenantFavoriteChanged } from '../utils/tenantFavorites';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
+import { getQuickViewMedia } from '../utils/quickViewMedia';
+import { landingPropertyTitle } from '../utils/landingPropertyData';
 
 type GalleryMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string | null; roomTag?: string | null };
 
@@ -238,6 +240,7 @@ const Lightbox: React.FC<{
 }> = ({ media, startIndex, title, onClose }) => {
   const [idx, setIdx] = useState(startIndex);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const gestureRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     closeBtnRef.current?.focus();
@@ -267,6 +270,8 @@ const Lightbox: React.FC<{
       aria-modal="true"
       aria-label={`${title} — ${current.tagLabel ? `${current.tagLabel}, ` : ''}media ${idx + 1} of ${media.length}`}
       className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-black/95 p-4"
+      onPointerDown={e => { gestureRef.current = { x: e.clientX, y: e.clientY }; }}
+      onPointerUp={e => { const start = gestureRef.current; gestureRef.current = null; if (!start) return; const dx = e.clientX - start.x; const dy = e.clientY - start.y; if (media.length > 1 && Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) setIdx(i => (i + (dx < 0 ? 1 : -1) + media.length) % media.length); }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Close */}
@@ -282,6 +287,7 @@ const Lightbox: React.FC<{
 
       {/* Media */}
       <div className="relative flex max-h-[82vh] max-w-[92vw] items-center justify-center">
+        {media.length > 1 && current.type === 'IMAGE' && <><button type="button" aria-label="Previous property media" className="absolute inset-y-0 left-0 z-10 w-[28%] cursor-w-resize opacity-0" onClick={() => setIdx(i => (i - 1 + media.length) % media.length)}/><button type="button" aria-label="Next property media" className="absolute inset-y-0 right-0 z-10 w-[28%] cursor-e-resize opacity-0" onClick={() => setIdx(i => (i + 1) % media.length)}/></>}
         {current.type === 'VIDEO' ? (
           <video
             controls
@@ -309,28 +315,7 @@ const Lightbox: React.FC<{
         )}
       </div>
 
-      {/* Navigation */}
-      {media.length > 1 && (
-        <>
-          <button
-            type="button"
-            aria-label="Previous property media"
-            onClick={() => setIdx(i => (i - 1 + media.length) % media.length)}
-            className="absolute left-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/30 transition"
-          >
-            <ChevronLeft className="h-6 w-6" />
-          </button>
-          <button
-            type="button"
-            aria-label="Next property media"
-            onClick={() => setIdx(i => (i + 1) % media.length)}
-            className="absolute right-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/30 transition"
-          >
-            <ChevronRight className="h-6 w-6" />
-          </button>
-          <p className="mt-3 text-sm font-semibold text-white/80">{current.tagLabel ? `${current.tagLabel} · ` : ''}{idx + 1} / {media.length}</p>
-        </>
-      )}
+      {media.length > 1 && <p className="mt-3 text-sm font-semibold text-white/80">{current.tagLabel ? `${current.tagLabel} · ` : ''}{idx + 1} / {media.length}</p>}
       {media.length === 1 && current.tagLabel && <p className="mt-3 text-sm font-semibold text-white/80">{current.tagLabel}</p>}
     </div>
   );
@@ -356,6 +341,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
   const favoriteSession = tenantUserId !== null ? readTenantVisitSession(tenantUserId) : null;
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLDivElement>(null);
+  const detailGestureRef = useRef<{ x: number; y: number } | null>(null);
 
   // Track fullscreen state changes (including browser Esc key)
   useEffect(() => {
@@ -445,20 +431,10 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
 
   const media = useMemo(() => {
     if (!property) return [] as GalleryMedia[];
-    const safeTaggedMedia = property.taggedMedia?.filter((entry) => entry.mediaUrl?.trim()) || [];
-    if (safeTaggedMedia.length > 0) {
-      return safeTaggedMedia.map((entry) => ({
-        url: entry.mediaUrl,
-        tagLabel: getMediaTagLabel(entry.roomTag),
-        roomTag: entry.roomTag ?? null,
-        type: entry.mediaType === 'VIDEO_WALKTHROUGH'
-          || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(entry.mediaUrl) ? 'VIDEO' as const : 'IMAGE' as const
-      }));
-    }
-    return [
-      ...property.images.map((url) => ({ url, type: 'IMAGE' as const, tagLabel: null, roomTag: null })),
-      ...(property.videoUrl ? [{ url: property.videoUrl, type: 'VIDEO' as const, tagLabel: null, roomTag: null }] : [])
-    ];
+    return getQuickViewMedia(property).map(entry => ({
+      ...entry,
+      roomTag: property.taggedMedia?.find(tagged => tagged.mediaUrl?.trim() === entry.url)?.roomTag ?? null
+    }));
   }, [property]);
 
   useEffect(() => {
@@ -659,7 +635,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
         <div className="tenant-v0-detail-heading">
           <div>
             <p className="tenant-v0-eyebrow">{[property.sector, property.city].filter(Boolean).join(' · ').toUpperCase() || 'PROPERTY DETAILS'}</p>
-            <h1>{property.title}</h1>
+            <h1>{landingPropertyTitle(property)}</h1>
             <p><MapPin size={15} aria-hidden="true" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Location details available on request'}</p>
           </div>
           {(!isAuthenticated || tenantUserId !== null) && <button type="button" onClick={() => favorite.status === 'error' ? setFavoriteRetry(value => value + 1) : void toggleFavorite()}
@@ -676,6 +652,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
             {/* Main viewer: Fixed responsive height prevents CLS; dark containment preserves aspect ratios */}
             <div
               ref={mediaStageRef}
+              tabIndex={0}
+              aria-label="Property media viewer. Use left and right arrow keys to browse."
+              onKeyDown={event => { if (event.target !== event.currentTarget) return; if (event.key === 'ArrowLeft') { event.preventDefault(); handlePrevMedia(); } else if (event.key === 'ArrowRight') { event.preventDefault(); handleNextMedia(); } }}
+              onTouchStart={event => { const touch = event.touches[0]; detailGestureRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null; }}
+              onTouchEnd={event => { const start = detailGestureRef.current; detailGestureRef.current = null; const touch = event.changedTouches[0]; if (!start || !touch) return; const dx = touch.clientX - start.x; const dy = touch.clientY - start.y; if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) { if (dx < 0) handleNextMedia(); else handlePrevMedia(); } }}
               className="relative h-[300px] w-full overflow-hidden rounded-[12px] border border-[#e9e7e1] bg-[#eeede8] shadow-[0_18px_48px_-38px_rgba(12,43,31,.5)] sm:h-[420px] lg:h-[500px]"
             >
               <div className="flex h-full w-full items-center justify-center">
@@ -762,27 +743,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                 </button>
               )}
 
-              {/* Navigation arrows with z-40 and explicit event isolation */}
-              {media.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    aria-label="Previous property media"
-                    onClick={handlePrevMedia}
-                    className="absolute left-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/60 text-white shadow-md backdrop-blur-md transition-colors hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                  >
-                    <ChevronLeft className="h-5 w-5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Next property media"
-                    onClick={handleNextMedia}
-                    className="absolute right-3 top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 pointer-events-auto items-center justify-center rounded-full border border-white/20 bg-slate-950/60 text-white shadow-md backdrop-blur-md transition-colors hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                  >
-                    <ChevronRight className="h-5 w-5" />
-                  </button>
-                </>
-              )}
+              {media.length > 1 && <><button type="button" aria-label="Previous property media" className="absolute inset-y-[15%] left-0 z-20 w-[28%] cursor-w-resize opacity-0" onClick={handlePrevMedia}/><button type="button" aria-label="Next property media" className="absolute inset-y-[15%] right-0 z-20 w-[28%] cursor-e-resize opacity-0" onClick={handleNextMedia}/></>}
             </div>
             {/* Thumbnail strip: images lazy-loaded with Cloudinary DETAIL_THUMBNAIL preset, video shows icon indicator */}
             {media.length > 1 && (

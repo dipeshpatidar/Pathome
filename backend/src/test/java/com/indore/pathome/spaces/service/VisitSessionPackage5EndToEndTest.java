@@ -145,8 +145,8 @@ class VisitSessionPackage5EndToEndTest {
     @LocalServerPort private int httpPort;
 
     @BeforeEach
-    void assertRealMigrationSchemaIsAtV41() {
-        assertEquals(41, jdbc.queryForObject(
+    void assertRealMigrationSchemaIsAtV42() {
+        assertEquals(42, jdbc.queryForObject(
                 "SELECT max(version::integer) FROM flyway_schema_history WHERE type='SQL' AND success", Integer.class));
         assertEquals(1, count("SELECT count(*) FROM visit_policy WHERE id=1"));
     }

@@ -4,6 +4,7 @@ import { ArrowRight, BedDouble, Building2, CalendarDays, ChevronRight, Clock3, H
 import { motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
+import { tenantVisitEntitlementService, type TenantVisitEntitlement } from '../services/tenantVisitEntitlementService';
 import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { secondsUntilVisitCodeTime } from '../utils/visitExecutionPresentation';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
@@ -69,6 +70,12 @@ type HistoryState = {
   totalCount: number;
   page: number;
   hasMore: boolean;
+};
+
+type EntitlementState = {
+  identityKey: string | null;
+  status: 'loading' | 'ready' | 'error';
+  value: TenantVisitEntitlement | null;
 };
 
 const emptyHistory: HistoryState = {
@@ -233,7 +240,7 @@ const SavedHomeCard: React.FC<{
   return <SupportingPropertyCard {...props} revealIndex={0} reduceMotion={reduceMotion} />;
 };
 
-const TenantPropertyQuickView: React.FC<{
+export const TenantPropertyQuickView: React.FC<{
   propertyId: number;
   visitRequestStatus: (propertyId: number) => string | null;
   onClose: () => void;
@@ -243,8 +250,9 @@ const TenantPropertyQuickView: React.FC<{
   favoriteStateReady: boolean;
   favoritePending: boolean;
   onToggleFavorite: (property: Property) => void;
+  displayTitle?: (property: Property) => string;
 }> = ({ propertyId, visitRequestStatus, onClose, onRequestVisit, onViewProperty,
-  isFavorite, favoriteStateReady, favoritePending, onToggleFavorite }) => {
+  isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, displayTitle }) => {
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -492,7 +500,7 @@ const TenantPropertyQuickView: React.FC<{
           <div className="tenant-v0-quick-panel">
             <div className="tenant-v0-quick-content">
               {locality && <p className="tenant-v0-quick-locality"><MapPin size={13} aria-hidden="true" />{locality}</p>}
-              <h2 id="tenant-quick-view-property-title" className="tenant-v0-quick-title">{property.title}</h2>
+              <h2 id="tenant-quick-view-property-title" className="tenant-v0-quick-title">{displayTitle ? displayTitle(property) : property.title}</h2>
               {price && <p className="tenant-v0-quick-price"><strong>{price}</strong><span>{property.listingType === 'RENT' ? '/ month' : 'asking price'}</span></p>}
               {facts.length > 0 && <div className="tenant-v0-quick-facts" aria-label="Property facts">{facts.map(fact => <span key={fact.label}><strong>{fact.value}</strong><small>{fact.label}</small></span>)}</div>}
               {description && <p className="tenant-v0-quick-description">{description}</p>}
@@ -543,6 +551,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [tenantSessions, setTenantSessions] = useState<TenantSessionHistory>(emptyTenantSessions);
   const [tenantOutcomeHistory, setTenantOutcomeHistory] = useState<TenantOutcomeHistory>(emptyTenantOutcomeHistory);
   const [tenantSessionsReload, setTenantSessionsReload] = useState(0);
+  const [entitlementReload, setEntitlementReload] = useState(0);
+  const [entitlement, setEntitlement] = useState<EntitlementState>({ identityKey: null, status: 'loading', value: null });
   const [tenantSessionPage, setTenantSessionPage] = useState(0);
   const [tenantSessionCodes, setTenantSessionCodes] = useState<Record<number, TenantVisitStartCode>>({});
   const [tenantSessionAction, setTenantSessionAction] = useState<number | null>(null);
@@ -560,6 +570,24 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     : location.hash === '#visit-history' || location.hash.startsWith('#visit-session-') ? 'visits'
       : location.hash === '#account' ? 'account'
         : location.hash === '#notifications' ? 'notifications' : 'home';
+  useEffect(() => {
+    if (tenantView !== 'account') return;
+    const identity = readTenantVisitSession(user.id);
+    if (!identity) {
+      setEntitlement({ identityKey: null, status: 'error', value: null });
+      return;
+    }
+    const controller = new AbortController();
+    setEntitlement({ identityKey: identity.key, status: 'loading', value: null });
+    tenantVisitEntitlementService.getMine(controller.signal).then(value => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
+      setEntitlement({ identityKey: identity.key, status: 'ready', value });
+    }).catch(() => {
+      if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
+      setEntitlement({ identityKey: identity.key, status: 'error', value: null });
+    });
+    return () => controller.abort();
+  }, [tenantView, user.id, tenantSessionsReload, entitlementReload]);
   const routeState = location.state && typeof location.state === 'object' ? location.state as Record<string, unknown> : {};
   const candidatePreviewId = Number(routeState.tenantQuickViewPropertyId);
   const previewPropertyId = routeState.tenantQuickView === true && Number.isSafeInteger(candidatePreviewId) && candidatePreviewId > 0
@@ -928,6 +956,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   }, [user.id, tenantSessionsReload, tenantSessionPage]);
 
   const session = readTenantVisitSession(user.id);
+  const visibleEntitlement: EntitlementState = session && entitlement.identityKey === session.key
+    ? entitlement : { identityKey: session?.key ?? null, status: session ? 'loading' : 'error', value: null };
   const visibleTenantSessions = !session ? { ...emptyTenantSessions, status: 'error' as const }
     : tenantSessions.identityKey === session.key ? tenantSessions : emptyTenantSessions;
   const visibleTenantOutcomeHistory = !session ? { ...emptyTenantOutcomeHistory, status: 'error' as const }
@@ -1493,6 +1523,16 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               <div className="tenant-v0-profile-fields">
                 {user.email?.trim() && <div><span>EMAIL ADDRESS</span><strong className="break-all">{user.email}</strong></div>}
                 <div><span>CAPABILITIES ON THIS ACCOUNT</span><strong>{hasLessorCapability === true ? 'Tenant + lessor' : hasLessorCapability === false ? 'Tenant' : hasLessorCapability === 'error' ? 'Property access unavailable' : 'Checking account access…'}</strong></div>
+                <div className="tenant-v0-entitlement-field" aria-live="polite">
+                  <span>FREE VISIT SESSIONS</span>
+                  {visibleEntitlement.status === 'loading' ? <strong role="status">Checking Visit Session balance…</strong>
+                    : visibleEntitlement.status === 'error' ? <><strong>Visit Session balance temporarily unavailable</strong><button type="button" onClick={() => setEntitlementReload(value => value + 1)}>Try again</button></>
+                      : visibleEntitlement.value?.totalReconciliationRequired ? <strong>Your Visit Session total is being verified</strong>
+                        : <><strong>{visibleEntitlement.value?.remainingSessions} / {visibleEntitlement.value?.totalGrantedSessions} remaining</strong>
+                            {(visibleEntitlement.value?.reservedSessions ?? 0) > 0 && <small>{visibleEntitlement.value?.reservedSessions} {visibleEntitlement.value?.reservedSessions === 1 ? 'session' : 'sessions'} reserved</small>}
+                            {(visibleEntitlement.value?.reservedSessions ?? 0) > 0 && <small>{visibleEntitlement.value?.availableSessions} currently available</small>}</>}
+                  <small>One Visit Session can include multiple suitable homes.</small>
+                </div>
               </div>
               {hasLessorCapability === 'error' && <div className="tenant-v0-profile-capability-error" role="alert">Property access could not be checked. <button type="button" onClick={() => window.dispatchEvent(new Event('pathome_auth_changed'))}>Try again</button></div>}
               <div className="tenant-v0-profile-actions">

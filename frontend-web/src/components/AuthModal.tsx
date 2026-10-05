@@ -35,6 +35,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [duplicateEmailError, setDuplicateEmailError] = useState(false);
   const [busy, setBusy] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+  const initialFocusRef = useRef<HTMLButtonElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -45,7 +46,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     const previous = document.activeElement as HTMLElement | null;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    emailRef.current?.focus({ preventScroll: true });
+    initialFocusRef.current?.focus({ preventScroll: true });
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); return; }
       if (event.key !== 'Tab') return;
@@ -135,7 +136,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
         onClick={() => closeRef.current()}
-        className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-start justify-center overflow-y-auto p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:items-center sm:p-4 perspective-1000"
+        className="fixed inset-0 z-[10020] bg-slate-950/70 backdrop-blur-md flex items-start justify-center overflow-y-auto p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:items-center sm:p-4 perspective-1000"
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.84, rotateX: 14, y: 30 }}
@@ -151,6 +152,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         >
           
           <button
+            ref={initialFocusRef}
+            type="button"
             onClick={() => closeRef.current()}
             disabled={busy}
             aria-label="Close sign in"
@@ -247,6 +250,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                       <input
                         id="pathome-auth-name"
                         type="text"
+                        autoComplete="name"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
                         placeholder="Full name"
@@ -271,6 +275,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   id="pathome-auth-email"
                   ref={emailRef}
                   type="email"
+                  autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@domain.com"
@@ -288,6 +293,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   id="pathome-auth-password"
                   ref={passwordRef}
                   type="password"
+                  autoComplete={authMode === 'REGISTER' ? 'new-password' : 'current-password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"

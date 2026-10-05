@@ -6237,3 +6237,21 @@ Integrate the approved Vercel/v0 UI enhancement from design commit `016f727` int
 - `git diff --check`: PASS (clean diff, 0 whitespace or formatting errors).
 
 Commit: not created. Push: not attempted.
+
+## 2026-10-06 02:15 IST — Final Landing & Tenant Integration Checkpoint
+
+### Reason for Request
+Perform safe, non-destructive Git checkpoint for the complete accepted batch on `feature/landing-v0-integration`:
+- Approved v0 Landing integration with Search / Filter ownership, clear behavior, and applied search chip styling.
+- Generic local launcher (`run-aap.sh`) dynamically resolving Git worktree, branch, HEAD, and dirty state.
+- Authenticated Landlord submission progress service and approved v0 progress indicator.
+- Tenant Free Visit Session entitlement backend and frontend views.
+- Tenant Explore tablet portrait (601–820px) responsive layout repairs.
+- Guest-to-auth draft handoff and submission recovery without ID collision.
+
+### Verification Performed
+- Frontend test suite: `node --test src/tests/*.test.mjs` — 592 tests: 588 passed, 0 failed, 4 existing TODO.
+- Frontend build: `npm run build` — `tsc && vite build` completed cleanly in 2.77s.
+- Backend tests: `mvn test` (focused entitlement, submission progress, auth, and media promotion tests) — 27 passed, 0 failed.
+- Backend build: `mvn compile test-compile` — 100% clean compilation.
+- Diff check: `git diff --check` and `git diff --cached --check` — clean (0 whitespace/formatting errors).

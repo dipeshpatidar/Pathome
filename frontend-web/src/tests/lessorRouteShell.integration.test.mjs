@@ -68,6 +68,15 @@ const output = await build({
   platform: 'node',
   format: 'cjs',
   write: false,
+  plugins: [{
+    name: 'test-css-modules',
+    setup(build) {
+      build.onLoad({ filter: /\.module\.css$/ }, () => ({
+        contents: 'export default new Proxy({}, { get: (_target, key) => String(key) });',
+        loader: 'js'
+      }));
+    }
+  }],
   external: ['react', 'react-dom', 'react-dom/server', 'react-router-dom', 'framer-motion', 'lucide-react'],
   define: { 'import.meta.env': '{"VITE_API_BASE_URL":"/api/v1","VITE_OAUTH_BASE_URL":""}' }
 });
@@ -122,7 +131,7 @@ test('tenant and guest draft routes render the real workspace without editor con
   for (const [user, active] of [[tenant, false], [null, false]]) {
     const html = renderRoute('/lessor?view=drafts', user, active, 1);
     assertShell(html, false);
-    assert.equal(/Your drafts|Your property drafts/.test(html), true);
+    assert.equal(/Your drafts|Your property.{0,100}drafts/.test(html), true);
     assert.equal(/Continue your property listing|Add more details|Review your property/.test(html), false);
   }
   const tenantHtml = renderRoute('/lessor', tenant, false, 1);

@@ -9,6 +9,7 @@ import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
+import com.indore.pathome.spaces.service.TenantVisitEntitlementService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -27,14 +28,17 @@ public class AuthController {
     private final JwtUtils jwtUtils;
     private final LessorProfileRepository lessorProfileRepository;
     private final EmployeeProfileRepository employeeProfileRepository;
+    private final TenantVisitEntitlementService entitlements;
 
     public AuthController(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtUtils jwtUtils,
-                          LessorProfileRepository lessorProfileRepository, EmployeeProfileRepository employeeProfileRepository) {
+                          LessorProfileRepository lessorProfileRepository, EmployeeProfileRepository employeeProfileRepository,
+                          TenantVisitEntitlementService entitlements) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtils = jwtUtils;
         this.lessorProfileRepository = lessorProfileRepository;
         this.employeeProfileRepository = employeeProfileRepository;
+        this.entitlements = entitlements;
     }
 
     /**
@@ -60,10 +64,9 @@ public class AuthController {
         // Public registration must never grant an administrative role. Admin users
         // are provisioned through the protected operational process.
         user.setRole(Role.ROLE_TENANT);
-        user.setFreeVisitsRemaining(5);
 
         try {
-            user = userRepository.save(user);
+            user = entitlements.createTenantWithGrant(user);
         } catch (DataIntegrityViolationException persistenceFailure) {
             if (userRepository.findByEmail(request.getEmail()).isPresent()) {
                 return duplicateEmailResponse();

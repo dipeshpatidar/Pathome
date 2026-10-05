@@ -23,6 +23,7 @@ class LandlordMediaPromotionServiceTest {
     private LandlordMediaStore store;
     private MediaStagingService staging;
     private CloudinaryService cloudinary;
+    private LandlordSubmissionProgressService progress;
     private LandlordMediaPromotionService service;
     private PropertyUploadDraft draft;
     private PropertyDraftMedia photo;
@@ -35,7 +36,8 @@ class LandlordMediaPromotionServiceTest {
         store = mock(LandlordMediaStore.class);
         staging = mock(MediaStagingService.class);
         cloudinary = mock(CloudinaryService.class);
-        service = new LandlordMediaPromotionService(capabilities, drafts, media, store, staging, cloudinary);
+        progress = mock(LandlordSubmissionProgressService.class);
+        service = new LandlordMediaPromotionService(capabilities, drafts, media, store, staging, cloudinary, progress);
         draft = new PropertyUploadDraft(); draft.setDraftId("guest-1"); draft.setStatus("DRAFT"); draft.setLandlordUserId(7L);
         photo = new PropertyDraftMedia(); photo.setDraftId("guest-1"); photo.setMediaId("photo-1");
         photo.setLandlordUserId(7L); photo.setContentType("image/png"); photo.setFileSizeBytes(32L);

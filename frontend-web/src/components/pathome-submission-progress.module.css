@@ -1,0 +1,224 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(35 45 38 / 48%);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 180ms ease-out;
+}
+
+.card {
+  width: min(100%, 520px);
+  padding: 36px 40px 34px;
+  border: 1px solid rgb(207 198 181 / 75%);
+  border-radius: 22px;
+  background: #fbfaf6;
+  box-shadow: 0 24px 70px rgb(35 45 38 / 22%), 0 4px 14px rgb(35 45 38 / 10%);
+  color: #26382d;
+  animation: cardIn 240ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 22px;
+  place-items: center;
+  border: 1px solid #c8d8cb;
+  border-radius: 50%;
+  background: #e9f0e8;
+  color: #315c47;
+}
+
+.iconSuccess {
+  border-color: #b8d2bd;
+  background: #e5f1e6;
+  color: #2e6b45;
+}
+
+.iconError {
+  border-color: #e0c9b9;
+  background: #f7eee7;
+  color: #9a5b40;
+}
+
+.eyebrow {
+  margin-bottom: 9px;
+  color: #6f8775;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: #26382d;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(28px, 4vw, 36px);
+  font-weight: 400;
+  letter-spacing: -.025em;
+  line-height: 1.1;
+  text-wrap: balance;
+}
+
+.description {
+  max-width: 42ch;
+  margin: 12px 0 0;
+  color: #607065;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.progressArea {
+  margin-top: 30px;
+  padding-top: 22px;
+  border-top: 1px solid #e5e0d5;
+}
+
+.progressHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.step {
+  margin: 0;
+  color: #314d3c;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.detail {
+  margin: 6px 0 0;
+  color: #7a887e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.percentage {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  color: #315c47;
+  white-space: nowrap;
+}
+
+.percentage strong {
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -.04em;
+  line-height: 1;
+}
+
+.percentage span {
+  color: #7a887e;
+  font-size: 12px;
+}
+
+.progressTrack {
+  position: relative;
+  height: 9px;
+  margin-top: 20px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e9e1;
+}
+
+.progressValue {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #315c47;
+  transition: width 240ms ease-out;
+}
+
+.keepOpen {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  color: #6f7e73;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.keepOpen svg {
+  flex: 0 0 auto;
+  color: #78927d;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.primaryButton,
+.secondaryButton {
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.primaryButton {
+  border: 1px solid #315c47;
+  background: #315c47;
+  color: #fffdf8;
+}
+
+.primaryButton:hover { background: #264b39; border-color: #264b39; }
+
+.secondaryButton {
+  border: 1px solid #cdd5cd;
+  background: transparent;
+  color: #315c47;
+}
+
+.secondaryButton:hover { border-color: #315c47; background: #eef3ed; }
+
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible {
+  outline: 3px solid #a9c9af;
+  outline-offset: 3px;
+}
+
+.primaryButton:active,
+.secondaryButton:active { transform: translateY(1px); }
+
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes cardIn { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+
+@media (max-width: 560px) {
+  .backdrop { align-items: end; padding: 12px; }
+  .card { padding: 28px 22px 24px; border-radius: 20px; }
+  .icon { width: 44px; height: 44px; margin-bottom: 18px; }
+  .title { font-size: 29px; }
+  .description { font-size: 14px; }
+  .progressArea { margin-top: 24px; padding-top: 18px; }
+  .progressHeader { gap: 12px; }
+  .step { font-size: 15px; }
+  .detail { font-size: 12px; }
+  .percentage { flex-direction: column; align-items: flex-end; gap: 2px; }
+  .percentage strong { font-size: 25px; }
+  .actions { flex-direction: column; }
+  .primaryButton, .secondaryButton { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop, .card { animation: none; }
+  .progressValue { transition: none; }
+}

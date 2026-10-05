@@ -7,6 +7,7 @@ import { lessorMediaService } from '../services/lessorMediaService';
 import { LessorListingSummary, lessorPortfolioService } from '../services/lessorPortfolioService';
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import { lessorStepStorageKey } from '../utils/lessorStepResume';
+import { actionableDraftsNewestFirst, guestDraftSummary } from '../utils/landingDrafts';
 
 const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-[#355c49] px-5 text-sm font-semibold text-white hover:bg-[#284a38] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]';
 const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[#e9e7e1] bg-white px-4 text-sm font-semibold text-[#355c49] hover:border-[#b9c4b3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]';
@@ -16,53 +17,28 @@ import { getListingActionLabel, getRevisionNotice, WORKFLOW_STATUS_CONFIG } from
 function DraftCard({ draft, onOpen, onDelete, deleting }: {
   draft: LessorDraftSummary; onOpen: (id: string) => void; onDelete?: (draft: LessorDraftSummary) => void; deleting?: boolean;
 }) {
-  return (
-    <article className="lessor-v0-listing-card flex min-w-0 flex-col overflow-hidden rounded-[9px] border border-[#e9e7e1] bg-white">
-      <div className="aspect-[16/9] bg-slate-100">
-        {draft.coverUrl ? (
-          <img src={draft.coverUrl} alt="Property cover" loading="lazy" className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex h-full items-center justify-center text-slate-400">
-            <Building2 className="h-9 w-9" aria-hidden="true" />
-          </div>
-        )}
+  const [mediaFailed, setMediaFailed] = useState(false);
+  useEffect(() => setMediaFailed(false), [draft.draftId, draft.coverUrl]);
+  return <article className="pathome-draft-card min-w-0 overflow-hidden rounded-[18px] border border-[#e4e7de] bg-white shadow-[0_12px_34px_rgba(42,54,43,.055)]">
+    <div className="flex min-w-0 flex-col sm:flex-row">
+      <div className="pathome-draft-media flex min-h-[156px] w-full shrink-0 items-center justify-center overflow-hidden bg-[#e9eee7] text-[#67806a] sm:min-h-[210px] sm:w-[38%]">
+        {draft.coverUrl && !mediaFailed ? <img src={draft.coverUrl} alt="" loading="lazy" onError={() => setMediaFailed(true)} className="h-full w-full object-cover" /> : <div className="flex flex-col items-center gap-3 text-[#62806b]"><Building2 className="h-11 w-11" aria-hidden="true"/><span className="text-xs font-semibold">{mediaFailed ? 'Photo unavailable' : 'Photos to add'}</span></div>}
       </div>
-      <div className="flex flex-1 flex-col justify-between p-4">
-        <div>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200/80 bg-amber-50 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-900">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-            Draft · {draft.completionPercent}% complete
-          </span>
-          <h3 className="mt-3 line-clamp-2 min-h-12 break-words text-lg font-semibold text-slate-950">{draft.title}</h3>
-          <p className="mt-1 break-words text-sm text-slate-600">{[draft.locality, draft.city].filter(Boolean).join(', ') || 'Location to add'}</p>
-          <p className="mt-2 text-sm font-semibold text-slate-800">{draft.monthlyRent !== null ? `${MONEY.format(draft.monthlyRent)} / month` : 'Rent to add'}</p>
+      <div className="flex min-w-0 flex-1 flex-col justify-between gap-5 p-5 sm:p-6">
+        <div className="min-w-0">
+          <span className="inline-flex min-h-7 items-center gap-2 rounded-full bg-[#f0f3ec] px-3 text-[11px] font-bold uppercase tracking-[.1em] text-[#3d634b]"><span className="h-1.5 w-1.5 rounded-full bg-[#628a6c]" aria-hidden="true"/>Draft · {draft.completionPercent}% complete</span>
+          <h3 className="mt-4 break-words font-serif text-[27px] leading-[1.12] tracking-[-.025em] text-[#303b32]">{draft.title}</h3>
+          <p className="mt-2 break-words text-sm text-[#667167]">{[draft.locality, draft.city].filter(Boolean).join(', ') || 'Location to add'}</p>
+          <p className="mt-3 text-[15px] font-semibold text-[#354d3c]">{draft.monthlyRent !== null ? `${MONEY.format(draft.monthlyRent)} / month` : 'Rent to add'}</p>
+          <LastUpdatedMeta updatedAt={draft.updatedAt} className="mt-3" />
         </div>
-        <div className="mt-4 border-t border-slate-100 pt-3">
-          <LastUpdatedMeta updatedAt={draft.updatedAt} className="mb-3" />
-          <button type="button" onClick={() => onOpen(draft.draftId)}
-            className="inline-flex min-h-11 w-full items-center justify-between rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-2xs transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
-            <span>Continue draft</span><ArrowRight className="h-4 w-4 text-slate-400" aria-hidden="true" />
-          </button>
-          {onDelete && <button type="button" onClick={() => onDelete(draft)} disabled={deleting}
-            className="mt-1 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-50">
-            <Trash2 className="h-4 w-4" aria-hidden="true" />Delete draft
-          </button>}
+        <div className="flex flex-wrap items-center gap-2 border-t border-[#edf0ea] pt-4">
+          <button type="button" onClick={() => onOpen(draft.draftId)} className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-[#355c49] px-4 text-sm font-semibold text-white hover:bg-[#284a38] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]"><span>Continue draft</span><ArrowRight className="h-4 w-4" aria-hidden="true" /></button>
+          {onDelete && <button type="button" onClick={() => onDelete(draft)} disabled={deleting} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:opacity-50"><Trash2 className="h-4 w-4" aria-hidden="true" />Delete</button>}
         </div>
       </div>
-    </article>
-  );
-}
-
-function guestDraftSummary(draft: LessorDraft, coverUrl: string | null): LessorDraftSummary {
-  const labels = { FLAT: 'Flat', HOUSE: 'House', STUDIO: 'Studio', PENTHOUSE: 'Penthouse', SERVICED_APARTMENT: 'Serviced apartment' };
-  const basics = draft.data.basics;
-  const title = [basics.bhkCount, labels[basics.propertyType]].filter(Boolean).join(' ') || 'Property listing';
-  return {
-    draftId: draft.draftId, title, status: draft.status, completionPercent: draft.completionPercent,
-    updatedAt: draft.updatedAt, propertyType: basics.propertyType, bhkCount: basics.bhkCount,
-    city: draft.data.location?.city || null, locality: draft.data.location?.localityInput || null,
-    monthlyRent: draft.data.pricing?.monthlyRent ?? null, coverUrl
-  };
+    </div>
+  </article>;
 }
 
 export function GuestDraftWorkspace({ draft, loading, error, onAdd, onOpenDraft, onRetry }: {
@@ -82,14 +58,14 @@ export function GuestDraftWorkspace({ draft, loading, error, onAdd, onOpenDraft,
       .catch(() => { if (live) setCoverUrl(null); });
     return () => { live = false; };
   }, [draft?.draftId, draft?.status]);
-  const resumable = draft?.status === 'DRAFT' ? guestDraftSummary(draft, coverUrl) : null;
-  return <section>
-    <p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your workspace</p>
-    <h1 className="mt-1 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">Your property drafts</h1>
-    <p className="mt-2 text-sm leading-relaxed text-slate-600">Your unfinished property listing is saved in this browser.</p>
+  const resumable = draft?.status === 'DRAFT' ? { ...guestDraftSummary(draft), coverUrl } : null;
+  return <section className="pathome-drafts-page pt-3">
+    <p className="tenant-v0-eyebrow">YOUR PROPERTY SPACE</p>
+    <h1 className="tenant-v0-page-title mt-4">Your property <em>drafts.</em></h1>
+    <p className="tenant-v0-intro mt-2">Continue your unfinished property listing.</p>
     {loading && <p role="status" className="mt-8 text-sm text-slate-600">Checking your saved draft…</p>}
     {error && <div role="alert" className="mt-8 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">{error}<button type="button" className={`${SECONDARY} mt-4 block`} onClick={onRetry}>Try again</button></div>}
-    {!loading && !error && resumable && <div className="mt-7 max-w-sm"><DraftCard draft={resumable} onOpen={onOpenDraft} /></div>}
+    {!loading && !error && resumable && <div className="mt-8 max-w-[800px]"><DraftCard draft={resumable} onOpen={onOpenDraft} /></div>}
     {!loading && !error && !resumable && <div className="mt-8 max-w-xl rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
       <Building2 className="h-8 w-8 text-emerald-700" aria-hidden="true" />
       <h2 className="mt-4 text-xl font-semibold text-slate-950">Your property listing starts here</h2>
@@ -176,14 +152,14 @@ export function LessorPortfolio({ userId = null, onAdd, onOpenDraft, onOpenListi
     }
   };
 
-  const visibleDrafts = drafts.filter(draft => draft.status === 'DRAFT');
+  const visibleDrafts = actionableDraftsNewestFirst(drafts);
   const empty = !loadingDrafts && !loadingListings && !draftError && !listingError && visibleDrafts.length === 0 && listings.length === 0;
-  return <section className="lessor-v0-portfolio">
+  return <section className={`lessor-v0-portfolio ${draftsOnly ? 'pathome-drafts-page' : ''}`}>
     <div className="lessor-v0-topline">
       <p className="tenant-v0-eyebrow">YOUR LESSOR SPACE</p>
       <button type="button" className={BUTTON} onClick={onAdd}><Plus size={16} aria-hidden="true" />{mainActionLabel}</button>
     </div>
-    <h1 className="tenant-v0-page-title">Make room for <em>what’s next.</em></h1>
+    {draftsOnly ? <><h1 className="tenant-v0-page-title">Your property <em>drafts.</em></h1><p className="tenant-v0-intro">Continue your unfinished property listings saved to your Pathome account.</p></> : <><h1 className="tenant-v0-page-title">Make room for <em>what’s next.</em></h1>
     <p className="tenant-v0-intro">A calmer way to share your place with the right people.</p>
     <div className="lessor-v0-welcome">
       <div><span className="tenant-v0-eyebrow">A BETTER WAY TO BEGIN</span>
@@ -193,11 +169,12 @@ export function LessorPortfolio({ userId = null, onAdd, onOpenDraft, onOpenListi
       </div>
       <div className="lessor-v0-welcome-art"><img src="/pathome-house.png" alt="A peaceful home ready for its next chapter" /><span>GOOD HOMES FIND GOOD PEOPLE</span></div>
     </div>
-    <div className="lessor-v0-table-head"><h2>{draftsOnly ? 'Your drafts' : 'Your listings'}</h2><Link to="/tenant">Explore homes <ArrowRight size={15} aria-hidden="true" /></Link></div>
+    </>}
+    <div className="lessor-v0-table-head"><h2>{draftsOnly ? 'Drafts' : 'Your listings'}</h2><Link to="/tenant">Explore homes <ArrowRight size={15} aria-hidden="true" /></Link></div>
     {empty && <div className="mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-7"><Building2 className="mb-4 h-7 w-7 text-emerald-700"/><h2 className="text-xl font-semibold text-slate-950">{draftsOnly ? 'Your property listing starts here' : 'Your first property starts here'}</h2><p className="mt-2 text-sm text-slate-600">Add the basics now. You can return to finish later.</p><div className="mt-5 flex flex-wrap items-center gap-3"><button className={BUTTON} onClick={onAdd}>{mainActionLabel}</button><Link to="/" className={SECONDARY}>Browse rental homes</Link></div></div>}
     {(loadingDrafts || loadingListings) && visibleDrafts.length === 0 && listings.length === 0 && <div aria-label="Loading properties" className="mt-8 grid gap-4 sm:grid-cols-2">{[1, 2].map(number => <div key={number} className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="aspect-[16/9] animate-pulse motion-reduce:animate-none bg-slate-200"/><div className="space-y-3 p-4"><div className="h-4 w-24 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-6 w-3/4 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-4 w-1/2 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-11 w-28 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/></div></div>)}</div>}
     {(visibleDrafts.length > 0 || draftError) && <div className="mt-9">{!draftsOnly && <h2 className="text-lg font-semibold text-slate-950">Drafts</h2>}{draftError && <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{draftError}<button className="ml-3 underline" onClick={() => { void loadDrafts(draftPage); }}>Retry</button></p>}
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{visibleDrafts.map(draft => <DraftCard key={draft.draftId} draft={draft} onOpen={onOpenDraft} onDelete={openDeleteConfirmation} deleting={deletingDraftId === draft.draftId} />)}</div>{moreDrafts && <button disabled={loadingDrafts} className={`${SECONDARY} mt-5`} onClick={() => { void loadDrafts(draftPage + 1); }}>{loadingDrafts ? 'Loading…' : 'Show more drafts'}</button>}</div>}
+      <div className="mt-5 grid gap-5 xl:grid-cols-2">{visibleDrafts.map(draft => <DraftCard key={draft.draftId} draft={draft} onOpen={onOpenDraft} onDelete={openDeleteConfirmation} deleting={deletingDraftId === draft.draftId} />)}</div>{moreDrafts && <button disabled={loadingDrafts} className={`${SECONDARY} mt-5`} onClick={() => { void loadDrafts(draftPage + 1); }}>{loadingDrafts ? 'Loading…' : 'Show more drafts'}</button>}</div>}
     {!draftsOnly && (listings.length > 0 || listingError) && <div className="mt-10"><h2 className="text-lg font-semibold text-slate-950">Submitted and managed properties</h2>{listingError && <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{listingError}<button className="ml-3 underline" onClick={() => { void loadListings(listingPage); }}>Retry</button></p>}
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{listings.map(listing => {
         const statusInfo = WORKFLOW_STATUS_CONFIG[listing.status] || {

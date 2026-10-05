@@ -21,37 +21,47 @@ public class LandlordMediaPromotionService {
     private final LandlordMediaStore store;
     private final MediaStagingService staging;
     private final CloudinaryService cloudinary;
+    private final LandlordSubmissionProgressService progress;
 
     public LandlordMediaPromotionService(LandlordCapabilityService capabilities, PropertyUploadDraftRepository drafts,
             PropertyDraftMediaRepository media, LandlordMediaStore store,
-            @Qualifier("draftMediaStagingService") MediaStagingService staging, CloudinaryService cloudinary) {
+            @Qualifier("draftMediaStagingService") MediaStagingService staging, CloudinaryService cloudinary,
+            LandlordSubmissionProgressService progress) {
         this.capabilities = capabilities; this.drafts = drafts; this.media = media;
-        this.store = store; this.staging = staging; this.cloudinary = cloudinary;
+        this.store = store; this.staging = staging; this.cloudinary = cloudinary; this.progress = progress;
     }
 
     public List<LandlordMediaItem> promote(String email, String draftId) {
         Long owner = capabilities.requireOnboardingUserId(email);
-        var draft = drafts.findByDraftIdAndLandlordUserId(draftId, owner)
-                .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
-        if (!"DRAFT".equals(draft.getStatus()))
-            throw new com.indore.pathome.spaces.exception.DraftConflictException(draftId, draft.getVersion(),
-                    "Draft can no longer be edited");
-        for (PropertyDraftMedia row : media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, owner)) {
-            if (row.getStagingObjectKey() == null) continue;
-            if ("UPLOADED".equals(row.getUploadStatus())) { cleanStaging(row, owner); continue; }
-            if (!"STAGED".equals(row.getUploadStatus())) continue;
-            boolean video = row.getContentType().startsWith("video/");
-            String requestId = "lessor-" + owner + "-" + row.getMediaId().replace("-", "");
-            var result = cloudinary.findExistingResourceByUploadRequestId(requestId, video);
-            if (result.isEmpty()) {
-                try (InputStream stream = staging.retrieve(row.getStagingObjectKey())) {
-                    result = java.util.Optional.of(cloudinary.uploadStreamResult(stream, video, requestId));
-                } catch (java.io.IOException ex) { throw new IllegalStateException("Temporary media could not be read", ex); }
+        try {
+            var draft = drafts.findByDraftIdAndLandlordUserId(draftId, owner)
+                    .orElseThrow(() -> new EntityNotFoundException("Draft unavailable"));
+            if (!"DRAFT".equals(draft.getStatus()))
+                throw new com.indore.pathome.spaces.exception.DraftConflictException(draftId, draft.getVersion(),
+                        "Draft can no longer be edited");
+            List<PropertyDraftMedia> rows = media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc(draftId, owner);
+            progress.mediaStarted(owner, draftId, rows);
+            for (PropertyDraftMedia row : rows) {
+                if (row.getStagingObjectKey() == null) continue;
+                if ("UPLOADED".equals(row.getUploadStatus())) { cleanStaging(row, owner); continue; }
+                if (!"STAGED".equals(row.getUploadStatus())) continue;
+                boolean video = row.getContentType().startsWith("video/");
+                String requestId = "lessor-" + owner + "-" + row.getMediaId().replace("-", "");
+                var result = cloudinary.findExistingResourceByUploadRequestId(requestId, video);
+                if (result.isEmpty()) {
+                    try (InputStream stream = staging.retrieve(row.getStagingObjectKey())) {
+                        result = java.util.Optional.of(cloudinary.uploadStreamResult(stream, video, requestId));
+                    } catch (java.io.IOException ex) { throw new IllegalStateException("Temporary media could not be read", ex); }
+                }
+                store.complete(email, draftId, row.getMediaId(), result.orElseThrow());
+                progress.mediaProcessed(owner, draftId, row.getMediaId());
+                cleanStaging(row, owner);
             }
-            store.complete(email, draftId, row.getMediaId(), result.orElseThrow());
-            cleanStaging(row, owner);
+            return store.list(email, draftId);
+        } catch (RuntimeException failure) {
+            progress.fail(owner, draftId);
+            throw failure;
         }
-        return store.list(email, draftId);
     }
 
     public Content stagedContent(String email, String draftId, String mediaId) {

@@ -477,6 +477,22 @@ class VisitSessionMigrationPostgresTest {
                 connection.setSchema(schema);
                 assertEquals(1, count(connection,
                         "SELECT count(*) FROM visit_session_item_outcomes WHERE session_id=600"));
+
+                // V42 leaves legacy totals unresolved without changing balances or ledger history.
+                int legacyAvailable = jdbc.queryForObject(
+                        "select available_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class);
+                int legacyLedgerRows = count(connection,
+                        "SELECT count(*) FROM visit_entitlement_ledger WHERE user_id=1");
+                migrate(url, username, password, schema, "42");
+                connection.setSchema(schema);
+                assertNull(jdbc.queryForObject(
+                        "select total_granted_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class));
+                assertEquals(legacyAvailable, jdbc.queryForObject(
+                        "select available_credits from tenant_visit_entitlement_accounts where user_id=1", Integer.class));
+                assertEquals(legacyLedgerRows, count(connection,
+                        "SELECT count(*) FROM visit_entitlement_ledger WHERE user_id=1"));
+                assertEquals("23514", sqlStateForRejectedInsert(connection,
+                        "UPDATE tenant_visit_entitlement_accounts SET total_granted_credits=-1 WHERE user_id=1"));
             } finally {
                 execute(connection, "DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }

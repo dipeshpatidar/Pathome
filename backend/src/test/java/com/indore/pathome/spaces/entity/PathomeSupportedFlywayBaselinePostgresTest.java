@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Verifies the supported pre-Flyway version-1 legacy baseline through the current migration chain. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_PACKAGE5_FLYWAY_TEST", matches = "true")
 class PathomeSupportedFlywayBaselinePostgresTest {
-    private static final String LATEST_VERSION = "41";
+    private static final String LATEST_VERSION = "42";
 
     @Test
     void supportedLegacyBaselineUpgradesThroughLatestMigrationWithoutInventingOldOutcomes() throws Exception {
@@ -87,8 +87,8 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "JOIN visit_sessions s ON s.id=r.session_id WHERE s.status='COMPLETED' "
                         + "AND r.state='LEGACY_UNRECORDED' AND r.scope_source='LEGACY_COMPLETED'"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM visit_session_item_outcomes"));
-                assertEquals(40, count(connection, "SELECT count(*) FROM flyway_schema_history "
-                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 41"));
+                assertEquals(41, count(connection, "SELECT count(*) FROM flyway_schema_history "
+                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 42"));
                 assertEquals("1", text(connection,
                         "SELECT version FROM flyway_schema_history WHERE type='BASELINE'"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_policy WHERE id=1"));

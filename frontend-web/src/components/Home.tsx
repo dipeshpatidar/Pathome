@@ -1,23 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile, UserRole } from '../types';
 import { Navbar } from './Navbar';
-import { HeroSection } from './HeroSection';
-import { PropertyShowcase } from './PropertyShowcase';
-import { ValueBanner } from './ValueBanner';
-import { FutureExpansion } from './FutureExpansion';
-import { HowItWorks } from './HowItWorks';
-import { Footer } from './Footer';
 import { AuthModal } from './AuthModal';
 import { LeaseUploadModal } from './LeaseUploadModal';
-import { TenantDashboard } from './TenantDashboard';
-import { ArrowUp, ChevronDown, LoaderCircle, MapPin } from 'lucide-react';
+import { TenantDashboard, TenantPropertyQuickView } from './TenantDashboard';
 import { PublicPropertyDetail } from './PublicPropertyDetail';
 import { VisitRequestModal } from './VisitRequestModal';
 import { LessorWorkspace } from './LessorWorkspace';
 import { PathomeRouteShell } from './PathomeRouteShell';
-import { lessorDraftService } from '../services/lessorDraftService';
+import { lessorDraftService, type LessorDraftSummary } from '../services/lessorDraftService';
+import { actionableDraftsNewestFirst, guestDraftSummary } from '../utils/landingDrafts';
+import { landingPropertyTitle } from '../utils/landingPropertyData';
+import { landingStateFromUrl, type LandingState } from '../utils/landingSearchState';
 import { favoriteService } from '../services/favoriteService';
 import { tenantVisitService } from '../services/tenantVisitService';
 import { tenantRequestStatusForProperty } from '../utils/tenantVisitView';
@@ -36,15 +32,15 @@ import {
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
-import { CompactSearchContext } from './CompactSearchContext';
+import { LandingV0 } from './LandingV0';
 import { propertyService } from '../services/propertyService';
 import { lessorCapabilityService } from '../services/lessorCapabilityService';
 import { LessorCapabilityTracker, isCurrentLessorSession, readLessorSessionIdentity } from '../utils/lessorCapabilityState';
 import { isLessorWorkspaceRoute, normalizeRoutePathname, resolveLessorExitPath } from '../utils/navigationPolicy';
-import { getGuestResumableDraftCount, readResumableDraftCount } from '../utils/draftAccessPolicy';
+import { readResumableDraftCount } from '../utils/draftAccessPolicy';
 import { useNotification } from '../context/NotificationContext';
 import { clearPersistedUser, readPersistedUser } from '../utils/authSession';
-import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalSearchFilters } from '../utils/rentalSearch';
+import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
 
 const VALID_ADMIN_TABS = new Set([
   'overview',
@@ -85,7 +81,7 @@ const getInitialAdminTab = (): string => {
 export const Home: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { notifySuccess } = useNotification();
+  const { notifySuccess, notifyError } = useNotification();
   const reduceMotion = useReducedMotion();
 
   const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
@@ -95,6 +91,8 @@ export const Home: React.FC = () => {
   tenantFavoritesSnapshotRef.current = tenantFavoritesSnapshot;
   const pendingFavoriteChangesRef = useRef<Map<string, Map<number, boolean>>>(new Map());
   const [favoriteCountReload, setFavoriteCountReload] = useState(0);
+  const [landingFavoritePending, setLandingFavoritePending] = useState<Set<number>>(() => new Set());
+  const [landingQuickViewId, setLandingQuickViewId] = useState<number | null>(null);
   const tenantFavoriteSession = role === 'TENANT' && user ? readTenantVisitSession(user.id) : null;
   const authoritativeSavedCount = tenantFavoriteSession
     && tenantFavoritesSnapshot.identityKey === tenantFavoriteSession.key
@@ -105,8 +103,8 @@ export const Home: React.FC = () => {
     setTenantFavoritesSnapshot(snapshot);
   };
   const [hasLessorCapability, setHasLessorCapability] = useState<boolean | null | 'error'>(null);
-  const [draftSnapshot, setDraftSnapshot] = useState<{ key: string; count: number; state: 'loading' | 'ready' | 'error' }>({
-    key: '', count: 0, state: 'loading'
+  const [draftSnapshot, setDraftSnapshot] = useState<{ key: string; count: number; latest: LessorDraftSummary | null; state: 'loading' | 'ready' | 'error' }>({
+    key: '', count: 0, latest: null, state: 'loading'
   });
   const capabilityTrackerRef = useRef<LessorCapabilityTracker | null>(null);
   if (!capabilityTrackerRef.current) {
@@ -117,6 +115,7 @@ export const Home: React.FC = () => {
   const clearUserSession = useCallback(() => {
     // Remove the token first so every in-flight identity check immediately becomes stale.
     clearPersistedUser();
+    sessionStorage.removeItem('pathome_pending_favorite_property_id');
     discoveryAbortRef.current?.abort();
     loadMoreAbortRef.current?.abort();
     discoveryRequestRef.current += 1;
@@ -126,8 +125,10 @@ export const Home: React.FC = () => {
     setLoadingMore(false);
     setLoadMoreError(null);
     setUser(null);
+    setLandingFavoritePending(new Set());
+    setLandingQuickViewId(null);
     capabilityTracker.clear();
-    setDraftSnapshot({ key: '', count: 0, state: 'loading' });
+    setDraftSnapshot({ key: '', count: 0, latest: null, state: 'loading' });
     setPendingVisitProperty(null);
     setShowPostPropertyModal(false);
     setLessorAuthContext(null);
@@ -234,8 +235,12 @@ export const Home: React.FC = () => {
     maxRent: parseRentFilter(currentSearchParams.get('maxRent')),
     rentalOnly: currentSearchParams.get('rentalOnly') === 'true'
   };
+  const landingState = landingStateFromUrl(currentSearchParams, activeSearchFilters, activeDiscoveryCity);
   const activeDiscoveryKey = discoverySearchKey(activeSearchFilters);
-  const [refineSearchRequest, setRefineSearchRequest] = useState(0);
+  const draftSessionKey = user ? (readLessorSessionIdentity()?.key ?? 'missing-session') : 'guest';
+  const currentDraftSnapshot = draftSnapshot.key === draftSessionKey ? draftSnapshot : null;
+  const currentDraftCount = currentDraftSnapshot?.count ?? 0;
+  const currentDraftState = currentDraftSnapshot?.state ?? 'loading';
   const [showPostPropertyModal, setShowPostPropertyModal] = useState(false);
   const openPostProperty = useCallback(() => {
     const origin = resolveLessorExitPath(`${location.pathname}${location.search}`, {
@@ -270,10 +275,6 @@ export const Home: React.FC = () => {
   const propertyVisitIdentity = role === 'TENANT' && user ? readTenantVisitSession(user.id) : null;
   const currentPropertyVisitLookup = propertyVisitIdentity && propertyVisitLookup.propertyId === publicPropertyId
     && propertyVisitLookup.identityKey === propertyVisitIdentity.key ? propertyVisitLookup : emptyPropertyVisitLookup;
-  const draftSessionKey = user ? (readLessorSessionIdentity()?.key ?? 'missing-session') : 'guest';
-  const currentDraftSnapshot = draftSnapshot.key === draftSessionKey ? draftSnapshot : null;
-  const currentDraftCount = currentDraftSnapshot?.count ?? 0;
-  const currentDraftState = currentDraftSnapshot?.state ?? 'loading';
 
   useEffect(() => {
     if (!isPublicPropertyRoute || !publicPropertyId || role !== 'TENANT' || !user) {
@@ -316,63 +317,7 @@ export const Home: React.FC = () => {
     };
   }, []);
 
-  const [showBackToTop, setShowBackToTop] = useState(false);
   const prevIsPropertyRoute = useRef(isPropertyRoute);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      setShowBackToTop(window.scrollY > 450);
-    };
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  const [showCompactSearch, setShowCompactSearch] = useState(false);
-
-  useEffect(() => {
-    if (isPropertyRoute || role !== 'GUEST') {
-      setShowCompactSearch(false);
-      return undefined;
-    }
-
-    const heroSearchEl = document.getElementById('hero-search-surface');
-    if (!heroSearchEl) return undefined;
-
-    const syncCompactSearch = () => {
-      const focusedElement = document.activeElement;
-      if (focusedElement && heroSearchEl.contains(focusedElement)) {
-        setShowCompactSearch(false);
-      } else if (focusedElement && document.getElementById('compact-discovery-context')?.contains(focusedElement)) {
-        setShowCompactSearch(true);
-      } else {
-        setShowCompactSearch(heroSearchEl.getBoundingClientRect().bottom < 75);
-      }
-    };
-    let focusFrame = 0;
-    const handleSearchFocus = (event: FocusEvent) => {
-      const target = event.target as Node;
-      if (!heroSearchEl.contains(target) && !document.getElementById('compact-discovery-context')?.contains(target)) return;
-      window.cancelAnimationFrame(focusFrame);
-      focusFrame = window.requestAnimationFrame(syncCompactSearch);
-    };
-    const observer = new IntersectionObserver(
-      syncCompactSearch,
-      {
-        rootMargin: '-75px 0px 0px 0px',
-        threshold: 0
-      }
-    );
-
-    observer.observe(heroSearchEl);
-    document.addEventListener('focusin', handleSearchFocus);
-    document.addEventListener('focusout', handleSearchFocus);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener('focusin', handleSearchFocus);
-      document.removeEventListener('focusout', handleSearchFocus);
-      window.cancelAnimationFrame(focusFrame);
-    };
-  }, [isPropertyRoute, role, location.pathname]);
 
   // Fetch live properties — resets to page 0 and discards previous results on every call
   const loadLiveProperties = async (filters: RentalSearchFilters) => {
@@ -556,6 +501,9 @@ export const Home: React.FC = () => {
         } else {
           // LOGIN/ROLE CHANGE IN ANOTHER WINDOW/TAB DETECTED!
           if (storedUser.id !== user?.id) {
+            setLandingFavoritePending(new Set());
+            setLandingQuickViewId(null);
+            sessionStorage.removeItem('pathome_pending_favorite_property_id');
             discoveryAbortRef.current?.abort();
             loadMoreAbortRef.current?.abort();
             discoveryRequestRef.current += 1;
@@ -620,37 +568,35 @@ export const Home: React.FC = () => {
     let revision = 0;
     const refreshDraftCount = () => {
       const currentRevision = ++revision;
-      setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'loading' });
+      setDraftSnapshot({ key: draftSessionKey, count: 0, latest: null, state: 'loading' });
       void (async () => {
         try {
           if (role === 'GUEST') {
-            const localDraftId = localStorage.getItem('pathome_guest_draft_id');
-            if (!localDraftId) {
-              if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'ready' });
-              return;
-            }
+            // The guest resume endpoint validates the browser's guest proof, as on the Drafts page.
+            // A local ID hint can be absent while that valid browser draft still exists.
             const draft = await lessorDraftService.resumeGuest();
-            const count = getGuestResumableDraftCount(localDraftId, draft);
-            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count, state: 'ready' });
+            const count = draft?.status === 'DRAFT' ? 1 : 0;
+            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count, latest: count ? guestDraftSummary(draft!) : null, state: 'ready' });
             return;
           }
 
           if (!user || !['TENANT', 'LANDLORD', 'ROLE_LANDLORD'].includes(role)) {
-            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'ready' });
+            if (live && currentRevision === revision) setDraftSnapshot({ key: draftSessionKey, count: 0, latest: null, state: 'ready' });
             return;
           }
           const identity = readLessorSessionIdentity();
           if (!identity || identity.userId !== user.id) throw new Error('Session identity changed');
           const page = await lessorDraftService.list(0);
           const count = readResumableDraftCount(page.totalCount);
+          const latest = actionableDraftsNewestFirst(page.items)[0] || null;
           if (count === null) throw new Error('Draft count unavailable');
           if (live && currentRevision === revision && isCurrentLessorSession(identity)) {
-            setDraftSnapshot({ key: draftSessionKey, count, state: 'ready' });
+            setDraftSnapshot({ key: draftSessionKey, count, latest, state: 'ready' });
           }
         } catch {
           if (live && currentRevision === revision &&
               (role === 'GUEST' || readLessorSessionIdentity()?.key === draftSessionKey)) {
-            setDraftSnapshot({ key: draftSessionKey, count: 0, state: 'error' });
+            setDraftSnapshot({ key: draftSessionKey, count: 0, latest: null, state: 'error' });
           }
         }
       })();
@@ -664,7 +610,7 @@ export const Home: React.FC = () => {
       window.removeEventListener('pathome_lessor_drafts_changed', refreshDraftCount);
       window.removeEventListener('pathome_auth_changed', refreshDraftCount);
     };
-  }, [draftSessionKey, role, user?.id]);
+  }, [draftSessionKey, role, user?.id, location.pathname]);
 
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
@@ -704,7 +650,7 @@ export const Home: React.FC = () => {
     }
   }, [location.pathname, user, role, navigate, isPropertyRoute, clearUserSession]);
 
-  const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>) => {
+  const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>, nextLandingState?: LandingState) => {
     focusResultsAfterSearch.current = true;
     const query = new URLSearchParams();
     const effectiveCity = city || undefined;
@@ -719,6 +665,11 @@ export const Home: React.FC = () => {
     if (search?.minRent) query.set('minRent', String(search.minRent));
     if (search?.maxRent) query.set('maxRent', String(search.maxRent));
     if (search?.rentalOnly) query.set('rentalOnly', 'true');
+    if (nextLandingState) {
+      query.set('lpSearch', JSON.stringify(nextLandingState.search));
+      query.set('lpFilters', JSON.stringify(nextLandingState.explicit));
+      if (nextLandingState.searchLabel) query.set('lpSearchLabel', nextLandingState.searchLabel);
+    }
     const nextFilters: RentalSearchFilters = {
       city: effectiveCity,
       sector: query.get('sector') || undefined,
@@ -733,12 +684,12 @@ export const Home: React.FC = () => {
     const sameCriteria = discoverySearchKey(nextFilters) === activeDiscoveryKey;
     if (sameCriteria && discoveryState === 'READY') {
       focusResultsAfterSearch.current = false;
-      window.requestAnimationFrame(() => document.getElementById('discovery-results-heading')?.focus({ preventScroll: true }));
+      window.requestAnimationFrame(() => document.getElementById('lp-homes-title')?.focus({ preventScroll: true }));
     } else if (sameCriteria && discoveryState === 'ERROR') {
       loadLiveProperties(nextFilters);
     }
-    navigate(`/?${query.toString()}#listings`);
-    const listingsElement = document.getElementById('listings');
+    navigate(`/?${query.toString()}#homes`);
+    const listingsElement = document.getElementById('homes');
     if (listingsElement) {
       listingsElement.scrollIntoView({
         behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
@@ -751,7 +702,7 @@ export const Home: React.FC = () => {
     if (!focusResultsAfterSearch.current || loadedDiscoveryKey !== activeDiscoveryKey || discoveryState === 'LOADING') return;
     focusResultsAfterSearch.current = false;
     window.requestAnimationFrame(() => {
-      document.getElementById(discoveryState === 'ERROR' ? 'discovery-results-error' : 'discovery-results-heading')?.focus({ preventScroll: true });
+      document.getElementById('lp-homes-title')?.focus({ preventScroll: true });
     });
   }, [activeDiscoveryKey, loadedDiscoveryKey, discoveryState]);
 
@@ -761,16 +712,19 @@ export const Home: React.FC = () => {
         sessionStorage.setItem('pathome_pending_favorite_property_id', String(property.id));
       } catch (_) {}
       setShowAuthModal(true);
-      notifySuccess('Sign in to save properties', 'Create or log into your Pathome account to save your favorite homes.');
       return;
     }
-    try {
-      const existing = JSON.parse(sessionStorage.getItem('pathome_session_saved_properties') || '[]');
-      if (!existing.includes(property.id)) {
-        sessionStorage.setItem('pathome_session_saved_properties', JSON.stringify([...existing, property.id]));
-      }
-    } catch (_) {}
-    notifySuccess('Saved for this session', `"${property.title}" is saved for your current session.`);
+    const session = readTenantVisitSession(user.id);
+    if (!session || !isCurrentTenantVisitSession(session) || landingFavoritePending.has(property.id) ||
+        tenantFavoritesSnapshot.identityKey !== session.key || tenantFavoritesSnapshot.status !== 'ready') return;
+    const saved = tenantFavoritesSnapshot.propertyIds.has(property.id);
+    setLandingFavoritePending(current => new Set(current).add(property.id));
+    void (saved ? favoriteService.remove(property.id) : favoriteService.save(property.id)).then(() => {
+      if (!isCurrentTenantVisitSession(session)) return;
+      window.dispatchEvent(new CustomEvent(TENANT_FAVORITE_CHANGED_EVENT, { detail: { identityKey: session.key, propertyId: property.id, saved: !saved } }));
+      notifySuccess(saved ? 'Home removed' : 'Home saved', saved ? 'Removed from your saved homes.' : 'Added to your saved homes.');
+    }).catch(() => { if (isCurrentTenantVisitSession(session)) notifyError('Could not update saved homes', 'Please try again.'); })
+      .finally(() => { if (isCurrentTenantVisitSession(session)) setLandingFavoritePending(current => { const next = new Set(current); next.delete(property.id); return next; }); });
   };
 
   const handleRequestVisit = (property: Property) => {
@@ -793,6 +747,16 @@ export const Home: React.FC = () => {
     window.dispatchEvent(new Event('pathome_auth_changed'));
     setShowAuthModal(false);
     setLessorAuthContext(null);
+    const pendingFavoriteId = Number(sessionStorage.getItem('pathome_pending_favorite_property_id'));
+    sessionStorage.removeItem('pathome_pending_favorite_property_id');
+    if (userProfile.role === 'TENANT' && Number.isSafeInteger(pendingFavoriteId) && pendingFavoriteId > 0) {
+      void favoriteService.save(pendingFavoriteId).then(() => {
+        const session = readTenantVisitSession(userProfile.id);
+        if (session && isCurrentTenantVisitSession(session)) {
+          window.dispatchEvent(new CustomEvent(TENANT_FAVORITE_CHANGED_EVENT, { detail: { identityKey: session.key, propertyId: pendingFavoriteId, saved: true } }));
+        }
+      }).catch(() => notifyError('Could not save home', 'Please try again from the listing.'));
+    }
     if (userProfile.role === 'TENANT' && location.pathname.startsWith('/lessor/') &&
         (sessionStorage.getItem('pathome_guest_submit_draft') || sessionStorage.getItem('pathome_guest_save_draft'))) return;
     const pendingLessor = sessionStorage.getItem('pathome_pending_after_auth');
@@ -835,7 +799,7 @@ export const Home: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Inter',sans-serif]">
       <PathomeRouteShell pathname={normalizedPathname} focused={lessorWorkspace} normal={<>
-        <Navbar
+        {!(role === 'GUEST' && !isPropertyRoute && !isLessorRoute) && <Navbar
           user={user}
           role={role}
           hasLessorCapability={hasLessorCapability}
@@ -851,7 +815,7 @@ export const Home: React.FC = () => {
           activeAdminTab={activeAdminTab}
           setActiveAdminTab={setActiveAdminTab}
           isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
-        />
+        />}
 
       {isPropertyRoute && (
         <PublicPropertyDetail propertyId={publicPropertyId} isAuthenticated={Boolean(user) && role !== 'GUEST'}
@@ -938,173 +902,46 @@ export const Home: React.FC = () => {
               onLogout={handleLogout}
             />
           </motion.div>
-        ) : !isPropertyRoute && !isLessorRoute && role === 'GUEST' && (
-          <motion.div
-            key="guest-homepage"
-            initial={reduceMotion ? false : { opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? undefined : { opacity: 0, y: -16 }}
-            transition={{ duration: reduceMotion ? 0 : 0.4, ease: [0.16, 1, 0.3, 1] }}
-          >
-            {/* SECTION 1: HERO SEARCH HUB */}
-            <div id="hero" className="relative z-30 focus-within:z-50 -mt-[calc(61px+env(safe-area-inset-top))] sm:-mt-[calc(70.5px+env(safe-area-inset-top))] lg:-mt-[calc(74.5px+env(safe-area-inset-top))]">
-              <HeroSection
-                onSearch={handleDiscoverySearch}
-                onOpenPostProperty={openPostProperty}
-                selectedCity={activeDiscoveryCity}
-                selectedSector={filterSector}
-                selectedQuery={activeSearchFilters.q}
-                selectedBhk={activeSearchFilters.bhk}
-                selectedPropertyType={activeSearchFilters.propertyType}
-                selectedFurnishing={activeSearchFilters.furnishing}
-                selectedMinRent={activeSearchFilters.minRent}
-                selectedMaxRent={activeSearchFilters.maxRent}
-                refineRequest={refineSearchRequest}
-              />
-            </div>
-
-
-            {/* Sticky Compact Search / Location Context (Task 2) */}
-            <AnimatePresence>
-              {showCompactSearch && (
-                <motion.div
-                  key="compact-search-wrapper"
-                  initial={reduceMotion ? false : { opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduceMotion ? undefined : { opacity: 0, y: -10 }}
-                  transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.16, 1, 0.3, 1] }}
-                  className="fixed top-[calc(69px+env(safe-area-inset-top))] sm:top-[calc(80px+env(safe-area-inset-top))] lg:top-[calc(88px+env(safe-area-inset-top))] inset-x-0 z-[90] px-3 sm:px-6 pointer-events-none"
-                >
-                  <div className="pointer-events-auto">
-                    <CompactSearchContext
-                      city={activeDiscoveryCity}
-                      filters={activeSearchFilters}
-                      onSearch={handleDiscoverySearch}
-                      onManualCityChange={(newCity) => {
-                        const clean = resetFiltersForManualCityChange(newCity);
-                        handleDiscoverySearch(clean.city, undefined, clean);
-                      }}
-                      onClearAll={() => {
-                        const clean = resetFiltersForSearchClear(activeDiscoveryCity);
-                        handleDiscoverySearch(clean.city, undefined, clean);
-                      }}
-                    />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* SECTION 3: FEATURED PROPERTIES GRID */}
-            <div id="listings" className="scroll-mt-36">
-              <PropertyShowcase
-                properties={properties}
-                isLoading={discoveryState === 'LOADING' || loadedDiscoveryKey !== activeDiscoveryKey}
-                error={discoveryState === 'ERROR' ? discoveryError : null}
-                onRetry={() => {
-                  loadLiveProperties(activeSearchFilters);
-                }}
-                onClearLocality={() => handleDiscoverySearch(activeDiscoveryCity, undefined)}
-                onViewDetails={handleOpenPropertyDetail}
-                onRefineSearch={() => setRefineSearchRequest((request) => request + 1)}
-                onOpenMediaModal={handleOpenPropertyDetail}
-                selectedSectorFilter={filterSector}
-                selectedCityFilter={activeDiscoveryCity}
-                onSaveFavorite={handleSaveFavorite}
-              />
-              {/* Single Authoritative Show More Properties CTA */}
-              {discoveryState === 'READY' && loadedDiscoveryKey === activeDiscoveryKey && properties.length > 0 && (hasMoreProperties || loadMoreError) && (
-                <div className="mx-auto flex max-w-7xl flex-col items-center gap-3 px-4 pb-8 pt-2">
-                  {loadMoreError && (
-                    <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadMoreError}</p>
-                  )}
-                  {(hasMoreProperties || loadMoreError) && (
-                    <button
-                      type="button"
-                      disabled={loadingMore}
-                      onClick={() => {
-                        loadMoreProperties(activeSearchFilters);
-                      }}
-                      className="group relative inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-emerald-600/35 bg-white px-8 py-3 text-sm font-extrabold text-emerald-700 shadow-xs transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-600/70 hover:bg-emerald-50/90 hover:shadow-md active:translate-y-0 active:scale-[0.98] active:shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-xs"
-                      aria-label={loadingMore ? "Loading more properties" : loadMoreError ? "Retry loading properties" : "Show More Properties"}
-                    >
-                      {loadingMore ? (
-                        <>
-                          <LoaderCircle className="h-4 w-4 animate-spin text-emerald-600" />
-                          <span>Loading more properties…</span>
-                        </>
-                      ) : loadMoreError ? (
-                        <span>Retry</span>
-                      ) : (
-                        <>
-                          <span>Show More Properties</span>
-                          <ChevronDown className="h-4 w-4 text-emerald-600 transition-transform duration-200 group-hover:translate-y-0.5" />
-                        </>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
-              {discoveryState === 'READY' && loadedDiscoveryKey === activeDiscoveryKey && !hasMoreProperties && properties.length > 0 && !loadMoreError && (
-                <div className="mx-auto max-w-7xl px-4 py-6 text-center">
-                  <p className="text-xs font-semibold text-slate-400">You've seen all available properties.</p>
-                </div>
-              )}
-            </div>
-
-            {/* SECTION 4: 3-STEP HOW IT WORKS */}
-            <div>
-              <HowItWorks />
-            </div>
-
-            {/* SECTION 5: STRATEGIC USP ACCORDION BAR */}
-            <div id="why-us">
-              <ValueBanner />
-            </div>
-
-            {/* SECTION 6: PLOTS & LAND EXPANSION BANNER */}
-            <div id="land-plots">
-              <FutureExpansion />
-            </div>
-
-            {/* SECTION 7: LANDING PAGE FOOTER */}
-            <Footer onSelectSector={handleDiscoverySearch} />
-
-            {/* FLOATING BACK TO TOP CONTROL */}
-            <AnimatePresence>
-              {showBackToTop && (
-                <motion.button
-                  initial={reduceMotion ? false : { opacity: 0, scale: 0.8, y: 12 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={reduceMotion ? undefined : { opacity: 0, scale: 0.8, y: 12 }}
-                  transition={{ duration: reduceMotion ? 0 : 0.25, ease: [0.16, 1, 0.3, 1] }}
-                  type="button"
-                  aria-label="Back to top of listings"
-                  title="Back to top"
-                  onClick={() => {
-                    const listingsEl = document.getElementById('listings');
-                    if (listingsEl) {
-                      listingsEl.scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'start' });
-                    } else {
-                      window.scrollTo({ top: 0, behavior: reduceMotion ? 'instant' : 'smooth' });
-                    }
-                  }}
-                  className="fixed bottom-6 right-4 z-30 hidden h-11 w-11 items-center justify-center rounded-full border border-slate-200/90 bg-white/95 text-slate-700 shadow-xl backdrop-blur-md transition-all hover:border-emerald-500/50 hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 md:bottom-8 md:right-4 md:flex lg:bottom-8 lg:right-4 xl:right-6 min-[1380px]:right-[max(1.5rem,calc((100vw-80rem)/2-3.75rem))]"
-                >
-                  <ArrowUp className="h-5 w-5" />
-                </motion.button>
-              )}
-            </AnimatePresence>
-          </motion.div>
+        ) : !isPropertyRoute && !isLessorRoute && (role === 'GUEST' || (role === 'TENANT' && normalizedPathname === '/')) && (
+          <LandingV0
+            city={activeDiscoveryCity}
+            filters={activeSearchFilters}
+            landingState={landingState}
+            properties={properties}
+            loading={discoveryState === 'LOADING' || loadedDiscoveryKey !== activeDiscoveryKey}
+            error={discoveryState === 'ERROR'}
+            hasMore={hasMoreProperties}
+            loadingMore={loadingMore}
+            loadMoreError={Boolean(loadMoreError)}
+            onSearch={handleDiscoverySearch}
+            onRetry={() => loadLiveProperties(activeSearchFilters)}
+            onLoadMore={() => loadMoreProperties(activeSearchFilters)}
+            onOpenProperty={property => setLandingQuickViewId(property.id)}
+            onSaveFavorite={handleSaveFavorite}
+            authenticated={role === 'TENANT'}
+            savedPropertyIds={tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key ? tenantFavoritesSnapshot.propertyIds : undefined}
+            favoriteReady={tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.status === 'ready'}
+            favoriteError={tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.status === 'error'}
+            onRetryFavorites={() => setFavoriteCountReload(value => value + 1)}
+            favoritePendingIds={landingFavoritePending}
+            latestDraft={currentDraftSnapshot?.state === 'ready' ? currentDraftSnapshot.latest : null}
+            draftCount={role === 'TENANT' && currentDraftSnapshot?.state === 'ready' ? currentDraftCount : 0}
+            onOpenDraft={id => navigate(`/lessor/drafts/${encodeURIComponent(id)}`)}
+            onViewAllDrafts={() => navigate('/lessor?view=drafts')}
+            onSignIn={() => setShowAuthModal(true)}
+            onListProperty={openPostProperty}
+          />
         )}
 
       </>}
 
       </>} />
+      {landingQuickViewId !== null && !isPropertyRoute && !isLessorRoute && <TenantPropertyQuickView key={landingQuickViewId} propertyId={landingQuickViewId} visitRequestStatus={() => null} onClose={() => setLandingQuickViewId(null)} onRequestVisit={handleRequestVisit} onViewProperty={property => { setLandingQuickViewId(null); handleOpenPropertyDetail(property); }} isFavorite={role === 'TENANT' && tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.propertyIds.has(landingQuickViewId)} favoriteStateReady={role === 'GUEST' || (tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.status === 'ready')} favoritePending={landingFavoritePending.has(landingQuickViewId)} onToggleFavorite={handleSaveFavorite} displayTitle={landingPropertyTitle}/>}
 
       {/* AUTH MODAL */}
       <AuthModal
         isOpen={showAuthModal}
-        onClose={() => { setShowAuthModal(false); setLessorAuthContext(null); sessionStorage.removeItem('pathome_guest_submit_draft'); sessionStorage.removeItem('pathome_guest_save_draft'); }}
+        onClose={() => { setShowAuthModal(false); setLessorAuthContext(null); sessionStorage.removeItem('pathome_guest_submit_draft'); sessionStorage.removeItem('pathome_guest_save_draft'); sessionStorage.removeItem('pathome_pending_favorite_property_id'); }}
         onSuccess={handleLoginSuccess}
         lessorContext={lessorAuthContext}
       />

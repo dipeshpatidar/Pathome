@@ -62,17 +62,20 @@ export const TenantNavigationRail: React.FC<TenantNavigationRailProps> = ({
 
     <div className="tenant-shell-divider my-4 h-px w-full" aria-hidden="true" />
     <p className="tenant-shell-section-label mb-2 ml-2.5 text-[9px] font-bold tracking-[1.45px]">FOR LESSORS</p>
-    <button type="button" onClick={onOpenLessor} aria-current={activeItem === 'lessor' ? 'location' : undefined}
+    <button type="button" onClick={onOpenLessor} aria-label={hasLessorCapability === true ? 'Your listings' : 'List your home'}
+      title={hasLessorCapability === true ? 'Your listings' : 'List your home'}
+      aria-current={activeItem === 'lessor' ? 'location' : undefined}
       className={`tenant-shell-rail-link flex min-h-11 w-full items-center gap-3 rounded-lg px-[11px] text-left text-xs font-semibold focus-visible:outline-none ${activeItem === 'lessor' ? 'is-active' : ''}`}>
       <KeyRound size={16} strokeWidth={1.7} aria-hidden="true" />
-      <span>{hasLessorCapability === true ? 'Your listings' : 'List your home'}</span>
+      <span className="tenant-shell-lessor-label">{hasLessorCapability === true ? 'Your listings' : 'List your home'}</span>
     </button>
     <div className="flex-1" />
     <div className="tenant-shell-note flex gap-2.5 rounded-[10px] border border-[#eeece7] p-3">
       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#edf2ed] text-[#45664f]"><ShieldCheck size={16} aria-hidden="true" /></span>
       <span><strong className="block text-[10px] text-[#39483d]">A more considered move.</strong><small className="mt-1 block text-[9px] leading-4 text-[#85877f]">Thoughtful homes, clearer next steps.</small></span>
     </div>
-    <button type="button" onClick={onOpenAccount} aria-current={activeItem === 'account' ? 'page' : undefined} className="tenant-shell-account mt-4 flex min-h-11 w-full items-center gap-2 border-t border-[#eeece7] pt-3 text-left focus-visible:outline-none">
+    <button type="button" onClick={onOpenAccount} aria-label="Open tenant account" title={accountName || 'Tenant account'}
+      aria-current={activeItem === 'account' ? 'page' : undefined} className="tenant-shell-account mt-4 flex min-h-11 w-full items-center gap-2 border-t border-[#eeece7] pt-3 text-left focus-visible:outline-none">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#e8ded4] text-[10px] font-bold text-[#675145]">{accountName.trim().charAt(0).toUpperCase() || 'T'}</span>
       <span className="min-w-0 flex-1"><strong className="block truncate text-[10px] text-[#39483d]">{accountName || 'Your account'}</strong><small className="block text-[9px] text-[#85877f]">Tenant account</small></span>
       <ChevronDown size={15} className="text-[#85877f]" aria-hidden="true" />

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.UserRepository;
+import com.indore.pathome.spaces.service.TenantVisitEntitlementService;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -22,11 +23,14 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
 
     private final JwtUtils jwtUtils;
     private final UserRepository userRepository;
+    private final TenantVisitEntitlementService entitlements;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public OAuth2AuthenticationSuccessHandler(JwtUtils jwtUtils, UserRepository userRepository) {
+    public OAuth2AuthenticationSuccessHandler(JwtUtils jwtUtils, UserRepository userRepository,
+                                              TenantVisitEntitlementService entitlements) {
         this.jwtUtils = jwtUtils;
         this.userRepository = userRepository;
+        this.entitlements = entitlements;
     }
 
     @Override
@@ -52,8 +56,7 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
             user.setFullName(name);
             user.setGoogleSub(sub);
             user.setRole(Role.ROLE_TENANT);
-            user.setFreeVisitsRemaining(5);
-            user = userRepository.save(user);
+            user = entitlements.createTenantWithGrant(user);
         }
 
         String jwtToken = jwtUtils.generateToken(user.getId(), user.getEmail(), user.getRole().name());

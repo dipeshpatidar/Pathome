@@ -34,6 +34,8 @@ import { LessorLocalityOption, lessorLocationService } from '../services/lessorL
 import { LessorMediaItem, lessorMediaService } from '../services/lessorMediaService';
 import { lessorSubmissionService } from '../services/lessorSubmissionService';
 import type { LessorSubmission } from '../services/lessorSubmissionService';
+import { lessorSubmissionProgressService } from '../services/lessorSubmissionProgressService';
+import type { LessorSubmissionProgress } from '../services/lessorSubmissionProgressService';
 import { lessorContactService } from '../services/lessorContactService';
 import { LessorContactModal } from './LessorContactModal';
 import { LessorMediaStep } from './LessorMediaStep';
@@ -41,6 +43,7 @@ import { LessorDetailsStep } from './LessorDetailsStep';
 import { LessorPreviewStep } from './LessorPreviewStep';
 import { GuestDraftWorkspace, LessorPortfolio } from './LessorPortfolio';
 import { LessorListingView } from './LessorListingView';
+import PathomeSubmissionProgress from './pathome-submission-progress';
 import { LessorOnboardingHeader } from './LessorOnboardingHeader';
 import { LessorProgressBar, OnboardingStepKey } from './LessorProgressBar';
 import { DraftAccessState } from './DraftAccessButton';
@@ -134,6 +137,10 @@ export function LessorWorkspace({
     'idle' | 'claiming' | 'promoting' | 'submitting' | 'failedClaim' | 'failedMedia' | 'failedSubmit'
   >('idle');
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [activeSubmissionProgress, setActiveSubmissionProgress] = useState<{
+    ownerId: number;
+    progress: LessorSubmissionProgress;
+  } | null>(null);
   const [showWorkspaceContactModal, setShowWorkspaceContactModal] = useState(false);
   const [pendingContactDraftId, setPendingContactDraftId] = useState<string | null>(null);
   const [workspaceContactInitial, setWorkspaceContactInitial] = useState<{ name: string; phone: string }>({ name: '', phone: '' });
@@ -152,30 +159,95 @@ export function LessorWorkspace({
     isFocusedOnboarding ? exitDestination : stateOrigin ?? `${pathname}${location.search}`,
     returnContext
   );
-  const submissionState = location.state as { lessorSubmissionComplete?: boolean; lessorSubmissionUserId?: number } | null;
+  const submissionState = location.state as {
+    lessorSubmissionComplete?: boolean;
+    lessorSubmissionUserId?: number;
+    lessorSubmissionProgress?: LessorSubmissionProgress;
+    lessorSubmissionResult?: LessorSubmission;
+  } | null;
   const submissionComplete = submissionState?.lessorSubmissionComplete === true && submissionState.lessorSubmissionUserId === user?.id;
+  const routedCompletedProgress = submissionComplete && submissionState?.lessorSubmissionProgress?.completed
+    ? submissionState.lessorSubmissionProgress
+    : null;
+  const visibleSubmissionProgress = activeSubmissionProgress && activeSubmissionProgress.ownerId === user?.id
+    ? activeSubmissionProgress.progress
+    : routedCompletedProgress;
+  const visibleSubmissionResult = submissionComplete && submissionState?.lessorSubmissionUserId === user?.id
+    ? submissionState.lessorSubmissionResult
+    : null;
+  const visibleListingId = visibleSubmissionResult?.listingId;
 
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }, [pathname, location.search]);
 
+  useEffect(() => {
+    const tracked = activeSubmissionProgress;
+    if (!user || !tracked || tracked.ownerId !== user.id || tracked.progress.completed || tracked.progress.failed) return;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const poll = async () => {
+      try {
+        const latest = await lessorSubmissionProgressService.get(tracked.progress.submissionId);
+        if (cancelled) return;
+        setActiveSubmissionProgress(current => current?.ownerId === user.id &&
+          current.progress.submissionId === latest.submissionId ? { ownerId: user.id, progress: latest } : current);
+        if (!latest.completed && !latest.failed) timeoutId = window.setTimeout(() => void poll(), 1800);
+      } catch {
+        if (!cancelled) timeoutId = window.setTimeout(() => void poll(), 1800);
+      }
+    };
+    timeoutId = window.setTimeout(() => void poll(), 1800);
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [user?.id, activeSubmissionProgress?.ownerId, activeSubmissionProgress?.progress.submissionId,
+    activeSubmissionProgress?.progress.completed, activeSubmissionProgress?.progress.failed]);
+
   const finishSubmission = async (id: string) => {
+    let submissionOperationStarted = false;
+    setTransition('claiming');
     try {
-      setTransition('promoting');
-      await lessorMediaService.promote(id);
-      setPreviewRevision(value => value + 1);
+      // Only read this ID after claimGuest has converted it to an owned draft.
+      // The status check also recovers a POST whose response was lost on reload.
+      const draft = await lessorDraftService.get(id);
+      const initialProgress = await lessorSubmissionProgressService.start(id);
+      if (user) setActiveSubmissionProgress({ ownerId: user.id, progress: initialProgress });
+      if (draft.status === 'DRAFT' && !initialProgress.completed) {
+        setTransition('promoting');
+        submissionOperationStarted = true;
+        await lessorMediaService.promote(id);
+        setPreviewRevision(value => value + 1);
+      }
       setTransition('submitting');
-      await lessorSubmissionService.submit(id);
+      submissionOperationStarted = true;
+      const result = await lessorSubmissionService.submit(id);
+      const completedProgress = await lessorSubmissionProgressService.get(id);
       sessionStorage.removeItem('pathome_guest_submit_draft');
       const stepKey = lessorStepStorageKey(id, user?.id ?? null, !user);
       if (stepKey) localStorage.removeItem(stepKey);
       notifyDraftListChanged();
       window.dispatchEvent(new Event('pathome_auth_changed'));
       setTransition('idle');
-      navigate('/lessor', { replace: true, state: { lessorSubmissionComplete: true, lessorSubmissionUserId: user?.id } });
+      navigate('/lessor', { replace: true, state: {
+        lessorSubmissionComplete: true,
+        lessorSubmissionUserId: user?.id,
+        lessorSubmissionProgress: completedProgress,
+        lessorSubmissionResult: result
+      } });
     } catch (cause) {
       setError(getErrorMessage(cause, 'Submission could not be completed.'));
       setTransition('failedSubmit');
+      if (user) {
+        void lessorSubmissionProgressService.get(id).then(progress => {
+          if (submissionOperationStarted || progress.status !== 'PREPARING') {
+            setActiveSubmissionProgress({ ownerId: user.id, progress });
+          } else {
+            setActiveSubmissionProgress(null);
+          }
+        }).catch(() => undefined);
+      }
     }
   };
 
@@ -193,6 +265,7 @@ export function LessorWorkspace({
     const id = pendingContactDraftId;
     setPendingContactDraftId(null);
     setTransition('idle');
+    sessionStorage.removeItem('pathome_guest_submit_draft');
     if (id) {
       navigate(`/lessor/drafts/${encodeURIComponent(id)}`, { replace: true });
     }
@@ -220,7 +293,6 @@ export function LessorWorkspace({
       setOwnedClaimedDraftId(id);
       localStorage.removeItem('pathome_guest_draft_id');
       sessionStorage.removeItem('pathome_guest_save_draft');
-      sessionStorage.removeItem('pathome_guest_submit_draft');
       notifyDraftListChanged();
       window.dispatchEvent(new Event('pathome_auth_changed'));
       if (submit) {
@@ -289,23 +361,11 @@ export function LessorWorkspace({
     if (draftId?.startsWith('guest-') && !ownerDraft) {
       const pendingSubmit = sessionStorage.getItem('pathome_guest_submit_draft') === draftId;
       const pendingSave = sessionStorage.getItem('pathome_guest_save_draft') === draftId;
-      lessorDraftService
-        .get(draftId)
-        .then(() => {
-          if (live) {
-            sessionStorage.removeItem('pathome_guest_submit_draft');
-            sessionStorage.removeItem('pathome_guest_save_draft');
-            localStorage.removeItem('pathome_guest_draft_id');
-            setOwnedClaimedDraftId(draftId);
-          }
-        })
-        .catch(cause => {
-          if (!live) return;
-          if (pendingSubmit || pendingSave) void claimDraft(draftId, pendingSubmit);
-          else {
-            setError(getErrorMessage(cause, 'This draft was started on another device. Sign in to continue it securely.'));
-          }
-        });
+      // A guest ID is valid only at the guest endpoint until claimGuest converts
+      // ownership. Never probe the authenticated draft route first or claim a
+      // guest draft into a different account without an explicit handoff intent.
+      if (pendingSubmit || pendingSave) void claimDraft(draftId, pendingSubmit);
+      else if (live) setError('This draft was started on another device. Sign in to continue it securely.');
       return () => {
         live = false;
       };
@@ -350,7 +410,9 @@ export function LessorWorkspace({
   };
 
   const goToDraftHub = () => navigate('/lessor?view=drafts');
-  const editorVisible = !submissionComplete && !!draftId && (!user || !draftId.startsWith('guest-') || ownerDraft);
+  const postAuthSubmitPending = Boolean(user && draftId?.startsWith('guest-') &&
+    sessionStorage.getItem('pathome_guest_submit_draft') === draftId);
+  const editorVisible = !submissionComplete && !postAuthSubmitPending && !!draftId && (!user || !draftId.startsWith('guest-') || ownerDraft);
   const sharedConsumerShell = user?.role === 'TENANT' && !isNew && !editorVisible;
   const openTenantSection = (section: 'home' | 'saved' | 'visits' | 'filters') => {
     const hash = section === 'saved' ? '#saved-homes-title' : section === 'visits' ? '#visit-history' : '#tenant-home-search';
@@ -379,7 +441,7 @@ export function LessorWorkspace({
             navigate(exitDestination);
           }}
           onExit={() => true}
-          onExitToLanding={() => navigate(exitDestination)}
+          onExitToLanding={() => navigate('/')}
           currentStepLabel="Property Type"
           currentStepNumber={1}
         />
@@ -391,7 +453,7 @@ export function LessorWorkspace({
           userId={user?.id ?? null}
           guest={(!ownerDraft && !user) || (!ownerDraft && draftId!.startsWith('guest-'))}
           draftId={decodeURIComponent(draftId!)}
-          onBack={() => navigate(exitDestination)}
+          onBack={() => navigate('/')}
           draftCount={draftCount}
           draftState={draftState}
           onOpenDrafts={goToDraftHub}
@@ -405,8 +467,8 @@ export function LessorWorkspace({
         />
       )}
 
-      {!editorVisible && <main className={`mx-auto w-full ${isNew ? 'lessor-v0-wizard max-w-[800px]' : 'max-w-6xl'} flex-1 px-4 pt-4 sm:px-6 lg:pt-8 ${sharedConsumerShell ? 'pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-10' : 'pb-[calc(2.5rem+env(safe-area-inset-bottom))]'}`}>
-      {!submissionComplete && !isNew && !draftId && !listingId && user && hasLessorCapability === null && (
+      {!editorVisible && <main className={`mx-auto w-full ${isNew ? 'lessor-v0-wizard max-w-[800px]' : 'max-w-[1220px]'} flex-1 px-4 pt-4 sm:px-6 lg:px-8 lg:pt-8 ${sharedConsumerShell ? 'pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-10' : 'pb-[calc(2.5rem+env(safe-area-inset-bottom))]'}`}>
+      {!submissionComplete && !isDraftHub && !isNew && !draftId && !listingId && user && hasLessorCapability === null && (
           <div className="flex min-h-48 items-center justify-center gap-3 text-slate-600">
             <LoaderCircle className="h-5 w-5 animate-spin motion-reduce:animate-none" />
             Opening your workspace…
@@ -417,7 +479,7 @@ export function LessorWorkspace({
         <PropertySubmittedState onDone={() => navigate('/lessor', { replace: true, state: null })} />
       )}
 
-        {!submissionComplete && !isNew && !draftId && !listingId && user && hasLessorCapability === 'error' && (
+        {!submissionComplete && !isDraftHub && !isNew && !draftId && !listingId && user && hasLessorCapability === 'error' && (
           <div role="alert" className="mx-auto max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-6 text-rose-800">
             <p>Could not check your property access. Please try again.</p>
             <button className={`${SECONDARY} mt-4`} onClick={() => window.dispatchEvent(new Event('pathome_auth_changed'))}>
@@ -426,8 +488,9 @@ export function LessorWorkspace({
           </div>
         )}
 
-        {!submissionComplete && !isNew && !draftId && !listingId && user && hasLessorCapability === false && (
+        {!submissionComplete && !isDraftHub && !isNew && !draftId && !listingId && user && hasLessorCapability === false && (
           <LessorPortfolio
+            key={user.id}
             userId={user.id}
             draftsOnly
             mainActionLabel="List your property"
@@ -620,8 +683,9 @@ export function LessorWorkspace({
         )}
 
         {/* AUTHENTICATED PORTFOLIO */}
-        {!submissionComplete && user && hasLessorCapability === true && !draftId && !listingId && !isNew && (
+        {!submissionComplete && user && (hasLessorCapability === true || isDraftHub) && !draftId && !listingId && !isNew && (
           <LessorPortfolio
+            key={user.id}
             userId={user.id}
             draftsOnly={isDraftHub}
             mainActionLabel={isDraftHub ? 'Add property' : undefined}
@@ -632,16 +696,12 @@ export function LessorWorkspace({
         )}
 
         {/* TRANSITION OVERLAY */}
-        {transition !== 'idle' && (
+        {transition !== 'idle' && transition !== 'promoting' && transition !== 'submitting' && !visibleSubmissionProgress && (
           <div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-xs">
             <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
               <p className="text-base font-semibold text-slate-950">
                 {transition === 'claiming'
-                  ? 'Saving your property…'
-                  : transition === 'promoting'
-                  ? 'Preparing your photos…'
-                  : transition === 'submitting'
-                  ? 'Submitting for review…'
+                  ? 'Preparing your submission…'
                   : transition === 'failedSubmit'
                   ? "Your property is saved. We couldn't submit it yet."
                   : transition === 'failedMedia'
@@ -673,6 +733,7 @@ export function LessorWorkspace({
                       <button
                         className={SECONDARY}
                         onClick={() => {
+                          sessionStorage.removeItem('pathome_guest_submit_draft');
                           setTransition('idle');
                         }}
                       >
@@ -684,6 +745,46 @@ export function LessorWorkspace({
               )}
             </div>
           </div>
+        )}
+
+        {visibleSubmissionProgress && (
+          <PathomeSubmissionProgress
+            open
+            state={visibleSubmissionProgress.completed
+              ? 'success'
+              : visibleSubmissionProgress.failed
+              ? 'error'
+              : visibleSubmissionProgress.status === 'PROCESSING_MEDIA'
+              ? 'processing-media'
+              : visibleSubmissionProgress.status === 'SAVING_PROPERTY'
+              ? 'saving-property'
+              : 'preparing'}
+            percent={visibleSubmissionProgress.percent}
+            step={visibleSubmissionProgress.status === 'PREPARING'
+              ? 'Preparing your submission'
+              : visibleSubmissionProgress.status === 'PROCESSING_MEDIA'
+              ? 'Processing your property photos'
+              : visibleSubmissionProgress.status === 'SAVING_PROPERTY'
+              ? 'Saving your property'
+              : visibleSubmissionProgress.status === 'COMPLETED'
+              ? 'Property submitted'
+              : 'Submission paused'}
+            detail={visibleSubmissionProgress.totalMedia > 0
+              ? `${visibleSubmissionProgress.processedMedia} of ${visibleSubmissionProgress.totalMedia} media files processed`
+              : undefined}
+            onViewListing={visibleSubmissionProgress.completed && visibleListingId !== undefined && visibleListingId > 0
+              ? () => navigate(`/lessor/listings/${visibleListingId}`, { replace: true, state: null })
+              : undefined}
+            onGoToListings={visibleSubmissionProgress.completed
+              ? () => navigate('/lessor', { replace: true, state: null })
+              : undefined}
+            onRetry={visibleSubmissionProgress.failed && draftId
+              ? () => {
+                  setActiveSubmissionProgress(null);
+                  void finishSubmission(draftId);
+                }
+              : undefined}
+          />
         )}
       </main>}
       {sharedConsumerShell && <TenantMobileDock activeItem="lessor" savedCount={savedCount}

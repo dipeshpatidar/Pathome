@@ -10,6 +10,7 @@ import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
+import com.indore.pathome.spaces.service.TenantVisitEntitlementService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,12 +46,15 @@ class AuthControllerTest {
     @Mock
     private EmployeeProfileRepository employeeProfileRepository;
 
+    @Mock
+    private TenantVisitEntitlementService entitlements;
+
     private AuthController authController;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        authController = new AuthController(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository);
+        authController = new AuthController(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository, entitlements);
     }
 
     @Test
@@ -84,7 +88,7 @@ class AuthControllerTest {
         assertFalse(body.containsKey("phoneNumber"));
         assertFalse(body.containsKey("userId"));
         assertFalse(body.containsKey("username"));
-        verify(userRepository, never()).save(any());
+        verifyNoInteractions(entitlements);
     }
 
     @Test
@@ -103,7 +107,7 @@ class AuthControllerTest {
             Map<String, String> body = (Map<String, String>) response.getBody();
             assertEquals("EMAIL_REQUIRED", body.get("error"));
         }
-        verifyNoInteractions(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository);
+        verifyNoInteractions(userRepository, passwordEncoder, jwtUtils, lessorProfileRepository, employeeProfileRepository, entitlements);
     }
 
     @Test
@@ -111,7 +115,7 @@ class AuthControllerTest {
     void legacyRegistrationPhoneDoesNotEnrollOtp() {
         when(userRepository.findByEmail("legacy@example.com")).thenReturn(Optional.empty());
         when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
-        when(userRepository.save(any(User.class))).thenAnswer(invocation -> {
+        when(entitlements.createTenantWithGrant(any(User.class))).thenAnswer(invocation -> {
             User user = invocation.getArgument(0);
             assertEquals("+91 9876543210", user.getPhoneNumber());
             assertNull(user.getMobileNumberNormalized());
@@ -126,7 +130,7 @@ class AuthControllerTest {
         request.setPhoneNumber("+91 9876543210");
 
         assertEquals(HttpStatus.OK, authController.registerUser(request).getStatusCode());
-        verify(userRepository).save(any(User.class));
+        verify(entitlements).createTenantWithGrant(any(User.class));
     }
 
     @Test
@@ -143,7 +147,7 @@ class AuthControllerTest {
         savedUser.setRole(Role.ROLE_TENANT);
         savedUser.setFreeVisitsRemaining(5);
 
-        when(userRepository.save(any(User.class))).thenReturn(savedUser);
+        when(entitlements.createTenantWithGrant(any(User.class))).thenReturn(savedUser);
 
         RegisterRequest request = new RegisterRequest();
         request.setEmail("new@example.com");
@@ -173,7 +177,7 @@ class AuthControllerTest {
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(winner));
         when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
-        when(userRepository.save(any(User.class)))
+        when(entitlements.createTenantWithGrant(any(User.class)))
                 .thenThrow(new DataIntegrityViolationException("unique constraint"));
 
         RegisterRequest request = new RegisterRequest();
@@ -201,7 +205,7 @@ class AuthControllerTest {
                 .thenReturn(Optional.empty());
         when(passwordEncoder.encode("Password123!")).thenReturn("hashed-pwd");
         DataIntegrityViolationException failure = new DataIntegrityViolationException("unrelated constraint");
-        when(userRepository.save(any(User.class))).thenThrow(failure);
+        when(entitlements.createTenantWithGrant(any(User.class))).thenThrow(failure);
 
         RegisterRequest request = new RegisterRequest();
         request.setEmail("failure@example.com");
