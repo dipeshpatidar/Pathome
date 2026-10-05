@@ -11,11 +11,11 @@ test('mobile dock stays out of the Hero and modal layers, then becomes eligible 
 
 test('mobile dock filter badge derives only from shared active search filters', () => {
   assert.deepEqual(tenantMobileDockBadges({ city: 'Indore', rentalOnly: true }), {
-    filterCount: null, visitCount: null
+    filterCount: null, visitCount: null, savedCount: null
   });
   assert.deepEqual(tenantMobileDockBadges({
     city: 'Indore', bhk: '2 BHK', propertyType: 'FLAT', rentalOnly: true
-  }), { filterCount: 2, visitCount: null });
+  }), { filterCount: 2, visitCount: null, savedCount: null });
 });
 
 test('mobile dock shows a Visit badge only for an authoritative positive active-request count', () => {
@@ -25,9 +25,17 @@ test('mobile dock shows a Visit badge only for an authoritative positive active-
   assert.equal(tenantMobileDockBadges({ city: 'Indore' }, 3).visitCount, 3);
 });
 
+test('mobile dock shows a Saved badge only for an authoritative positive saved-home count', () => {
+  for (const count of [undefined, null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(tenantMobileDockBadges({ city: 'Indore' }, null, count).savedCount, null);
+  }
+  assert.equal(tenantMobileDockBadges({ city: 'Indore' }, null, 1).savedCount, 1);
+  assert.equal(tenantMobileDockBadges({ city: 'Indore' }, null, 5).savedCount, 5);
+});
+
 test('mobile dock actions target existing Tenant sections or open the existing filter sheet', () => {
   assert.equal(tenantMobileDockTarget('home'), 'tenant-home-search');
   assert.equal(tenantMobileDockTarget('filters'), null);
-  assert.equal(tenantMobileDockTarget('visits'), 'visit-history-title');
+  assert.equal(tenantMobileDockTarget('visits'), 'tenant-visits-page-title');
   assert.equal(tenantMobileDockTarget('saved'), 'saved-homes-title');
 });

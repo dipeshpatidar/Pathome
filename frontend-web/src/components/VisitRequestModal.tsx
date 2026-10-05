@@ -4,6 +4,7 @@ import { ArrowRight, CalendarDays, CheckCircle2, Clock3, MapPin, Send, X } from 
 import { Property } from '../types';
 import { propertyService } from '../services/propertyService';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
+import { tenantVisitAcknowledgement } from '../utils/tenantVisitView';
 
 interface VisitRequestModalProps {
   property: Property | null;
@@ -56,7 +57,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [acknowledgement, setAcknowledgement] = useState(false);
+  const [acknowledgement, setAcknowledgement] = useState<{ title: string; detail: string } | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -74,7 +75,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     setPreferredWindow('');
     setNote('');
     setError('');
-    setAcknowledgement(false);
+    setAcknowledgement(null);
     inFlightRef.current = false;
   }, [property, isOpen]);
 
@@ -131,7 +132,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     inFlightRef.current = true;
     setSubmitting(true);
     try {
-      await propertyService.createVisitRequest(property.id, {
+      const result = await propertyService.createVisitRequest(property.id, {
         budgetMin: minimum,
         budgetMax: maximum,
         preferredAreas,
@@ -140,7 +141,8 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
         note: note.trim() || undefined
       });
       if (!isCurrentTenantVisitSession(requestSession)) return;
-      setAcknowledgement(true);
+      setAcknowledgement(tenantVisitAcknowledgement(result.status, result.created));
+      inFlightRef.current = false;
       window.dispatchEvent(new Event('pathome_visit_request_created'));
     } catch {
       if (isCurrentTenantVisitSession(requestSession)) {
@@ -174,13 +176,6 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     }
   };
 
-  const chooseQuickDate = (offset: number) => {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
-    date.setDate(date.getDate() + offset);
-    setPreferredDate(dateInputValue(date));
-  };
-
   return (
     <AnimatePresence>
       <motion.div
@@ -196,15 +191,15 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
           initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 28 }}
           animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24 }}
           transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-          className="my-0 flex max-h-[94dvh] w-full max-w-xl flex-col overflow-hidden rounded-t-[28px] bg-[#fffefa] shadow-[0_24px_80px_-24px_rgba(15,23,42,.45)] sm:my-auto sm:max-h-[min(90dvh,52rem)] sm:rounded-[26px]"
+          className="tenant-v0-request my-0 flex max-h-[94dvh] w-full max-w-xl flex-col overflow-hidden rounded-t-[20px] bg-[#fffefa] shadow-[0_24px_80px_-24px_rgba(15,23,42,.3)] sm:my-auto sm:max-h-[min(90dvh,52rem)] sm:rounded-[12px]"
           onClick={event => event.stopPropagation()}
         >
           <div className="shrink-0 border-b border-[#e7e8df] px-5 pb-4 pt-3 sm:px-7 sm:pt-6">
             <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-slate-300 sm:hidden" aria-hidden="true" />
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-800">A guided visit, arranged around you</p>
-                <h2 id="visit-request-title" className="mt-1 font-['Outfit'] text-2xl font-semibold tracking-tight text-slate-950">Request a visit</h2>
+                <p className="tenant-v0-eyebrow">A FIRST LOOK</p>
+                <h2 id="visit-request-title" className="mt-1 font-serif text-3xl font-normal tracking-tight text-slate-950">Request a visit.</h2>
                 <p id="visit-request-description" className="mt-1 max-w-md text-sm leading-5 text-slate-600">Pathome coordinates with the property owner before confirming your guided visit.</p>
               </div>
               <button ref={closeButtonRef} type="button" onClick={closeIfIdle} disabled={submitting}
@@ -218,8 +213,8 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
             <div className="overflow-y-auto p-5 sm:p-7" aria-live="polite">
               <div className="rounded-[22px] bg-[#eef5ec] p-5 sm:p-6">
                 <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-emerald-800 shadow-sm"><CheckCircle2 size={25} aria-hidden="true" /></span>
-                <h3 className="mt-4 font-['Outfit'] text-xl font-semibold text-slate-950">Visit request received</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-700">We’ll coordinate with the property owner and confirm your visit once availability is verified.</p>
+                <h3 className="mt-4 font-['Outfit'] text-xl font-semibold text-slate-950">{acknowledgement.title}</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-700">{acknowledgement.detail}</p>
                 <p className="mt-3 text-xs leading-5 text-slate-600">Your preferred date and time are requests, not a confirmed appointment.</p>
               </div>
               <div className="mt-5 grid gap-2 sm:grid-cols-2">
@@ -244,25 +239,13 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
                 <p className="text-sm leading-5 text-slate-600">Tell us when you’d prefer to visit. We’ll confirm availability before scheduling.</p>
 
                 <fieldset>
-                  <legend className="text-sm font-semibold text-slate-900">Preferred date <span className="text-rose-700">*</span></legend>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {[1, 2, 3].map(offset => {
-                      const date = new Date();
-                      date.setHours(0, 0, 0, 0);
-                      date.setDate(date.getDate() + offset);
-                      const value = dateInputValue(date);
-                      const formattedDate = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }).format(date);
-                      const label = offset === 1 ? `Tomorrow · ${formattedDate}` : formattedDate;
-                      return <button key={value} type="button" onClick={() => setPreferredDate(value)} aria-pressed={preferredDate === value}
-                        className={`min-h-11 rounded-xl border px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 ${preferredDate === value ? 'border-emerald-800 bg-[#eaf2e9] text-emerald-950' : 'border-slate-300 bg-white text-slate-700 hover:border-emerald-700'}`}>{label}</button>;
-                    })}
-                    <label className="flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 focus-within:ring-2 focus-within:ring-emerald-700">
-                      <CalendarDays size={15} className="shrink-0 text-emerald-800" aria-hidden="true" />
-                      <span className="sr-only">Choose another preferred date</span>
-                      <input type="date" value={preferredDate} min={minDate} onChange={event => setPreferredDate(event.target.value)} required
-                        className="min-w-0 bg-transparent text-base text-slate-900 outline-none" />
-                    </label>
-                  </div>
+                  <legend className="text-sm font-semibold text-slate-900">Preferred future date <span className="text-rose-700">*</span></legend>
+                  <label className="mt-2 flex min-h-11 items-center gap-2 rounded-md border border-[#e9e7e1] bg-white px-3 text-slate-700 focus-within:ring-2 focus-within:ring-emerald-700">
+                    <CalendarDays size={15} className="shrink-0 text-emerald-800" aria-hidden="true" />
+                    <span className="sr-only">Preferred future date</span>
+                    <input type="date" value={preferredDate} min={minDate} onChange={event => setPreferredDate(event.target.value)} required
+                      className="min-w-0 flex-1 bg-transparent text-base text-slate-900 outline-none" />
+                  </label>
                   {preferredDate && <p className="mt-2 text-xs text-slate-600">Selected: {formatRequestDate(preferredDate)}</p>}
                 </fieldset>
 
@@ -308,7 +291,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
                 {error && <p role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm leading-5 text-rose-900">{error}</p>}
                 <button disabled={submitting || !preferredDate || !preferredWindow} type="submit" aria-busy={submitting}
                   className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-800 px-4 py-3 text-sm font-semibold text-white shadow-[0_8px_20px_-10px_rgba(6,95,70,.6)] transition hover:bg-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55">
-                  {submitting ? <><Clock3 size={16} className="motion-safe:animate-spin" aria-hidden="true" />Sending request…</> : <><Send size={16} aria-hidden="true" />Send visit request</>}
+                  {submitting ? <><Clock3 size={16} className="motion-safe:animate-spin" aria-hidden="true" />Sending request…</> : <><Send size={16} aria-hidden="true" />Request visit</>}
                 </button>
                 <p className="mt-2 text-center text-[11px] leading-4 text-slate-500">Submitting does not reserve or confirm a visit.</p>
               </div>

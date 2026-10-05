@@ -29,7 +29,7 @@ FRONTEND_DIR="${ROOT_DIR}/frontend-web"
 ENV_FILE="${ROOT_DIR}/.env.local"
 
 # Strict Worktree Validation
-EXPECTED_WORKTREE="/Users/dipeshpatidar/Documents/Pathome-tenant-ui-v0"
+EXPECTED_WORKTREE="/Users/dipeshpatidar/Documents/Pathome-tenant-ui-b1"
 if [ "${ROOT_DIR}" != "${EXPECTED_WORKTREE}" ]; then
     echo -e "${RED}[Pathome] WRONG WORKTREE${RESET}"
     echo -e "${RED}Expected:${RESET}"
@@ -40,7 +40,7 @@ if [ "${ROOT_DIR}" != "${EXPECTED_WORKTREE}" ]; then
 fi
 
 # Strict Branch Validation
-EXPECTED_BRANCH="feature/tenant-ui-v0-integration"
+EXPECTED_BRANCH="feature/tenant-ui-b1-integration"
 CURRENT_BRANCH="$(git -C "${ROOT_DIR}" branch --show-current 2>/dev/null || true)"
 if [ "${CURRENT_BRANCH}" != "${EXPECTED_BRANCH}" ]; then
     echo -e "${RED}[Pathome] WRONG BRANCH${RESET}"

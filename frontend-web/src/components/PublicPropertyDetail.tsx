@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useNavigate, useNavigationType } from 'react-router-dom';
 import {
   Bath, BedDouble, Building2, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Dumbbell, Image as LucideImage, LayoutDashboard, LoaderCircle, MapPin,
+  Dumbbell, Heart, Image as LucideImage, LayoutDashboard, LoaderCircle, MapPin,
   Maximize2, Minimize2, Play, Ruler, Sofa, UtensilsCrossed,
   Video, WalletCards, Wind, X
 } from 'lucide-react';
@@ -13,6 +13,9 @@ import { buildCloudinaryUrl, deriveVideoPosterUrl } from '../utils/mediaTransfor
 import { getMediaTagIcon, getMediaTagLabel, getTaggedAreas } from '../utils/mediaTags';
 import { resolvePropertyDetailBackTarget } from '../utils/propertyDetailRecovery';
 import { PropertyDetailErrorState } from './PropertyDetailErrorState';
+import { favoriteService } from '../services/favoriteService';
+import { notifyTenantFavoriteChanged } from '../utils/tenantFavorites';
+import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 
 type GalleryMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string | null; roomTag?: string | null };
 
@@ -208,6 +211,8 @@ const AreaNavigationDropdown: React.FC<AreaNavigationDropdownProps> = ({
 interface PublicPropertyDetailProps {
   propertyId: number | null;
   isAuthenticated: boolean;
+  tenantUserId: number | null;
+  onSignIn: () => void;
   visitRequestStatus: string | null;
   visitRequestStatusLoading: boolean;
   visitRequestStatusError: boolean;
@@ -333,7 +338,7 @@ const Lightbox: React.FC<{
 };
 
 export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
-  propertyId, isAuthenticated, visitRequestStatus, visitRequestStatusLoading, visitRequestStatusError, visitRequestStatusIncomplete,
+  propertyId, isAuthenticated, tenantUserId, onSignIn, visitRequestStatus, visitRequestStatusLoading, visitRequestStatusError, visitRequestStatusIncomplete,
   onRequestVisit, onViewMyVisits, onRetryVisitRequestStatus
 }) => {
   const navigate = useNavigate();
@@ -345,6 +350,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [favorite, setFavorite] = useState<{ status: 'loading' | 'ready' | 'error' | 'pending'; saved: boolean; identityKey: string | null }>({ status: 'loading', saved: false, identityKey: null });
+  const [favoriteError, setFavoriteError] = useState<string | null>(null);
+  const [favoriteRetry, setFavoriteRetry] = useState(0);
+  const favoritePendingKeyRef = useRef<string | null>(null);
+  const favoriteSession = tenantUserId !== null ? readTenantVisitSession(tenantUserId) : null;
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLDivElement>(null);
 
@@ -451,6 +461,54 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
       ...(property.videoUrl ? [{ url: property.videoUrl, type: 'VIDEO' as const, tagLabel: null, roomTag: null }] : [])
     ];
   }, [property]);
+
+  useEffect(() => {
+    if (propertyId === null || !favoriteSession) {
+      setFavorite({ status: 'loading', saved: false, identityKey: null });
+      setFavoriteError(null);
+      return;
+    }
+    const session = favoriteSession;
+    const controller = new AbortController();
+    setFavorite({ status: 'loading', saved: false, identityKey: session.key });
+    setFavoriteError(null);
+    favoriteService.listForProperties([propertyId], controller.signal).then(ids => {
+      if (!controller.signal.aborted && isCurrentTenantVisitSession(session)) {
+        setFavorite({ status: 'ready', saved: ids.includes(propertyId), identityKey: session.key });
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted && isCurrentTenantVisitSession(session)) {
+        setFavorite({ status: 'error', saved: false, identityKey: session.key });
+        setFavoriteError('Saved status unavailable. Retry to save this home.');
+      }
+    });
+    return () => controller.abort();
+  }, [propertyId, favoriteSession?.key, favoriteRetry]);
+
+  const toggleFavorite = async () => {
+    if (!favoriteSession) { onSignIn(); return; }
+    if (propertyId === null || favorite.identityKey !== favoriteSession.key || favorite.status !== 'ready' || favoritePendingKeyRef.current === favoriteSession.key) return;
+    const session = favoriteSession;
+    const previousSaved = favorite.saved;
+    favoritePendingKeyRef.current = session.key;
+    setFavorite(current => ({ ...current, status: 'pending' }));
+    setFavoriteError(null);
+    try {
+      if (previousSaved) await favoriteService.remove(propertyId);
+      else await favoriteService.save(propertyId);
+      if (isCurrentTenantVisitSession(session)) {
+        notifyTenantFavoriteChanged({ identityKey: session.key, propertyId, saved: !previousSaved });
+        setFavorite({ status: 'ready', saved: !previousSaved, identityKey: session.key });
+      }
+    } catch {
+      if (isCurrentTenantVisitSession(session)) {
+        setFavorite({ status: 'ready', saved: previousSaved, identityKey: session.key });
+        setFavoriteError('Unable to update saved homes. Please try again.');
+      }
+    } finally {
+      if (favoritePendingKeyRef.current === session.key) favoritePendingKeyRef.current = null;
+    }
+  };
 
   const activeMediaSource = media[activeMedia]?.url;
   const activeMediaType = media[activeMedia]?.type;
@@ -568,7 +626,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
           onClose={() => setLightboxOpen(false)}
         />
       )}
-      <main className="mx-auto w-full max-w-[1440px] bg-[#f8f7f4] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
+      <main className="tenant-v0-detail mx-auto w-full max-w-[1440px] bg-[#f8f7f4] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
         {/* Dependable High-Contrast Floating Back Navigation */}
         <div className="mb-4 flex h-11 items-center justify-between">
           <button
@@ -584,7 +642,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
           >
             <ChevronLeft className="h-4.5 w-4.5 shrink-0 text-emerald-800 transition-transform duration-200 group-hover:-translate-x-0.5" />
             <span className={isScrolled ? 'hidden sm:inline' : 'inline'}>
-              Back to discovery
+              Back to homes
             </span>
           </button>
           <div className="hidden sm:flex items-center gap-1.5 text-xs font-medium text-slate-500">
@@ -599,8 +657,23 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
             )}
           </div>
         </div>
+        <div className="tenant-v0-detail-heading">
+          <div>
+            <p className="tenant-v0-eyebrow">{[property.sector, property.city].filter(Boolean).join(' · ').toUpperCase() || 'PROPERTY DETAILS'}</p>
+            <h1>{property.title}</h1>
+            <p><MapPin size={15} aria-hidden="true" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Location details available on request'}</p>
+          </div>
+          {(!isAuthenticated || tenantUserId !== null) && <button type="button" onClick={() => favorite.status === 'error' ? setFavoriteRetry(value => value + 1) : void toggleFavorite()}
+            disabled={tenantUserId !== null && favorite.status !== 'ready' && favorite.status !== 'error'}
+            aria-pressed={favorite.status === 'ready' ? favorite.saved : undefined}
+            className="tenant-v0-detail-save">
+            <Heart size={16} fill={favorite.saved ? 'currentColor' : 'none'} aria-hidden="true" />
+            {favorite.status === 'error' ? 'Retry saved status' : favorite.status === 'pending' ? 'Updating…' : favorite.status === 'loading' && tenantUserId !== null ? 'Checking saved status…' : favorite.saved ? 'Saved home' : 'Save home'}
+          </button>}
+        </div>
+        {favoriteError && <p className="tenant-v0-detail-save-error" role="alert">{favoriteError}</p>}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
-          <section className="space-y-4 lg:col-span-7">
+          <section className={`tenant-v0-detail-gallery ${media.length > 1 ? 'has-thumbnails' : ''} space-y-4 lg:col-span-12`}>
             {/* Main viewer: Fixed responsive height prevents CLS; dark containment preserves aspect ratios */}
             <div
               ref={mediaStageRef}
@@ -609,7 +682,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
               <div className="flex h-full w-full items-center justify-center">
                 {currentMedia ? (
                   currentMedia.type === 'VIDEO' ? (
-                    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+                    <div className="tenant-v0-video-stage relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
                       {/* Ambient blurred backdrop preserves the full portrait video. */}
                       {videoPoster && (
                         <img
@@ -658,7 +731,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                     </button>
                   )
                 ) : (
-                  <div className="flex h-64 items-center justify-center text-sm font-semibold text-slate-300">Photos will be available soon.</div>
+                  <div className="flex h-64 items-center justify-center text-sm font-semibold text-slate-500">Property media unavailable.</div>
                 )}
               </div>
 
@@ -714,7 +787,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
             </div>
             {/* Thumbnail strip: images lazy-loaded with Cloudinary DETAIL_THUMBNAIL preset, video shows icon indicator */}
             {media.length > 1 && (
-              <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Property media thumbnails">
+              <div className="tenant-v0-detail-thumbs flex gap-2 overflow-x-auto pb-1" aria-label="Property media thumbnails">
                 {media.map((entry, index) => (
                   <button
                     key={`${entry.url}-${index}`}
@@ -729,8 +802,9 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
                     className={`relative h-16 w-20 shrink-0 overflow-hidden rounded-md border-2 ${index === activeMedia ? 'border-emerald-600' : 'border-transparent'}`}
                   >
                     {entry.type === 'VIDEO' ? (
-                      <div className="flex h-full w-full items-center justify-center bg-slate-900 text-white">
-                        <Video className="h-5 w-5" />
+                      <div className="flex h-full w-full items-center justify-center bg-[#e9eee8] text-[#355c49]">
+                        {deriveVideoPosterUrl(entry.url) && <img src={deriveVideoPosterUrl(entry.url)!} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />}
+                        <Video className="relative h-5 w-5" />
                       </div>
                     ) : (
                       <img
@@ -746,11 +820,26 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
             )}
           </section>
 
-          <aside className="space-y-5 lg:col-span-5 lg:sticky lg:top-24">
+
+        </div>
+
+        <section className="mt-7 grid grid-cols-1 gap-5 lg:grid-cols-3">
+          <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)] lg:col-span-2">
+            <p className="tenant-v0-eyebrow">A CLOSER LOOK</p>
+            <h2 className="font-serif text-2xl font-medium tracking-tight text-slate-950">About this property</h2>
+            {property.description && <p className="mt-3 whitespace-pre-line text-sm leading-7 text-slate-600">{property.description}</p>}
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {property.bhk && <DetailFact icon={<BedDouble />} label="Configuration" value={property.bhk} />}
+              {property.propertyType && <DetailFact icon={<Building2 />} label="Property type" value={property.propertyType.replace(/_/g, ' ')} />}
+              {property.totalAreaSqFt > 0 && <DetailFact icon={<Ruler />} label="Area" value={`${property.totalAreaSqFt.toLocaleString('en-IN')} sq ft`} />}
+              {property.bathroomCount ? <DetailFact icon={<Bath />} label="Bathrooms" value={String(property.bathroomCount)} /> : null}
+              {floorLabel(property) && <DetailFact icon={<Building2 />} label="Floor" value={floorLabel(property)!} />}
+              {property.furnishingStatus && <DetailFact icon={<Maximize2 />} label="Furnishing" value={property.furnishingStatus} />}
+            </div>
+          </div>
+          <aside className="tenant-v0-detail-booking space-y-5 lg:col-span-1 lg:sticky lg:top-24">
             <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_10px_28px_-22px_rgba(38,48,39,.28)] sm:p-7">
-              <p className="text-[10px] font-extrabold uppercase tracking-[0.17em] text-emerald-800">Explore this home</p>
-              <h1 className="mt-2 font-serif text-2xl font-medium leading-tight tracking-tight text-slate-950 sm:text-3xl">{property.title}</h1>
-              <p className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-600"><MapPin className="h-4 w-4 shrink-0 text-emerald-600" />{[property.sector, property.city].filter(Boolean).join(', ') || 'Locality details available on request'}</p>
+              <p className="tenant-v0-eyebrow">MONTHLY RENT</p>
               <div className="mt-5 grid grid-cols-2 gap-3 border-y border-slate-100 py-5"><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Monthly rent</p><p className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">{formatRupees(property.monthlyRent) || 'On request'}</p></div>{formatRupees(property.securityDeposit) && <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Security deposit</p><p className="mt-1 text-lg font-bold text-emerald-800">{formatRupees(property.securityDeposit)}</p></div>}</div>
               {formatRupees(property.maintenanceCharge) && <p className="mt-4 flex items-center gap-2 text-sm text-slate-600"><WalletCards className="h-4 w-4 text-emerald-600" />Maintenance: {formatRupees(property.maintenanceCharge)} / month</p>}
               <button type="button" disabled={visitRequestStatusLoading || visitRequestStatusError}
@@ -767,22 +856,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
               {!isAuthenticated && <p className="mt-2 text-xs leading-relaxed text-slate-500">Interested in this property? Sign in to request a visit and manage your visit requests.</p>}
             </div>
           </aside>
-        </div>
-
-        <section className="mt-7 grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)] lg:col-span-2">
-            <h2 className="font-serif text-2xl font-medium tracking-tight text-slate-950">About this property</h2>
-            {property.description && <p className="mt-3 whitespace-pre-line text-sm leading-7 text-slate-600">{property.description}</p>}
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {property.bhk && <DetailFact icon={<BedDouble />} label="Configuration" value={property.bhk} />}
-              {property.propertyType && <DetailFact icon={<Building2 />} label="Property type" value={property.propertyType.replace(/_/g, ' ')} />}
-              {property.totalAreaSqFt > 0 && <DetailFact icon={<Ruler />} label="Area" value={`${property.totalAreaSqFt.toLocaleString('en-IN')} sq ft`} />}
-              {property.bathroomCount ? <DetailFact icon={<Bath />} label="Bathrooms" value={String(property.bathroomCount)} /> : null}
-              {floorLabel(property) && <DetailFact icon={<Building2 />} label="Floor" value={floorLabel(property)!} />}
-              {property.furnishingStatus && <DetailFact icon={<Maximize2 />} label="Furnishing" value={property.furnishingStatus} />}
-            </div>
-          </div>
-          <div className="rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)]">
+          <div className="lg:col-span-2 rounded-[12px] border border-[#e9e7e1] bg-white p-5 shadow-[0_8px_22px_-18px_rgba(38,48,39,.22)]">
             <h2 className="font-serif text-xl font-medium tracking-tight text-slate-950">Preferences</h2>
             <dl className="mt-4 space-y-3 text-sm">
               {preferredTenant && <div><dt className="font-bold text-slate-500">Suitable for</dt><dd className="mt-1 capitalize text-slate-800">{preferredTenant}</dd></div>}

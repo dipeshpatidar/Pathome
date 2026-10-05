@@ -43,7 +43,22 @@ export function tenantVisitCtaLabel(status: string | null | undefined): string |
   if (status === 'RECEIVED') return 'Visit Requested';
   if (status === 'COORDINATING') return 'Visit Being Coordinated';
   if (status === 'SCHEDULED') return 'View Visit';
+  if (status === 'UNAVAILABLE' || status === 'CANCELLED') return 'View My Visits';
   return null;
+}
+
+export function tenantVisitAcknowledgement(status: string | null | undefined, created: boolean): { title: string; detail: string } {
+  if (created && status === 'RECEIVED') return {
+    title: 'Visit request received',
+    detail: 'We’ll coordinate availability before a visit is confirmed.'
+  };
+  return {
+    title: 'Your existing request was found',
+    detail: status === 'UNAVAILABLE' ? 'This property owner is unavailable for visits. Review My Visits for the current request status.'
+      : status === 'CANCELLED' ? 'This request was cancelled. Review My Visits for its current status.'
+      : status === 'SCHEDULED' ? 'This request is already part of a Visit Session. Review My Visits for the current appointment details.'
+      : 'Review My Visits for the current request status.'
+  };
 }
 
 export function isActiveTenantVisitRequest(status: string | null | undefined): boolean {

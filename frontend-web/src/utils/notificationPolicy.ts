@@ -33,10 +33,12 @@ export function calculateUnreadCount(items: Array<{ read: boolean }>): number {
   return items.filter(item => !item.read).length;
 }
 
-export function resolveNotificationActionLabel(item: { actionType?: string }): string {
+export function resolveNotificationActionLabel(item: { actionType?: string; category?: string; targetRole?: string }): string {
   if (item.actionType === 'REVIEW_CHANGES') {
     return 'Review changes';
   }
+  if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') return 'View My Visits';
+  if (item.category === 'VISIT_SESSION') return 'View update';
   return 'View property';
 }
 
@@ -46,7 +48,9 @@ export function resolveNotificationActionTarget(item: {
   actionType?: string;
   eventKey?: string;
   targetRole?: string;
+  category?: string;
 }): string {
+  if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') return '/tenant#visit-history';
   const listingId = item.listingId;
   const hasListingId = typeof listingId === 'number' && Number.isSafeInteger(listingId) && listingId > 0;
   const isLessorPropertyAction = item.actionType === 'VIEW_PROPERTY' || item.actionType === 'REVIEW_CHANGES';
@@ -81,7 +85,10 @@ export async function activateNotificationItem(
   }
 ): Promise<void> {
   if (!item.read) await actions.markAsRead(item.id);
-  if (!item.actionTarget && !item.actionType && !item.eventKey) return;
+  if (item.category === 'VISIT_SESSION' && item.targetRole !== 'TENANT'
+      && !item.actionTarget && !item.actionType) return;
+  if (!item.actionTarget && !item.actionType && !item.eventKey
+      && !(item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT')) return;
   actions.closeDrawer();
   actions.navigate(resolveNotificationActionTarget(item));
 }

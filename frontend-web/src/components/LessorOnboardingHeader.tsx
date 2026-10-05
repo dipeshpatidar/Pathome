@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Building2,
+  Home,
   Check,
   LoaderCircle,
   RefreshCw,
@@ -242,7 +242,7 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
 
   return (
     <>
-      <header data-pathome-header="onboarding" className="sticky top-0 z-40 w-full border-b border-slate-200/90 bg-white/95 pt-[env(safe-area-inset-top)] shadow-xs backdrop-blur-xl">
+      <header data-pathome-header="onboarding" className="lessor-v0-onboarding-header sticky top-0 z-40 w-full border-b border-[#eeece7] bg-[#f8f7f4]/95 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
         <div className="mx-auto grid min-h-16 max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 px-3 py-2 sm:flex sm:gap-4 sm:px-6 sm:py-2">
           <button
             type="button"
@@ -251,12 +251,12 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
             title="Return to your previous page"
             aria-label="Return to your previous page"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-700 text-white shadow-sm shadow-emerald-700/20">
-              <Building2 className="h-5 w-5" aria-hidden="true" />
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-[#355c49] text-white">
+              <Home className="h-5 w-5" aria-hidden="true" />
             </span>
             <span className="flex min-w-0 items-center gap-2 text-left">
-              <span className="shrink-0 font-['Outfit',sans-serif] text-base font-black tracking-tight text-slate-950 sm:text-lg">
-                Path<span className="text-emerald-600">ome</span>
+              <span className="shrink-0 text-base font-bold tracking-[-1.3px] text-[#2e4436] sm:text-xl">
+                pathome<span className="text-[#c27d5a]">.</span>
               </span>
               <span className="hidden truncate text-[11px] font-semibold text-slate-500 lg:inline">Property onboarding</span>
             </span>
@@ -332,9 +332,6 @@ export const LessorOnboardingHeader: React.FC<LessorOnboardingHeaderProps> = ({
             </>}
           </div>
         </div>
-        {currentStepNumber && <div className="px-3 pb-2 md:hidden" aria-hidden="true">
-          <div className="h-1 w-full overflow-hidden rounded-full bg-slate-200"><div className="h-full bg-emerald-600" style={{ width: `${Math.round(currentStepNumber / 7 * 100)}%` }} /></div>
-        </div>}
       </header>
 
       {/* ACTIVE UPLOADS CONFIRMATION DIALOG */}

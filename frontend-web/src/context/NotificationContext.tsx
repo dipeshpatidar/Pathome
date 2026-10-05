@@ -4,7 +4,7 @@ import { readNotificationIdentity, visibleNotificationHistory, isCurrentNotifica
 import { notifySessionExpired } from '../services/apiError';
 
 export type NotificationType = 'success' | 'info' | 'warning' | 'error' | 'ai_magic';
-export type NotificationCategory = 'SYSTEM' | 'PROPERTY' | 'PAYROLL' | 'APPROVAL' | 'AI_ENGINE';
+export type NotificationCategory = 'SYSTEM' | 'PROPERTY' | 'PAYROLL' | 'APPROVAL' | 'AI_ENGINE' | 'VISIT_SESSION';
 
 export interface ToastAction {
   label: string;

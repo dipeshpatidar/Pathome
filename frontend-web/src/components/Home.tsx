@@ -18,8 +18,19 @@ import { VisitRequestModal } from './VisitRequestModal';
 import { LessorWorkspace } from './LessorWorkspace';
 import { PathomeRouteShell } from './PathomeRouteShell';
 import { lessorDraftService } from '../services/lessorDraftService';
+import { favoriteService } from '../services/favoriteService';
 import { tenantVisitService } from '../services/tenantVisitService';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
+import {
+  applyFavoriteChanges,
+  applyTenantFavoriteChanged,
+  emptyTenantFavoritesSnapshot,
+  FAVORITE_COUNT_PAGE_SIZE,
+  loadAllSavedPropertyIds,
+  TENANT_FAVORITE_CHANGED_EVENT,
+  type TenantFavoriteChangedDetail,
+  type TenantFavoritesSnapshot
+} from '../utils/tenantFavorites';
 
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
@@ -71,649 +82,6 @@ const getInitialAdminTab = (): string => {
   return 'overview';
 };
 
-const mockPropertyList: Property[] = [
-  {
-    id: 1,
-    title: "Luxury 3 BHK Gated Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Vijay Nagar",
-    bhk: "3BHK",
-    monthlyRent: 22000,
-    securityDeposit: 44000,
-    totalAreaSqFt: 1650,
-    images: ["/assets/hero_luxury.jpg", "/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98260 *****",
-    latitude: 22.7533,
-    longitude: 75.8937
-  },
-  {
-    id: 2,
-    title: "Independent House with Garden",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Indore",
-    sector: "Bhawarkua",
-    bhk: "3BHK",
-    monthlyRent: 18500,
-    securityDeposit: 37000,
-    totalAreaSqFt: 2100,
-    images: ["/assets/interior_living.jpg", "/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 94250 *****",
-    latitude: 22.6926,
-    longitude: 75.8676
-  },
-  {
-    id: 3,
-    title: "Phase 2 Prime Commercial Plot",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    city: "Indore",
-    sector: "AB Road",
-    monthlyRent: 0,
-    askingPrice: 7500000,
-    securityDeposit: 0,
-    totalAreaSqFt: 3000,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 98930 *****",
-    latitude: 22.7200,
-    longitude: 75.8800
-  },
-  {
-    id: 4,
-    title: "Furnished 2 BHK High-Rise Apartment",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Nipania",
-    bhk: "2BHK",
-    monthlyRent: 16000,
-    securityDeposit: 32000,
-    totalAreaSqFt: 1250,
-    images: ["/assets/panoramic_skyline.jpg", "/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98271 *****",
-    latitude: 22.7650,
-    longitude: 75.9050
-  },
-  {
-    id: 5,
-    title: "Modern 1 BHK Studio Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "LIG Circle",
-    bhk: "1BHK",
-    monthlyRent: 12000,
-    securityDeposit: 24000,
-    totalAreaSqFt: 750,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98263 *****",
-    latitude: 22.7388,
-    longitude: 75.8820
-  },
-  {
-    id: 6,
-    title: "Executive Duplex Villa",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Indore",
-    sector: "Old Palasia",
-    bhk: "4BHK",
-    monthlyRent: 35000,
-    securityDeposit: 70000,
-    totalAreaSqFt: 2800,
-    images: ["/assets/hero_luxury.jpg", "/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 94253 *****",
-    latitude: 22.7196,
-    longitude: 75.8839
-  },
-  {
-    id: 7,
-    title: "Premium Student Co-Living Suite",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Bhawarkua",
-    bhk: "1RK",
-    monthlyRent: 8500,
-    securityDeposit: 17000,
-    totalAreaSqFt: 550,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98934 *****",
-    latitude: 22.6900,
-    longitude: 75.8650
-  },
-  {
-    id: 8,
-    title: "High-Rise 3 BHK Penthouse",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Super Corridor",
-    bhk: "3BHK",
-    monthlyRent: 28000,
-    securityDeposit: 56000,
-    totalAreaSqFt: 1950,
-    images: ["/assets/panoramic_skyline.jpg", "/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98265 *****",
-    latitude: 22.7750,
-    longitude: 75.8350
-  },
-  {
-    id: 9,
-    title: "Spacious 2 BHK Family Home",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Vijay Nagar",
-    bhk: "2BHK",
-    monthlyRent: 19000,
-    securityDeposit: 38000,
-    totalAreaSqFt: 1350,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98268 *****",
-    latitude: 22.7560,
-    longitude: 75.8910
-  },
-  {
-    id: 10,
-    title: "Corner Residential Plot 2400 Sq Ft",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    sector: "Super Corridor",
-    monthlyRent: 0,
-    askingPrice: 4500000,
-    securityDeposit: 0,
-    totalAreaSqFt: 2400,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 94258 *****",
-    latitude: 22.7720,
-    longitude: 75.8320
-  },
-  {
-    id: 11,
-    title: "Gated Community 4 BHK Bungalow",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Indore",
-    sector: "South Tukoganj",
-    bhk: "4BHK",
-    monthlyRent: 42000,
-    securityDeposit: 84000,
-    totalAreaSqFt: 3400,
-    images: ["/assets/hero_luxury.jpg", "/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98939 *****",
-    latitude: 22.7120,
-    longitude: 75.8750
-  },
-  {
-    id: 12,
-    title: "Compact 1 BHK Flat near Coaching Hub",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Bhawarkua",
-    bhk: "1BHK",
-    monthlyRent: 9500,
-    securityDeposit: 19000,
-    totalAreaSqFt: 620,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98274 *****",
-    latitude: 22.6950,
-    longitude: 75.8690
-  },
-  {
-    id: 13,
-    title: "Modern 2 BHK Gated Residency",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "AB Road",
-    bhk: "2BHK",
-    monthlyRent: 17500,
-    securityDeposit: 35000,
-    totalAreaSqFt: 1180,
-    images: ["/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 98262 *****",
-    latitude: 22.7300,
-    longitude: 75.8850
-  },
-  {
-    id: 14,
-    title: "Luxury 3 BHK Metro Apartment",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bhopal",
-    sector: "MP Nagar",
-    bhk: "3BHK",
-    monthlyRent: 20000,
-    securityDeposit: 40000,
-    totalAreaSqFt: 1500,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98279 *****",
-    latitude: 23.2332,
-    longitude: 77.4343
-  },
-  {
-    id: 15,
-    title: "Premium 2 BHK Independent House",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Bhopal",
-    sector: "Arera Colony",
-    bhk: "2BHK",
-    monthlyRent: 24000,
-    securityDeposit: 48000,
-    totalAreaSqFt: 1800,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 94259 *****",
-    latitude: 23.2100,
-    longitude: 77.4400
-  },
-  {
-    id: 16,
-    title: "IT Park 2 BHK Smart Apartment",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Pune",
-    sector: "Hinjewadi",
-    bhk: "2BHK",
-    monthlyRent: 26000,
-    securityDeposit: 52000,
-    totalAreaSqFt: 1100,
-    images: ["/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 98288 *****",
-    latitude: 18.5912,
-    longitude: 73.7389
-  },
-  {
-    id: 17,
-    title: "Gated 3 BHK Premium Society Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Pune",
-    sector: "Baner",
-    bhk: "3BHK",
-    monthlyRent: 32000,
-    securityDeposit: 64000,
-    totalAreaSqFt: 1600,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98299 *****",
-    latitude: 18.5590,
-    longitude: 73.7868
-  },
-  {
-    id: 18,
-    title: "Tech Park 2 BHK Luxury Residence",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bangalore",
-    sector: "Indiranagar",
-    bhk: "2BHK",
-    monthlyRent: 38000,
-    securityDeposit: 76000,
-    totalAreaSqFt: 1300,
-    images: ["/assets/hero_luxury.jpg", "/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98290 *****",
-    latitude: 12.9784,
-    longitude: 77.6408
-  },
-  {
-    id: 19,
-    title: "Phase 1 Residential Plot 1800 Sq Ft",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    sector: "Vijay Nagar",
-    monthlyRent: 0,
-    askingPrice: 5200000,
-    securityDeposit: 0,
-    totalAreaSqFt: 1800,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 98261 *****",
-    latitude: 22.7580,
-    longitude: 75.8940
-  },
-  {
-    id: 20,
-    title: "Fully Furnished 3 BHK Penthouse",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Old Palasia",
-    bhk: "3BHK",
-    monthlyRent: 38000,
-    securityDeposit: 76000,
-    totalAreaSqFt: 2200,
-    images: ["/assets/panoramic_skyline.jpg", "/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 94251 *****",
-    latitude: 22.7210,
-    longitude: 75.8850
-  },
-  {
-    id: 21,
-    title: "Independent 2 BHK Garden House",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Indore",
-    sector: "Nipania",
-    bhk: "2BHK",
-    monthlyRent: 21000,
-    securityDeposit: 42000,
-    totalAreaSqFt: 1750,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98272 *****",
-    latitude: 22.7680,
-    longitude: 75.9080
-  },
-  {
-    id: 22,
-    title: "Cozy 1 BHK Flat for Young Professionals",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "AB Road",
-    bhk: "1BHK",
-    monthlyRent: 11500,
-    securityDeposit: 23000,
-    totalAreaSqFt: 680,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98264 *****",
-    latitude: 22.7320,
-    longitude: 75.8870
-  },
-  {
-    id: 23,
-    title: "Commercial Plot 3600 Sq Ft",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    sector: "Super Corridor",
-    monthlyRent: 0,
-    askingPrice: 8800000,
-    securityDeposit: 0,
-    totalAreaSqFt: 3600,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 94254 *****",
-    latitude: 22.7780,
-    longitude: 75.8380
-  },
-  {
-    id: 24,
-    title: "Luxury 4 BHK Villa with Private Garden",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Indore",
-    sector: "South Tukoganj",
-    bhk: "4BHK",
-    monthlyRent: 55000,
-    securityDeposit: 110000,
-    totalAreaSqFt: 4100,
-    images: ["/assets/hero_luxury.jpg", "/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98935 *****",
-    latitude: 22.7140,
-    longitude: 75.8770
-  },
-  {
-    id: 25,
-    title: "Compact 1 BHK Studio for Students",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Bhawarkua",
-    bhk: "1BHK",
-    monthlyRent: 10000,
-    securityDeposit: 20000,
-    totalAreaSqFt: 600,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98275 *****",
-    latitude: 22.6970,
-    longitude: 75.8710
-  },
-  {
-    id: 26,
-    title: "High-Rise 2 BHK Gated Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "LIG Circle",
-    bhk: "2BHK",
-    monthlyRent: 15500,
-    securityDeposit: 31000,
-    totalAreaSqFt: 1120,
-    images: ["/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 98266 *****",
-    latitude: 22.7400,
-    longitude: 75.8840
-  },
-  {
-    id: 27,
-    title: "Spacious 3 BHK Duplex Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Indore",
-    sector: "Vijay Nagar",
-    bhk: "3BHK",
-    monthlyRent: 25000,
-    securityDeposit: 50000,
-    totalAreaSqFt: 1780,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98269 *****",
-    latitude: 22.7590,
-    longitude: 75.8950
-  },
-  {
-    id: 28,
-    title: "Corner Plot 1500 Sq Ft Prime Belt",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    sector: "AB Road",
-    monthlyRent: 0,
-    askingPrice: 3900000,
-    securityDeposit: 0,
-    totalAreaSqFt: 1500,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 94257 *****",
-    latitude: 22.7350,
-    longitude: 75.8890
-  },
-  {
-    id: 29,
-    title: "Modern 2 BHK Apartment",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bhopal",
-    sector: "Kolar Road",
-    bhk: "2BHK",
-    monthlyRent: 15000,
-    securityDeposit: 30000,
-    totalAreaSqFt: 1200,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98278 *****",
-    latitude: 23.1800,
-    longitude: 77.4200
-  },
-  {
-    id: 30,
-    title: "Spacious 3 BHK Family House",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    city: "Bhopal",
-    sector: "Hoshangabad Road",
-    bhk: "3BHK",
-    monthlyRent: 22000,
-    securityDeposit: 44000,
-    totalAreaSqFt: 1900,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 94256 *****",
-    latitude: 23.1900,
-    longitude: 77.4500
-  },
-  {
-    id: 31,
-    title: "IT Hub 3 BHK Apartment",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Pune",
-    sector: "Wakad",
-    bhk: "3BHK",
-    monthlyRent: 30000,
-    securityDeposit: 60000,
-    totalAreaSqFt: 1550,
-    images: ["/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 98287 *****",
-    latitude: 18.5980,
-    longitude: 73.7620
-  },
-  {
-    id: 32,
-    title: "Gated 2 BHK Society Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Pune",
-    sector: "Kharadi",
-    bhk: "2BHK",
-    monthlyRent: 27000,
-    securityDeposit: 54000,
-    totalAreaSqFt: 1150,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98289 *****",
-    latitude: 18.5510,
-    longitude: 73.9450
-  },
-  {
-    id: 33,
-    title: "Premium 3 BHK Suite",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Pune",
-    sector: "Viman Nagar",
-    bhk: "3BHK",
-    monthlyRent: 36000,
-    securityDeposit: 72000,
-    totalAreaSqFt: 1700,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98291 *****",
-    latitude: 18.5670,
-    longitude: 73.9140
-  },
-  {
-    id: 34,
-    title: "Tech Corridor 2 BHK Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bangalore",
-    sector: "Koramangala",
-    bhk: "2BHK",
-    monthlyRent: 35000,
-    securityDeposit: 70000,
-    totalAreaSqFt: 1250,
-    images: ["/assets/panoramic_skyline.jpg"],
-    verified: true,
-    ownerPhone: "+91 98292 *****",
-    latitude: 12.9350,
-    longitude: 77.6240
-  },
-  {
-    id: 35,
-    title: "Luxury 3 BHK Penthouse",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bangalore",
-    sector: "HSR Layout",
-    bhk: "3BHK",
-    monthlyRent: 45000,
-    securityDeposit: 90000,
-    totalAreaSqFt: 2100,
-    images: ["/assets/hero_luxury.jpg"],
-    verified: true,
-    ownerPhone: "+91 98293 *****",
-    latitude: 12.9120,
-    longitude: 77.6440
-  },
-  {
-    id: 36,
-    title: "Gated 2 BHK Flat",
-    listingType: "RENT",
-    propertyType: "FLAT",
-    city: "Bangalore",
-    sector: "Whitefield",
-    bhk: "2BHK",
-    monthlyRent: 30000,
-    securityDeposit: 60000,
-    totalAreaSqFt: 1200,
-    images: ["/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98294 *****",
-    latitude: 12.9690,
-    longitude: 77.7500
-  },
-  {
-    id: 37,
-    title: "Phase 2 Corner Plot 2000 Sq Ft",
-    listingType: "SALE",
-    propertyType: "PLOT",
-    sector: "Super Corridor",
-    monthlyRent: 0,
-    askingPrice: 4100000,
-    securityDeposit: 0,
-    totalAreaSqFt: 2000,
-    images: ["/assets/spatial_gis.jpg"],
-    verified: true,
-    ownerPhone: "+91 94255 *****",
-    latitude: 22.7760,
-    longitude: 75.8360
-  },
-  {
-    id: 38,
-    title: "Executive 2 BHK Garden Villa",
-    listingType: "RENT",
-    propertyType: "HOUSE",
-    sector: "Vijay Nagar",
-    bhk: "2BHK",
-    monthlyRent: 23500,
-    securityDeposit: 47000,
-    totalAreaSqFt: 1850,
-    images: ["/assets/hero_luxury.jpg", "/assets/interior_living.jpg"],
-    verified: true,
-    ownerPhone: "+91 98267 *****",
-    latitude: 22.7570,
-    longitude: 75.8920
-  }
-];
-
 export const Home: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -722,6 +90,20 @@ export const Home: React.FC = () => {
 
   const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
   const role: UserRole = user?.role ?? 'GUEST';
+  const [tenantFavoritesSnapshot, setTenantFavoritesSnapshot] = useState<TenantFavoritesSnapshot>(emptyTenantFavoritesSnapshot);
+  const tenantFavoritesSnapshotRef = useRef(tenantFavoritesSnapshot);
+  tenantFavoritesSnapshotRef.current = tenantFavoritesSnapshot;
+  const pendingFavoriteChangesRef = useRef<Map<string, Map<number, boolean>>>(new Map());
+  const [favoriteCountReload, setFavoriteCountReload] = useState(0);
+  const tenantFavoriteSession = role === 'TENANT' && user ? readTenantVisitSession(user.id) : null;
+  const authoritativeSavedCount = tenantFavoriteSession
+    && tenantFavoritesSnapshot.identityKey === tenantFavoriteSession.key
+    && tenantFavoritesSnapshot.status === 'ready'
+    ? tenantFavoritesSnapshot.propertyIds.size : null;
+  const publishTenantFavoritesSnapshot = (snapshot: TenantFavoritesSnapshot) => {
+    tenantFavoritesSnapshotRef.current = snapshot;
+    setTenantFavoritesSnapshot(snapshot);
+  };
   const [hasLessorCapability, setHasLessorCapability] = useState<boolean | null | 'error'>(null);
   const [draftSnapshot, setDraftSnapshot] = useState<{ key: string; count: number; state: 'loading' | 'ready' | 'error' }>({
     key: '', count: 0, state: 'loading'
@@ -770,6 +152,69 @@ export const Home: React.FC = () => {
       } catch (_) {}
     }
   }, [activeAdminTab]);
+
+  useEffect(() => {
+    if (role !== 'TENANT' || !user || !tenantFavoriteSession) {
+      publishTenantFavoritesSnapshot(emptyTenantFavoritesSnapshot);
+      pendingFavoriteChangesRef.current.clear();
+      return undefined;
+    }
+    const session = tenantFavoriteSession;
+    const current = tenantFavoritesSnapshotRef.current;
+    if (current.identityKey !== session.key) {
+      pendingFavoriteChangesRef.current.clear();
+      publishTenantFavoritesSnapshot({ identityKey: session.key, status: 'loading', propertyIds: new Set() });
+    }
+    const controller = new AbortController();
+    loadAllSavedPropertyIds((page, signal) =>
+      favoriteService.listSavedProperties(page, signal, FAVORITE_COUNT_PAGE_SIZE), controller.signal)
+      .then(propertyIds => {
+        if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
+        const pendingChanges = pendingFavoriteChangesRef.current.get(session.key);
+        const nextSnapshot: TenantFavoritesSnapshot = {
+          identityKey: session.key,
+          status: 'ready',
+          propertyIds: pendingChanges ? applyFavoriteChanges(propertyIds, pendingChanges) : propertyIds
+        };
+        pendingFavoriteChangesRef.current.delete(session.key);
+        publishTenantFavoritesSnapshot(nextSnapshot);
+      })
+      .catch(() => {
+        if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
+        publishTenantFavoritesSnapshot({ identityKey: session.key, status: 'error', propertyIds: new Set() });
+      });
+    return () => controller.abort();
+  }, [favoriteCountReload, role, tenantFavoriteSession?.key, user?.id]);
+
+  useEffect(() => {
+    const refresh = () => setFavoriteCountReload(value => value + 1);
+    const favoriteChanged = (event: Event) => {
+      const detail = (event as CustomEvent<TenantFavoriteChangedDetail>).detail;
+      const session = tenantFavoriteSession;
+      if (!detail || !session || detail.identityKey !== session.key || !isCurrentTenantVisitSession(session)
+        || !Number.isSafeInteger(detail.propertyId) || detail.propertyId <= 0 || typeof detail.saved !== 'boolean') return;
+      const snapshot = tenantFavoritesSnapshotRef.current;
+      if (snapshot.identityKey === session.key && snapshot.status === 'ready') {
+        publishTenantFavoritesSnapshot(applyTenantFavoriteChanged(snapshot, session.key, detail.propertyId, detail.saved));
+      } else {
+        let pendingChanges = pendingFavoriteChangesRef.current.get(session.key);
+        if (!pendingChanges) {
+          pendingChanges = new Map();
+          pendingFavoriteChangesRef.current.set(session.key, pendingChanges);
+        }
+        pendingChanges.set(detail.propertyId, detail.saved);
+        if (snapshot.identityKey === session.key && snapshot.status === 'error') refresh();
+      }
+    };
+    window.addEventListener('pathome_auth_changed', refresh);
+    window.addEventListener('storage', refresh);
+    window.addEventListener(TENANT_FAVORITE_CHANGED_EVENT, favoriteChanged);
+    return () => {
+      window.removeEventListener('pathome_auth_changed', refresh);
+      window.removeEventListener('storage', refresh);
+      window.removeEventListener(TENANT_FAVORITE_CHANGED_EVENT, favoriteChanged);
+    };
+  }, [tenantFavoriteSession?.key]);
   const filterSector = new URLSearchParams(location.search).get('sector') || '';
   const currentSearchParams = new URLSearchParams(location.search);
   const rawUrlCity = currentSearchParams.get('city');
@@ -1380,6 +825,7 @@ export const Home: React.FC = () => {
     <LessorWorkspace
       key={draftSessionKey}
       user={role === 'GUEST' ? null : user}
+      savedCount={authoritativeSavedCount}
       hasLessorCapability={hasLessorCapability}
       draftCount={currentDraftCount}
       draftState={currentDraftState}
@@ -1411,6 +857,8 @@ export const Home: React.FC = () => {
 
       {isPropertyRoute && (
         <PublicPropertyDetail propertyId={publicPropertyId} isAuthenticated={Boolean(user) && role !== 'GUEST'}
+          tenantUserId={role === 'TENANT' ? user?.id ?? null : null}
+          onSignIn={() => setShowAuthModal(true)}
           visitRequestStatus={currentPropertyVisitLookup.requestStatus}
           visitRequestStatusLoading={role === 'TENANT' && currentPropertyVisitLookup.status !== 'ready' && currentPropertyVisitLookup.status !== 'error'}
           visitRequestStatusError={currentPropertyVisitLookup.status === 'error'}
@@ -1461,6 +909,7 @@ export const Home: React.FC = () => {
           >
             <TenantDashboard
               user={user}
+              savedCount={authoritativeSavedCount}
               properties={properties}
               discoveryState={discoveryState}
               discoveryLoadedKey={loadedDiscoveryKey}
@@ -1487,6 +936,9 @@ export const Home: React.FC = () => {
               onLoadMoreProperties={() => loadMoreProperties(activeSearchFilters)}
               onRequestVisit={handleRequestVisit}
               onViewProperty={handleOpenPropertyDetail}
+              hasLessorCapability={hasLessorCapability}
+              onOpenLessor={() => hasLessorCapability === true ? navigate('/lessor') : openPostProperty()}
+              onLogout={handleLogout}
             />
           </motion.div>
         ) : !isPropertyRoute && !isLessorRoute && role === 'GUEST' && (

@@ -1,33 +1,34 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowRight, BedDouble, Building2, CalendarDays, Camera, ChevronLeft, ChevronRight, Clock3, Heart, Home as HomeIcon, LoaderCircle, MapPin, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { ArrowRight, BedDouble, Building2, CalendarDays, ChevronRight, Clock3, Heart, Home as HomeIcon, LoaderCircle, LogOut, MapPin, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, X } from 'lucide-react';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
 import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
-import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
+import { appendUniqueVisitRequests, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalPropertyType, RentalSearchFilters, discoverySearchKey } from '../utils/rentalSearch';
 import { queueTenantHeroFilterScroll, resolveTenantHeroFilterScroll, type PendingTenantHeroFilterScroll } from '../utils/tenantQuickFilterScroll';
 import { CompactSearchContext } from './CompactSearchContext';
 import { favoriteService } from '../services/favoriteService';
 import { propertyService } from '../services/propertyService';
-import { getMediaTagLabel } from '../utils/mediaTags';
-import { applyPersistedSavedHomeChange, mergeSavedHomes, savedHomesForPresentation, savedHomesVisibleLimitForWidth } from '../utils/tenantSavedHomes';
-import { formatPropertyArea, formatSecurityDeposit } from '../utils/discoveryCardData';
+import { exitQuickViewFullscreen, getQuickViewMedia, isQuickViewFullscreenActive, lockQuickViewBodyScroll, moveQuickViewMediaIndex, nextQuickViewControlsState, quickViewSwipeStartsOnControl, resolveQuickViewStageAction, type QuickViewFullscreenMode } from '../utils/quickViewMedia';
+import { notifyTenantFavoriteChanged } from '../utils/tenantFavorites';
+import { applyPersistedSavedHomeChange, mergeSavedHomes } from '../utils/tenantSavedHomes';
+import { formatPropertyArea } from '../utils/discoveryCardData';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
-import { TenantQuickRefineMobile, TenantQuickRefinePanel } from './TenantQuickRefine';
+import { TenantQuickRefineMobile } from './TenantQuickRefine';
 import { TenantNavigationRail } from './TenantNavigationRail';
+import { TenantMobileDock } from './TenantMobileDock';
 import { TenantDiscoveryCardMedia } from './TenantDiscoveryCardMedia';
+import { QuickViewVideoPlayer } from './QuickViewVideoPlayer';
 import { quickRefineRentBounds as getQuickRefineRentBounds } from '../utils/tenantQuickRefine';
+import { QUICK_REFINE_PROPERTY_TYPES } from '../utils/tenantQuickRefine';
 import type { QuickRefineRentBounds } from '../utils/tenantQuickRefine';
-import { shouldRenderTenantMobileDock, tenantMobileDockBadges, tenantMobileDockTarget } from '../utils/tenantMobileDock';
+import { shouldRenderTenantMobileDock, tenantMobileDockBadges } from '../utils/tenantMobileDock';
 import type { TenantMobileDockItem } from '../utils/tenantMobileDock';
-import { createTenantSearchMorphOverlay, shouldCollapseTenantSearch, tenantSearchCollisionBand, tenantSearchCollisionReached, tenantSearchMorphPlan } from '../utils/tenantSearchMorph';
 import { tenantOutcomeSummaryLabel, tenantPropertyOutcomeLabel, tenantVisitOutcomeStatusLabel, tenantVisitOutcomeSummaryText } from '../utils/tenantVisitOutcomePresentation';
-import type { TenantSearchMorphOverlay } from '../utils/tenantSearchMorph';
-import { LastUpdatedMeta } from './LastUpdatedMeta';
 import {
   applyFavoriteLookupFailure,
   applyFavoriteLookupSuccess,
@@ -39,6 +40,7 @@ import {
 
 interface TenantDashboardProps {
   user: UserProfile;
+  savedCount: number | null;
   properties: Property[];
   discoveryState: 'LOADING' | 'READY' | 'ERROR';
   discoveryLoadedKey: string | null;
@@ -53,6 +55,9 @@ interface TenantDashboardProps {
   onLoadMoreProperties: () => void;
   onRequestVisit: (property: Property) => void;
   onViewProperty: (property: Property) => void;
+  hasLessorCapability: boolean | null | 'error';
+  onOpenLessor: () => void;
+  onLogout: () => void;
 }
 
 type HistoryState = {
@@ -104,41 +109,36 @@ const formatVisitTime = (value: string | null | undefined, zoneId?: string | nul
     : `${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', ...(zoneId ? { timeZone: zoneId } : {}) }).format(date)}${zoneId ? ` · ${zoneId}` : ''}`;
 };
 
-const PropertyImage: React.FC<{ src?: string | null; alt: string; editorialHover?: boolean; premiumCardHover?: boolean }> = ({ src, alt, editorialHover = false, premiumCardHover = false }) => {
-  const [failed, setFailed] = useState(false);
-  const image = typeof src === 'string' ? src.trim() : '';
-  useEffect(() => setFailed(false), [image]);
-  return image && !failed ? (
-    <img src={buildCloudinaryUrl(image, 'DISCOVERY_CARD')} alt={alt} loading="lazy"
-      decoding="async" onError={() => setFailed(true)} className={`h-full w-full object-cover ${premiumCardHover
-        ? 'transition-transform duration-[320ms] ease-[cubic-bezier(.16,1,.3,1)] group-hover/available-card:scale-[1.035] group-hover/available-card:-translate-y-0.5 motion-reduce:transform-none motion-reduce:transition-none'
-        : editorialHover
-        ? 'transition-transform duration-300 ease-[cubic-bezier(.16,1,.3,1)] group-hover:scale-[1.025] group-hover:-translate-y-0.5 motion-reduce:transform-none motion-reduce:transition-none'
-        : 'motion-safe:transition-transform motion-safe:duration-300 group-hover:scale-[1.015] motion-reduce:group-hover:scale-100'}`} />
-  ) : <div className="flex h-full w-full items-center justify-center bg-[#e8e6df] text-slate-500" role="img" aria-label="Property photo unavailable"><HomeIcon size={36} aria-hidden="true" /></div>;
-};
-
 const focusClass = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700';
 
 const TenantVisitRequestCard: React.FC<{ request: TenantVisitRequest }> = ({ request }) => {
+  const [imageFailed, setImageFailed] = useState(false);
   const date = formatRequestedDate(request.requestedAt);
   const location = [readText(request.sector), readText(request.city)].filter(Boolean).join(', ');
   const title = readText(request.propertyTitle);
   const bhk = readText(request.bhk);
   const propertyType = readText(request.propertyType);
   const preferredTiming = readText(request.preferredVisitTiming);
-  return <article className="min-w-0 rounded-xl border border-[#e1e5dc] bg-white p-3">
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${request.status === 'RECEIVED' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-slate-100 text-slate-800'}`}>{tenantVisitStatusLabel(request.status)}</span>
-      {date && <span className="text-[11px] text-slate-600">Requested {date}</span>}
+  const awaiting = request.status === 'RECEIVED' || request.status === 'COORDINATING';
+  return <article className="tenant-v0-request-card min-w-0">
+    <div className="tenant-v0-request-image">
+      {request.coverImageUrl && !imageFailed
+        ? <img src={buildCloudinaryUrl(request.coverImageUrl, 'DISCOVERY_CARD')} alt="" loading="lazy" onError={() => setImageFailed(true)} />
+        : <span role="img" aria-label="Property image unavailable"><HomeIcon size={28} aria-hidden="true" /></span>}
     </div>
-    <h4 className="mt-2 break-words font-['Outfit'] text-sm font-semibold leading-snug text-slate-950">{title || 'Property'}</h4>
-    {(bhk || propertyType) && <p className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] font-semibold uppercase tracking-wide text-emerald-800">{bhk && <span className="inline-flex items-center gap-1"><BedDouble size={13} aria-hidden="true" />{bhk}</span>}{propertyType && <span>{propertyType.replace(/_/g, ' ').toLowerCase()}</span>}</p>}
-    {(location || preferredTiming) && <div className="mt-2 space-y-1 text-xs leading-5 text-slate-600">
-      {location && <p className="flex min-w-0 items-start gap-1.5"><MapPin size={14} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">{location}</span></p>}
-      {preferredTiming && <p className="flex min-w-0 items-start gap-1.5"><Clock3 size={14} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">Preferred: {preferredTiming}</span></p>}
-    </div>}
-    <div className="mt-2">{request.propertyAvailable && Number.isSafeInteger(request.propertyId) && request.propertyId > 0 ? <Link to={`/property/${request.propertyId}`} className={`inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-emerald-800 underline-offset-4 hover:underline ${focusClass}`}>View property <ArrowRight size={14} aria-hidden="true" /></Link> : <p className="text-xs text-slate-600">This property is no longer available to view.</p>}</div>
+    <div className="tenant-v0-request-info min-w-0">
+      <span className="tenant-v0-eyebrow">VISIT REQUEST</span>
+      <span className="tenant-v0-request-status-mobile">{tenantVisitStatusLabel(request.status)}</span>
+      <h3>{title || 'Property'}</h3>
+      {location && <p className="tenant-v0-request-location"><MapPin size={14} aria-hidden="true" />{location}</p>}
+      {(bhk || propertyType) && <p className="tenant-v0-request-facts">{[bhk, propertyType?.replace(/_/g, ' ').toLowerCase()].filter(Boolean).join(' · ')}</p>}
+      {(date || preferredTiming) && <p className="tenant-v0-request-timing"><CalendarDays size={15} aria-hidden="true" />{date ? `Requested ${date}` : 'Timing requested'}{preferredTiming ? ` · Preferred: ${preferredTiming}` : ''}</p>}
+      {awaiting && <p className="tenant-v0-request-awaiting"><span aria-hidden="true" />Not a confirmed appointment</p>}
+      {request.propertyAvailable && Number.isSafeInteger(request.propertyId) && request.propertyId > 0
+        ? <Link to={`/property/${request.propertyId}`} className={`tenant-v0-request-link ${focusClass}`}>View property <ArrowRight size={14} aria-hidden="true" /></Link>
+        : <p className="tenant-v0-request-unavailable">This property is no longer available to view.</p>}
+    </div>
+    <div className="tenant-v0-request-aside"><span>{tenantVisitStatusLabel(request.status)}</span></div>
   </article>;
 };
 const readText = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
@@ -162,31 +162,6 @@ const formatTenantCardFurnishing = (value: string | null | undefined): string | 
   return normalized ? TENANT_CARD_FURNISHING_LABELS[normalized] ?? null : null;
 };
 
-const PropertyFacts: React.FC<{ property: Property }> = ({ property }) => (
-  <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-900">
-    {property.bhk && <span className="inline-flex items-center gap-1"><BedDouble size={15} aria-hidden="true" />{property.bhk}</span>}
-    {property.propertyType && <span>{property.propertyType.replace(/_/g, ' ').toLowerCase()}</span>}
-  </div>
-);
-
-const PropertyLocation: React.FC<{ property: Property; compact?: boolean }> = ({ property, compact = false }) => {
-  const parts = [property.sector, property.city].filter((part): part is string => Boolean(part?.trim()));
-  if (!parts.length) return compact ? <p className="min-h-5" aria-hidden="true">&nbsp;</p> : null;
-  return <p className={`flex min-w-0 items-start gap-1.5 text-slate-600 ${compact ? 'text-xs leading-5' : 'mt-2 text-sm'}`}>
-    <MapPin size={compact ? 14 : 16} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-words">{parts.join(', ')}</span>
-  </p>;
-};
-
-const PropertyPrice: React.FC<{ property: Property; compact?: boolean }> = ({ property, compact = false }) => {
-  const isRent = property.listingType === 'RENT' && property.monthlyRent > 0;
-  const isSale = property.listingType === 'SALE' && Number.isFinite(property.askingPrice) && (property.askingPrice ?? 0) > 0;
-  if (!isRent && !isSale) return null;
-  const amount = isRent ? property.monthlyRent : property.askingPrice!;
-  return <p className={`${compact ? 'mt-1 text-[15px]' : 'mt-2 text-lg'} font-semibold tracking-tight text-slate-950 transition-transform duration-300 group-hover:-translate-y-px motion-reduce:transform-none`}>
-    ₹{amount.toLocaleString('en-IN')}{isRent && <span className={`${compact ? 'text-[10px]' : 'text-sm'} font-normal tracking-normal text-slate-600`}> / month</span>}
-  </p>;
-};
-
 const SupportingPropertyCard: React.FC<{
   property: Property;
   visitRequestStatus: string | null;
@@ -202,90 +177,38 @@ const SupportingPropertyCard: React.FC<{
   const isRent = property.listingType === 'RENT' && property.monthlyRent > 0;
   const isSale = property.listingType === 'SALE' && Number.isFinite(property.askingPrice) && (property.askingPrice ?? 0) > 0;
   const amount = isRent ? property.monthlyRent : isSale ? property.askingPrice! : null;
-  const priceLabel = property.listingType === 'RENT' ? 'Monthly rent' : property.listingType === 'SALE' ? 'Asking price' : null;
-  const location = [property.sector, property.city].filter((part): part is string => Boolean(part?.trim())).join(', ');
-  const area = formatPropertyArea(property.totalAreaSqFt);
-  const bhk = formatTenantCardBhk(property.bhk);
-  const furnishing = formatTenantCardFurnishing(property.furnishingStatus);
+  const location = [property.sector, property.city].filter((part): part is string => Boolean(part?.trim())).join(' · ');
+  const facts = [formatTenantCardBhk(property.bhk),
+    property.bathroomCount ? `${property.bathroomCount} bath` : null,
+    formatPropertyArea(property.totalAreaSqFt),
+    formatTenantCardFurnishing(property.furnishingStatus)].filter((fact): fact is string => Boolean(fact));
   const propertyType = tenantPropertyTypeLabel(property.propertyType);
-  const deposit = isRent && typeof property.securityDeposit === 'number'
-    && Number.isFinite(property.securityDeposit) && property.securityDeposit >= 0
-    ? formatSecurityDeposit(property.securityDeposit)
-    : null;
   return <motion.article initial={reduceMotion || typeof IntersectionObserver === 'undefined' ? false : 'hidden'}
-    whileInView="visible"
-    whileHover={reduceMotion ? undefined : { y: -2, transition: { duration: 0.24, ease: [0.16, 1, 0.3, 1] } }}
-    variants={tenantCardRevealVariants}
+    whileInView="visible" whileHover={reduceMotion ? undefined : { y: -2 }} variants={tenantCardRevealVariants}
     viewport={{ once: true, amount: 0.12 }}
-    transition={{ duration: reduceMotion ? 0 : 0.56, delay: reduceMotion ? 0 : (revealIndex % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
-    className="group/available-card relative flex h-full min-w-0 flex-col overflow-hidden rounded-[10px] border border-[#e9e7e1] bg-white shadow-[0_7px_22px_-18px_rgba(38,48,39,.3)] transition-[transform,box-shadow] duration-300 hover:shadow-[0_14px_30px_-20px_rgba(38,48,39,.34)] motion-reduce:transform-none motion-reduce:transition-none">
-    <div className="group/image relative z-0 aspect-[1.48] min-w-0 overflow-hidden bg-[#eeede8]">
-      <div className="absolute inset-0">
-        <motion.div variants={tenantCardImageRevealVariants}
-          transition={{ duration: reduceMotion ? 0 : 0.64, delay: reduceMotion ? 0 : (revealIndex % 2) * 0.08, ease: [0.16, 1, 0.3, 1] }}
-          className="absolute inset-0">
-          <TenantDiscoveryCardMedia property={property} reduceMotion={reduceMotion} onOpen={() => onOpenQuickView(property)} openerId={`tenant-property-${property.id}`} />
-        </motion.div>
-      </div>
-      <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-12 -translate-x-[115%] skew-x-[-18deg] bg-[linear-gradient(110deg,transparent_18%,rgba(167,243,208,.14)_48%,transparent_78%)] transition-transform duration-[620ms] ease-[cubic-bezier(.16,1,.3,1)] group-hover/image:translate-x-[115%] motion-reduce:hidden" />
-      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute left-3 top-3 inline-flex min-h-8 items-center gap-1.5 rounded-md border border-white/70 bg-white/95 px-2.5 text-[11px] font-semibold text-[#355c49] shadow-sm backdrop-blur-sm">
-        <Camera size={14} className="shrink-0 text-[#638267]" aria-hidden="true" />{property._mediaCount} media
-      </span>}
+    transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : (revealIndex % 3) * 0.06, ease: [0.16, 1, 0.3, 1] }}
+    className="tenant-v0-card group/available-card relative flex h-full min-w-0 flex-col overflow-hidden border border-[#eae8e2] bg-white">
+    <div className="relative aspect-[1.48] min-w-0 overflow-hidden bg-[#ebe9e2]">
+      <motion.div variants={tenantCardImageRevealVariants} className="absolute inset-0">
+        <TenantDiscoveryCardMedia property={property} reduceMotion={reduceMotion} onOpen={() => onOpenQuickView(property)} openerId={`tenant-property-${property.id}`} />
+      </motion.div>
+      {propertyType && <span className="tenant-v0-photo-tag"><span aria-hidden="true" />{propertyType}</span>}
       <button type="button" onClick={() => onToggleFavorite(property)} disabled={!favoriteStateReady || favoritePending}
-        aria-label={!favoriteStateReady ? `Saved state loading for ${property.title}` : favoritePending ? `${isFavorite ? 'Removing' : 'Saving'} ${property.title}` : isFavorite ? `Remove ${property.title} from saved properties` : `Save ${property.title}`}
-        aria-pressed={favoriteStateReady ? isFavorite : undefined} title={isFavorite ? 'Remove from saved properties' : 'Save property'}
-        className={`absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full border border-white/80 bg-white/95 text-[#355c49] shadow-sm backdrop-blur-sm transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-75 ${focusClass}`}>
-        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-[#355c49]' : 'text-[#61715d]'} aria-hidden="true" />}
+        aria-label={!favoriteStateReady ? `Saved state loading for ${property.title}` : favoritePending ? `${isFavorite ? 'Removing' : 'Saving'} ${property.title}` : isFavorite ? `Remove ${property.title} from saved homes` : `Save ${property.title}`}
+        aria-pressed={favoriteStateReady ? isFavorite : undefined}
+        className={`tenant-v0-save-button ${isFavorite ? 'is-saved' : ''} ${focusClass}`}>
+        {favoritePending ? <LoaderCircle size={17} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={18} fill={isFavorite ? 'currentColor' : 'none'} aria-hidden="true" />}
       </button>
     </div>
-    <div className="flex min-w-0 flex-1 flex-col p-3.5 sm:p-4">
-      <div className="flex min-h-5 min-w-0 items-center justify-between gap-3 text-xs font-semibold text-slate-600">
-        {location ? <span className="flex min-w-0 items-center gap-1.5" title={location}>
-          <MapPin className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
-          <span className="truncate">{location}</span>
-        </span> : <span aria-hidden="true" />}
-        {area && <span className="shrink-0 tabular-nums text-slate-500">{area}</span>}
+    <div className="tenant-v0-card-body flex flex-1 flex-col">
+      {location && <p className="tenant-v0-card-location"><MapPin size={13} aria-hidden="true" />{location}</p>}
+      <h3 className="tenant-v0-card-title"><button type="button" onClick={() => onOpenQuickView(property)}>{property.title?.trim() || 'Property'}</button></h3>
+      {facts.length > 0 && <p className="tenant-v0-card-specs">{facts.map((fact, index) => <React.Fragment key={`${fact}-${index}`}>{index > 0 && <span aria-hidden="true">·</span>}<span>{fact}</span></React.Fragment>)}</p>}
+      <div className="tenant-v0-card-bottom">
+        <p><strong>{amount !== null ? `₹${amount.toLocaleString('en-IN')}` : 'Price on request'}</strong>{isRent && amount !== null && <span> / month</span>}</p>
+        <button type="button" onClick={() => onOpenQuickView(property)} aria-label={`Quick view ${property.title || 'property'}`} className="tenant-v0-card-arrow"><ArrowRight size={17} aria-hidden="true" /></button>
       </div>
-
-      <h3 className="mt-1.5 line-clamp-2 min-h-[2.5rem] break-words font-serif text-[17px] font-medium leading-snug tracking-tight text-[#252b25] sm:text-lg">
-        <button type="button" onClick={() => onOpenQuickView(property)} className={`text-left hover:text-emerald-800 ${focusClass}`}>{property.title?.trim() || 'Property'}</button>
-      </h3>
-
-      <div className="mt-1.5 flex min-h-5 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
-        {bhk && <span className="inline-flex items-center gap-1.5 font-bold text-slate-800">
-          <BedDouble className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />{bhk}
-        </span>}
-        {propertyType && <span>{propertyType}</span>}
-        {furnishing && <span>{furnishing}</span>}
-      </div>
-
-      <div className="mt-auto pt-3">
-        <div className={`grid gap-2 border-t border-slate-200/90 pt-2.5 ${deposit ? 'grid-cols-[minmax(0,1fr)_auto] items-end gap-3' : ''}`}>
-          <div className="min-w-0">
-            {priceLabel && <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">{priceLabel}</p>}
-            <p className="mt-0.5 break-words font-serif text-[clamp(1.25rem,2vw,1.55rem)] font-semibold leading-tight tabular-nums text-[#252b25]">
-              {amount !== null ? `₹${amount.toLocaleString('en-IN')}` : 'On request'}
-              {isRent && amount !== null && <span className="ml-1 text-xs font-medium tracking-normal text-slate-500">/ month</span>}
-            </p>
-          </div>
-          {deposit && <div className="min-w-0 text-right">
-            <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">Deposit</p>
-            <p className="mt-0.5 break-words text-sm font-semibold leading-snug tabular-nums text-slate-700">{deposit}</p>
-          </div>}
-        </div>
-
-        <div className="mt-2 min-h-4">
-          <LastUpdatedMeta updatedAt={property.updatedAt} className="text-[11px]" />
-        </div>
-        <p className="mt-2.5 min-h-4 text-[11px] leading-4 text-slate-500">Contact details protected</p>
-
-        <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2">
-          <button type="button" onClick={() => onOpenQuickView(property)} className={`group/quick inline-flex min-h-11 items-center gap-1 rounded-lg px-2.5 text-xs font-bold text-emerald-800 transition-colors duration-200 hover:bg-emerald-50 hover:text-emerald-900 ${focusClass}`}>
-            <span>Quick view</span><ArrowRight size={14} className="transition-transform duration-300 group-hover/quick:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
-          </button>
-          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-11 shrink-0 rounded-full bg-emerald-800 px-3.5 text-xs font-semibold text-white shadow-[0_4px_12px_-8px_rgba(5,92,66,.65)] transition-[background-color,box-shadow,transform] duration-200 group-hover/available-card:shadow-[0_7px_16px_-8px_rgba(5,92,66,.7)] hover:bg-emerald-900 hover:shadow-[0_7px_16px_-8px_rgba(5,92,66,.68)] motion-safe:active:scale-[0.99] motion-reduce:transition-none ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
-        </div>
-      </div>
+      <button type="button" onClick={() => onRequestVisit(property)} className="tenant-v0-card-visit">{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request a visit'} <ArrowRight size={14} aria-hidden="true" /></button>
     </div>
   </motion.article>;
 };
@@ -299,86 +222,10 @@ const SavedHomeCard: React.FC<{
   onToggleFavorite: (property: Property) => void;
   onOpenQuickView: (property: Property) => void;
   onRequestVisit: (property: Property) => void;
-}> = ({ property, visitRequestStatus, isFavorite, favoriteStateReady, favoritePending, onToggleFavorite, onOpenQuickView, onRequestVisit }) => (
-  <article className="group flex h-full min-w-0 flex-col overflow-hidden rounded-[10px] border border-[#e9e7e1] bg-white shadow-[0_7px_22px_-18px_rgba(38,48,39,.3)] transition-[transform,box-shadow] duration-300 hover:shadow-[0_14px_30px_-20px_rgba(38,48,39,.34)] motion-safe:hover:-translate-y-0.5 motion-reduce:transform-none motion-reduce:transition-none">
-    <div className="relative aspect-[1.48] min-w-0 overflow-hidden bg-[#eeede8]">
-      <button type="button" onClick={() => onOpenQuickView(property)} aria-label={`Quick view: ${property.title || 'property'}`} className={`block h-full w-full ${focusClass}`}>
-        <PropertyImage src={property.images?.[0]} alt={property.title ? `${property.title} photo` : 'Property photo'} editorialHover />
-      </button>
-      {typeof property._mediaCount === 'number' && property._mediaCount > 0 && <span className="absolute left-3 top-3 rounded-md border border-white/70 bg-white/95 px-2.5 py-1.5 text-[10px] font-semibold text-[#355c49] shadow-sm">{property._mediaCount} media</span>}
-      <button type="button" onClick={() => onToggleFavorite(property)} disabled={!favoriteStateReady || favoritePending}
-        aria-label={favoritePending ? `Updating saved state for ${property.title || 'property'}` : isFavorite ? `Remove ${property.title || 'property'} from saved homes` : `Save ${property.title || 'property'}`}
-        aria-pressed={favoriteStateReady ? isFavorite : undefined} title={isFavorite ? 'Remove from saved homes' : 'Save property'}
-        className={`absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full border border-white/80 bg-white/95 text-[#355c49] shadow-sm backdrop-blur-sm hover:bg-white disabled:cursor-wait disabled:opacity-75 ${focusClass}`}>
-        {favoritePending ? <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={17} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-[#355c49]' : 'text-[#61715d]'} aria-hidden="true" />}
-      </button>
-    </div>
-    <div className="flex min-w-0 flex-1 flex-col p-3.5 sm:p-4">
-      <PropertyFacts property={property} />
-      <h3 className="mt-1 line-clamp-2 min-h-[2.5rem] break-words font-serif text-[17px] font-medium leading-snug tracking-tight text-[#252b25]">
-        <button type="button" onClick={() => onOpenQuickView(property)} className={`text-left hover:text-[#355c49] ${focusClass}`}>{property.title?.trim() || 'Property'}</button>
-      </h3>
-      <p className="mt-1 truncate text-xs text-[#61715d]">{[property.sector, property.city].filter((part): part is string => Boolean(part?.trim())).join(', ')}</p>
-      <PropertyPrice property={property} compact />
-      <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-1 border-t border-[#eeece7] pt-2">
-        <button type="button" onClick={() => onOpenQuickView(property)} className={`inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-1 text-xs font-semibold text-[#355c49] hover:bg-[#f3f5f0] ${focusClass}`}>Quick view <ArrowRight size={13} aria-hidden="true" /></button>
-        <button type="button" onClick={() => onRequestVisit(property)} aria-label={`${tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'} for ${property.title || 'property'}`} className={`min-h-11 shrink-0 whitespace-nowrap rounded-md bg-[#355c49] px-3 text-xs font-semibold text-white hover:bg-[#294a3a] ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus) ?? 'Request visit'}</button>
-      </div>
-    </div>
-  </article>
-);
-
-const SavedStackCard: React.FC<{
-  properties: Property[];
-  additionalCount: number;
-  hasMorePages: boolean;
-  expanded: boolean;
-  onExpand: () => void;
-}> = ({ properties, additionalCount, hasMorePages, expanded, onExpand }) => {
-  const reduceMotion = useReducedMotion();
-  const previews = properties.slice(0, 3);
-  const label = additionalCount > 0
-    ? `Show ${additionalCount} more saved ${additionalCount === 1 ? 'home' : 'homes'}`
-    : 'Show more saved homes';
-  return <motion.button
-    type="button"
-    aria-expanded={expanded}
-    aria-controls="tenant-saved-home-grid"
-    aria-label={additionalCount > 0 ? `Reveal ${additionalCount} additional loaded saved homes` : 'Reveal more saved homes'}
-    onClick={onExpand}
-    whileHover={reduceMotion ? undefined : { y: -2 }}
-    whileTap={reduceMotion ? undefined : { scale: 0.99 }}
-    className={`group relative flex h-full min-h-[9.5rem] min-w-0 items-center gap-2 overflow-hidden rounded-[18px] border border-[#dfe8de] bg-[linear-gradient(140deg,#f3f7ef,#ffffff_55%,#e7f0e7)] p-2.5 text-left shadow-[0_7px_26px_-20px_rgba(15,45,34,.38)] transition-[box-shadow,transform] duration-300 hover:shadow-[0_16px_32px_-22px_rgba(15,45,34,.42)] motion-reduce:transition-none ${focusClass}`}
-  >
-    <span className="relative block h-[5.5rem] w-[46%] shrink-0" aria-hidden="true">
-      {previews.map((property, index) => {
-        const firstImage = property.images?.[0];
-        const source = typeof firstImage === 'string' ? firstImage.trim() : '';
-        const fan = !reduceMotion && previews.length > 1
-            ? index === 0
-              ? 'group-hover:[--stack-x:-8px] group-hover:[--stack-rotate:-1.5deg]'
-              : index === previews.length - 1
-              ? 'group-hover:[--stack-x:6px] group-hover:[--stack-y:-4px] group-hover:[--stack-rotate:1.5deg]'
-              : 'group-hover:[--stack-x:3px] group-hover:[--stack-y:-5px] group-hover:[--stack-rotate:0deg]'
-          : '';
-        return <span key={property.id}
-          className={`absolute left-1/2 top-1/2 h-[4.25rem] w-[92%] overflow-hidden rounded-lg border-[3px] border-white bg-[#e5e9e2] shadow-[0_8px_18px_-10px_rgba(15,45,34,.48)] [transform:translate3d(calc(-50%_+_var(--stack-x)),calc(-50%_+_var(--stack-y)),0)_rotate(var(--stack-rotate))] transition-transform duration-300 motion-reduce:transition-none ${fan}`}
-          style={{ '--stack-x': `${(index - (previews.length - 1) / 2) * 6}px`, '--stack-y': `${Math.abs(index - 1) * 2}px`, '--stack-rotate': `${(index - (previews.length - 1) / 2) * 1.2}deg`, zIndex: index + 1 } as React.CSSProperties}>
-          {source ? <img src={buildCloudinaryUrl(source, 'DISCOVERY_CARD')} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center text-emerald-800"><HomeIcon size={24} /></span>}
-        </span>;
-      })}
-      {additionalCount > 0 && <span className="absolute right-0 top-0 rounded-full bg-emerald-900 px-2 py-1 text-[9px] font-semibold text-white shadow-sm transition-transform duration-300 group-hover:-translate-y-0.5 motion-reduce:transition-none">+{additionalCount}{hasMorePages ? ' loaded' : ''}</span>}
-      {hasMorePages && additionalCount === 0 && <span className="absolute right-0 top-0 rounded-full bg-emerald-900 px-2 py-1 text-[9px] font-semibold text-white shadow-sm">More</span>}
-    </span>
-    <span className="block min-w-0 flex-1">
-      <span className="block truncate text-sm font-semibold text-slate-950">{additionalCount > 0 ? hasMorePages ? `${additionalCount} more loaded` : `${additionalCount} more saved` : 'More saved homes'}</span>
-      <span className="mt-1 block text-[11px] leading-4 text-slate-600">{hasMorePages ? 'Load another page when you’re ready.' : 'Reveal your saved collection.'}</span>
-      <span className="mt-1 inline-flex min-h-11 max-w-full items-center gap-1 text-xs font-semibold text-emerald-800"><span className="truncate">{label}</span><ArrowRight size={14} aria-hidden="true" className="shrink-0 transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transform-none" /></span>
-    </span>
-  </motion.button>;
+}> = props => {
+  const reduceMotion = useReducedMotion() === true;
+  return <SupportingPropertyCard {...props} revealIndex={0} reduceMotion={reduceMotion} />;
 };
-
-type QuickViewMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string | null };
 
 const TenantPropertyQuickView: React.FC<{
   propertyId: number;
@@ -386,31 +233,80 @@ const TenantPropertyQuickView: React.FC<{
   onClose: () => void;
   onRequestVisit: (property: Property) => void;
   onViewProperty: (property: Property) => void;
-}> = ({ propertyId, visitRequestStatus, onClose, onRequestVisit, onViewProperty }) => {
+  isFavorite: boolean;
+  favoriteStateReady: boolean;
+  favoritePending: boolean;
+  onToggleFavorite: (property: Property) => void;
+}> = ({ propertyId, visitRequestStatus, onClose, onRequestVisit, onViewProperty,
+  isFavorite, favoriteStateReady, favoritePending, onToggleFavorite }) => {
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
-  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [failedMedia, setFailedMedia] = useState<Set<string>>(() => new Set());
+  const [activeMediaIndexState, setActiveMediaIndex] = useState(0);
+  const [videoControls, setVideoControls] = useState({ playing: false, visible: true, activityVersion: 0 });
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [fullscreenMode, setFullscreenMode] = useState<QuickViewFullscreenMode>('NONE');
   const dialogRef = useRef<HTMLElement>(null);
+  const mediaStageRef = useRef<HTMLDivElement>(null);
+  const activeVideoRef = useRef<HTMLVideoElement>(null);
+  const mediaGestureRef = useRef<{ pointerId: number; x: number; y: number; time: number; mediaIndex: number; eligible: boolean } | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const focusRestoreTimerRef = useRef<number | null>(null);
   const onCloseRef = useRef(onClose);
+  const media = useMemo(() => getQuickViewMedia(property), [property]);
+  const changeMedia = useCallback((direction: -1 | 1, count: number) => {
+    activeVideoRef.current?.pause();
+    setPlaybackError(null);
+    setVideoControls(previous => nextQuickViewControlsState(previous, 'MEDIA_CHANGE'));
+    setActiveMediaIndex(index => moveQuickViewMediaIndex(index, count, direction));
+  }, []);
+  const toggleActiveVideo = useCallback(() => {
+    const video = activeVideoRef.current;
+    if (!video) return;
+    setPlaybackError(null);
+    if (video.paused) void video.play().catch(() => {
+      if (activeVideoRef.current === video) setPlaybackError('Video could not start. Try again.');
+    });
+    else video.pause();
+  }, []);
+  const revealControls = useCallback(() => {
+    setVideoControls(previous => nextQuickViewControlsState(previous, 'ACTIVITY'));
+  }, []);
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   useEffect(() => {
+    if (fullscreenMode !== 'APP_FALLBACK') return;
+    return lockQuickViewBodyScroll(document.body);
+  }, [fullscreenMode]);
+
+  useEffect(() => {
+    if (!videoControls.playing) return;
+    const scheduledVersion = videoControls.activityVersion;
+    const timer = window.setTimeout(() => {
+      setVideoControls(previous => previous.activityVersion === scheduledVersion
+        ? nextQuickViewControlsState(previous, 'TIMEOUT') : previous);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [videoControls.playing, videoControls.activityVersion]);
+
+  useEffect(() => {
     const controller = new AbortController();
+    activeVideoRef.current?.pause();
+    setFullscreenMode('NONE');
+    setPlaybackError(null);
+    setVideoControls(previous => nextQuickViewControlsState(previous, 'MEDIA_CHANGE'));
     setLoading(true);
     setError(null);
     setProperty(null);
+    setActiveMediaIndex(0);
+    setFailedMedia(new Set());
     propertyService.getPublicProperty(propertyId, controller.signal)
       .then(result => {
         if (controller.signal.aborted) return;
         setProperty(result);
-        setActiveMediaIndex(0);
-        setFailedMedia(new Set());
       })
       .catch((requestError: unknown) => {
         if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : 'Unable to load this property. Please try again.');
@@ -427,21 +323,48 @@ const TenantPropertyQuickView: React.FC<{
     const previousOverflow = document.body.style.overflow;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = 'hidden';
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => {
+      if (document.activeElement !== mediaStageRef.current) closeButtonRef.current?.focus();
+    }, 0);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        const iosVideo = activeVideoRef.current as (HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }) | null;
+        if (document.fullscreenElement === mediaStageRef.current || iosVideo?.webkitDisplayingFullscreen) return;
+        if (mediaStageRef.current?.classList.contains('is-app-fullscreen')) {
+          event.preventDefault();
+          setFullscreenMode('NONE');
+          return;
+        }
         event.preventDefault();
         onCloseRef.current();
         return;
       }
-      if (event.key !== 'Tab' || !dialogRef.current) return;
-      const controls = [...dialogRef.current.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), video[controls], [tabindex]:not([tabindex="-1"])'
+      if (!dialogRef.current) return;
+      if ((event.key === ' ' || event.code === 'Space') && !event.repeat
+        && document.activeElement === mediaStageRef.current && activeVideoRef.current) {
+        event.preventDefault();
+        revealControls();
+        toggleActiveVideo();
+        return;
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('input, select, textarea, [contenteditable="true"], [role="slider"], [role="textbox"]')) return;
+        if (media.length <= 1) return;
+        event.preventDefault();
+        changeMedia(event.key === 'ArrowRight' ? 1 : -1, media.length);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusScope = mediaStageRef.current?.classList.contains('is-app-fullscreen') ? mediaStageRef.current : dialogRef.current;
+      const controls = [...focusScope.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
       )].filter(control => control.offsetParent !== null);
       if (controls.length === 0) { event.preventDefault(); dialogRef.current.focus(); return; }
       const first = controls[0];
       const last = controls[controls.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current
+        || document.activeElement === mediaStageRef.current)) {
         event.preventDefault(); last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault(); first.focus();
@@ -457,70 +380,131 @@ const TenantPropertyQuickView: React.FC<{
         focusRestoreTimerRef.current = null;
       }, 0);
     };
-  }, []);
+  }, [media.length, changeMedia, revealControls, toggleActiveVideo]);
 
-  const media: QuickViewMedia[] = useMemo(() => {
-    if (!property) return [];
-    const stored = property.taggedMedia?.filter(item => item.mediaUrl?.trim()).map(item => ({
-      url: item.mediaUrl,
-      type: item.mediaType === 'VIDEO_WALKTHROUGH' || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(item.mediaUrl) ? 'VIDEO' as const : 'IMAGE' as const,
-      tagLabel: getMediaTagLabel(item.roomTag)
-    })) || [];
-    if (stored.length) return stored;
-    return [
-      ...(property.images || []).filter(Boolean).map(url => ({ url, type: 'IMAGE' as const, tagLabel: null })),
-      ...(property.videoUrl ? [{ url: property.videoUrl, type: 'VIDEO' as const, tagLabel: null }] : [])
-    ];
-  }, [property]);
-  const activeMedia = media[activeMediaIndex];
-  const setRelativeMedia = (amount: -1 | 1) => setActiveMediaIndex(index => media.length ? (index + amount + media.length) % media.length : 0);
+  const activeMediaIndex = media.length ? ((activeMediaIndexState % media.length) + media.length) % media.length : 0;
+  const activeMedia = media[activeMediaIndex] ?? null;
+  useEffect(() => {
+    if (activeMedia?.type === 'VIDEO' && window.matchMedia('(pointer: fine)').matches) {
+      mediaStageRef.current?.focus({ preventScroll: true });
+    }
+  }, [activeMedia?.type, activeMedia?.url]);
+  const handleMediaPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    revealControls();
+    if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) {
+      mediaGestureRef.current = null;
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    if (activeMedia?.type === 'VIDEO' && event.pointerType === 'mouse' && !quickViewSwipeStartsOnControl(target)) {
+      event.currentTarget.focus({ preventScroll: true });
+    }
+    mediaGestureRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      time: event.timeStamp,
+      mediaIndex: activeMediaIndex,
+      eligible: !quickViewSwipeStartsOnControl(target)
+    };
+  };
+  const handleMediaPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = mediaGestureRef.current;
+    mediaGestureRef.current = null;
+    if (!start?.eligible || start.pointerId !== event.pointerId || start.mediaIndex !== activeMediaIndex || !activeMedia) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const isFullscreen = isQuickViewFullscreenActive(fullscreenMode, mediaStageRef.current);
+    const action = resolveQuickViewStageAction({
+      startX: start.x, startY: start.y, endX: event.clientX, endY: event.clientY,
+      durationMs: Math.max(0, event.timeStamp - start.time), stageLeft: bounds.left,
+      stageWidth: bounds.width, mediaType: activeMedia.type, mediaCount: media.length,
+      fullscreen: isFullscreen
+    });
+    if (action === 'PREVIOUS' || action === 'NEXT') changeMedia(action === 'NEXT' ? 1 : -1, media.length);
+    else if (action === 'TOGGLE_PLAYBACK') toggleActiveVideo();
+    else if (action === 'EXIT_FULLSCREEN') {
+      exitQuickViewFullscreen({
+        fullscreenMode,
+        stageElement: mediaStageRef.current,
+        videoElement: activeVideoRef.current,
+        onFullscreenModeChange: setFullscreenMode,
+        onActivity: revealControls
+      });
+    }
+  };
   const formatMoney = (value?: number | null) => typeof value === 'number' && value > 0 ? `₹${value.toLocaleString('en-IN')}` : null;
   const typeLabel = property?.propertyType?.replace(/_/g, ' ').toLowerCase();
-  const amenities = property?.amenities?.split(',').map(value => value.trim()).filter(Boolean) || [];
+  const price = property?.listingType === 'RENT' ? formatMoney(property.monthlyRent) : formatMoney(property?.askingPrice);
+  const facts = property ? [
+    { label: 'Bedrooms', value: formatTenantCardBhk(property.bhk) },
+    { label: 'Bathrooms', value: property.bathroomCount && property.bathroomCount > 0 ? `${property.bathroomCount} ${property.bathroomCount === 1 ? 'bath' : 'baths'}` : null },
+    { label: 'Area', value: Number.isFinite(property.totalAreaSqFt) && property.totalAreaSqFt > 0 ? `${property.totalAreaSqFt.toLocaleString('en-IN')} sq ft` : null },
+    { label: 'Home type', value: typeLabel ? typeLabel.replace(/^\w/, value => value.toUpperCase()) : null },
+    { label: 'Furnishing', value: formatTenantCardFurnishing(property.furnishingStatus) }
+  ].filter((fact): fact is { label: string; value: string } => Boolean(fact.value)) : [];
+  const description = property?.description?.trim();
+  const locality = property ? [property.sector, property.city].map(readText).filter(Boolean).join(', ') : '';
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-end justify-center bg-transparent p-0 sm:items-center sm:p-5" data-testid="tenant-property-quick-view">
-      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-[#252b25]/45 backdrop-blur-[2px]" />
-      <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="tenant-quick-view-dialog-title" tabIndex={-1}
-        className="relative z-10 flex h-[min(92dvh,860px)] w-full min-w-0 flex-col overflow-hidden rounded-t-[15px] border border-[#e9e7e1] bg-white shadow-[0_24px_80px_rgba(24,35,27,.22)] sm:h-[min(90dvh,820px)] sm:w-[min(680px,calc(100vw_-_2.5rem))] sm:rounded-[12px]">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#e5e9e1] px-4 sm:px-6">
-          <h2 id="tenant-quick-view-dialog-title" className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">Property quick view</h2>
-          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close property quick view" className={`flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 hover:bg-emerald-50 ${focusClass}`}><X size={18} aria-hidden="true" /></button>
-        </header>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-3 sm:px-6">
-          {loading && <div role="status" aria-label="Loading property details" className="space-y-4"><div className="aspect-[16/10] animate-pulse rounded-2xl bg-[#e8eae3]" /><div className="h-4 w-28 animate-pulse rounded bg-emerald-100" /><div className="h-8 w-4/5 animate-pulse rounded bg-slate-200" /><div className="h-5 w-1/3 animate-pulse rounded bg-slate-100" /><div className="h-32 animate-pulse rounded-xl bg-slate-100" /></div>}
-          {!loading && error && <div role="alert" className="rounded-2xl border border-rose-200 bg-white p-6 text-center"><p className="text-sm text-slate-700">{error}</p><button type="button" onClick={() => setRetry(value => value + 1)} className={`mt-4 min-h-11 rounded-xl bg-emerald-800 px-5 text-sm font-bold text-white hover:bg-emerald-900 ${focusClass}`}>Try again</button></div>}
-          {!loading && !error && property && <>
-            <div className="relative aspect-[16/10] overflow-hidden rounded-2xl bg-[#e7e8e1]" aria-label="Property gallery">
-              {activeMedia && !failedMedia.has(activeMedia.url) ? activeMedia.type === 'VIDEO' ? <video key={activeMedia.url} controls playsInline preload="metadata" aria-label={activeMedia.tagLabel ? `${activeMedia.tagLabel} video` : 'Property video'} src={activeMedia.url} className="h-full w-full object-contain bg-slate-950" /> : <img key={activeMedia.url} src={buildCloudinaryUrl(activeMedia.url, 'DETAIL_MAIN') || activeMedia.url} alt={`${property.title}${activeMedia.tagLabel ? ` — ${activeMedia.tagLabel}` : ''}`} onError={() => setFailedMedia(previous => new Set(previous).add(activeMedia.url))} className="h-full w-full object-cover" /> : <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-500" role="img" aria-label="Property media unavailable"><HomeIcon size={34} aria-hidden="true" /><span className="text-sm">Property media unavailable</span></div>}
-              {activeMedia?.tagLabel && <span className="absolute left-3 top-3 rounded-full border border-white/70 bg-white/95 px-3 py-1.5 text-xs font-semibold text-emerald-950 shadow-sm">{activeMedia.tagLabel}</span>}
-              {media.length > 1 && <>
-                <button type="button" onClick={() => setRelativeMedia(-1)} aria-label="Previous property media" className={`absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/95 text-slate-900 shadow-md ${focusClass}`}><ChevronLeft aria-hidden="true" /></button>
-                <button type="button" onClick={() => setRelativeMedia(1)} aria-label="Next property media" className={`absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/95 text-slate-900 shadow-md ${focusClass}`}><ChevronRight aria-hidden="true" /></button>
-                <span className="absolute bottom-3 right-3 rounded-full bg-slate-950/80 px-3 py-1.5 text-xs font-semibold text-white">{activeMediaIndex + 1} / {media.length} media</span>
-              </>}
+    <div className={`tenant-v0-quick-backdrop fixed inset-0 z-[110] grid place-items-center overflow-y-auto p-3 sm:p-[25px] ${fullscreenMode === 'APP_FALLBACK' ? 'has-app-fullscreen' : ''}`} data-testid="tenant-property-quick-view"
+      onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} role="dialog" aria-modal="true"
+        aria-labelledby={property && !loading && !error ? 'tenant-quick-view-property-title' : 'tenant-quick-view-dialog-title'} tabIndex={-1}
+        className={`tenant-v0-quick-modal min-w-0 overflow-hidden ${loading || error || !property ? 'is-pending' : ''} ${fullscreenMode === 'APP_FALLBACK' ? 'has-app-fullscreen' : ''}`}>
+        <span id="tenant-quick-view-dialog-title" className="sr-only">Property quick view</span>
+        {loading && <div role="status" aria-label="Loading property details" className="tenant-v0-quick-loading"><div /><span /><span /><span /></div>}
+        {!loading && error && <div role="alert" className="tenant-v0-quick-error"><p>{error}</p><button type="button" onClick={() => setRetry(value => value + 1)} className={focusClass}>Try again</button></div>}
+        {!loading && !error && property && <>
+          <div ref={mediaStageRef} tabIndex={-1}
+            className={`tenant-v0-quick-media ${activeMedia?.type === 'VIDEO' ? 'is-video' : ''} ${fullscreenMode === 'APP_FALLBACK' ? 'is-app-fullscreen' : ''} ${activeMedia?.type === 'VIDEO' && videoControls.playing && !videoControls.visible ? 'is-controls-hidden' : ''}`}
+            onPointerDown={handleMediaPointerDown} onPointerUp={handleMediaPointerUp}
+            onPointerCancel={() => { mediaGestureRef.current = null; }}
+            onPointerMove={event => { if (event.pointerType === 'mouse' && (event.movementX || event.movementY)) revealControls(); }}
+            onFocusCapture={revealControls}>
+            {activeMedia && !failedMedia.has(activeMedia.url)
+              ? activeMedia.type === 'VIDEO'
+                ? <QuickViewVideoPlayer key={`${activeMedia.url}-${activeMediaIndex}`} src={activeMedia.url}
+                    label={activeMedia.tagLabel ? `${activeMedia.tagLabel} video` : 'Property video'}
+                    videoRef={activeVideoRef} stageRef={mediaStageRef} playing={videoControls.playing}
+                    fullscreenMode={fullscreenMode} onFullscreenModeChange={setFullscreenMode}
+                    playbackError={playbackError} onPlaybackError={setPlaybackError} onTogglePlayback={toggleActiveVideo}
+                    onPlaybackChange={(playing, video) => {
+                      if (activeVideoRef.current === video) setVideoControls(previous => nextQuickViewControlsState(previous, playing ? 'PLAY' : 'PAUSE'));
+                    }} onActivity={revealControls}
+                    onError={() => {
+                      setVideoControls(previous => nextQuickViewControlsState(previous, 'PAUSE'));
+                      setFailedMedia(previous => new Set(previous).add(activeMedia.url));
+                    }} />
+                : <img key={`${activeMedia.url}-${activeMediaIndex}`} draggable={false} src={buildCloudinaryUrl(activeMedia.url, 'DETAIL_MAIN') || activeMedia.url}
+                  alt={activeMedia.tagLabel ? `${property.title} — ${activeMedia.tagLabel}` : property.title}
+                  onError={() => setFailedMedia(previous => new Set(previous).add(activeMedia.url))} />
+              : <div className="tenant-v0-quick-media-unavailable" role="img" aria-label="Property media unavailable"><HomeIcon size={30} aria-hidden="true" /><span>Property media unavailable</span></div>}
+            {activeMedia?.tagLabel && <span className="tenant-v0-quick-media-tag" data-quick-view-control="true"><i aria-hidden="true" /><span className="tenant-v0-quick-media-tag-text">{activeMedia.tagLabel}</span></span>}
+            {media.length > 0 && <span className="tenant-v0-quick-media-count" data-quick-view-control="true" aria-live="polite" aria-atomic="true">{activeMediaIndex + 1} / {media.length}</span>}
+            <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close property quick view" className={`tenant-v0-quick-close ${focusClass}`}><X size={18} aria-hidden="true" /></button>
+          </div>
+          <div className="tenant-v0-quick-panel">
+            <div className="tenant-v0-quick-content">
+              {locality && <p className="tenant-v0-quick-locality"><MapPin size={13} aria-hidden="true" />{locality}</p>}
+              <h2 id="tenant-quick-view-property-title" className="tenant-v0-quick-title">{property.title}</h2>
+              {price && <p className="tenant-v0-quick-price"><strong>{price}</strong><span>{property.listingType === 'RENT' ? '/ month' : 'asking price'}</span></p>}
+              {facts.length > 0 && <div className="tenant-v0-quick-facts" aria-label="Property facts">{facts.map(fact => <span key={fact.label}><strong>{fact.value}</strong><small>{fact.label}</small></span>)}</div>}
+              {description && <p className="tenant-v0-quick-description">{description}</p>}
+              <div className="tenant-v0-quick-status"><Clock3 size={17} aria-hidden="true" /><span>A visit request is not a confirmed appointment.</span></div>
+              <button type="button" onClick={() => onViewProperty(property)} className={`tenant-v0-quick-full ${focusClass}`}>View full property <ArrowRight size={15} aria-hidden="true" /></button>
             </div>
-            {media.length > 1 && <div className="mt-2 flex gap-2 overflow-x-auto pb-1" aria-label="Property media thumbnails">{media.map((item, index) => <button type="button" key={`${item.url}-${index}`} onClick={() => setActiveMediaIndex(index)} aria-pressed={index === activeMediaIndex} aria-label={`Show ${item.tagLabel ? `${item.tagLabel} ` : ''}${item.type === 'VIDEO' ? 'video' : 'photo'} ${index + 1}`} className={`relative h-[68px] w-[90px] shrink-0 overflow-hidden rounded-lg border-2 bg-slate-100 ${index === activeMediaIndex ? 'border-emerald-700' : 'border-transparent'} ${focusClass}`}>
-              {item.type === 'VIDEO' ? <span className="grid h-full place-items-center bg-slate-900 text-xs font-semibold text-white">Video</span> : failedMedia.has(item.url) ? <span className="grid h-full place-items-center bg-slate-200 text-[9px] font-semibold text-slate-700">Unavailable</span> : <img loading="lazy" src={buildCloudinaryUrl(item.url, 'DETAIL_THUMBNAIL') || item.url} alt="" onError={() => setFailedMedia(previous => new Set(previous).add(item.url))} className="h-full w-full object-cover" />}
-              {item.tagLabel && <span className="absolute inset-x-0 bottom-0 truncate bg-slate-950/75 px-1 py-0.5 text-[9px] font-semibold text-white">{item.tagLabel}</span>}
-            </button>)}</div>}
-            <div className="mt-5">
-              <p className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-emerald-800">{property.bhk || ''}{property.bhk && typeLabel ? ' · ' : ''}{typeLabel || ''}</p>
-              <h1 className="mt-2 font-serif text-[clamp(1.45rem,3vw,2rem)] font-medium leading-tight tracking-tight text-slate-950">{property.title}</h1>
-              <p className="mt-2 flex items-start gap-1.5 text-sm text-slate-600"><MapPin size={16} className="mt-0.5 shrink-0 text-emerald-800" aria-hidden="true" />{[property.sector, property.city].filter(Boolean).join(', ')}</p>
-              {formatMoney(property.monthlyRent) && <p className="mt-3 text-2xl font-bold tracking-tight text-slate-950">{formatMoney(property.monthlyRent)} <span className="text-sm font-normal text-slate-600">/ month</span></p>}
-              <div className="mt-3 flex flex-wrap gap-2">{property.bhk && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.bhk}</span>}{typeLabel && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold capitalize text-emerald-950">{typeLabel}</span>}{property.totalAreaSqFt > 0 && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.totalAreaSqFt.toLocaleString('en-IN')} sq ft</span>}{property.furnishingStatus && <span className="rounded-md bg-[#edf5ee] px-2.5 py-1.5 text-xs font-semibold text-emerald-950">{property.furnishingStatus}</span>}</div>
-              {property.description && <p className="mt-4 whitespace-pre-line text-sm leading-6 text-slate-600">{property.description}</p>}
-              <dl className="mt-4 divide-y divide-slate-200 border-y border-slate-200 text-sm">{formatMoney(property.securityDeposit) && <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Security deposit</dt><dd className="font-semibold text-slate-900">{formatMoney(property.securityDeposit)}</dd></div>}{formatMoney(property.maintenanceCharge) && <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Maintenance</dt><dd className="font-semibold text-slate-900">{formatMoney(property.maintenanceCharge)} / month</dd></div>}{property.bathroomCount ? <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Bathrooms</dt><dd className="font-semibold text-slate-900">{property.bathroomCount}</dd></div> : null}{property.vastuFacing && <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Facing</dt><dd className="font-semibold text-slate-900">{property.vastuFacing}</dd></div>}</dl>
-              {amenities.length > 0 && <div className="mt-4"><h2 className="font-serif text-lg">Listed amenities</h2><div className="mt-2 flex flex-wrap gap-2">{amenities.map(amenity => <span key={amenity} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-950">{amenity}</span>)}</div></div>}
-            </div>
-          </>}
-        </div>
-        {!loading && !error && property && <footer className="safe-area-bottom flex shrink-0 gap-2 border-t border-[#e5e9e1] bg-white/95 p-3 backdrop-blur sm:px-6">
-          <button type="button" onClick={() => onRequestVisit(property)} className={`min-h-12 flex-1 rounded-xl bg-emerald-800 px-3 text-sm font-bold text-white hover:bg-emerald-900 ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus(property.id)) ?? 'Request visit'} <ArrowRight size={15} className="ml-1 inline" aria-hidden="true" /></button>
-          <button type="button" onClick={() => onViewProperty(property)} className={`min-h-12 flex-1 rounded-xl border border-emerald-800/25 bg-white px-3 text-sm font-bold text-emerald-900 hover:bg-emerald-50 ${focusClass}`}>View full property</button>
-        </footer>}
-      </aside>
+            <footer className="tenant-v0-quick-footer">
+              <button type="button" onClick={() => onRequestVisit(property)} className={`tenant-v0-quick-request ${focusClass}`}>{tenantVisitCtaLabel(visitRequestStatus(property.id)) ?? 'Request visit'} <ArrowRight size={15} aria-hidden="true" /></button>
+              <button type="button" onClick={() => onToggleFavorite(property)} disabled={!favoriteStateReady || favoritePending}
+                aria-label={favoritePending ? 'Updating saved home' : isFavorite ? 'Remove from saved homes' : 'Save home'}
+                aria-pressed={favoriteStateReady ? isFavorite : undefined}
+                className={`tenant-v0-quick-save ${focusClass}`}>
+                {favoritePending ? <LoaderCircle size={18} className="motion-safe:animate-spin" aria-hidden="true" /> : <Heart size={18} fill={isFavorite ? 'currentColor' : 'none'} aria-hidden="true" />}
+              </button>
+            </footer>
+          </div>
+        </>}
+      </section>
     </div>
   );
 };
@@ -543,9 +527,9 @@ const initialSavedHomesState: SavedHomesState = {
 };
 
 export const TenantDashboard: React.FC<TenantDashboardProps> = ({
-  user, properties, discoveryState, discoveryLoadedKey, discoveryCity, searchFilters, hasMoreProperties,
+  user, savedCount, properties, discoveryState, discoveryLoadedKey, discoveryCity, searchFilters, hasMoreProperties,
   loadingMoreProperties, loadMorePropertiesError, onSearchHomes, onRetryDiscovery,
-  onLoadMoreProperties, onRequestVisit, onViewProperty
+  onLoadMoreProperties, onRequestVisit, onViewProperty, hasLessorCapability, onOpenLessor, onLogout
 }) => {
   const reduceMotionPreference = useReducedMotion();
   const reduceMotion = reduceMotionPreference === true;
@@ -566,6 +550,10 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const pagePendingRef = useRef(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const tenantView: 'home' | 'saved' | 'visits' | 'account' | 'notifications' = location.hash === '#saved-homes-title' ? 'saved'
+    : location.hash === '#visit-history' || location.hash.startsWith('#visit-session-') ? 'visits'
+      : location.hash === '#account' ? 'account'
+        : location.hash === '#notifications' ? 'notifications' : 'home';
   const routeState = location.state && typeof location.state === 'object' ? location.state as Record<string, unknown> : {};
   const candidatePreviewId = Number(routeState.tenantQuickViewPropertyId);
   const previewPropertyId = routeState.tenantQuickView === true && Number.isSafeInteger(candidatePreviewId) && candidatePreviewId > 0
@@ -578,237 +566,39 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [favoriteActionError, setFavoriteActionError] = useState<string | null>(null);
   const [savedHomesState, setSavedHomesState] = useState<SavedHomesState>(initialSavedHomesState);
   const [savedHomesReload, setSavedHomesReload] = useState(0);
-  const [savedHomesExpanded, setSavedHomesExpanded] = useState(false);
-  const [savedHomesVisibleLimit, setSavedHomesVisibleLimit] = useState(() =>
-    typeof window === 'undefined' ? 2 : savedHomesVisibleLimitForWidth(window.innerWidth));
-  const [stickySearchMode, setStickySearchMode] = useState<'hero' | 'sticky' | 'beacon'>('hero');
-  const [heroSearchAnchorVisible, setHeroSearchAnchorVisible] = useState(true);
-  const [searchEngaged, setSearchEngaged] = useState(false);
-  const [searchActivityVersion, setSearchActivityVersion] = useState(0);
-  const [discoverySearchCollision, setDiscoverySearchCollision] = useState(false);
-  const [manualSearchOpenGrace, setManualSearchOpenGrace] = useState(false);
-  const [searchBeaconTop, setSearchBeaconTop] = useState<number | null>(null);
-  const [searchMorphActive, setSearchMorphActive] = useState(false);
-  const [beaconAcknowledgement, setBeaconAcknowledgement] = useState(0);
-  const [tenantHeroVisible, setTenantHeroVisible] = useState(true);
-  const [heroSearchRevealVersion, setHeroSearchRevealVersion] = useState(0);
-  const [mobileDockIsScrolling, setMobileDockIsScrolling] = useState(false);
-  const [mobileDockActiveItem, setMobileDockActiveItem] = useState<TenantMobileDockItem>('home');
-  const [visitHistoryOpen, setVisitHistoryOpen] = useState(false);
   const [visitSessionOpenState, setVisitSessionOpenState] = useState<Record<number, boolean>>({});
   const [quickRefineSheetOpen, setQuickRefineSheetOpen] = useState(false);
-  const mobileDockSelectionPinnedRef = useRef(false);
-  const heroSearchWasAwayRef = useRef(false);
-  const mobileDockScrollIdleTimerRef = useRef<number | null>(null);
-  const searchMorphOverlayRef = useRef<TenantSearchMorphOverlay | null>(null);
-  const searchMorphFrameRef = useRef<number | null>(null);
-  const searchMorphCleanupTimerRef = useRef<number | null>(null);
   const pendingHeroFilterScrollRef = useRef<PendingTenantHeroFilterScroll | null>(null);
   const pendingHeroFilterScrollFrameRef = useRef<number | null>(null);
   const quickRefineOpenRef = useRef<(() => void) | null>(null);
-  const visitHistoryDetailsRef = useRef<HTMLDetailsElement>(null);
+  const submitSearchRef = useRef<(() => void) | null>(null);
   const savedHomesRequestRef = useRef<AbortController | null>(null);
   const savedHomesLoadingMoreRef = useRef(false);
   const favoriteMutationRef = useRef<Set<string>>(new Set());
   const favoriteMutationRevisionRef = useRef<Map<string, number>>(new Map());
   const favoriteSession = readTenantVisitSession(user.id);
+  const savedHomesIdentityMatches = Boolean(favoriteSession && savedHomesState.identityKey === favoriteSession.key);
+  const visibleSavedHomes = savedHomesIdentityMatches && savedHomesState.status !== "error"
+    ? savedHomesState.properties : [];
+  const visibleFavoriteIds = new Set<number>([
+    ...(favoriteSession && favoriteState.identityKey === favoriteSession.key && favoriteState.status === "ready"
+      ? favoriteState.favoriteIds : []),
+    ...visibleSavedHomes.map(property => property.id)
+  ]);
   const currentDiscoveryKey = discoverySearchKey(searchFilters);
-  const mobileDockBadges = tenantMobileDockBadges(searchFilters);
+  const mobileDockBadges = tenantMobileDockBadges(searchFilters, undefined, savedCount);
   const showTenantMobileDock = shouldRenderTenantMobileDock(
-    tenantHeroVisible, quickRefineSheetOpen, previewPropertyId !== null
+    false, quickRefineSheetOpen, previewPropertyId !== null
   );
-  const tenantDiscoveryRailTop = 'calc(76px + env(safe-area-inset-top) + 18px)';
+  const mobileDockActiveItem: TenantMobileDockItem | 'account' | 'notifications' = quickRefineSheetOpen ? 'filters' : tenantView;
   const quickRefineRentBounds = useMemo(() => getQuickRefineRentBounds(searchFilters),
     [searchFilters.minRent, searchFilters.maxRent]);
-  const cancelSearchMorph = useCallback(() => {
-    if (searchMorphFrameRef.current !== null) {
-      window.cancelAnimationFrame(searchMorphFrameRef.current);
-      searchMorphFrameRef.current = null;
-    }
-    if (searchMorphCleanupTimerRef.current !== null) {
-      window.clearTimeout(searchMorphCleanupTimerRef.current);
-      searchMorphCleanupTimerRef.current = null;
-    }
-    searchMorphOverlayRef.current?.cancel();
-    searchMorphOverlayRef.current = null;
-    setSearchMorphActive(false);
-  }, []);
-  const startSearchMorph = useCallback((targetMode: 'sticky' | 'beacon') => {
-    const sourceMode = stickySearchMode;
-    if (sourceMode !== 'sticky' && sourceMode !== 'beacon') {
-      setStickySearchMode(targetMode);
-      return;
-    }
-    if (sourceMode === targetMode) return;
-    const plan = tenantSearchMorphPlan(sourceMode, targetMode, reduceMotion, window.innerWidth);
-    cancelSearchMorph();
-    if (targetMode === 'beacon') setSearchBeaconTop(Math.round(window.innerHeight * 0.44 - 24));
-    const source = document.getElementById('compact-discovery-context');
-    const overlay = plan.travels && source ? createTenantSearchMorphOverlay(source, sourceMode) : null;
-    if (!overlay) {
-      setStickySearchMode(targetMode);
-      return;
-    }
-
-    searchMorphOverlayRef.current = overlay;
-    setSearchMorphActive(true);
-    setStickySearchMode(targetMode);
-    let attempts = 0;
-    const beginAnimation = () => {
-      searchMorphFrameRef.current = null;
-      if (searchMorphOverlayRef.current !== overlay) return;
-      const destination = document.getElementById('compact-discovery-context');
-      const icon = destination?.querySelector(`[data-tenant-search-mode-icon="${targetMode}"]`);
-      if (!destination || !icon) {
-        if (attempts++ < 2) searchMorphFrameRef.current = window.requestAnimationFrame(beginAnimation);
-        else cancelSearchMorph();
-        return;
-      }
-      overlay.animateTo(destination, targetMode, () => {
-        if (searchMorphOverlayRef.current !== overlay) return;
-        setSearchMorphActive(false);
-        if (targetMode === 'beacon' && !reduceMotion) setBeaconAcknowledgement(value => value + 1);
-        searchMorphCleanupTimerRef.current = window.setTimeout(() => {
-          if (searchMorphOverlayRef.current !== overlay) return;
-          overlay.cancel();
-          searchMorphOverlayRef.current = null;
-          searchMorphCleanupTimerRef.current = null;
-        }, 40);
-      });
-    };
-    searchMorphFrameRef.current = window.requestAnimationFrame(beginAnimation);
-  }, [cancelSearchMorph, reduceMotion, stickySearchMode]);
-
-  const collapseSearchToBeacon = useCallback((reason: 'inactivity' | 'discovery') => {
-    if (!shouldCollapseTenantSearch(reason, {
-      mode: stickySearchMode,
-      heroVisible: heroSearchAnchorVisible,
-      engaged: searchEngaged,
-      discoveryCollision: discoverySearchCollision,
-      manualOpenGrace: manualSearchOpenGrace
-    })) return;
-    setManualSearchOpenGrace(false);
-    startSearchMorph('beacon');
-  }, [discoverySearchCollision, heroSearchAnchorVisible, manualSearchOpenGrace, searchEngaged, startSearchMorph, stickySearchMode]);
-
   useEffect(() => {
-    if (!searchMorphActive) return undefined;
-    const cancelOnResize = () => cancelSearchMorph();
-    window.addEventListener('resize', cancelOnResize, { passive: true });
-    return () => window.removeEventListener('resize', cancelOnResize);
-  }, [cancelSearchMorph, searchMorphActive]);
-
-  useEffect(() => () => {
-    if (searchMorphFrameRef.current !== null) window.cancelAnimationFrame(searchMorphFrameRef.current);
-    if (searchMorphCleanupTimerRef.current !== null) window.clearTimeout(searchMorphCleanupTimerRef.current);
-    searchMorphOverlayRef.current?.cancel();
-    searchMorphOverlayRef.current = null;
-  }, []);
-
-  const reportSearchEngagement = useCallback((engaged: boolean) => setSearchEngaged(engaged), []);
-  const recordSearchInteraction = useCallback(() => setSearchActivityVersion(version => version + 1), []);
-  const expandSearchBeacon = useCallback(() => {
-    setManualSearchOpenGrace(true);
-    startSearchMorph('sticky');
-  }, [startSearchMorph]);
+    if (routeState.openTenantAccount !== true) return;
+    navigate(`${location.pathname}${location.search}#account`, { replace: true, state: null });
+  }, [routeState.openTenantAccount, location.pathname, location.search, navigate]);
   const reportQuickRefineSheetOpen = useCallback((isOpen: boolean) => {
     setQuickRefineSheetOpen(isOpen);
-    if (isOpen) {
-      mobileDockSelectionPinnedRef.current = true;
-      setMobileDockActiveItem('filters');
-      return;
-    }
-    mobileDockSelectionPinnedRef.current = false;
-    const candidates: Array<{ id: string; item: TenantMobileDockItem }> = [
-      { id: 'tenant-home-search', item: 'home' },
-      { id: 'saved-homes-title', item: 'saved' },
-      { id: 'visit-history-title', item: 'visits' },
-      { id: 'discover-homes-title', item: 'home' }
-    ];
-    const visible = candidates.map(candidate => ({
-      ...candidate,
-      rect: document.getElementById(candidate.id)?.getBoundingClientRect()
-    })).filter(candidate => candidate.rect && candidate.rect.bottom > 0 && candidate.rect.top < window.innerHeight)
-      .sort((left, right) => Math.abs((left.rect?.top ?? 0) - window.innerHeight * 0.4)
-        - Math.abs((right.rect?.top ?? 0) - window.innerHeight * 0.4))[0];
-    if (visible) setMobileDockActiveItem(visible.item);
-  }, []);
-
-  useEffect(() => {
-    const hero = document.getElementById('tenant-home-search');
-    if (!hero) {
-      setTenantHeroVisible(false);
-      return undefined;
-    }
-    const observer = new IntersectionObserver(entries => {
-      const entry = entries.find(candidate => candidate.target === hero);
-      if (entry) setTenantHeroVisible(entry.intersectionRatio >= 0.12);
-    }, { threshold: [0, 0.12] });
-    observer.observe(hero);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      setMobileDockIsScrolling(current => current ? current : true);
-      if (mobileDockScrollIdleTimerRef.current !== null) {
-        window.clearTimeout(mobileDockScrollIdleTimerRef.current);
-      }
-      mobileDockScrollIdleTimerRef.current = window.setTimeout(() => {
-        mobileDockScrollIdleTimerRef.current = null;
-        setMobileDockIsScrolling(false);
-      }, 200);
-    };
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => {
-      window.removeEventListener('scroll', handleScroll);
-      if (mobileDockScrollIdleTimerRef.current !== null) {
-        window.clearTimeout(mobileDockScrollIdleTimerRef.current);
-        mobileDockScrollIdleTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (typeof IntersectionObserver === 'undefined') return undefined;
-    const targets: Array<{ id: string; item: TenantMobileDockItem }> = [
-      { id: 'tenant-home-search', item: 'home' },
-      { id: 'saved-homes-title', item: 'saved' },
-      { id: 'visit-history-title', item: 'visits' },
-      { id: 'discover-homes-title', item: 'home' }
-    ];
-    const observer = new IntersectionObserver(entries => {
-      if (mobileDockSelectionPinnedRef.current) return;
-      const closest = entries.filter(entry => entry.isIntersecting)
-        .sort((left, right) => Math.abs(left.boundingClientRect.top - window.innerHeight * 0.38)
-          - Math.abs(right.boundingClientRect.top - window.innerHeight * 0.38))[0];
-      const matched = closest && targets.find(target => document.getElementById(target.id) === closest.target);
-      if (matched) setMobileDockActiveItem(matched.item);
-    }, { rootMargin: '-120px 0px -280px 0px', threshold: 0 });
-    targets.forEach(({ id }) => {
-      const target = document.getElementById(id);
-      if (target) observer.observe(target);
-    });
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const clearPinnedSelectionForUserScroll = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return;
-      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
-        mobileDockSelectionPinnedRef.current = false;
-      }
-    };
-    const clearPinnedSelection = () => { mobileDockSelectionPinnedRef.current = false; };
-    window.addEventListener('wheel', clearPinnedSelection, { passive: true });
-    window.addEventListener('touchstart', clearPinnedSelection, { passive: true });
-    window.addEventListener('keydown', clearPinnedSelectionForUserScroll);
-    return () => {
-      window.removeEventListener('wheel', clearPinnedSelection);
-      window.removeEventListener('touchstart', clearPinnedSelection);
-      window.removeEventListener('keydown', clearPinnedSelectionForUserScroll);
-    };
   }, []);
   const closeQuickView = useCallback(() => navigate(-1), [navigate]);
   const openQuickView = useCallback((property: Property) => {
@@ -819,132 +609,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     });
   }, [location.hash, location.pathname, location.search, location.state, navigate]);
 
-  useEffect(() => {
-    const updateLimit = () => setSavedHomesVisibleLimit(savedHomesVisibleLimitForWidth(window.innerWidth));
-    window.addEventListener('resize', updateLimit, { passive: true });
-    return () => window.removeEventListener('resize', updateLimit);
-  }, []);
-
-  useEffect(() => {
-    const heroSearchAnchor = document.getElementById('tenant-search-placeholder');
-    if (!heroSearchAnchor) return undefined;
-
-    const navbar = document.querySelector<HTMLElement>('[data-pathome-header="global"]');
-    const navbarHeight = navbar?.getBoundingClientRect().height ?? 80;
-    const setHeroVisibility = (visible: boolean) => {
-      if (visible && heroSearchWasAwayRef.current) {
-        heroSearchWasAwayRef.current = false;
-        if (window.innerWidth < 768) setHeroSearchRevealVersion(version => version + 1);
-      } else if (!visible) {
-        heroSearchWasAwayRef.current = true;
-      }
-      if (visible) {
-        cancelSearchMorph();
-        setDiscoverySearchCollision(false);
-        setManualSearchOpenGrace(false);
-      }
-      setHeroSearchAnchorVisible(visible);
-      setStickySearchMode(current => visible ? 'hero' : current === 'hero' ? 'sticky' : current);
-    };
-    const syncVisibility = () => {
-      const bounds = heroSearchAnchor.getBoundingClientRect();
-      const navbarBottom = navbar?.getBoundingClientRect().bottom ?? navbarHeight;
-      setHeroVisibility(bounds.bottom > navbarBottom + 8 && bounds.top < window.innerHeight);
-    };
-    let observer: IntersectionObserver | null = null;
-    if (typeof IntersectionObserver !== 'undefined') {
-      observer = new IntersectionObserver(entries => {
-        const entry = entries[entries.length - 1];
-        if (entry) setHeroVisibility(entry.isIntersecting);
-      }, { rootMargin: `-${Math.ceil(navbarHeight + 8)}px 0px 0px 0px`, threshold: 0 });
-      observer.observe(heroSearchAnchor);
-    } else {
-      window.addEventListener('scroll', syncVisibility, { passive: true });
-    }
-    window.addEventListener('resize', syncVisibility, { passive: true });
-    syncVisibility();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('scroll', syncVisibility);
-      window.removeEventListener('resize', syncVisibility);
-    };
-  }, [cancelSearchMorph]);
-
-  useEffect(() => {
-    const sentinel = document.getElementById('tenant-discovery-collision-sentinel');
-    const search = document.getElementById('compact-discovery-context');
-    if (!sentinel || !search || stickySearchMode !== 'sticky' || discoverySearchCollision
-      || heroSearchAnchorVisible || searchEngaged || searchMorphActive) return undefined;
-
-    let observer: IntersectionObserver | null = null;
-    let collisionFrame: number | null = null;
-    const isEligible = () => window.innerWidth >= 1024
-      && !heroSearchAnchorVisible && !searchEngaged && !searchMorphActive;
-    const collisionReached = () => {
-      if (!isEligible()) return false;
-      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
-      return tenantSearchCollisionReached(sentinel.getBoundingClientRect().top, band);
-    };
-    const checkCollision = () => {
-      collisionFrame = null;
-      if (!collisionReached()) return;
-      observer?.disconnect();
-      observer = null;
-      setDiscoverySearchCollision(true);
-    };
-    const scheduleCollisionCheck = () => {
-      if (!isEligible() || collisionFrame !== null) return;
-      collisionFrame = window.requestAnimationFrame(checkCollision);
-    };
-    const observeCollisionLine = () => {
-      observer?.disconnect();
-      observer = null;
-      if (window.innerWidth < 1024) {
-        setDiscoverySearchCollision(false);
-        return;
-      }
-      if (!isEligible()) return;
-      const band = tenantSearchCollisionBand(search.getBoundingClientRect().bottom, window.innerHeight);
-      if (tenantSearchCollisionReached(sentinel.getBoundingClientRect().top, band)) {
-        setDiscoverySearchCollision(true);
-        return;
-      }
-      if (typeof IntersectionObserver === 'undefined') return;
-      const bottomInset = Math.max(0, window.innerHeight - band.bottom);
-      observer = new IntersectionObserver(scheduleCollisionCheck,
-        { rootMargin: `-${band.top}px 0px -${bottomInset}px 0px`, threshold: 0 });
-      observer.observe(sentinel);
-    };
-
-    observeCollisionLine();
-    const onResize = () => {
-      observeCollisionLine();
-      scheduleCollisionCheck();
-    };
-    window.addEventListener('resize', onResize, { passive: true });
-    // IO catches ordinary crossings; this rAF-coalesced geometry check also catches a fast
-    // scroll that moves the sentinel completely past the narrow observation band.
-    window.addEventListener('scroll', scheduleCollisionCheck, { passive: true });
-    return () => {
-      observer?.disconnect();
-      if (collisionFrame !== null) window.cancelAnimationFrame(collisionFrame);
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('scroll', scheduleCollisionCheck);
-    };
-  }, [discoverySearchCollision, heroSearchAnchorVisible, searchEngaged, searchMorphActive, stickySearchMode]);
-
-  useEffect(() => {
-    if (!discoverySearchCollision) return;
-    collapseSearchToBeacon('discovery');
-  }, [collapseSearchToBeacon, discoverySearchCollision]);
-
-  useEffect(() => {
-    if (stickySearchMode !== 'sticky' || heroSearchAnchorVisible || searchEngaged) return undefined;
-    const timeout = window.setTimeout(() => {
-      collapseSearchToBeacon('inactivity');
-    }, 5000);
-    return () => window.clearTimeout(timeout);
-  }, [stickySearchMode, heroSearchAnchorVisible, searchEngaged, searchActivityVersion, collapseSearchToBeacon]);
 
   useEffect(() => {
     const pending = pendingHeroFilterScrollRef.current;
@@ -983,28 +647,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       window.cancelAnimationFrame(pendingHeroFilterScrollFrameRef.current);
     }
   }, []);
-
-  useEffect(() => {
-    if (stickySearchMode !== 'beacon') {
-      setSearchBeaconTop(null);
-      return undefined;
-    }
-    const placeBeacon = () => {
-      setSearchBeaconTop(Math.round(window.innerHeight * 0.44 - 24));
-    };
-    let frame = window.requestAnimationFrame(placeBeacon);
-    const schedulePlacement = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(placeBeacon);
-    };
-    window.addEventListener('resize', schedulePlacement, { passive: true });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener('resize', schedulePlacement);
-    };
-  }, [stickySearchMode]);
-
-  useEffect(() => { setSavedHomesExpanded(false); }, [favoriteSession?.key]);
 
   useEffect(() => {
     favoriteStateRef.current = favoriteState;
@@ -1133,6 +775,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       if (wasSaved) await favoriteService.remove(property.id);
       else await favoriteService.save(property.id);
       if (!isCurrentTenantVisitSession(session)) return;
+      notifyTenantFavoriteChanged({ identityKey: session.key, propertyId: property.id, saved: !wasSaved });
       favoriteMutationRevisionRef.current.set(session.key,
         (favoriteMutationRevisionRef.current.get(session.key) || 0) + 1);
       setFavoriteState(current => {
@@ -1330,15 +973,32 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     return () => window.clearInterval(interval);
   }, [tenantSessionCodes]);
   useEffect(() => {
-    if (routeState.focusTenantVisits !== true) return undefined;
-    const timer = window.setTimeout(() => {
-      const target = document.getElementById('visit-history-title');
-      target?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
-      target?.focus({ preventScroll: true });
-      navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
-    }, 80);
-    return () => window.clearTimeout(timer);
+    if (routeState.focusTenantVisits !== true) return;
+    navigate(`${location.pathname}${location.search}#visit-history`, { replace: true, state: null });
   }, [routeState.focusTenantVisits, location.pathname, location.search, navigate]);
+  useEffect(() => {
+    const targetId = tenantView === 'visits' ? 'tenant-visits-page-title'
+      : tenantView === 'saved' ? 'saved-homes-title'
+        : tenantView === 'account' ? 'tenant-account-title'
+          : tenantView === 'notifications' ? 'tenant-notifications-title' : 'tenant-home-search';
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById(targetId);
+      if (!target) return;
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      target.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [tenantView]);
+  useEffect(() => {
+    if (!location.hash.startsWith('#visit-session-')) return undefined;
+    const sessionId = Number(location.hash.slice('#visit-session-'.length));
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return undefined;
+    setVisitSessionOpenState(current => current[sessionId] ? current : { ...current, [sessionId]: true });
+    const timer = window.setTimeout(() => {
+      document.getElementById(`visit-session-${sessionId}`)?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [location.hash]);
   const visibleHistory: HistoryState = !session ? { ...emptyHistory, status: 'error' } :
     session.key === history.identityKey ? history : emptyHistory;
   const view = tenantVisitView(visibleHistory.status, visibleHistory.requests);
@@ -1359,9 +1019,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const pastRequests = visibleHistory.requests.filter(request => request.status === 'UNAVAILABLE' || request.status === 'CANCELLED');
   const requestStatusForProperty = (propertyId: number): string | null => {
     if (view === 'loading' || view === 'error') return 'UNKNOWN';
-    const activeRequest = visibleHistory.requests.find(request => request.propertyId === propertyId
-      && isActiveTenantVisitRequest(request.status));
-    return activeRequest?.status ?? (visibleHistory.hasMore ? 'UNKNOWN' : null);
+    const existingRequest = visibleHistory.requests.find(request => request.propertyId === propertyId);
+    return existingRequest?.status ?? (visibleHistory.hasMore ? 'UNKNOWN' : null);
   };
   const handleTenantRequestVisit = (property: Property) => {
     if (requestStatusForProperty(property.id)) {
@@ -1370,18 +1029,6 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     }
     onRequestVisit(property);
   };
-  const firstName = user.fullName?.trim().split(/\s+/)[0];
-  const savedHomesIdentityMatches = Boolean(favoriteSession && savedHomesState.identityKey === favoriteSession.key);
-  const visibleSavedHomes = savedHomesIdentityMatches && savedHomesState.status !== 'error'
-    ? savedHomesState.properties : [];
-  const presentedSavedHomes = savedHomesForPresentation(visibleSavedHomes, savedHomesVisibleLimit, savedHomesExpanded);
-  const additionalSavedHomes = visibleSavedHomes.slice(savedHomesVisibleLimit);
-  const hasSavedHomesStack = additionalSavedHomes.length > 0 || Boolean(savedHomesIdentityMatches && savedHomesState.status === 'ready' && savedHomesState.hasMore);
-  const visibleFavoriteIds = new Set<number>([
-    ...(favoriteSession && favoriteState.identityKey === favoriteSession.key && favoriteState.status === 'ready'
-      ? favoriteState.favoriteIds : []),
-    ...visibleSavedHomes.map(property => property.id)
-  ]);
   const availableProperties = properties;
   const favoriteIsReadyFor = (propertyId: number): boolean => Boolean(favoriteSession && (
     isFavoriteLookupReadyFor(favoriteState, favoriteSession.key, propertyId)
@@ -1399,20 +1046,10 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   };
 
   const navigateMobileDock = (item: TenantMobileDockItem) => {
-    mobileDockSelectionPinnedRef.current = true;
-    setMobileDockActiveItem(item);
-    const targetId = tenantMobileDockTarget(item);
-    if (!targetId) return;
-    const target = document.getElementById(targetId);
-    if (!target) return;
-    target.scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-      block: 'start'
-    });
-    const focusTarget = target.matches('[data-tenant-nav-focus]')
-      ? target
-      : target.querySelector<HTMLElement>('[data-tenant-nav-focus]');
-    focusTarget?.focus({ preventScroll: true });
+    if (item === 'filters') { quickRefineOpenRef.current?.(); return; }
+    const hash = item === 'visits' ? '#visit-history' : item === 'saved' ? '#saved-homes-title' : '#tenant-home-search';
+    if (location.hash !== hash) navigate(`${location.pathname}${location.search}${hash}`);
+    else window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const clearTenantSearch = () => {
@@ -1522,75 +1159,106 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     <div className="tenant-shell-main relative min-w-0">
     {previewPropertyId === null && !quickRefineSheetOpen && <TenantNavigationRail
       activeItem={mobileDockActiveItem}
-      quickRefineOpen={quickRefineSheetOpen}
       onNavigate={navigateMobileDock}
-      onOpenFilters={() => {
-        setMobileDockActiveItem('filters');
-        quickRefineOpenRef.current?.();
-      }}
+      hasLessorCapability={hasLessorCapability}
+      savedCount={savedCount}
+      onOpenLessor={onOpenLessor}
+      onOpenAccount={() => navigate(`${location.pathname}${location.search}#account`)}
+      accountName={user.fullName || ''}
     />}
-    <main aria-hidden={previewPropertyId !== null} className="relative -mt-[calc(72px+env(safe-area-inset-top))] min-w-0 bg-[#f7f7f2] pb-[calc(7.25rem+env(safe-area-inset-bottom))] text-slate-950 lg:pb-16 lg:pl-[226px] min-[1101px]:pl-[258px]">
-      <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className={`relative z-20 isolate flex min-w-0 scroll-mt-[calc(72px+env(safe-area-inset-top))] flex-col overflow-visible bg-[#f8f7f4] text-[#252b25] outline-none ${stickySearchMode !== 'hero' ? 'z-[90]' : ''}`}>
-
-        <div className="relative mx-auto flex w-full max-w-[1440px] flex-col px-4 pb-4 pt-[calc(84px+env(safe-area-inset-top))] sm:px-6 sm:pb-5 sm:pt-[calc(88px+env(safe-area-inset-top))] lg:px-8 lg:pb-6 lg:pt-[calc(92px+env(safe-area-inset-top))]">
-          <div className="order-1 relative z-10 mb-5 max-w-[56rem]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#638267] sm:text-xs">Your home search</p>
-            <h1 data-tenant-nav-focus tabIndex={-1} className="mt-2 max-w-[55rem] break-words font-serif text-[clamp(2.25rem,5vw,3.25rem)] font-normal leading-[1.05] tracking-[-0.045em] text-[#252b25] focus:outline-none">
-              {firstName ? <><span className="block">Find your place,</span><span className="block text-[#355c49]">{firstName}.</span></> : <span className="block">Find your place.</span>}
-            </h1>
-            <p className="mt-2 max-w-[32rem] text-sm leading-6 text-[#61715d] sm:text-[15px]">Explore homes that fit. See the details, then request a visit when one feels right.</p>
+    <main aria-hidden={previewPropertyId !== null} className="tenant-v0-main min-w-0 bg-[#f8f7f4] pb-[calc(5rem+env(safe-area-inset-bottom))] text-[#252b25]">
+      {tenantView === 'home' && <section id="tenant-home-search" tabIndex={-1} aria-label="Tenant home search" className="tenant-v0-search-hero relative z-20 min-w-0 scroll-mt-20 bg-[#f8f7f4] text-[#252b25] outline-none">
+        <div className="tenant-v0-hero-inner">
+          <div className="tenant-v0-welcome-row">
+            <div>
+              <p className="tenant-v0-eyebrow"><span aria-hidden="true" />A LITTLE MORE LIKE HOME</p>
+              <h1 data-tenant-nav-focus tabIndex={-1}>Find a place<br className="tenant-v0-title-break" /> to <em>belong.</em></h1>
+              <p className="tenant-v0-intro">Good homes. Clear next steps. A move that feels like yours.</p>
+            </div>
+            <aside className="tenant-v0-welcome-aside"><span><Sparkles size={18} aria-hidden="true" /></span><p>Thoughtful homes,<br /><strong>for your next chapter.</strong></p></aside>
           </div>
-
-          <div role="group" aria-label="Quick filters" className="order-3 mt-3 hidden max-w-[58rem] gap-2 lg:flex lg:flex-wrap lg:overflow-visible">
-            {renderHeroQuickFilterControls()}
+          <div className="tenant-v0-search-panel" aria-label="Find a home">
+            <div id="tenant-search-placeholder" className="tenant-v0-search-context relative z-40 min-w-0">
+              <CompactSearchContext appearance="tenant-hero" alwaysEditing stickyMode="hero" hideSubmitButton externalSubmitRef={submitSearchRef}
+                searchPlaceholder="Neighbourhood or city" city={discoveryCity} filters={searchFilters}
+                onSearch={handleSmartSearch}
+                onManualCityChange={city => applySmartSearch(resetFiltersForManualCityChange(city))}
+                onClearAll={clearTenantSearch} />
+            </div>
+            <label className="tenant-v0-home-type"><span>HOME TYPE</span><select value={searchFilters.propertyType || ''}
+              onChange={event => onSearchHomes({ ...searchFilters, propertyType: event.target.value ? event.target.value as RentalPropertyType : undefined })}>
+              <option value="">Any home</option>
+              {QUICK_REFINE_PROPERTY_TYPES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select></label>
+            <button type="button" id="tenant-v0-filter-trigger" className="tenant-v0-filter-button" aria-haspopup="dialog" aria-expanded={quickRefineSheetOpen}
+              onClick={() => quickRefineOpenRef.current?.()}><SlidersHorizontal size={17} aria-hidden="true" />Filters{mobileDockBadges.filterCount ? ` · ${mobileDockBadges.filterCount}` : ''}</button>
+            <button type="button" className="tenant-v0-search-submit" onClick={() => submitSearchRef.current?.()}><Search size={17} aria-hidden="true" />Find homes</button>
           </div>
-
-          <div aria-label="Pathome product highlights" className="order-4 mt-4 hidden max-w-[58rem] grid-cols-3 gap-6 border-t border-[#e9e7e1] pt-4 lg:grid">
-            {[
-              { icon: HomeIcon, title: 'Clear details', copy: 'Property information in one place' },
-              { icon: MapPin, title: 'Location-led search', copy: 'Find homes by city and locality' },
-              { icon: CalendarDays, title: 'Visit requests', copy: 'Request a visit when a home fits' }
-            ].map(({ icon: Icon, title, copy }) => <div key={title} className="flex min-w-0 items-start gap-3 text-[#61715d]">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#e9e7e1] bg-white text-[#638267]"><Icon size={17} aria-hidden="true" /></span>
-              <span className="min-w-0 pt-0.5"><span className="block text-xs font-semibold leading-4">{title}</span><span className="mt-0.5 block max-w-[12rem] text-[11px] leading-4 text-[#85877f]">{copy}</span></span>
-            </div>)}
-          </div>
-
-          <div id="tenant-search-placeholder" className="relative z-40 order-2 mt-0 w-full min-w-0 pt-0 lg:w-[min(58rem,100%)] lg:max-w-full">
-            <CompactSearchContext appearance="tenant-hero" alwaysEditing stickyMode={stickySearchMode} beaconTop={searchBeaconTop}
-              searchMorphActive={searchMorphActive} beaconAcknowledgement={beaconAcknowledgement}
-              heroRevealVersion={heroSearchRevealVersion}
-              searchPlaceholder="Search locality, landmark, or property type" city={discoveryCity} filters={searchFilters}
-              onInteraction={recordSearchInteraction} onEngagementChange={reportSearchEngagement} onBeaconExpand={expandSearchBeacon}
-              onSearch={handleSmartSearch}
-              onManualCityChange={city => applySmartSearch(resetFiltersForManualCityChange(city))}
-              onClearAll={clearTenantSearch} />
-          </div>
-
-          <div role="group" aria-label="Quick filters" className="order-3 mt-3 flex w-full min-w-0 gap-2 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:hidden">
-            {renderHeroQuickFilterControls(true)}
-          </div>
-
-          <div aria-label="Pathome promise" className="order-4 mt-3 grid w-full max-w-[58rem] grid-cols-3 items-center gap-1 border-t border-[#e9e7e1] pt-3 lg:hidden">
-            {[
-              { icon: HomeIcon, title: 'Clear details' },
-              { icon: MapPin, title: 'Location-led search' },
-              { icon: CalendarDays, title: 'Visit requests' }
-            ].map(({ icon: Icon, title }) => <div key={title} className="flex min-w-0 flex-col items-center gap-1 text-center text-[#61715d]">
-              <Icon size={16} strokeWidth={1.8} className="shrink-0 text-[#638267]" aria-hidden="true" />
-              <span className="max-w-full text-[9px] font-medium leading-[1.15] tracking-[-0.01em] sm:text-[10px]">{title}</span>
-            </div>)}
-          </div>
+          <div className="tenant-v0-quick-refine" role="group" aria-label="Quick refine"><span>QUICK REFINE</span>{renderHeroQuickFilterControls()}</div>
         </div>
+      </section>}
 
-      </section>
-
-      <div className="relative z-0 mx-auto w-full max-w-[1440px] min-w-0 px-4 pt-6 sm:px-6 sm:pt-7 lg:px-8 lg:pt-8">
-
-        <section aria-labelledby="saved-homes-title" className="mb-7 mt-5 min-w-0 sm:mb-8 sm:mt-6">
+      <div className="tenant-v0-page mx-auto w-full min-w-0">
+        {tenantView === 'home' && <>
+        <section className="tenant-v0-reassurance" aria-label="What to expect">
+          <span className="tenant-v0-reassurance-icon"><ShieldCheck size={20} aria-hidden="true" /></span>
+          <span><strong>A little more peace of mind.</strong><small>Explore real homes, then request a visit when one feels right.</small></span>
+          <button type="button" onClick={() => navigateMobileDock('visits')}>How visits work <ArrowRight size={15} aria-hidden="true" /></button>
+        </section>
+        <div className="tenant-v0-discovery">
+          <section id="discover-homes" aria-labelledby="discover-homes-title" className="min-w-0 scroll-mt-20">
+            <div className="tenant-v0-section-heading mb-4"><p className="tenant-v0-eyebrow">A GOOD PLACE TO START</p>
+              <h2 id="discover-homes-title" tabIndex={-1} className="scroll-mt-20 focus:outline-none">Homes worth a closer look</h2>
+              <p className="mt-1 text-sm text-slate-600">Browse current listings and request a visit when you find a fit.</p>
+              <button type="button" onClick={() => navigateMobileDock('saved')} className="tenant-v0-saved-entry">Your saved homes <ArrowRight size={15} aria-hidden="true" /></button>
+            </div>
+            <TenantQuickRefineMobile filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
+              discoveryLoadedKey={discoveryLoadedKey} homesLoaded={properties.length} rentBounds={quickRefineRentBounds}
+              onSearchHomes={onSearchHomes} openRequestRef={quickRefineOpenRef} onSheetOpenChange={reportQuickRefineSheetOpen} />
+            {(favoriteState.status === 'error' || favoriteState.lookupError) && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3" role="alert"><p className="text-sm text-amber-950">Saved property status could not be loaded.</p><button type="button" onClick={() => setFavoriteReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-bold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button></div>}
+            {favoriteActionError && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3" role="alert"><p className="text-sm text-rose-900">{favoriteActionError}</p><button type="button" onClick={() => setFavoriteActionError(null)} aria-label="Dismiss saved property message" className={`flex h-11 w-11 items-center justify-center rounded-lg text-rose-900 hover:bg-rose-100 ${focusClass}`}><X size={16} aria-hidden="true" /></button></div>}
+            {discoveryState === 'LOADING' && <div className="grid gap-4 sm:grid-cols-2" role="status" aria-label="Loading available homes">
+              {[0, 1, 2].map(index => <div key={index} className="overflow-hidden rounded-[26px] border border-slate-200 bg-white"><div className="aspect-[16/10] bg-slate-200 motion-safe:animate-pulse" /><div className="p-5"><div className="h-5 w-3/4 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /><div className="mt-6 h-11 rounded-xl bg-slate-100 motion-safe:animate-pulse" /></div></div>)}
+            </div>}
+            {discoveryState === 'ERROR' && <div className="rounded-[26px] border border-slate-200 bg-white p-6 shadow-sm" role="alert"><p className="text-sm text-slate-700">Available homes could not be loaded right now.</p><button type="button" onClick={onRetryDiscovery} className={`mt-4 min-h-11 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 ${focusClass}`}>Retry</button></div>}
+            {discoveryState === 'READY' && properties.length === 0 && <div className="flex min-w-0 items-start gap-4 rounded-[24px] border border-[#e1e5dc] bg-white p-5 shadow-sm sm:p-6">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#eff5ef] text-emerald-800"><Search size={22} aria-hidden="true" /></span>
+              <div className="min-w-0"><p className="font-['Outfit'] text-lg font-semibold text-slate-950">No homes match your search.</p>
+                <p className="mt-1 text-sm leading-5 text-slate-600">Try another city, locality, or property type.</p>
+                <a href="#tenant-home-search" className={`mt-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-emerald-800 underline-offset-4 hover:underline ${focusClass}`}>Adjust search <ArrowRight size={15} aria-hidden="true" /></a>
+              </div>
+            </div>}
+            {discoveryState === 'READY' && availableProperties.length > 0 && <div className="tenant-v0-home-grid grid min-w-0 grid-cols-2 gap-4 min-[821px]:grid-cols-3">
+              {availableProperties.map((property, index) => {
+                const favoriteStateReady = favoriteIsReadyFor(property.id);
+                return <SupportingPropertyCard key={property.id} property={property} visitRequestStatus={requestStatusForProperty(property.id)} onRequestVisit={handleTenantRequestVisit}
+                  onOpenQuickView={openQuickView} isFavorite={isPropertySaved(property.id)}
+                  favoriteStateReady={favoriteStateReady} favoritePending={isFavoritePending(property.id)}
+                  onToggleFavorite={toggleFavorite} revealIndex={index} reduceMotion={reduceMotion} />;
+              })}
+            </div>}
+            {discoveryState === 'READY' && hasMoreProperties && <div className="mt-8 flex flex-col items-center text-center">
+              <button type="button" onClick={onLoadMoreProperties} disabled={loadingMoreProperties} aria-busy={loadingMoreProperties}
+                className={`group inline-flex h-12 w-full max-w-[19rem] items-center gap-2 rounded-full border border-emerald-950/10 bg-gradient-to-r from-[#fffefa] via-white to-[#f2f8f2] px-3 text-sm font-semibold text-slate-800 shadow-[0_8px_22px_-16px_rgba(6,78,59,0.5),inset_0_1px_0_rgba(255,255,255,0.9)] transition-[transform,box-shadow,border-color] duration-[240ms] ease-out hover:-translate-y-0.5 hover:border-emerald-800/25 hover:shadow-[0_12px_26px_-15px_rgba(6,78,59,0.45),inset_0_1px_0_rgba(255,255,255,0.95)] active:translate-y-0 active:scale-[0.99] disabled:cursor-wait disabled:opacity-75 disabled:hover:translate-y-0 ${focusClass} motion-reduce:transform-none motion-reduce:transition-none`}>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-800 ring-1 ring-emerald-900/5" aria-hidden="true">
+                  {loadingMoreProperties ? <RefreshCw size={16} className="motion-safe:animate-spin" /> : <HomeIcon size={16} />}
+                </span>
+                <span className="min-w-0 flex-1 whitespace-nowrap">{loadingMoreProperties ? 'Loading more homes…' : 'Load more homes'}</span>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-emerald-800" aria-hidden="true">
+                  <ArrowRight size={17} className="transition-transform duration-200 group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5 motion-reduce:transition-none" />
+                </span>
+              </button>
+              {loadMorePropertiesError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more homes. Please try again.</p>}
+            </div>}
+          </section>
+        </div>
+        </>}
+        {tenantView === 'saved' && <div className="tenant-v0-saved">
+        <section aria-labelledby="saved-homes-title" className="min-w-0">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
-            <div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-800">Keep close</p>
-              <h2 id="saved-homes-title" data-tenant-nav-focus tabIndex={-1} className="mt-0.5 scroll-mt-24 font-serif text-xl font-medium tracking-tight focus:outline-none">Saved homes</h2>
+            <div><p className="tenant-v0-eyebrow">YOUR SHORTLIST</p>
+              <h1 id="saved-homes-title" data-tenant-nav-focus tabIndex={-1} className="tenant-v0-page-title mt-2 scroll-mt-24 focus:outline-none">The ones you <em>kept.</em></h1>
+              <p className="tenant-v0-intro">Your saved homes, all in one place. Take your time.</p>
             </div>
             {visibleSavedHomes.length > 0 && <p className="text-xs text-slate-500">A small collection, kept in one place</p>}
           </div>
@@ -1601,73 +1269,42 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
           </div>}
 
           {savedHomesIdentityMatches && savedHomesState.status === 'loading' && visibleSavedHomes.length === 0 && <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3" role="status" aria-label="Loading saved homes">
-            {Array.from({ length: Math.min(savedHomesVisibleLimit, 2) }, (_, index) => index).map(index => <div key={index} className="aspect-[1.48] rounded-[10px] border border-[#e9e7e1] bg-white motion-safe:animate-pulse" />)}
+            {[0, 1].map(index => <div key={index} className="aspect-[1.48] rounded-[10px] border border-[#e9e7e1] bg-white motion-safe:animate-pulse" />)}
           </div>}
 
-          {savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.length === 0 && <div className="flex min-h-[4.25rem] items-center gap-3 rounded-2xl border border-[#e7eae3] bg-white/70 px-4 py-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#edf4ee] text-emerald-800"><Heart size={19} aria-hidden="true" /></span>
-            <div className="min-w-0"><p className="text-sm font-semibold text-slate-900">Save a home for later</p><p className="mt-0.5 text-sm text-slate-600">Heart homes you like and they’ll appear here.</p></div>
+          {savedHomesIdentityMatches && savedHomesState.status === 'ready' && visibleSavedHomes.length === 0 && <div className="tenant-v0-saved-empty" role="status">
+            <span><Heart size={22} aria-hidden="true" /></span>
+            <h2>A little room for possibility.</h2>
+            <p>When a home catches your eye, save it here and come back when you’re ready.</p>
+            <button type="button" onClick={() => navigateMobileDock('home')}>Explore homes <ArrowRight size={16} aria-hidden="true" /></button>
           </div>}
 
           {visibleSavedHomes.length > 0 && <motion.div id="tenant-saved-home-grid" layout={!reduceMotion}
-            className={`grid min-w-0 gap-3 ${savedHomesExpanded ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3' : hasSavedHomesStack ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(9rem,.58fr)]' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3'}`}
+            className="tenant-v0-home-grid grid min-w-0 grid-cols-2 gap-3 min-[821px]:grid-cols-3"
             aria-label="Your saved homes">
-            <AnimatePresence initial={false}>
-              {presentedSavedHomes.map((property, index) => <motion.div key={property.id} layout={!reduceMotion}
+              {visibleSavedHomes.map((property, index) => <motion.div key={property.id} layout={!reduceMotion}
                 initial={reduceMotion ? false : { opacity: 0, y: 9 }} animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? undefined : { opacity: 0, y: -5 }}
                 transition={reduceMotion ? { duration: 0 } : { duration: 0.3, delay: Math.min(index, 5) * 0.055, ease: [0.16, 1, 0.3, 1] }}>
                 <SavedHomeCard property={property} visitRequestStatus={requestStatusForProperty(property.id)} isFavorite={isPropertySaved(property.id)} favoriteStateReady={favoriteIsReadyFor(property.id)}
                   favoritePending={isFavoritePending(property.id)} onToggleFavorite={toggleFavorite}
                   onOpenQuickView={openQuickView} onRequestVisit={handleTenantRequestVisit} />
               </motion.div>)}
-              {!savedHomesExpanded && hasSavedHomesStack && <motion.div key="saved-stack" layout={!reduceMotion}
-                initial={reduceMotion ? false : { opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.98 }}
-                transition={reduceMotion ? { duration: 0 } : { duration: 0.3, ease: [0.16, 1, 0.3, 1] }}>
-                <SavedStackCard properties={[...additionalSavedHomes, ...visibleSavedHomes]}
-                  additionalCount={additionalSavedHomes.length} hasMorePages={Boolean(savedHomesState.hasMore)} expanded={false}
-                  onExpand={() => setSavedHomesExpanded(true)} />
-              </motion.div>}
-            </AnimatePresence>
           </motion.div>}
 
-          {visibleSavedHomes.length > 0 && savedHomesExpanded && <div className="mt-2 flex justify-end">
-            <button type="button" onClick={() => setSavedHomesExpanded(false)} aria-controls="tenant-saved-home-grid" aria-expanded="true" className={`inline-flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-50 ${focusClass}`}>Show less <ChevronLeft size={15} aria-hidden="true" className="-rotate-90" /></button>
-          </div>}
-
-          {savedHomesIdentityMatches && savedHomesState.status === 'ready' && savedHomesState.hasMore && (savedHomesExpanded || visibleSavedHomes.length === 0) && <div className="mt-1 text-right">
+          {savedHomesIdentityMatches && savedHomesState.status === 'ready' && savedHomesState.hasMore && <div className="mt-1 text-right">
             <button type="button" onClick={loadMoreSavedHomes} disabled={savedHomesState.loadingMore} className={`inline-flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>
               {savedHomesState.loadingMore ? <><RefreshCw size={15} className="motion-safe:animate-spin" aria-hidden="true" />Loading saved homes…</> : 'Show more saved homes'}
             </button>
           </div>}
         </section>
-
-        <div className="mt-6 grid min-w-0 gap-7 sm:mt-7 lg:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)] lg:items-start lg:gap-6 xl:gap-7">
-          <div style={{ '--tenant-discovery-rail-top': tenantDiscoveryRailTop } as React.CSSProperties}
-            className={`tenant-discovery-rail ${view === 'populated' ? 'order-1' : 'order-2'} min-w-0 lg:order-1`}>
-          <span id="tenant-discovery-collision-sentinel" aria-hidden="true" className="pointer-events-none absolute left-0 top-0 h-px w-px" />
-          {actionRequiredVisits.length > 0 && !visitHistoryOpen && <section aria-labelledby="tenant-visit-action-summary-title" className="mb-3 flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
-            <div className="min-w-0"><h2 id="tenant-visit-action-summary-title" className="text-sm font-semibold text-amber-950">Action Required</h2>
-              <p className="mt-0.5 text-sm leading-5 text-amber-950">{actionRequiredVisits.length === 1 ? 'A visit needs your response.' : `${actionRequiredVisits.length} visits need your response.`}</p></div>
-            <button type="button" onClick={() => navigateMobileDock('visits')} className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-amber-950 underline underline-offset-2 hover:bg-amber-100 ${focusClass}`}>Review visits <ArrowRight size={15} aria-hidden="true" /></button>
-          </section>}
-          <details ref={visitHistoryDetailsRef} id="visit-history" onToggle={() => setVisitHistoryOpen(Boolean(visitHistoryDetailsRef.current?.open))}
-            className="group min-w-0 overflow-hidden rounded-[18px] border border-[#e3e5dc] bg-gradient-to-br from-[#fffefa] to-[#f5f8f1] shadow-[0_8px_24px_-21px_rgba(15,45,34,.5)]">
-            <summary className={`flex min-h-[68px] cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 marker:hidden [&::-webkit-details-marker]:hidden ${focusClass}`}>
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#d8e7dd] bg-[#edf5ef] text-emerald-800"><CalendarDays size={19} aria-hidden="true" /></span>
-              <div className="min-w-0 flex-1">
-                <h2 id="visit-history-title" data-tenant-nav-focus tabIndex={-1} onFocus={() => {
-                  const details = visitHistoryDetailsRef.current;
-                  if (details && !details.open) {
-                    details.open = true;
-                    setVisitHistoryOpen(true);
-                  }
-                }} className="scroll-mt-24 font-['Outfit'] text-sm font-semibold text-slate-950 focus:outline-none">My Visits</h2>
-                <p className="mt-0.5 truncate text-xs text-slate-600">{visitHistorySummary}</p>
-              </div>
-              <ChevronRight size={17} className="shrink-0 text-emerald-800 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
-            </summary>
-            <div className="space-y-3 border-t border-emerald-950/10 p-3">
-            {actionRequiredVisits.length > 0 && visitHistoryOpen && <section aria-labelledby="tenant-visit-action-title" className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3.5">
+        </div>}
+        {tenantView === 'visits' && <section className="tenant-v0-visits" aria-labelledby="tenant-visits-page-title">
+          <p className="tenant-v0-eyebrow">THE NEXT STEP, AT YOUR PACE</p>
+          <h1 id="tenant-visits-page-title" data-tenant-nav-focus tabIndex={-1} className="tenant-v0-page-title focus:outline-none">A look around, <em>soon.</em></h1>
+          <p className="tenant-v0-intro">Visit requests and confirmed sessions, kept clear and separate.</p>
+          <div id="visit-history" className="tenant-v0-visits-content min-w-0 space-y-4">
+            <p className="tenant-v0-visit-summary">{visitHistorySummary}</p>
+            {actionRequiredVisits.length > 0 && <section aria-labelledby="tenant-visit-action-title" className="rounded-[9px] border border-amber-300 bg-amber-50 px-4 py-3.5">
               <h3 id="tenant-visit-action-title" className="font-['Outfit'] text-sm font-semibold text-amber-950">Action Required</h3>
               <p className="mt-1 text-sm leading-5 text-amber-950">{actionRequiredVisits.length === 1 ? 'A visit needs your response.' : `${actionRequiredVisits.length} visits need your response.`}</p>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -1710,7 +1347,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                       const open = event.currentTarget.open;
                       setVisitSessionOpenState(current => current[visit.sessionId] === open
                         ? current : { ...current, [visit.sessionId]: open });
-                    }} className="group min-w-0 rounded-xl border border-emerald-100 bg-white shadow-sm">
+                    }} className="tenant-v0-session-card group min-w-0 rounded-xl border border-emerald-100 bg-white shadow-sm">
                   <summary className={`flex min-h-11 min-w-0 cursor-pointer items-center gap-2 p-3 ${focusClass}`}>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -1727,7 +1364,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                     const locality = [outcome?.locality, outcome?.city].map(readText).filter(Boolean).join(', ');
                     return locality ? <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-600"><MapPin size={15} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{locality}</span></p> : null;
                   })()}
-                  {outcome?.outcomeReportAvailable && <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                  {outcome?.outcomeReportAvailable && <div className="tenant-v0-outcome-panel mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-semibold text-slate-900">Visit outcomes</p>
                       {outcome.outcomeSummary && <span className="text-xs font-semibold text-emerald-900">{tenantOutcomeSummaryLabel(outcome.outcomeSummary)}</span>}
@@ -1761,7 +1398,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                   </div>}
                   {visit.status === 'PROVISIONAL_NO_SHOW' && <button type="button" disabled={isPending} onClick={() => void confirmVisitChange(visit.sessionId, 'DISPUTE_NO_SHOW', visit.version)} className={`mt-3 min-h-11 rounded-xl border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-60 ${focusClass}`}>Dispute provisional no-show</button>}
                   {visit.status === 'SCHEDULED' && !needsTenantConfirmation && visit.repairState === 'NONE' && <div className="mt-3">
-                    {code ? <div className="rounded-2xl border border-emerald-200 bg-[#eef5ec] p-4" role="status" aria-live="polite">
+                    {code ? <div className="tenant-v0-pass-panel rounded-2xl border border-emerald-200 bg-[#eef5ec] p-4" role="status" aria-live="polite">
                       <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-900">Your Visit Pass</p>
                       {codeExpired ? <p className="mt-2 text-sm font-semibold text-slate-900">This code has expired. Request a fresh code when you’re with your Ground Executive.</p>
                         : <><p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em] text-emerald-950 sm:text-4xl" aria-label="Visit start code">{code.code}</p><p className="mt-2 text-xs font-medium text-emerald-950">{secondsRemaining === null ? `Expires ${formatVisitTime(code.expiresAt)}` : `Expires in ${String(Math.floor(secondsRemaining / 60)).padStart(2, '0')}:${String(secondsRemaining % 60).padStart(2, '0')}`}</p></>}
@@ -1801,7 +1438,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
             {view === 'empty' && visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && visibleTenantOutcomeHistory.status === 'ready' && visibleTenantOutcomeHistory.sessions.length === 0 && <div className="py-1" role="status" aria-live="polite">
               <div className="relative min-w-0"><h3 className="font-['Outfit'] text-sm font-semibold tracking-tight">No visits yet</h3>
                 <p className="mt-1 text-xs leading-5 text-slate-600">Request a visit from a property to track it here.</p>
-                <a href="#discover-homes" className={`mt-1 inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 ${focusClass}`}>Explore homes <ArrowRight size={14} aria-hidden="true" /></a>
+                <button type="button" onClick={() => navigateMobileDock('home')} className={`mt-1 inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 ${focusClass}`}>Explore homes <ArrowRight size={14} aria-hidden="true" /></button>
               </div>
             </div>}
 
@@ -1826,102 +1463,58 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
 
             {view === 'populated' && visibleHistory.hasMore && <div className="text-center"><button type="button" onClick={loadMore} disabled={loadMorePending} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-6 text-sm font-semibold text-slate-800 transition-colors hover:border-emerald-700 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>{loadMorePending ? <><RefreshCw size={15} className="mr-2 inline motion-safe:animate-spin" aria-hidden="true" />Loading more…</> : 'Load more requests'}</button>
               {loadMoreError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more requests. Please try again.</p>}</div>}
-            </div>
-          </details>
-          <TenantQuickRefinePanel filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
-            discoveryLoadedKey={discoveryLoadedKey} homesLoaded={properties.length} rentBounds={quickRefineRentBounds}
-            onSearchHomes={onSearchHomes} />
           </div>
-
-          <section id="discover-homes" aria-labelledby="discover-homes-title" className={`${view === 'populated' ? 'order-2' : 'order-1'} min-w-0 scroll-mt-[calc(80px+env(safe-area-inset-top)+4.5rem)] lg:order-2`}>
-            <div className="mb-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">Keep exploring</p>
-              <h2 id="discover-homes-title" tabIndex={-1} className="mt-1 scroll-mt-[calc(80px+env(safe-area-inset-top)+4.5rem)] font-serif text-2xl font-medium tracking-tight focus:outline-none">Available homes</h2>
-              <p className="mt-1 text-sm text-slate-600">Browse current listings and request a visit when you find a fit.</p>
-            </div>
-            <TenantQuickRefineMobile filters={searchFilters} discoveryCity={discoveryCity} discoveryState={discoveryState}
-              discoveryLoadedKey={discoveryLoadedKey} homesLoaded={properties.length} rentBounds={quickRefineRentBounds}
-              onSearchHomes={onSearchHomes} openRequestRef={quickRefineOpenRef} onSheetOpenChange={reportQuickRefineSheetOpen} />
-            {(favoriteState.status === 'error' || favoriteState.lookupError) && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3" role="alert"><p className="text-sm text-amber-950">Saved property status could not be loaded.</p><button type="button" onClick={() => setFavoriteReload(value => value + 1)} className={`min-h-11 rounded-lg px-3 text-sm font-bold text-emerald-900 underline underline-offset-2 ${focusClass}`}>Retry</button></div>}
-            {favoriteActionError && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3" role="alert"><p className="text-sm text-rose-900">{favoriteActionError}</p><button type="button" onClick={() => setFavoriteActionError(null)} aria-label="Dismiss saved property message" className={`flex h-11 w-11 items-center justify-center rounded-lg text-rose-900 hover:bg-rose-100 ${focusClass}`}><X size={16} aria-hidden="true" /></button></div>}
-            {discoveryState === 'LOADING' && <div className="grid gap-4 sm:grid-cols-2" role="status" aria-label="Loading available homes">
-              {[0, 1, 2].map(index => <div key={index} className="overflow-hidden rounded-[26px] border border-slate-200 bg-white"><div className="aspect-[16/10] bg-slate-200 motion-safe:animate-pulse" /><div className="p-5"><div className="h-5 w-3/4 rounded bg-slate-200 motion-safe:animate-pulse" /><div className="mt-3 h-4 w-1/2 rounded bg-slate-100 motion-safe:animate-pulse" /><div className="mt-6 h-11 rounded-xl bg-slate-100 motion-safe:animate-pulse" /></div></div>)}
-            </div>}
-            {discoveryState === 'ERROR' && <div className="rounded-[26px] border border-slate-200 bg-white p-6 shadow-sm" role="alert"><p className="text-sm text-slate-700">Available homes could not be loaded right now.</p><button type="button" onClick={onRetryDiscovery} className={`mt-4 min-h-11 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 ${focusClass}`}>Retry</button></div>}
-            {discoveryState === 'READY' && properties.length === 0 && <div className="flex min-w-0 items-start gap-4 rounded-[24px] border border-[#e1e5dc] bg-white p-5 shadow-sm sm:p-6">
-              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#eff5ef] text-emerald-800"><Search size={22} aria-hidden="true" /></span>
-              <div className="min-w-0"><p className="font-['Outfit'] text-lg font-semibold text-slate-950">No homes match your search.</p>
-                <p className="mt-1 text-sm leading-5 text-slate-600">Try another city, locality, or property type.</p>
-                <a href="#tenant-home-search" className={`mt-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-emerald-800 underline-offset-4 hover:underline ${focusClass}`}>Adjust search <ArrowRight size={15} aria-hidden="true" /></a>
+        </section>}
+        {tenantView === 'account' && <section className="tenant-v0-account" aria-labelledby="tenant-account-title">
+          <p className="tenant-v0-eyebrow"><span aria-hidden="true" />YOUR PATHOME ACCOUNT</p>
+          <h1 id="tenant-account-title" data-tenant-nav-focus tabIndex={-1} className="tenant-v0-page-title">Make yourself <em>at home.</em></h1>
+          <p className="tenant-v0-intro">Your profile and the things that make Pathome yours.</p>
+          <div className="tenant-v0-profile-layout">
+            <section className="tenant-v0-profile-card" aria-label="Your profile">
+              <div className="tenant-v0-profile-cover">
+                <span className="tenant-v0-profile-avatar" aria-hidden="true">{user.fullName?.trim().charAt(0).toUpperCase() || 'T'}</span>
+                <div><h2>{user.fullName?.trim() || 'Your account'}</h2><p>Tenant account</p></div>
               </div>
-            </div>}
-            {discoveryState === 'READY' && properties.length > 0 && availableProperties.length === 0 && <p className="rounded-2xl border border-[#e7eae3] bg-white/70 px-4 py-3 text-sm text-slate-600">Homes you’ve saved from this search are shown above.</p>}
-            {discoveryState === 'READY' && availableProperties.length > 0 && <div className="grid min-w-0 gap-4 sm:grid-cols-2 min-[1400px]:grid-cols-3">
-              {availableProperties.map((property, index) => {
-                const favoriteStateReady = favoriteIsReadyFor(property.id);
-                return <SupportingPropertyCard key={property.id} property={property} visitRequestStatus={requestStatusForProperty(property.id)} onRequestVisit={handleTenantRequestVisit}
-                  onOpenQuickView={openQuickView} isFavorite={isPropertySaved(property.id)}
-                  favoriteStateReady={favoriteStateReady} favoritePending={isFavoritePending(property.id)}
-                  onToggleFavorite={toggleFavorite} revealIndex={index} reduceMotion={reduceMotion} />;
-              })}
-            </div>}
-            {discoveryState === 'READY' && hasMoreProperties && <div className="mt-8 flex flex-col items-center text-center">
-              <button type="button" onClick={onLoadMoreProperties} disabled={loadingMoreProperties} aria-busy={loadingMoreProperties}
-                className={`group inline-flex h-12 w-full max-w-[19rem] items-center gap-2 rounded-full border border-emerald-950/10 bg-gradient-to-r from-[#fffefa] via-white to-[#f2f8f2] px-3 text-sm font-semibold text-slate-800 shadow-[0_8px_22px_-16px_rgba(6,78,59,0.5),inset_0_1px_0_rgba(255,255,255,0.9)] transition-[transform,box-shadow,border-color] duration-[240ms] ease-out hover:-translate-y-0.5 hover:border-emerald-800/25 hover:shadow-[0_12px_26px_-15px_rgba(6,78,59,0.45),inset_0_1px_0_rgba(255,255,255,0.95)] active:translate-y-0 active:scale-[0.99] disabled:cursor-wait disabled:opacity-75 disabled:hover:translate-y-0 ${focusClass} motion-reduce:transform-none motion-reduce:transition-none`}>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-800 ring-1 ring-emerald-900/5" aria-hidden="true">
-                  {loadingMoreProperties ? <RefreshCw size={16} className="motion-safe:animate-spin" /> : <HomeIcon size={16} />}
-                </span>
-                <span className="min-w-0 flex-1 whitespace-nowrap">{loadingMoreProperties ? 'Loading more homes…' : 'Load more homes'}</span>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-emerald-800" aria-hidden="true">
-                  <ArrowRight size={17} className="transition-transform duration-200 group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5 motion-reduce:transition-none" />
-                </span>
-              </button>
-              {loadMorePropertiesError && <p role="alert" className="mt-2 text-sm text-rose-700">Could not load more homes. Please try again.</p>}
-            </div>}
-          </section>
-        </div>
+              <div className="tenant-v0-profile-fields">
+                {user.email?.trim() && <div><span>EMAIL ADDRESS</span><strong className="break-all">{user.email}</strong></div>}
+                <div><span>CAPABILITIES ON THIS ACCOUNT</span><strong>{hasLessorCapability === true ? 'Tenant + lessor' : hasLessorCapability === false ? 'Tenant' : hasLessorCapability === 'error' ? 'Property access unavailable' : 'Checking account access…'}</strong></div>
+              </div>
+              {hasLessorCapability === 'error' && <div className="tenant-v0-profile-capability-error" role="alert">Property access could not be checked. <button type="button" onClick={() => window.dispatchEvent(new Event('pathome_auth_changed'))}>Try again</button></div>}
+              <div className="tenant-v0-profile-actions">
+                {hasLessorCapability !== 'error' && <button type="button" onClick={onOpenLessor} className="tenant-v0-profile-outline">{hasLessorCapability === true ? 'Your listings' : 'List your home'} <ArrowRight size={15} aria-hidden="true" /></button>}
+              </div>
+            </section>
+            <aside className="tenant-v0-profile-security">
+              <p className="tenant-v0-eyebrow">ACCOUNT &amp; SECURITY</p>
+              <h2>Keep your account yours.</h2>
+              <p>Sign out when you finish using a shared device.</p>
+              <button type="button" onClick={onLogout}><LogOut size={16} aria-hidden="true" />Log out <ArrowRight size={15} aria-hidden="true" /></button>
+            </aside>
+          </div>
+        </section>}
+        {tenantView === 'notifications' && <section className="tenant-v0-notifications-section" aria-labelledby="tenant-notifications-title">
+          <p className="tenant-v0-eyebrow"><span aria-hidden="true" />KEEPING YOU IN THE LOOP</p>
+          <h1 id="tenant-notifications-title" tabIndex={-1} className="tenant-v0-page-title">A little <em>update.</em></h1>
+          <p className="tenant-v0-intro">Relevant changes to your visits, homes and account.</p>
+          <div id="tenant-notifications-root" className="tenant-v0-notifications-root" />
+        </section>}
+        {tenantView === 'home' && <section className="tenant-v0-lessor-banner">
+          <div><span className="tenant-v0-eyebrow">FOR THE PEOPLE OPENING THEIR DOORS</span>
+            <h2>A good tenant relationship<br />starts before the keys.</h2>
+            <p>List your place with the details people actually need.</p>
+          </div>
+          <button type="button" onClick={onOpenLessor}>List your home <ArrowRight size={16} aria-hidden="true" /></button>
+        </section>}
       </div>
+      <footer className="tenant-v0-footer"><span>Your dreams, our efforts.</span><span>Pathome</span></footer>
     </main>
-    {showTenantMobileDock && <motion.nav aria-label="Tenant quick navigation" initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: mobileDockIsScrolling ? 4 : 0 }}
-      transition={reduceMotion ? { duration: 0 } : { duration: mobileDockIsScrolling ? 0.2 : 0.24, ease: [0.16, 1, 0.3, 1] }}
-      className={`fixed inset-x-3 bottom-[calc(0.5rem+env(safe-area-inset-bottom))] z-[95] isolate mx-auto flex h-[74px] w-[calc(100vw-24px)] max-w-[32rem] items-center gap-1 overflow-hidden rounded-[24px] border p-2 transition-[background-color,border-color,box-shadow,backdrop-filter] duration-200 motion-reduce:transition-none lg:hidden ${mobileDockIsScrolling
-        ? 'pointer-events-none border-white/15 bg-[#fffdf8]/10 shadow-none backdrop-blur-[2px]'
-        : 'border-[#ddd8ca] bg-[#fffdf8]/95 shadow-[0_12px_34px_-18px_rgba(5,40,29,.32),inset_0_1px_0_rgba(255,255,255,.92)] backdrop-blur-xl'} before:pointer-events-none before:absolute before:inset-x-10 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#c5a65d]/60 before:to-transparent ${mobileDockIsScrolling ? 'before:opacity-20' : ''}`}>
-      {([
-        { item: 'home', label: 'Home', icon: HomeIcon },
-        { item: 'filters', label: 'Filters', icon: SlidersHorizontal },
-        { item: 'visits', label: 'Visits', icon: CalendarDays },
-        { item: 'saved', label: 'Saved', icon: Heart }
-      ] as const).map(({ item, label, icon: Icon }) => {
-        const active = mobileDockActiveItem === item;
-        const badgeCount = item === 'filters' ? mobileDockBadges.filterCount
-          : item === 'visits' ? mobileDockBadges.visitCount : null;
-        return <button key={item} type="button"
-          id={item === 'filters' ? 'tenant-mobile-quick-refine-trigger' : undefined}
-          aria-label={item === 'filters' && badgeCount ? `Filters, ${badgeCount} active ${badgeCount === 1 ? 'filter' : 'filters'}` : label}
-          aria-current={active ? 'location' : undefined}
-          aria-haspopup={item === 'filters' ? 'dialog' : undefined}
-          aria-expanded={item === 'filters' ? quickRefineSheetOpen : undefined}
-          onClick={() => {
-            if (item === 'filters') {
-              setMobileDockActiveItem('filters');
-              quickRefineOpenRef.current?.();
-            } else navigateMobileDock(item);
-          }}
-          className={`relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-[17px] px-1 text-[10px] font-semibold leading-none transition-[color,background-color,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-emerald-800 motion-reduce:transition-none ${mobileDockIsScrolling ? 'pointer-events-none opacity-65' : ''} ${active ? mobileDockIsScrolling ? 'text-emerald-900' : 'bg-[#edf4e9] text-[#0a5f45]' : 'text-slate-700 hover:bg-white/75'}`}>
-          {item === 'filters' ? <span className={`relative grid h-9 w-10 place-items-center rounded-xl ${mobileDockIsScrolling ? 'bg-transparent text-emerald-900 shadow-none' : 'bg-[#0b674b] text-[#fff8e8] shadow-[0_4px_10px_-7px_rgba(4,47,31,.65)]'}`}>
-            <Icon size={18} strokeWidth={1.9} aria-hidden="true" />
-            {badgeCount !== null && <span aria-hidden="true" className="absolute -right-1.5 -top-1.5 grid h-[17px] min-w-[17px] place-items-center rounded-full border border-[#fffdf8] bg-[#d7bc78] px-1 text-[9px] font-bold leading-none text-[#153c2e]">{badgeCount}</span>}
-          </span> : <span className="relative grid h-9 w-10 place-items-center text-emerald-800"><Icon size={19} strokeWidth={1.8} aria-hidden="true" />
-            {badgeCount !== null && <span aria-hidden="true" className="absolute -right-1 -top-1 grid h-[17px] min-w-[17px] place-items-center rounded-full bg-[#d7bc78] px-1 text-[9px] font-bold leading-none text-[#153c2e]">{badgeCount}</span>}
-          </span>}
-          <span className="truncate">{label}</span>
-          {active && <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-2.5 rounded-full bg-[#c5a65d]" />}
-        </button>;
-      })}
-    </motion.nav>}
+    {showTenantMobileDock && <TenantMobileDock activeItem={mobileDockActiveItem} savedCount={mobileDockBadges.savedCount}
+      visitCount={mobileDockBadges.visitCount} hasLessorCapability={hasLessorCapability}
+      onNavigate={navigateMobileDock} onOpenListings={onOpenLessor} />}
     {previewPropertyId !== null && <TenantPropertyQuickView key={previewPropertyId} propertyId={previewPropertyId}
-      visitRequestStatus={requestStatusForProperty} onClose={closeQuickView} onRequestVisit={handleTenantRequestVisit} onViewProperty={onViewProperty} />}
+      visitRequestStatus={requestStatusForProperty} onClose={closeQuickView} onRequestVisit={handleTenantRequestVisit} onViewProperty={onViewProperty}
+      isFavorite={isPropertySaved(previewPropertyId)} favoriteStateReady={favoriteIsReadyFor(previewPropertyId)}
+      favoritePending={isFavoritePending(previewPropertyId)} onToggleFavorite={toggleFavorite} />}
     </div>
   );
 };

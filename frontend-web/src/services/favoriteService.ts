@@ -18,10 +18,12 @@ const getToken = (): string => {
 };
 
 export const favoriteService = {
-  async listSavedProperties(page: number, signal?: AbortSignal): Promise<{ properties: Property[]; page: number; hasMore: boolean }> {
-    if (!Number.isSafeInteger(page) || page < 0) throw new ApiRequestError('Unable to load saved homes. Please try again.');
+  async listSavedProperties(page: number, signal?: AbortSignal, pageSize = 6): Promise<{ properties: Property[]; page: number; hasMore: boolean }> {
+    if (!Number.isSafeInteger(page) || page < 0 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 24) {
+      throw new ApiRequestError('Unable to load saved homes. Please try again.');
+    }
     const token = getToken();
-    const query = new URLSearchParams({ page: String(page), size: '6' });
+    const query = new URLSearchParams({ page: String(page), size: String(pageSize) });
     const response = await fetch(`${API_ROOT_URL}/favorites/properties?${query.toString()}`, {
       headers: authenticatedRequest(token), signal
     });

@@ -360,12 +360,13 @@ export function LessorMediaStep({
   };
 
   return (
-    <div className="mt-2">
-      <h1 className="font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">Show the home</h1>
+    <div className="lessor-v0-media mt-2">
+      <p className="tenant-v0-eyebrow">SHOW THE SPACE</p>
+      <h1 className="font-serif text-3xl font-normal text-[#344236]">The little details make it yours.</h1>
       <p className="mt-2 text-sm text-slate-600">
         Add at least one photo. The first successful photo becomes the cover; you can change it.
       </p>
-      <label className="mt-6 flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-emerald-400 bg-emerald-50 px-4 py-5 text-center text-sm font-semibold text-emerald-900 hover:bg-emerald-100 focus-within:ring-2 focus-within:ring-emerald-500">
+      <label className="lessor-v0-upload-zone mt-6 flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-emerald-400 bg-emerald-50 px-4 py-5 text-center text-sm font-semibold text-emerald-900 hover:bg-emerald-100 focus-within:ring-2 focus-within:ring-emerald-500">
         <Camera className="h-6 w-6" />
         Add photos or a video
         <input

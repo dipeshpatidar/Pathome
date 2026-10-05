@@ -35,6 +35,8 @@ export interface CompactSearchContextProps {
   onBeaconExpand?: () => void;
   searchPlaceholder?: string;
   submitLabel?: string;
+  externalSubmitRef?: React.MutableRefObject<(() => void) | null>;
+  hideSubmitButton?: boolean;
   onSearch: (
     city?: string,
     sector?: string,
@@ -60,6 +62,8 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
   onBeaconExpand,
   searchPlaceholder,
   submitLabel,
+  externalSubmitRef,
+  hideSubmitButton = false,
   onSearch,
   onManualCityChange,
   onClearAll
@@ -367,6 +371,11 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     lastCommittedFiltersRef.current = discoverySearchKey(nextFilters);
     onSearch(nextFilters.city, nextFilters.sector, nextFilters);
   };
+  useEffect(() => {
+    if (!externalSubmitRef) return undefined;
+    externalSubmitRef.current = applySearch;
+    return () => { if (externalSubmitRef.current === applySearch) externalSubmitRef.current = null; };
+  }, [externalSubmitRef, applySearch]);
 
   const formatSuggestionRow = (item: RentalSuggestion) => {
     if (item.type === 'SEARCH_QUERY' && item.locality) {
@@ -476,17 +485,17 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
     <button
       type="button"
       id="compact-search-submit"
-      aria-label={tenantHeroAppearance ? 'Explore homes' : (submitLabel || 'Submit search')}
+      aria-label={tenantHeroAppearance ? (submitLabel || 'Explore homes') : (submitLabel || 'Submit search')}
       onClick={applySearch}
       className={heroAppearance
         ? tenantHeroAppearance
           ? tenantSticky
             ? 'grid h-11 w-11 min-h-11 shrink-0 place-items-center rounded-none border-0 bg-transparent p-0 leading-none text-emerald-700 shadow-none transition-[color,transform] duration-150 hover:translate-x-0.5 hover:text-emerald-900 focus-visible:translate-x-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-5px] focus-visible:outline-emerald-700/55 active:translate-x-0.5 motion-reduce:transition-none motion-reduce:hover:translate-x-0 motion-reduce:focus-visible:translate-x-0'
-            : 'grid h-11 w-11 min-h-11 shrink-0 place-items-center border-0 bg-transparent p-0 leading-none text-emerald-700 shadow-none transition-[color,transform] duration-150 hover:translate-x-0.5 hover:text-emerald-800 focus-visible:translate-x-0.5 focus-visible:outline-none focus-visible:text-emerald-950 focus-visible:drop-shadow-[0_0_5px_rgba(8,123,96,0.5)] active:translate-x-0.5 motion-reduce:transition-none motion-reduce:hover:translate-x-0 motion-reduce:focus-visible:translate-x-0'
+            : submitLabel ? 'inline-flex h-11 min-w-11 items-center justify-center gap-2 rounded-[6px] bg-[#355c49] px-2 text-xs font-semibold text-white transition-colors hover:bg-[#284a38] sm:px-3' : 'grid h-11 w-11 min-h-11 shrink-0 place-items-center border-0 bg-transparent p-0 leading-none text-emerald-700 shadow-none transition-[color,transform] duration-150 hover:translate-x-0.5 hover:text-emerald-800 focus-visible:translate-x-0.5 focus-visible:outline-none focus-visible:text-emerald-950 focus-visible:drop-shadow-[0_0_5px_rgba(8,123,96,0.5)] active:translate-x-0.5 motion-reduce:transition-none motion-reduce:hover:translate-x-0 motion-reduce:focus-visible:translate-x-0'
           : `inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${submitLabel ? 'w-full sm:w-auto' : 'w-11'}`
         : 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm transition-all hover:bg-emerald-500 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'}
     >
-      {submitLabel && <span>{submitLabel}</span>}
+      {submitLabel && <span className={tenantHeroAppearance ? tenantSticky ? 'hidden' : 'whitespace-nowrap' : undefined}>{submitLabel}</span>}
       <ArrowRight
         className={tenantHeroAppearance ? tenantSticky ? 'block h-6 w-6 drop-shadow-[0_1px_2px_rgba(8,123,96,0.16)]' : 'block h-[1.125rem] w-[1.125rem] drop-shadow-[0_1px_2px_rgba(8,123,96,0.18)]' : 'block h-4 w-4'}
         strokeWidth={tenantHeroAppearance ? 1.8 : 2}
@@ -669,12 +678,13 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
               ? tenantHeroAppearance
               ? tenantSticky
                   ? 'relative flex h-10 min-h-10 min-w-0 items-center gap-x-1 rounded-lg px-1 text-slate-900'
-                  : `relative grid h-12 min-h-12 min-w-0 ${searchText ? 'grid-cols-[auto_minmax(0,1fr)_5.5rem]' : 'grid-cols-[auto_minmax(0,1fr)_2.75rem]'} items-center gap-x-1 rounded-full px-1 pb-0 pt-0 text-slate-900 max-[360px]:gap-x-0 max-[360px]:px-0 sm:grid-cols-[auto_minmax(0,1fr)_5.5rem] sm:h-11 sm:min-h-11 sm:pb-0 sm:pt-0 sm:gap-x-1 sm:px-1 lg:rounded-lg`
+                  : `relative grid h-12 min-h-12 min-w-0 ${hideSubmitButton ? 'grid-cols-[auto_minmax(0,1fr)_auto]' : submitLabel ? searchText ? 'grid-cols-[auto_minmax(0,1fr)_9.25rem]' : 'grid-cols-[auto_minmax(0,1fr)_6.5rem]' : searchText ? 'grid-cols-[auto_minmax(0,1fr)_5.5rem]' : 'grid-cols-[auto_minmax(0,1fr)_2.75rem]'} items-center gap-x-1 rounded-full px-1 pb-0 pt-0 text-slate-900 max-[360px]:gap-x-0 max-[360px]:px-0 ${hideSubmitButton ? 'sm:grid-cols-[auto_minmax(0,1fr)_auto]' : submitLabel ? 'sm:grid-cols-[auto_minmax(0,1fr)_10rem]' : 'sm:grid-cols-[auto_minmax(0,1fr)_5.5rem]'} sm:h-11 sm:min-h-11 sm:pb-0 sm:pt-0 sm:gap-x-1 sm:px-1 lg:rounded-lg`
                 : 'relative grid min-h-11 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 rounded-xl border border-slate-200 bg-white px-3 py-1 text-slate-900 focus-within:ring-2 focus-within:ring-emerald-600 sm:flex sm:items-center sm:py-0'
                 : 'flex h-9 sm:h-10 flex-1 min-w-0 items-center gap-1.5 sm:gap-2 px-1 sm:px-1.5'}>
                 {tenantHeroAppearance
                   ? <span data-tenant-search-mode-icon="sticky" className="grid h-4 w-4 shrink-0 place-items-center max-[360px]:hidden"><Search className="h-4 w-4 text-emerald-700" aria-hidden="true" /></span>
                   : <Search className={`h-4 w-4 shrink-0 ${heroAppearance ? 'text-emerald-700' : 'text-emerald-400'}`} aria-hidden="true" />}
+                {tenantHeroAppearance && hideSubmitButton && <span className="tenant-v0-field-label" aria-hidden="true">LOCATION OR KEYWORD</span>}
                 <input
                   ref={searchInputRef}
                   id="compact-search-input"
@@ -728,18 +738,20 @@ export const CompactSearchContext: React.FC<CompactSearchContextProps> = ({
                     }
                   }}
                   placeholder={searchPlaceholder || summary || "Search locality or 2 BHK"}
-                  aria-label="Search homes"
+                  aria-label={tenantHeroAppearance ? 'Location or keyword' : 'Search homes'}
                   autoComplete="off"
-                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${tenantHeroAppearance ? 'sm:text-xs' : ''} ${heroAppearance ? 'text-[#252b25] placeholder:text-[#85877f]' : 'text-white placeholder:text-slate-400'}`}
+                  className={`min-w-0 flex-1 bg-transparent text-base font-medium outline-none ${tenantHeroAppearance ? 'sm:text-xs' : ''} ${tenantHeroAppearance && hideSubmitButton ? 'tenant-v0-location-input' : ''} ${heroAppearance ? 'text-[#252b25] placeholder:text-[#85877f]' : 'text-white placeholder:text-slate-400'}`}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck="false"
                 />
 
-                {tenantHeroAppearance
-                  ? <div role="group" aria-label="Search actions" className={`grid h-11 shrink-0 place-items-center ${searchText ? 'w-[5.5rem] grid-cols-2' : 'w-11 grid-cols-1'} sm:w-[5.5rem] sm:grid-cols-2`}>
+                {tenantHeroAppearance && hideSubmitButton
+                  ? searchText ? <span className="grid h-11 w-11 place-items-center">{clearDraftButton}</span> : null
+                  : tenantHeroAppearance
+                  ? <div role="group" aria-label="Search actions" className={`grid h-11 shrink-0 place-items-center ${submitLabel && !tenantSticky ? searchText ? 'w-[9.25rem] grid-cols-[2.75rem_minmax(0,1fr)] sm:w-[10rem]' : 'w-[6.5rem] grid-cols-1 sm:w-[10rem]' : searchText ? 'w-[5.5rem] grid-cols-2' : 'w-11 grid-cols-1'}`}>
                       {searchText && <span className="grid h-11 w-11 place-items-center">{clearDraftButton}</span>}
-                      <span className="grid h-11 w-11 place-items-center">{submitButton}</span>
+                      <span className={`grid h-11 w-11 place-items-center ${submitLabel && !tenantSticky ? 'w-full' : ''}`}>{submitButton}</span>
                     </div>
                   : <>{clearDraftButton}{submitButton}</>}
               </div>

@@ -17,7 +17,7 @@ import { GuestDraftWorkspace } from '../components/LessorPortfolio';
 function Route({ user, active, draftCount }) {
   const location = useLocation();
   const workspace = location.pathname.startsWith('/lessor')
-    ? <LessorWorkspace user={user} hasLessorCapability={active} draftCount={draftCount}
+    ? <LessorWorkspace user={user} savedCount={3} hasLessorCapability={active} draftCount={draftCount}
         draftState="ready" onRetryDrafts={() => {}} onRequestAuth={() => {}} />
     : <main>Landing page</main>;
   return <PathomeRouteShell pathname={location.pathname}
@@ -122,12 +122,14 @@ test('tenant and guest draft routes render the real workspace without editor con
   for (const [user, active] of [[tenant, false], [null, false]]) {
     const html = renderRoute('/lessor?view=drafts', user, active, 1);
     assertShell(html, false);
-    assert.equal(/Your property drafts/.test(html), true);
+    assert.equal(/Your drafts|Your property drafts/.test(html), true);
     assert.equal(/Continue your property listing|Add more details|Review your property/.test(html), false);
   }
   const tenantHtml = renderRoute('/lessor', tenant, false, 1);
   assert.equal(/List your property/.test(tenantHtml), true);
-  assert.equal(/My Properties/.test(tenantHtml), false);
+  assert.equal(/Your listings/.test(tenantHtml), false);
+  assert.match(tenantHtml, /Saved homes, 3 properties/);
+  assert.match(tenantHtml, /<span>List home<\/span>/);
   const guestHtml = renderRoute('/lessor', null, false, 1);
   assert.equal(/Post Your Property/.test(guestHtml), true);
 });
@@ -152,19 +154,19 @@ test('guest draft card only exposes a resumable draft and concise summary', () =
 
 test('account replacement does not reuse a prior portfolio or draft badge in rendered route', () => {
   const previous = renderRoute('/lessor', lessor, true, 3);
-  assert.equal(/My Properties/.test(previous), true);
+  assert.equal(/Your listings/.test(previous), true);
   assert.equal(/Drafts, 3 resumable drafts/.test(previous), true);
   const next = renderRoute('/lessor', tenant, false, 0);
   assertShell(next, false);
   assert.equal(/List your property/.test(next), true);
-  assert.equal(/My Properties|Drafts, 3 resumable drafts/.test(next), false);
+  assert.equal(/Your listings|Drafts, 3 resumable drafts/.test(next), false);
 });
 
 test('logout route renders one public header and no prior account controls', () => {
   const before = renderRoute('/lessor', lessor, true, 3);
-  assert.match(before, /My Properties/);
+  assert.match(before, /Your listings/);
   const after = renderRoute('/', null, null, 0);
   assertShell(after, false);
-  assert.doesNotMatch(after, /My Properties|Log Out Session|Lessor Tester|Drafts, 3 resumable drafts/);
+  assert.doesNotMatch(after, /Your listings|Log Out Session|Lessor Tester|Drafts, 3 resumable drafts/);
   assert.doesNotMatch(after, /aria-label="Notifications"/);
 });

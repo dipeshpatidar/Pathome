@@ -8,8 +8,8 @@ import { LessorListingSummary, lessorPortfolioService } from '../services/lessor
 import { LastUpdatedMeta } from './LastUpdatedMeta';
 import { lessorStepStorageKey } from '../utils/lessorStepResume';
 
-const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
-const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:border-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
+const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-[#355c49] px-5 text-sm font-semibold text-white hover:bg-[#284a38] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]';
+const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[#e9e7e1] bg-white px-4 text-sm font-semibold text-[#355c49] hover:border-[#b9c4b3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]';
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 import { getListingActionLabel, getRevisionNotice, WORKFLOW_STATUS_CONFIG } from '../utils/lessorWorkflow';
 
@@ -17,7 +17,7 @@ function DraftCard({ draft, onOpen, onDelete, deleting }: {
   draft: LessorDraftSummary; onOpen: (id: string) => void; onDelete?: (draft: LessorDraftSummary) => void; deleting?: boolean;
 }) {
   return (
-    <article className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+    <article className="lessor-v0-listing-card flex min-w-0 flex-col overflow-hidden rounded-[9px] border border-[#e9e7e1] bg-white">
       <div className="aspect-[16/9] bg-slate-100">
         {draft.coverUrl ? (
           <img src={draft.coverUrl} alt="Property cover" loading="lazy" className="h-full w-full object-cover" />
@@ -178,24 +178,22 @@ export function LessorPortfolio({ userId = null, onAdd, onOpenDraft, onOpenListi
 
   const visibleDrafts = drafts.filter(draft => draft.status === 'DRAFT');
   const empty = !loadingDrafts && !loadingListings && !draftError && !listingError && visibleDrafts.length === 0 && listings.length === 0;
-  return <section>
-    <div className="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <p className="text-xs font-bold uppercase tracking-widest text-emerald-700">Your workspace</p>
-        <h1 className="mt-1 font-['Outfit',sans-serif] text-3xl font-bold text-slate-950">{draftsOnly ? 'Your property drafts' : 'My Properties'}</h1>
-        {draftsOnly && <p className="mt-2 text-sm leading-relaxed text-slate-600">Your unfinished property listings are saved here.</p>}
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <Link
-          to="/"
-          className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-semibold text-slate-700 shadow-2xs transition-colors hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer"
-        >
-          <Building2 className="h-4 w-4 text-slate-500" />
-          <span>Browse rental homes</span>
-        </Link>
-        <button className={BUTTON} onClick={onAdd}><Plus className="h-4 w-4"/>{mainActionLabel}</button>
-      </div>
+  return <section className="lessor-v0-portfolio">
+    <div className="lessor-v0-topline">
+      <p className="tenant-v0-eyebrow">YOUR LESSOR SPACE</p>
+      <button type="button" className={BUTTON} onClick={onAdd}><Plus size={16} aria-hidden="true" />{mainActionLabel}</button>
     </div>
+    <h1 className="tenant-v0-page-title">Make room for <em>what’s next.</em></h1>
+    <p className="tenant-v0-intro">A calmer way to share your place with the right people.</p>
+    <div className="lessor-v0-welcome">
+      <div><span className="tenant-v0-eyebrow">A BETTER WAY TO BEGIN</span>
+        <h2>Every good move<br />starts with <em>clarity.</em></h2>
+        <p>Share real details, set availability, and review your listing before you submit it.</p>
+        <button type="button" className={BUTTON} onClick={onAdd}>List your home <ArrowRight size={16} aria-hidden="true" /></button>
+      </div>
+      <div className="lessor-v0-welcome-art"><img src="/pathome-house.png" alt="A peaceful home ready for its next chapter" /><span>GOOD HOMES FIND GOOD PEOPLE</span></div>
+    </div>
+    <div className="lessor-v0-table-head"><h2>{draftsOnly ? 'Your drafts' : 'Your listings'}</h2><Link to="/tenant">Explore homes <ArrowRight size={15} aria-hidden="true" /></Link></div>
     {empty && <div className="mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-7"><Building2 className="mb-4 h-7 w-7 text-emerald-700"/><h2 className="text-xl font-semibold text-slate-950">{draftsOnly ? 'Your property listing starts here' : 'Your first property starts here'}</h2><p className="mt-2 text-sm text-slate-600">Add the basics now. You can return to finish later.</p><div className="mt-5 flex flex-wrap items-center gap-3"><button className={BUTTON} onClick={onAdd}>{mainActionLabel}</button><Link to="/" className={SECONDARY}>Browse rental homes</Link></div></div>}
     {(loadingDrafts || loadingListings) && visibleDrafts.length === 0 && listings.length === 0 && <div aria-label="Loading properties" className="mt-8 grid gap-4 sm:grid-cols-2">{[1, 2].map(number => <div key={number} className="overflow-hidden rounded-2xl border border-slate-200 bg-white"><div className="aspect-[16/9] animate-pulse motion-reduce:animate-none bg-slate-200"/><div className="space-y-3 p-4"><div className="h-4 w-24 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-6 w-3/4 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-4 w-1/2 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/><div className="h-11 w-28 animate-pulse motion-reduce:animate-none rounded bg-slate-100"/></div></div>)}</div>}
     {(visibleDrafts.length > 0 || draftError) && <div className="mt-9">{!draftsOnly && <h2 className="text-lg font-semibold text-slate-950">Drafts</h2>}{draftError && <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{draftError}<button className="ml-3 underline" onClick={() => { void loadDrafts(draftPage); }}>Retry</button></p>}
@@ -211,7 +209,7 @@ export function LessorPortfolio({ userId = null, onAdd, onOpenDraft, onOpenListi
         const revisionNotice = getRevisionNotice(listing.status, listing.openRevisionStatus);
 
         return (
-          <article key={listing.listingId} className="flex flex-col min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <article key={listing.listingId} className="lessor-v0-listing-card flex flex-col min-w-0 overflow-hidden rounded-[9px] border border-[#e9e7e1] bg-white">
             <div className="aspect-[16/9] bg-slate-100">
               {listing.coverUrl ? (
                 <img src={listing.coverUrl} alt="Property cover" loading="lazy" className="h-full w-full object-cover"/>

@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Armchair, BedDouble, Building2, Home, LoaderCircle, SlidersHorizontal, X
@@ -6,9 +6,8 @@ import {
 import { discoverySearchKey, formatRentDisplay, RentalSearchFilters } from '../utils/rentalSearch';
 import {
   QUICK_REFINE_BHK_OPTIONS, QUICK_REFINE_FURNISHING, QUICK_REFINE_PROPERTY_TYPES,
-  QUICK_REFINE_CHIP_REMOVE_TARGET_PX, QUICK_REFINE_RENT_SLIDER_MAX_POSITION,
-  QuickRefineDimension, clearQuickRefineFilters,
-  quickRefineActiveCount, quickRefineChipLabels, quickRefineOptionIsSelected,
+  QUICK_REFINE_RENT_SLIDER_MAX_POSITION, clearQuickRefineFilters,
+  quickRefineActiveCount, quickRefineOptionIsSelected,
   quickRefineResultSummary, updateQuickRefineFilter,
   applyQuickRefineRentSliderChanges, quickRefineRentValues,
   quickRefineRentToSliderPosition, quickRefineSliderPositionToRent,
@@ -217,18 +216,10 @@ const useQuickRefineActions = (filters: RentalSearchFilters, discoveryCity: stri
   const toggle = (dimension: 'bhk' | 'propertyType' | 'furnishing', value: string) => {
     onSearchHomes(updateQuickRefineFilter(filters, dimension, value as never));
   };
-  const clearDimension = (dimension: QuickRefineDimension) => {
-    if (dimension === 'budget') {
-      onSearchHomes({ ...filters, minRent: undefined, maxRent: undefined });
-    } else if (dimension === 'bhk' || dimension === 'propertyType' || dimension === 'furnishing') {
-      const value = filters[dimension];
-      if (value) onSearchHomes(updateQuickRefineFilter(filters, dimension, value as never));
-    }
-  };
   const clearAll = () => {
     onSearchHomes(clearQuickRefineFilters(filters, discoveryCity));
   };
-  return { toggle, clearDimension, clearAll };
+  return { toggle, clearAll };
 };
 
 export const TenantQuickRefinePanel: React.FC<QuickRefineBaseProps> = props => {
@@ -276,16 +267,15 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
   const { filters, discoveryCity, onSearchHomes } = props;
   const id = useId();
   const budget = useRentSliderControls(filters, props.rentBounds, onSearchHomes);
-  const { toggle, clearDimension, clearAll } = useQuickRefineActions(filters, discoveryCity, onSearchHomes);
+  const { toggle, clearAll } = useQuickRefineActions(filters, discoveryCity, onSearchHomes);
   const activeCount = quickRefineActiveCount(filters);
-  const chips = useMemo(() => quickRefineChipLabels(filters), [filters]);
   const [isOpen, setIsOpen] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const closeSheet = (restoreFocus: boolean) => {
     props.onSheetOpenChange(false);
     setIsOpen(false);
-    if (restoreFocus) window.setTimeout(() => document.getElementById('tenant-mobile-quick-refine-trigger')?.focus(), 0);
+    if (restoreFocus) window.setTimeout(() => (document.getElementById('tenant-v0-filter-trigger') || document.getElementById('tenant-mobile-quick-refine-trigger'))?.focus(), 0);
   };
 
   useEffect(() => {
@@ -296,6 +286,7 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
     props.openRequestRef.current = open;
     return () => {
       if (props.openRequestRef.current === open) props.openRequestRef.current = null;
+      props.onSheetOpenChange(false);
     };
   }, [props.openRequestRef, props.onSheetOpenChange]);
 
@@ -339,22 +330,11 @@ export const TenantQuickRefineMobile: React.FC<TenantQuickRefineMobileProps> = p
   }, [isOpen]);
 
   return <>
-    {chips.length > 0 && <div className="mb-4 min-w-0 lg:hidden" aria-label="Active search filters">
-      <div className="flex min-w-0 items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {chips.map(chip => <span key={chip.dimension} className="relative inline-flex min-h-10 shrink-0 items-center rounded-full border border-emerald-800/20 bg-[#edf5ec] pl-3 pr-11 text-xs font-medium text-emerald-950">
-          {chip.label}
-          <button type="button" onClick={() => clearDimension(chip.dimension)} aria-label={`Remove ${chip.label} filter`}
-            style={{ width: QUICK_REFINE_CHIP_REMOVE_TARGET_PX, height: QUICK_REFINE_CHIP_REMOVE_TARGET_PX }}
-            className={`absolute right-0 top-1/2 flex -translate-y-1/2 items-center justify-center rounded-full text-emerald-900 hover:bg-white/80 ${focusClass}`}><X size={14} aria-hidden="true" /></button>
-        </span>)}
-      </div>
-    </div>}
-
     {isOpen && createPortal(
-      <div className="fixed inset-0 z-[100] flex items-end justify-center lg:hidden" role="presentation">
+      <div className="fixed inset-0 z-[120] flex items-end justify-center sm:items-center sm:p-4" role="presentation">
         <button type="button" tabIndex={-1} aria-label="Close filters" onClick={() => closeSheet(true)} className="absolute inset-0 bg-[#101b17]/45 backdrop-blur-[2px]" />
         <section ref={sheetRef} id="tenant-mobile-quick-refine" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`}
-          className="relative flex max-h-[min(92dvh,56rem)] w-full flex-col overflow-hidden rounded-t-[15px] border border-[#e9e7e1] bg-white shadow-[0_-16px_48px_-24px_rgba(37,43,37,.3)]">
+          className="relative flex max-h-[min(92dvh,56rem)] w-full flex-col overflow-hidden rounded-t-[15px] border border-[#e9e7e1] bg-white shadow-[0_-16px_48px_-24px_rgba(37,43,37,.3)] sm:max-w-[38rem] sm:rounded-[10px]">
           <div className="relative z-10 shrink-0 border-b border-[#eeece7] px-5 pb-4 pt-3" style={{ paddingTop: 'max(.75rem, env(safe-area-inset-top))' }}>
             <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-emerald-900/20" aria-hidden="true" />
             <div className="flex items-start justify-between gap-3">

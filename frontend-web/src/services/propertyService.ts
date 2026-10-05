@@ -445,7 +445,7 @@ export const propertyService = {
     moveInTiming?: string;
     preferredVisitTiming: string;
     note?: string;
-  }): Promise<{ requestId: number; propertyId: number; status: string; message: string; receivedAt: string }> {
+  }): Promise<{ requestId: number; propertyId: number; status: string; message: string; receivedAt: string; created: boolean }> {
     const token = localStorage.getItem('pathome_auth_token');
     const response = await fetch(`${API_BASE_URL}/${propertyId}/visit-requests`, {
       method: 'POST',
@@ -458,7 +458,8 @@ export const propertyService = {
     if (!response.ok) {
       throw await createApiRequestError(response, 'Unable to send your visit request. Please try again.', false, token);
     }
-    return response.json();
+    const acknowledgement = await response.json();
+    return { ...acknowledgement, created: response.status === 201 };
   },
 
   /**

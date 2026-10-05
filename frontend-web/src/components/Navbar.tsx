@@ -9,9 +9,11 @@ import { UserRole, UserProfile } from '../types';
 import { resolveWorkspaceContext, resolveLogoDestination } from '../utils/navigationPolicy';
 import {
   Building2,
+  Home as HomeIcon,
   User,
   LogOut,
   ChevronDown,
+  ChevronRight,
   Bell,
   Menu,
   X,
@@ -156,13 +158,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [activeTenantSection, setActiveTenantSection] = useState('tenant-home-search');
   const [isScrolled, setIsScrolled] = useState(() => (typeof window !== 'undefined' ? window.scrollY > 40 : false));
   const { unreadCount, isDrawerOpen, setIsDrawerOpen } = useNotification();
   const prefersReducedMotion = useReducedMotion();
   const navigate = useNavigate();
   const location = useLocation();
   const isTenantLanding = role === 'TENANT' && location.pathname.replace(/\/+$/, '') === '/tenant';
+  const tenantBreadcrumb = location.hash === '#saved-homes-title' ? 'Saved homes'
+    : location.hash === '#visit-history' || location.hash.startsWith('#visit-session-') ? 'Visit requests'
+      : location.hash === '#account' ? 'Your account'
+        : location.hash === '#notifications' ? 'Notifications' : 'Explore homes';
+  const isLessorSurface = role === 'TENANT' && /^\/lessor(?:\/|$)/.test(location.pathname);
+  const isPropertySurface = role === 'TENANT' && /^\/property(?:\/|$)/.test(location.pathname);
+  const isConsumerHeader = isTenantLanding || isLessorSurface || isPropertySurface;
 
   // Keep one mounted header across identity changes and drop account overlays immediately.
   useEffect(() => {
@@ -199,40 +207,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  useEffect(() => {
-    if (!isTenantLanding || typeof IntersectionObserver === 'undefined') return undefined;
-    const targets = ['tenant-home-search', 'saved-homes-title', 'visit-history-title']
-      .map(id => document.getElementById(id)).filter((element): element is HTMLElement => Boolean(element));
-    if (!targets.length) return undefined;
-    const observer = new IntersectionObserver(entries => {
-      const visible = entries.filter(entry => entry.isIntersecting)
-        .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
-      if (visible) setActiveTenantSection(visible.target.id);
-    }, { rootMargin: '-22% 0px -62% 0px', threshold: 0 });
-    targets.forEach(target => observer.observe(target));
-    return () => observer.disconnect();
-  }, [isTenantLanding]);
-
   // Determine active visual theme
-  const isHeroTop = (isLandingHero || isTenantLanding) && !isScrolled;
-  const scrollTenantSection = (id: string) => {
-    setMobileMenuOpen(false);
-    setActiveTenantSection(id);
-    const target = document.getElementById(id);
-    if (!target) return;
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    target.scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'start' });
-    const focusTarget = target.matches('[data-tenant-nav-focus]')
-      ? target
-      : target.querySelector<HTMLElement>('[data-tenant-nav-focus]');
-    focusTarget?.focus({ preventScroll: true });
-  };
-
+  const isHeroTop = isLandingHero && !isScrolled;
   return (
     <>
-      <header data-pathome-header="global"
+      <header data-pathome-header="global" data-tenant-header={isConsumerHeader} data-consumer-section={isLessorSurface ? 'lessor' : isPropertySurface ? 'property' : isTenantLanding ? 'tenant' : undefined}
         className={`sticky top-0 z-[100] w-full pt-[env(safe-area-inset-top)] transition-[background-color,border-color,box-shadow] duration-300 motion-reduce:transition-none ${
-          isAdminRole
+          isConsumerHeader
+            ? 'border-b border-[#eeece7] bg-[#f8f7f4]/95 shadow-none backdrop-blur-xl'
+            : isAdminRole
             ? 'bg-slate-950/95 backdrop-blur-2xl border-b border-emerald-500/30 shadow-2xl'
             : isHeroTop
             ? 'bg-slate-950/40 backdrop-blur-md border-b border-white/10 shadow-sm'
@@ -241,22 +224,24 @@ export const Navbar: React.FC<NavbarProps> = ({
       >
         {/* The mobile toolbar stays quiet; the established accent remains on larger screens. */}
         <div
-          className={`h-0 w-full transition-opacity duration-300 sm:h-[2.5px] ${
+          className={`h-0 w-full transition-opacity duration-300 ${isConsumerHeader ? '' : 'sm:h-[2.5px]'} ${
             isHeroTop
               ? 'bg-gradient-to-r from-emerald-500/80 via-cyan-400/80 via-indigo-500/80 to-amber-400/80 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
               : 'bg-gradient-to-r from-emerald-500 via-cyan-400 via-indigo-500 to-amber-400 shadow-[0_0_12px_rgba(16,185,129,0.5)]'
           }`}
         />
 
-        <div className={`${isTenantLanding ? 'max-w-[1600px]' : 'max-w-7xl'} mx-auto flex items-center justify-between gap-1 px-2.5 min-[360px]:px-3 sm:gap-2 sm:px-6 lg:px-8 ${role === 'GUEST' ? 'h-[60px] sm:h-[68px] lg:h-[72px]' : 'h-[72px]'}`}>
+        <div className={`${isConsumerHeader ? 'tenant-v0-header-inner max-w-[1220px]' : 'max-w-7xl'} mx-auto flex items-center justify-between gap-1 px-2.5 min-[360px]:px-3 sm:gap-2 sm:px-6 lg:px-8 ${role === 'GUEST' ? 'h-[60px] sm:h-[68px] lg:h-[72px]' : isConsumerHeader ? 'h-[63px]' : 'h-[72px]'}`}>
+
+          {(isTenantLanding || isLessorSurface) && <div className="tenant-v0-crumbs hidden items-center gap-2 lg:flex"><span>Home</span><ChevronRight size={14} aria-hidden="true" /><strong>{isLessorSurface ? hasLessorCapability === true ? 'Your listings' : 'List your property' : tenantBreadcrumb}</strong></div>}
 
           {/* BRANDING LOGO */}
-          <div className={`flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8 ${isTenantLanding ? 'lg:hidden' : ''}`}>
+          <div data-tenant-header-brand={isTenantLanding || isLessorSurface || undefined} className={`flex min-w-0 items-center gap-2.5 sm:gap-6 lg:gap-8 ${isTenantLanding || isLessorSurface ? 'lg:hidden' : ''}`}>
             <motion.button
               type="button"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={() => isTenantLanding ? scrollTenantSection('tenant-home-search') : navigate(logoDestination.path)}
+              onClick={() => isTenantLanding ? navigate('/tenant#tenant-home-search') : navigate(logoDestination.path)}
               aria-label={logoDestination.label}
               title={logoDestination.label}
               className="flex min-w-0 items-center gap-2.5 cursor-pointer text-left rounded-xl p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 bg-transparent border-none"
@@ -265,18 +250,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex w-9 h-9 sm:w-10 sm:h-10 rounded-xl items-center justify-center font-bold shrink-0 shadow-sm transition-colors ${
                   isAdminRole
                     ? 'bg-gradient-to-tr from-emerald-600 via-teal-500 to-emerald-400 text-white shadow-emerald-500/30'
-                    : 'bg-emerald-600 text-white shadow-emerald-600/20'
+                    : isConsumerHeader ? 'bg-[#355c49] text-white' : 'bg-emerald-600 text-white shadow-emerald-600/20'
                 }`}
               >
-                <Building2 className="w-5 h-5" />
+                {isConsumerHeader ? <HomeIcon className="w-5 h-5" /> : <Building2 className="w-5 h-5" />}
               </div>
               <div className="min-w-0">
                 <span
                   className={`font-['Outfit',sans-serif] text-base sm:text-xl font-black tracking-tight inline-flex items-center transition-colors ${
-                    isAdminRole || isHeroTop ? 'text-white' : 'text-slate-900'
+                    isConsumerHeader ? 'text-[#344036]' : isAdminRole || isHeroTop ? 'text-white' : 'text-slate-900'
                   }`}
                 >
-                  Path<span className="text-emerald-400">ome</span>
+                  {isConsumerHeader ? <>pathome<span className="text-[#6d886e]">.</span></> : <>Path<span className="text-emerald-400">ome</span></>}
                 </span>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span
@@ -330,24 +315,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </a>
               </nav>
             )}
-            {isTenantLanding && (
-              <nav className="hidden items-center gap-6 lg:hidden xl:gap-8" aria-label="Tenant navigation">
-                {[
-                  { label: 'Home', id: 'tenant-home-search' },
-                  { label: 'Saved Homes', id: 'saved-homes-title' },
-                  { label: 'Visit Requests', id: 'visit-history-title' }
-                ].map(item => (
-                  <button key={item.id} type="button" onClick={() => scrollTenantSection(item.id)}
-                    className={`relative min-h-11 whitespace-nowrap px-1 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${isHeroTop ? 'text-white/90 hover:text-white' : 'text-slate-700 hover:text-emerald-800'} ${activeTenantSection === item.id ? 'after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-emerald-400' : ''}`}>
-                    {item.label}
-                  </button>
-                ))}
-              </nav>
-            )}
           </div>
 
           {/* RIGHT ACTIONS & PROFILE MENU */}
-          <div className={`flex shrink-0 items-center gap-1 sm:gap-3 ${isTenantLanding ? 'lg:ml-auto' : ''}`}>
+          <div className={`flex shrink-0 items-center gap-1 sm:gap-3 ${isTenantLanding || isLessorSurface ? 'lg:ml-auto' : ''}`}>
 
             {role === 'GUEST' && (
               <>
@@ -396,14 +367,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               </>
             )}
 
-            {isTenantLanding && (
-              <button type="button" onClick={() => setMobileMenuOpen(open => !open)} aria-expanded={mobileMenuOpen}
-                aria-label={mobileMenuOpen ? 'Close tenant navigation' : 'Open tenant navigation'}
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 lg:hidden ${isHeroTop ? 'text-white hover:bg-white/10' : 'text-slate-700 hover:bg-slate-900/5'}`}>
-                {mobileMenuOpen ? <X className="h-4 w-4" aria-hidden="true" /> : <Menu className="h-4 w-4" aria-hidden="true" />}
-              </button>
-            )}
-
             {(role === 'GUEST' || role === 'TENANT' || hasLessorCapability === true) && (
               isTenantLanding
                 ? <div className="hidden lg:block"><DraftAccessButton count={draftCount} state={draftState} onOpen={onOpenDrafts} onRetry={onRetryDrafts} dark={isHeroTop} /></div>
@@ -415,10 +378,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => setIsDrawerOpen(!isDrawerOpen)}
+                onClick={() => {
+                  if (isConsumerHeader && role === 'TENANT') {
+                    setIsDrawerOpen(false);
+                    navigate('/tenant#notifications');
+                  } else setIsDrawerOpen(!isDrawerOpen);
+                }}
                 className={`relative flex min-h-11 min-w-11 items-center justify-center rounded-2xl border transition-all cursor-pointer shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                  isTenantLanding
-                    ? isHeroTop ? 'border-white/15 bg-slate-950/35 text-emerald-200 shadow-sm hover:bg-slate-950/55' : 'border-slate-200 bg-slate-950 text-emerald-300 shadow-[0_8px_20px_-12px_rgba(15,23,42,.7)] hover:bg-slate-900'
+                  isConsumerHeader
+                    ? 'border-0 bg-transparent text-[#61715d] shadow-none hover:bg-[#edf2ed]'
                     : isAdminRole
                     ? 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:border-emerald-500/50 hover:bg-slate-800'
                     : 'bg-slate-900/90 text-emerald-400 border-slate-800 hover:bg-slate-800'
@@ -449,24 +417,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                   whileHover={{ scale: 1.04 }}
                   whileTap={{ scale: 0.96 }}
                   onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
-                  aria-label={isTenantLanding ? `Profile menu for ${user?.fullName || role}` : undefined}
-                  aria-expanded={isTenantLanding ? profileDropdownOpen : undefined}
-                  className={`flex min-h-11 min-w-11 items-center justify-center gap-2 ${isTenantLanding ? 'rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300' : 'rounded-2xl'} border p-1.5 transition-all shadow-md ${
-                    isTenantLanding
-                      ? 'border-white/15 bg-slate-950/90 text-white shadow-[0_10px_26px_-15px_rgba(0,0,0,.75)] hover:bg-slate-950'
+                  aria-label={isConsumerHeader ? `Profile menu for ${user?.fullName || role}` : undefined}
+                  aria-expanded={isConsumerHeader ? profileDropdownOpen : undefined}
+                  className={`flex min-h-11 min-w-11 items-center justify-center gap-2 ${isConsumerHeader ? 'rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300' : 'rounded-2xl'} border p-1.5 transition-all shadow-md ${
+                    isConsumerHeader
+                      ? 'border-0 bg-transparent text-[#61715d] shadow-none hover:bg-[#edf2ed]'
                       : isAdminRole
                       ? 'bg-slate-900 border-slate-800 text-white hover:border-emerald-500/40'
                       : 'bg-slate-900 border-slate-800 text-white'
                   }`}
                 >
-                  <div className={`w-7 h-7 ${isTenantLanding ? 'rounded-full' : 'rounded-xl'} flex items-center justify-center font-extrabold text-xs shadow-inner ${
-                    isTenantLanding ? 'bg-emerald-400 text-slate-950' : role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'bg-gradient-to-tr from-amber-500 to-amber-300 text-slate-950' :
+                  <div className={`w-7 h-7 ${isConsumerHeader ? 'rounded-full' : 'rounded-xl'} flex items-center justify-center font-extrabold text-xs shadow-inner ${
+                    isConsumerHeader ? 'bg-[#e8ded4] text-[#675145]' : role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'bg-gradient-to-tr from-amber-500 to-amber-300 text-slate-950' :
                     role === 'SUB_ADMIN' ? 'bg-gradient-to-tr from-purple-600 to-purple-400 text-white' :
                     role === 'EMPLOYEE' ? 'bg-gradient-to-tr from-indigo-600 to-indigo-400 text-white' : 'bg-emerald-500 text-slate-950'
                   }`}>
                     {user?.fullName ? user.fullName.charAt(0).toUpperCase() : role.charAt(0)}
                   </div>
-                  <span className="text-xs font-bold max-w-[180px] sm:max-w-[220px] truncate hidden sm:inline text-slate-200">
+                  <span className={`text-xs font-bold max-w-[180px] sm:max-w-[220px] truncate hidden sm:inline ${isConsumerHeader ? 'text-[#39483d]' : 'text-slate-200'}`}>
                     {user?.fullName || role}
                   </span>
                   <ChevronDown className={`hidden h-3.5 w-3.5 text-slate-400 transition-transform duration-300 sm:block ${profileDropdownOpen ? 'rotate-180' : ''}`} />
@@ -477,7 +445,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       initial={{ opacity: 0, scale: 0.95, y: 8 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       transition={{ type: 'spring', stiffness: 450, damping: 28 }}
-                      className="absolute right-0 mt-1 w-60 bg-slate-950 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 py-2 z-50 overflow-hidden"
+                      className={`absolute right-0 mt-1 w-60 rounded-2xl border py-2 shadow-2xl z-50 overflow-hidden ${isConsumerHeader ? 'tenant-v0-profile-dropdown border-[#e9e7e1] bg-white text-[#252b25]' : 'border-slate-800 bg-slate-950 text-slate-100'}`}
                     >
                       <div className="px-4 py-3 border-b border-slate-800/80 bg-slate-900/60">
                         <p className="text-xs font-bold text-white flex items-center justify-between">
@@ -490,10 +458,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                             {role}
                           </span>
                         </p>
-                        <p className="text-[11px] text-slate-400 truncate mt-0.5">{user?.email || 'admin@pathome.in'}</p>
+                        {user?.email && <p className="text-[11px] text-slate-400 truncate mt-0.5">{user.email}</p>}
                       </div>
 
                       <div className="p-1">
+                        {isConsumerHeader && role === 'TENANT' && <button type="button" onClick={() => { setProfileDropdownOpen(false); navigate('/tenant#account'); }}
+                          className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+                          <User className="h-4 w-4" />Your account
+                        </button>}
                         {showMyProperties && (
                           <button
                             onClick={() => { setProfileDropdownOpen(false); navigate('/lessor'); }}
@@ -615,32 +587,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
         </AnimatePresence>
 
-        <AnimatePresence>
-          {mobileMenuOpen && isTenantLanding && (
-            <motion.nav id="tenant-navigation-drawer" aria-label="Tenant navigation"
-              initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }} transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
-              className={`overflow-hidden border-b lg:hidden ${isHeroTop ? 'border-white/10 bg-slate-950/95 text-white backdrop-blur-2xl' : 'border-slate-200 bg-white/98 text-slate-900 shadow-xl backdrop-blur-2xl'}`}>
-              <div className="mx-auto grid max-w-7xl gap-1 px-4 py-3">
-                {[
-                  { label: 'Home', id: 'tenant-home-search' },
-                  { label: 'Saved Homes', id: 'saved-homes-title' },
-                  { label: 'Visit Requests', id: 'visit-history-title' }
-                ].map(item => (
-                  <button key={item.id} type="button" onClick={() => scrollTenantSection(item.id)}
-                    className={`flex min-h-11 items-center rounded-xl px-3.5 text-left text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${isHeroTop ? 'text-white/90 hover:bg-white/10 hover:text-white' : 'text-slate-700 hover:bg-slate-100 hover:text-emerald-800'}`}>
-                    {item.label}
-                  </button>
-                ))}
-                {(draftState === 'error' || draftState === 'ready' && draftCount > 0) && <div className="mt-2 border-t border-current/10 pt-2">
-                  <DraftAccessButton count={draftCount} state={draftState}
-                    onOpen={() => { setMobileMenuOpen(false); onOpenDrafts(); }}
-                    onRetry={() => { setMobileMenuOpen(false); onRetryDrafts(); }} dark={isHeroTop} />
-                </div>}
-              </div>
-            </motion.nav>
-          )}
-        </AnimatePresence>
       </header>
 
       {/* Post Your Property Informational Modal */}

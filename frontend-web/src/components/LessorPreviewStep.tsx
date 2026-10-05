@@ -13,7 +13,7 @@ const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounde
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 
 function SummarySection({ title, onEdit, children }: { title: string; onEdit: () => void; children: React.ReactNode }) {
-  return <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:p-5">
+  return <section className="lessor-v0-review-section min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:p-5">
     <div className="flex min-w-0 items-start justify-between gap-3">
       <h2 className="font-['Outfit',sans-serif] text-lg font-semibold text-slate-950">{title}</h2>
       <button type="button" onClick={onEdit} aria-label={`Edit ${title.toLowerCase()}`}
@@ -122,8 +122,9 @@ export function LessorPreviewStep({ draftId, onEdit, onSubmitted, guest = false,
   const visibleMissing = (hasActiveUploads || stagedMedia.length > 0)
     ? preview.missingRequirements.filter(requirement => requirement !== 'choose a cover photo')
     : preview.missingRequirements;
-  return <div>
-    <h1 className="font-['Outfit',sans-serif] text-2xl font-bold text-slate-950 sm:text-3xl">Review your property</h1>
+  return <div className="lessor-v0-review">
+    <p className="tenant-v0-eyebrow">ONE LAST LOOK</p>
+    <h1 className="font-serif text-2xl font-normal text-[#344236] sm:text-3xl">Review your property</h1>
     <p className="mt-2 text-sm leading-relaxed text-slate-600">Check each section before submitting for review. Your full address and contact stay private.</p>
     <div className="mt-5 grid gap-3 sm:gap-4 lg:grid-cols-2">
       <SummarySection title="Photos" onEdit={() => onEdit('media')}>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { createPortal } from 'react-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   motion,
   AnimatePresence,
@@ -39,6 +40,10 @@ function formatTimeAgo(date: Date): string {
 
 export const NotificationCenterDrawer: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const consumerSurface = /^\/(tenant|lessor|property)(?:\/|$)/.test(location.pathname);
+  const pageMode = location.pathname.replace(/\/+$/, '') === '/tenant' && location.hash === '#notifications';
+  const [pageTarget, setPageTarget] = useState<HTMLElement | null>(null);
   const shouldReduceMotion = useReducedMotion();
 
   const {
@@ -57,6 +62,11 @@ export const NotificationCenterDrawer: React.FC = () => {
   } = useNotification();
 
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+
+  useEffect(() => {
+    setPageTarget(pageMode ? document.getElementById('tenant-notifications-root') : null);
+    if (pageMode) setSelectedCategory('ALL');
+  }, [pageMode]);
 
   // Handle ESC key to close drawer and restore focus
   useEffect(() => {
@@ -119,30 +129,16 @@ export const NotificationCenterDrawer: React.FC = () => {
     return resolveNotificationActionLabel(item);
   };
 
-  return (
-    <AnimatePresence>
-      {isDrawerOpen && (
-        <>
-          {/* BACKDROP OVERLAY */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setIsDrawerOpen(false)}
-            className="fixed inset-0 bg-slate-950/70 backdrop-blur-md z-[9990]"
-            aria-hidden="true"
-          />
-
-          {/* SLIDE-OVER NOTIFICATION CENTER DRAWER */}
+  const panel = (
           <motion.aside
-            initial={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
-            animate={shouldReduceMotion ? { opacity: 1 } : { x: 0 }}
-            exit={shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+            initial={pageMode ? false : shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
+            animate={pageMode ? undefined : shouldReduceMotion ? { opacity: 1 } : { x: 0 }}
+            exit={pageMode ? undefined : shouldReduceMotion ? { opacity: 0 } : { x: '100%' }}
             transition={{ type: 'spring', stiffness: 350, damping: 30 }}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Notifications Panel"
-            className="fixed top-0 right-0 h-full w-full max-w-md bg-slate-950 text-white border-l border-slate-800 shadow-2xl z-[9995] flex flex-col justify-between overflow-hidden"
+            role={pageMode ? undefined : 'dialog'}
+            aria-modal={pageMode ? undefined : true}
+            aria-label={pageMode ? 'Notifications' : 'Notifications Panel'}
+            className={`${pageMode ? 'tenant-v0-notifications-page' : 'fixed top-0 right-0 h-full w-full max-w-md border-l shadow-2xl z-[9995]'} bg-slate-950 text-white border-slate-800 flex flex-col justify-between overflow-hidden ${consumerSurface ? 'tenant-v0-notifications' : ''}`}
           >
             {/* AMBIENT AURORA BACKGROUND MESH */}
             <div className="absolute -top-32 -right-32 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -150,7 +146,8 @@ export const NotificationCenterDrawer: React.FC = () => {
 
             {/* HEADER */}
             <div className="relative z-10 border-b border-slate-800/80 p-4 sm:p-5">
-              <div className="flex items-center justify-between gap-3">
+              {pageMode && <div className="tenant-v0-notifications-count">{unreadCount} unread</div>}
+              {!pageMode && <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
                   <div className="w-9 h-9 shrink-0 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center font-bold shadow-lg shadow-emerald-500/20 sm:h-10 sm:w-10">
                     <Bell className="w-5 h-5" aria-hidden="true" />
@@ -176,7 +173,7 @@ export const NotificationCenterDrawer: React.FC = () => {
                 >
                   <X className="w-5 h-5" aria-hidden="true" />
                 </button>
-              </div>
+              </div>}
 
               {/* ACTION BAR */}
               <div className="flex items-center justify-between gap-2 mt-4 pt-3 border-t border-slate-800/60">
@@ -190,20 +187,19 @@ export const NotificationCenterDrawer: React.FC = () => {
                   <span>Mark All Read</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={clearHistory}
-                  disabled={history.length === 0}
-                  className="min-h-11 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-rose-300 text-xs font-bold font-mono rounded-xl border border-slate-800 transition-all cursor-pointer flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-                >
-                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Clear Log</span>
-                </button>
+                {consumerSurface ? <button type="button" onClick={() => void refetchNotifications()}
+                  disabled={isLoading}
+                  className="min-h-11 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-emerald-300 text-xs font-bold font-mono rounded-xl border border-slate-800 transition-all cursor-pointer flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" /><span>Refresh</span>
+                </button> : <button type="button" onClick={clearHistory} disabled={history.length === 0}
+                  className="min-h-11 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-rose-300 text-xs font-bold font-mono rounded-xl border border-slate-800 transition-all cursor-pointer flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
+                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" /><span>Clear Log</span>
+                </button>}
               </div>
 
               {/* CATEGORY FILTER TABS */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 mt-3 no-scrollbar" role="tablist">
-                {['ALL', 'PROPERTY', 'AI_ENGINE', 'SYSTEM'].map(cat => {
+                {(consumerSurface ? ['ALL', 'VISIT_SESSION', 'PROPERTY', 'SYSTEM', 'AI_ENGINE'] : ['ALL', 'PROPERTY', 'AI_ENGINE', 'SYSTEM']).map(cat => {
                   const isActive = selectedCategory === cat;
                   return (
                     <button
@@ -218,9 +214,10 @@ export const NotificationCenterDrawer: React.FC = () => {
                           : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200'
                       }`}
                     >
-                      {cat === 'ALL' ? '🌐 All' :
-                       cat === 'PROPERTY' ? '🏢 Properties' :
-                       cat === 'AI_ENGINE' ? '⚡ AI Engine' : '⚙️ System'}
+                      {cat === 'ALL' ? 'All' :
+                       cat === 'VISIT_SESSION' ? 'Visits' :
+                       cat === 'PROPERTY' ? 'Properties' :
+                       cat === 'AI_ENGINE' ? 'AI Engine' : 'System'}
                     </button>
                   );
                 })}
@@ -274,7 +271,7 @@ export const NotificationCenterDrawer: React.FC = () => {
                 <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-slate-500 font-mono space-y-2">
                   <Bell className="w-10 h-10 text-slate-700" aria-hidden="true" />
                   <p className="text-sm font-bold text-slate-300">You're all caught up.</p>
-                  <span className="text-xs text-slate-500 max-w-xs">Updates about your properties will appear here.</span>
+                  <span className="text-xs text-slate-500 max-w-xs">Updates about your {consumerSurface ? 'visits, homes, and account' : 'properties'} will appear here.</span>
                 </div>
               ) : (
                 /* NOTIFICATION CARDS */
@@ -331,7 +328,7 @@ export const NotificationCenterDrawer: React.FC = () => {
                         <div className="flex items-center justify-between gap-2 pt-1 text-[10px] font-mono text-slate-500">
                           <span>{formatTimeAgo(new Date(item.createdAt))}</span>
 
-                          {(item.actionTarget || item.actionType) && (
+                          {(item.actionTarget || item.actionType || (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT')) && (
                             <span className="inline-flex min-h-[44px] items-center gap-1 font-semibold text-emerald-400 hover:text-emerald-300">
                               <span>{getActionLabel(item)}</span>
                               <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
@@ -347,11 +344,19 @@ export const NotificationCenterDrawer: React.FC = () => {
 
             {/* FOOTER */}
             <div className="p-4 border-t border-slate-800/80 bg-slate-950/90 text-center font-mono text-[10px] text-slate-500 relative z-10">
-              Pathome Workflow Notification Engine Active
+              Your Dreams, Our Efforts.
             </div>
           </motion.aside>
-        </>
-      )}
+  );
+  if (pageMode) return pageTarget ? createPortal(panel, pageTarget) : null;
+  return (
+    <AnimatePresence>
+      {isDrawerOpen && <>
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          onClick={() => setIsDrawerOpen(false)}
+          className="fixed inset-0 bg-slate-950/70 backdrop-blur-md z-[9990]" aria-hidden="true" />
+        {panel}
+      </>}
     </AnimatePresence>
   );
 };

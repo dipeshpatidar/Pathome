@@ -6138,3 +6138,68 @@ Address the final visual QA blocker for Phase 2A where active local property lis
   - Deleted disposable QA tenant visit requests (zero remaining).
 
 Commit: not created. Push: not attempted. Phase 2B: not started.
+
+## 2026-10-05 11:40 IST — Final Surgical V0 Parity Pass (Visits Geometry, Mobile Search & Saved Badge)
+
+### Why this work was requested
+Perform the final presentation and responsive parity pass for Pathome tenant UI across three confirmed visual mismatches:
+1. Desktop Visits content geometry: previously stretched and left-aligned too close to sidebar.
+2. Mobile Explore search: previously 4 full rows and significantly taller than approved v0.
+3. Mobile Saved dock icon: missing real saved-property numeric badge.
+
+### Exact Areas Changed
+- `frontend-web/src/tenantV0.css`:
+  - Centered desktop Visits section with `max-width: 900px; margin-inline: auto; padding-top: 13px;` matching v0 editorial left inset. At mobile (<=600px), preserved fluid 100% card layout with `padding-top: 4px;`.
+  - Compacted mobile Explore search into exact 3-row layout: Row 1 integrates City selector and Location/Keyword input side-by-side (min-height 46px), Row 2 houses Home Type (flex 40%) and Filters (flex 78px) with top border, Row 3 houses full-width Find homes CTA (40px height with 4px top margin).
+  - Added relative positioning and circular sage/forest numeric badge styles for `.tenant-v0-mobile-nav button i` matching v0.
+- `frontend-web/src/utils/tenantMobileDock.ts`:
+  - Extended `TenantMobileDockBadges` to include `savedCount: number | null`.
+  - Updated `tenantMobileDockBadges` to accept `authoritativeSavedCount` and return number only when > 0.
+- `frontend-web/src/tests/tenantMobileDock.test.mjs`:
+  - Added unit tests verifying Saved badge behavior for undefined, null, zero, negative, and positive counts.
+- `frontend-web/src/components/TenantDashboard.tsx`:
+  - Connected mobile dock Saved item to authoritative `savedCount` derived from `visibleSavedHomes` and `visibleFavoriteIds`.
+  - Rendered numeric badge `<i>{count > 99 ? "99+" : count}</i>` on Saved heart when saved homes exist.
+  - Added accessible `aria-label` conveying saved count to assistive tech without visual clutter.
+
+### Verification Performed
+- `node --test src/tests/*.test.mjs`: PASS (524 passed, 0 failed, 5 todo).
+- `npm run build`: PASS (TypeScript and Vite production build succeeded).
+- `git diff --check`: PASS (clean diff, 0 whitespace warnings).
+
+Commit: not created. Push: not attempted.
+
+## 2026-10-05 15:20 IST — Quick View Fullscreen Swipe-Down Exit Enhancement
+
+### Why this work was requested
+Implement mobile/touch downward-swipe-to-exit for Quick View video in fullscreen:
+- Swiping down in fullscreen dismisses fullscreen and returns to the existing Quick View modal.
+- Active media item is preserved (no change to activeMediaIndex).
+- Quick View modal remains open (downward swipe never dismisses the entire Quick View modal).
+- Sensible playback state is preserved without forced pauses or disruptions.
+- Preserves horizontal swipes for previous/next media navigation.
+- Excludes interactive controls (seek, play/pause, mute, fullscreen button, close button).
+- Truthfully handles and documents native iOS video fullscreen limitations.
+
+### Exact Areas Changed
+- `frontend-web/src/utils/quickViewMedia.ts`:
+  - Added `'EXIT_FULLSCREEN'` to `QuickViewStageAction`.
+  - Added `fullscreen?: boolean` to `QuickViewStageGesture`.
+  - Implemented `resolveQuickViewDownwardSwipe(startX, startY, endX, endY, threshold = 80)`: checks `deltaY >= threshold && Math.abs(deltaY) > Math.abs(deltaX)`.
+  - Updated `resolveQuickViewStageAction`: prioritizes horizontal swipe navigation when `abs(deltaX) > abs(deltaY)`; if not horizontal and `gesture.fullscreen` is active and downward swipe is detected, resolves to `'EXIT_FULLSCREEN'`.
+  - Implemented `isQuickViewFullscreenActive(mode, stageElement)` and `exitQuickViewFullscreen({ fullscreenMode, stageElement, videoElement, onFullscreenModeChange, onActivity })`.
+- `frontend-web/src/components/TenantDashboard.tsx`:
+  - Imported `exitQuickViewFullscreen` and `isQuickViewFullscreenActive`.
+  - In `handleMediaPointerUp`: computed `isFullscreen` and passed it to `resolveQuickViewStageAction`.
+  - On `action === 'EXIT_FULLSCREEN'`, invoked `exitQuickViewFullscreen` to exit app-fallback or standard browser fullscreen, keeping Quick View modal open and activeMediaIndex unchanged.
+- `frontend-web/src/tests/quickViewMedia.test.mjs`:
+  - Added tests for downward swipe classifier (`resolveQuickViewDownwardSwipe`), stage gesture resolution with `fullscreen: true`, horizontal swipe preservation, diagonal movement distinction, and `exitQuickViewFullscreen` exit flows.
+- `frontend-web/src/tests/quickViewFullscreenInteraction.test.mjs`:
+  - Added interaction integration test verifying TenantDashboard wires downward swipe to exit fullscreen without closing Quick View or changing active media index.
+
+### Verification Performed
+- `node --test src/tests/*.test.mjs`: PASS (552 passed, 0 failed, 5 todo).
+- `npm run build`: PASS (tsc and vite production build succeeded cleanly).
+- `git diff --check`: PASS (clean diff, 0 whitespace or formatting issues).
+
+Commit: not created. Push: not attempted.

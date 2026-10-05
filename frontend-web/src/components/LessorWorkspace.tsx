@@ -7,6 +7,9 @@ import {
   ArrowRight,
   Building2,
   Home,
+  Heart,
+  CalendarDays,
+  KeyRound,
   Building,
   Sparkles,
   Hotel,
@@ -42,6 +45,8 @@ import { LessorOnboardingHeader } from './LessorOnboardingHeader';
 import { LessorProgressBar, OnboardingStepKey } from './LessorProgressBar';
 import { DraftAccessState } from './DraftAccessButton';
 import { LessorLivePreview } from './LessorLivePreview';
+import { TenantNavigationRail } from './TenantNavigationRail';
+import { TenantMobileDock } from './TenantMobileDock';
 import { bhkChoice, exactBhk, pricingReady } from '../utils/lessorConfiguration';
 import { normalizeRoutePathname, resolveAppHeaderOwner, resolveLessorExitPath } from '../utils/navigationPolicy';
 import { changeLocationCity, changeLocalityText, chooseLocalityOption, locationValidationError,
@@ -67,9 +72,9 @@ const PROPERTY_TYPES: PropertyTypeOption[] = [
 ];
 
 const BHK_OPTIONS = ['1RK', '1BHK', '2BHK', '3BHK', '4+'] as const;
-const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
-const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:border-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500';
-const FIELD = 'min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200';
+const BUTTON = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-[#355c49] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#284a38] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84] disabled:cursor-not-allowed disabled:opacity-50';
+const SECONDARY = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[#e9e7e1] bg-white px-4 py-2.5 text-sm font-semibold text-[#355c49] hover:border-[#b9c4b3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7b9b84]';
+const FIELD = 'min-h-11 w-full rounded-md border border-[#e2e0d9] bg-white px-3 text-base text-[#252b25] outline-none focus:border-[#7b9b84] focus:ring-2 focus:ring-[#e9eee8]';
 
 function notifyDraftListChanged() {
   window.dispatchEvent(new Event('pathome_lessor_drafts_changed'));
@@ -98,6 +103,7 @@ function PropertySubmittedState({ onDone, alreadySubmitted = false }: { onDone: 
 
 export function LessorWorkspace({
   user,
+  savedCount,
   hasLessorCapability,
   draftCount,
   draftState,
@@ -105,6 +111,7 @@ export function LessorWorkspace({
   onRequestAuth
 }: {
   user: UserProfile | null;
+  savedCount: number | null;
   hasLessorCapability: boolean | null | 'error';
   draftCount: number;
   draftState: DraftAccessState;
@@ -344,9 +351,18 @@ export function LessorWorkspace({
 
   const goToDraftHub = () => navigate('/lessor?view=drafts');
   const editorVisible = !submissionComplete && !!draftId && (!user || !draftId.startsWith('guest-') || ownerDraft);
+  const sharedConsumerShell = user?.role === 'TENANT' && !isNew && !editorVisible;
+  const openTenantSection = (section: 'home' | 'saved' | 'visits' | 'filters') => {
+    const hash = section === 'saved' ? '#saved-homes-title' : section === 'visits' ? '#visit-history' : '#tenant-home-search';
+    navigate(`/tenant${hash}`);
+  };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50">
+    <div className={`lessor-v0-workspace flex min-h-screen flex-col bg-[#f8f7f4] ${sharedConsumerShell ? 'lessor-v0-shared-shell' : ''}`}>
+      {sharedConsumerShell && <TenantNavigationRail activeItem="lessor" onNavigate={openTenantSection}
+        onOpenLessor={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        onOpenAccount={() => navigate('/tenant', { state: { openTenantAccount: true } })}
+        hasLessorCapability={hasLessorCapability} savedCount={savedCount} accountName={user.fullName || ''} />}
       {/* Focus shell ownership mirrors Home's global-navbar route classifier. */}
       {isNew && (
         <LessorOnboardingHeader
@@ -389,7 +405,7 @@ export function LessorWorkspace({
         />
       )}
 
-      {!editorVisible && <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-4 sm:px-6 lg:pt-8">
+      {!editorVisible && <main className={`mx-auto w-full ${isNew ? 'lessor-v0-wizard max-w-[800px]' : 'max-w-6xl'} flex-1 px-4 pt-4 sm:px-6 lg:pt-8 ${sharedConsumerShell ? 'pb-[calc(6rem+env(safe-area-inset-bottom))] lg:pb-10' : 'pb-[calc(2.5rem+env(safe-area-inset-bottom))]'}`}>
       {!submissionComplete && !isNew && !draftId && !listingId && user && hasLessorCapability === null && (
           <div className="flex min-h-48 items-center justify-center gap-3 text-slate-600">
             <LoaderCircle className="h-5 w-5 animate-spin motion-reduce:animate-none" />
@@ -462,11 +478,9 @@ export function LessorWorkspace({
               <LessorProgressBar currentStep="type" />
             </div>
 
-            {/* 2-COLUMN DESKTOP LAYOUT */}
-            <div className="lg:grid lg:grid-cols-12 lg:gap-8 xl:gap-10">
-              {/* LEFT: STEP 1 FORM */}
-              <div className="lg:col-span-7 xl:col-span-7">
-                <div className="rounded-2xl border border-slate-200/90 bg-white p-6 sm:p-8 shadow-xs">
+            <div className="lessor-v0-wizard-body">
+              <div className="min-w-0">
+                <div className="lessor-v0-form-card rounded-[10px] border border-[#e9e7e1] bg-white p-6 sm:p-8">
                   <h1 className="font-['Outfit',sans-serif] text-2xl sm:text-3xl font-bold tracking-tight text-slate-950">
                     What kind of home is it?
                   </h1>
@@ -557,12 +571,12 @@ export function LessorWorkspace({
                         </>
                       )}
                     </button>
-                  </div>
-                </div>
+      </div>
+    </div>
               </div>
 
-              {/* RIGHT: DESKTOP LIVE PREVIEW */}
-              <div className="hidden lg:col-span-5 lg:block xl:col-span-5">
+              <details className="lessor-v0-live-preview">
+                <summary>Preview as you go</summary>
                 <LessorLivePreview
                   propertyType={selectedType}
                   bhkCount={null}
@@ -570,7 +584,7 @@ export function LessorWorkspace({
                   securityDeposit={null}
                   mediaCount={0}
                 />
-              </div>
+              </details>
             </div>
           </section>
         )}
@@ -672,6 +686,10 @@ export function LessorWorkspace({
           </div>
         )}
       </main>}
+      {sharedConsumerShell && <TenantMobileDock activeItem="lessor" savedCount={savedCount}
+        hasLessorCapability={hasLessorCapability}
+        onNavigate={section => openTenantSection(section)}
+        onOpenListings={() => window.scrollTo({ top: 0, behavior: 'smooth' })} />}
       <LessorContactModal
         isOpen={showWorkspaceContactModal}
         initialFullName={workspaceContactInitial.name}
@@ -1127,7 +1145,7 @@ function LessorEditor({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="lessor-v0-editor min-h-screen bg-[#f8f7f4]">
       {/* ONBOARDING HEADER */}
       <LessorOnboardingHeader
         status={status}
@@ -1153,7 +1171,7 @@ function LessorEditor({
         onDiscard={handleDiscard}
       />
 
-      <main className="mx-auto w-full max-w-6xl space-y-6 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 lg:pt-8">
+      <main className="lessor-v0-wizard mx-auto w-full max-w-[800px] space-y-6 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 lg:pt-8">
 
       {/* GUIDED PROGRESS EXPERIENCE */}
       <div className="mx-auto max-w-4xl pb-2">
@@ -1173,11 +1191,9 @@ function LessorEditor({
         </div>
       )}
 
-      {/* DESKTOP LAYOUT (2 COLUMNS FOR STEPS 2-6, FULL-WIDTH FOR REVIEW) */}
-      <div className={step === 'preview' ? 'mx-auto max-w-3xl' : 'lg:grid lg:grid-cols-12 lg:gap-8 xl:gap-10'}>
-        {/* LEFT COLUMN: ACTIVE STEP FORM */}
-        <div className={step === 'preview' ? 'w-full' : 'lg:col-span-7 xl:col-span-7'}>
-          <div className="rounded-2xl border border-slate-200/90 bg-white p-6 sm:p-8 shadow-xs">
+      <div className="lessor-v0-wizard-body">
+        <div className="min-w-0">
+          <div className="lessor-v0-form-card rounded-[10px] border border-[#e9e7e1] bg-white p-6 sm:p-8">
             <AnimatePresence mode="wait" custom={direction}>
               <motion.div
                 key={step}
@@ -1629,9 +1645,9 @@ function LessorEditor({
           </div>
         </div>
 
-        {/* RIGHT COLUMN: DESKTOP LIVE PREVIEW PANEL (HIDDEN ON REVIEW STEP & MOBILE) */}
         {step !== 'preview' && (
-          <div className="hidden lg:col-span-5 lg:block xl:col-span-5">
+          <details className="lessor-v0-live-preview">
+            <summary>Preview as you go</summary>
             <LessorLivePreview
               propertyType={basics.propertyType}
               bhkCount={basics.bhkCount}
@@ -1645,7 +1661,7 @@ function LessorEditor({
               furnishingStatus={details.furnishingStatus}
               totalAreaSqFt={details.totalAreaSqFt}
             />
-          </div>
+          </details>
         )}
       </div>
       </main>

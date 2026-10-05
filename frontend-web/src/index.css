@@ -493,24 +493,7 @@
 }
 
 @layer components {
-  .tenant-discovery-rail {
-    position: relative;
-  }
-
   @media (min-width: 1024px) {
-    .tenant-discovery-rail {
-      position: sticky;
-      top: var(--tenant-discovery-rail-top, 94px);
-      align-self: start;
-      display: flex;
-      flex-direction: column;
-      max-height: calc(100dvh - var(--tenant-discovery-rail-top, 94px) - 16px);
-    }
-
-    .tenant-discovery-rail > details {
-      flex: none;
-    }
-
     .tenant-quick-refine-panel {
       display: flex;
       min-height: 0;
@@ -532,20 +515,5 @@
       scrollbar-width: thin;
     }
 
-    .tenant-discovery-rail:has(> details[open]) {
-      overflow-y: auto;
-      scrollbar-color: #b7c8b5 transparent;
-      scrollbar-width: thin;
-    }
-
-    .tenant-discovery-rail:has(> details[open]) .tenant-quick-refine-panel,
-    .tenant-discovery-rail:has(> details[open]) .tenant-quick-refine-panel-content,
-    .tenant-discovery-rail:has(> details[open]) .tenant-quick-refine-scroll-body {
-      flex: none;
-    }
-
-    .tenant-discovery-rail:has(> details[open]) .tenant-quick-refine-scroll-body {
-      overflow-y: visible;
-    }
   }
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { belongsToTenantVisitSession, readTenantVisitSession, isCurrentTenantVisitSession } from '../utils/tenantVisitSession.ts';
-import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
+import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitAcknowledgement, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
 
 const withSession = (userId, token) => {
   const values = new Map([
@@ -40,13 +40,19 @@ test('request-aware CTAs distinguish active request states from terminal request
   assert.equal(isActiveTenantVisitRequest('SCHEDULED'), true);
   assert.equal(isActiveTenantVisitRequest('UNAVAILABLE'), false);
   assert.equal(isActiveTenantVisitRequest('CANCELLED'), false);
-  assert.equal(tenantVisitCtaLabel('UNAVAILABLE'), null);
-  assert.equal(tenantVisitCtaLabel('CANCELLED'), null);
+  assert.equal(tenantVisitCtaLabel('UNAVAILABLE'), 'View My Visits');
+  assert.equal(tenantVisitCtaLabel('CANCELLED'), 'View My Visits');
   assert.equal(tenantVisitStatusLabel('UNAVAILABLE'), 'Owner unavailable for visits');
   assert.equal(tenantVisitStatusLabel('CANCELLED'), 'Request cancelled');
 });
 
-test.todo('an existing terminal-request acknowledgement is not presented as a newly created request');
+test('only a newly created received request gets a fresh-request acknowledgement', () => {
+  assert.equal(tenantVisitAcknowledgement('RECEIVED', true).title, 'Visit request received');
+  assert.equal(tenantVisitAcknowledgement('UNAVAILABLE', false).title, 'Your existing request was found');
+  assert.equal(tenantVisitAcknowledgement('CANCELLED', false).title, 'Your existing request was found');
+  assert.equal(tenantVisitAcknowledgement('RECEIVED', false).title, 'Your existing request was found');
+  assert.match(tenantVisitAcknowledgement('UNAVAILABLE', false).detail, /unavailable for visits/i);
+});
 
 test('compact Visit Requests summary stays truthful for loading, error, empty, and populated states', () => {
   assert.equal(tenantVisitSummary('loading', 0), 'Loading requests…');

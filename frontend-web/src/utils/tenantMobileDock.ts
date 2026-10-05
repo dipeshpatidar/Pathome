@@ -4,6 +4,7 @@ import type { RentalSearchFilters } from './rentalSearch.ts';
 export interface TenantMobileDockBadges {
   filterCount: number | null;
   visitCount: number | null;
+  savedCount: number | null;
 }
 
 export function shouldRenderTenantMobileDock(
@@ -16,15 +17,20 @@ export function shouldRenderTenantMobileDock(
 
 export function tenantMobileDockBadges(
   filters: RentalSearchFilters,
-  authoritativeActiveVisitCount?: number | null
+  authoritativeActiveVisitCount?: number | null,
+  authoritativeSavedCount?: number | null
 ): TenantMobileDockBadges {
   const filtersCount = quickRefineActiveCount(filters);
   const visitsCount = Number.isSafeInteger(authoritativeActiveVisitCount) && (authoritativeActiveVisitCount ?? 0) > 0
     ? authoritativeActiveVisitCount as number
     : null;
+  const savedCount = Number.isSafeInteger(authoritativeSavedCount) && (authoritativeSavedCount ?? 0) > 0
+    ? authoritativeSavedCount as number
+    : null;
   return {
     filterCount: filtersCount > 0 ? filtersCount : null,
-    visitCount: visitsCount
+    visitCount: visitsCount,
+    savedCount: savedCount
   };
 }
 
@@ -34,7 +40,7 @@ export function tenantMobileDockTarget(item: TenantMobileDockItem): string | nul
   switch (item) {
     case 'home': return 'tenant-home-search';
     case 'filters': return null;
-    case 'visits': return 'visit-history-title';
+    case 'visits': return 'tenant-visits-page-title';
     case 'saved': return 'saved-homes-title';
   }
 }
