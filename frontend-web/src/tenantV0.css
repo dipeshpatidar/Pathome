@@ -89,6 +89,9 @@
 .tenant-v0-card-title button { max-width: 100%; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .tenant-v0-card-specs { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 0; color: #777a72; font-size: 11px; }
 .tenant-v0-card-specs > span:nth-child(even) { color: #c6c4bd; }
+.tenant-v0-card-updated { display: flex; align-items: center; gap: 5px; margin-top: 9px; color: #85877f; font-size: 9px; line-height: 1.4; }
+.tenant-v0-card-updated svg { flex: 0 0 auto; color: #8b9688; }
+.tenant-v0-card-updated span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tenant-v0-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 11px; border-top: 1px solid #f0eee9; }
 .tenant-v0-card-bottom p { margin: 0; }
 .tenant-v0-card-bottom strong { color: #304c39; font-size: 17px; font-weight: 650; }
@@ -537,6 +540,7 @@
   .tenant-v0-card-body { padding: 12px 11px 10px; }
   .tenant-v0-card-title { font-size: 14px; }
   .tenant-v0-card-specs { gap: 5px; font-size: 8px; }
+  .tenant-v0-card-updated { margin-top: 7px; font-size: 8px; }
 }
 
 /* Port the approved v0 compact composition at its 600px mobile breakpoint. */
@@ -582,6 +586,8 @@
   .tenant-v0-card-title { margin: 7px 0; font-size: 13px; line-height: 1.2; }
   .tenant-v0-card-title button { display: -webkit-box; overflow: hidden; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .tenant-v0-card-specs { gap: 4px; font-size: 7px; }
+  .tenant-v0-card-updated { gap: 3.5px; margin-top: 6px; font-size: 7.5px; }
+  .tenant-v0-card-updated svg { width: 10px; height: 10px; }
   .tenant-v0-card-bottom { padding-top: 8px; }
   .tenant-v0-card-bottom strong { font-size: 12px; overflow-wrap: anywhere; }
   .tenant-v0-card-bottom p { min-width: 0; }

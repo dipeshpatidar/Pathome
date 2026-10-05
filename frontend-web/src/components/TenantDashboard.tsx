@@ -5,8 +5,9 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
 import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
+import { secondsUntilVisitCodeTime } from '../utils/visitExecutionPresentation';
 import { belongsToTenantVisitSession, isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
-import { appendUniqueVisitRequests, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
+import { appendUniqueVisitRequests, tenantRequestStatusForProperty, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView';
 import { buildCloudinaryUrl } from '../utils/mediaTransform';
 import { resetFiltersForManualCityChange, resetFiltersForSearchClear, RentalPropertyType, RentalSearchFilters, discoverySearchKey } from '../utils/rentalSearch';
 import { queueTenantHeroFilterScroll, resolveTenantHeroFilterScroll, type PendingTenantHeroFilterScroll } from '../utils/tenantQuickFilterScroll';
@@ -17,6 +18,7 @@ import { exitQuickViewFullscreen, getQuickViewMedia, isQuickViewFullscreenActive
 import { notifyTenantFavoriteChanged } from '../utils/tenantFavorites';
 import { applyPersistedSavedHomeChange, mergeSavedHomes } from '../utils/tenantSavedHomes';
 import { formatPropertyArea } from '../utils/discoveryCardData';
+import { formatExactPropertyTimestampIST, formatPropertyRelativeTime, parsePropertyTimestamp } from '../utils/propertyTimestamp';
 import { tenantPropertyTypeLabel } from '../utils/tenantPropertyTypeLabel';
 import { TenantQuickRefineMobile } from './TenantQuickRefine';
 import { TenantNavigationRail } from './TenantNavigationRail';
@@ -183,6 +185,9 @@ const SupportingPropertyCard: React.FC<{
     formatPropertyArea(property.totalAreaSqFt),
     formatTenantCardFurnishing(property.furnishingStatus)].filter((fact): fact is string => Boolean(fact));
   const propertyType = tenantPropertyTypeLabel(property.propertyType);
+  const parsedUpdatedDate = parsePropertyTimestamp(property.updatedAt);
+  const relativeUpdated = formatPropertyRelativeTime(parsedUpdatedDate);
+  const exactUpdatedIST = formatExactPropertyTimestampIST(parsedUpdatedDate);
   return <motion.article initial={reduceMotion || typeof IntersectionObserver === 'undefined' ? false : 'hidden'}
     whileInView="visible" whileHover={reduceMotion ? undefined : { y: -2 }} variants={tenantCardRevealVariants}
     viewport={{ once: true, amount: 0.12 }}
@@ -204,6 +209,7 @@ const SupportingPropertyCard: React.FC<{
       {location && <p className="tenant-v0-card-location"><MapPin size={13} aria-hidden="true" />{location}</p>}
       <h3 className="tenant-v0-card-title"><button type="button" onClick={() => onOpenQuickView(property)}>{property.title?.trim() || 'Property'}</button></h3>
       {facts.length > 0 && <p className="tenant-v0-card-specs">{facts.map((fact, index) => <React.Fragment key={`${fact}-${index}`}>{index > 0 && <span aria-hidden="true">·</span>}<span>{fact}</span></React.Fragment>)}</p>}
+      {relativeUpdated && parsedUpdatedDate && <time className="tenant-v0-card-updated" dateTime={parsedUpdatedDate.toISOString()} title={exactUpdatedIST ? `Updated ${exactUpdatedIST}` : undefined}><Clock3 size={12} aria-hidden="true" /><span>Updated {relativeUpdated}</span></time>}
       <div className="tenant-v0-card-bottom">
         <p><strong>{amount !== null ? `₹${amount.toLocaleString('en-IN')}` : 'Price on request'}</strong>{isRent && amount !== null && <span> / month</span>}</p>
         <button type="button" onClick={() => onOpenQuickView(property)} aria-label={`Quick view ${property.title || 'property'}`} className="tenant-v0-card-arrow"><ArrowRight size={17} aria-hidden="true" /></button>
@@ -823,14 +829,24 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   };
 
   useEffect(() => {
-    const refresh = () => setReload(value => value + 1);
-    window.addEventListener('pathome_auth_changed', refresh);
-    window.addEventListener('pathome_visit_request_created', refresh);
-    window.addEventListener('storage', refresh);
+    const refreshRequests = () => setReload(value => value + 1);
+    const refreshIdentity = () => {
+      refreshRequests();
+      setTenantSessionPage(0);
+      setTenantSessionsReload(value => value + 1);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'pathome_auth_token' || event.key === 'pathome_user' || event.key === null) refreshIdentity();
+    };
+    window.addEventListener('pathome_auth_changed', refreshIdentity);
+    window.addEventListener('pathome_visit_request_created', refreshRequests);
+    window.addEventListener('pathome_tenant_visit_notification_opened', refreshIdentity);
+    window.addEventListener('storage', onStorage);
     return () => {
-      window.removeEventListener('pathome_auth_changed', refresh);
-      window.removeEventListener('pathome_visit_request_created', refresh);
-      window.removeEventListener('storage', refresh);
+      window.removeEventListener('pathome_auth_changed', refreshIdentity);
+      window.removeEventListener('pathome_visit_request_created', refreshRequests);
+      window.removeEventListener('pathome_tenant_visit_notification_opened', refreshIdentity);
+      window.removeEventListener('storage', onStorage);
     };
   }, []);
 
@@ -958,17 +974,16 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     }
   };
   useEffect(() => {
-    const hasLiveCode = (now: number) => Object.values(tenantSessionCodes).some(code => {
-      const expiry = Date.parse(code.expiresAt);
-      return Number.isFinite(expiry) && expiry > now;
-    });
+    const hasUpcomingCodeBoundary = (now: number) => Object.values(tenantSessionCodes).some(code =>
+      (secondsUntilVisitCodeTime(code.expiresAt, now) ?? 0) > 0
+      || (secondsUntilVisitCodeTime(code.nextRequestAt, now) ?? 0) > 0);
     const now = Date.now();
     setVisitClock(now);
-    if (!hasLiveCode(now)) return undefined;
+    if (!hasUpcomingCodeBoundary(now)) return undefined;
     const interval = window.setInterval(() => {
       const tick = Date.now();
       setVisitClock(tick);
-      if (!hasLiveCode(tick)) window.clearInterval(interval);
+      if (!hasUpcomingCodeBoundary(tick)) window.clearInterval(interval);
     }, 1000);
     return () => window.clearInterval(interval);
   }, [tenantSessionCodes]);
@@ -1019,8 +1034,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const pastRequests = visibleHistory.requests.filter(request => request.status === 'UNAVAILABLE' || request.status === 'CANCELLED');
   const requestStatusForProperty = (propertyId: number): string | null => {
     if (view === 'loading' || view === 'error') return 'UNKNOWN';
-    const existingRequest = visibleHistory.requests.find(request => request.propertyId === propertyId);
-    return existingRequest?.status ?? (visibleHistory.hasMore ? 'UNKNOWN' : null);
+    // The POST is tenant/listing-idempotent. An older request outside the loaded page returns its existing state.
+    return tenantRequestStatusForProperty(visibleHistory.requests, propertyId);
   };
   const handleTenantRequestVisit = (property: Property) => {
     if (requestStatusForProperty(property.id)) {
@@ -1337,9 +1352,9 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                 const statusLabel = visit.repairState === 'PROPOSED' ? 'New time proposed' : visit.repairState === 'REQUIRED' ? 'Schedule under review' : needsTenantConfirmation && visit.repairState === 'NONE' ? 'Confirmation needed' : tenantVisitOutcomeStatusLabel(outcome, visit.status);
                 const visitDescription = visit.status === 'INTERRUPTED' ? 'Visit interrupted; Operations is reviewing recovery' : visit.repairState === 'REQUIRED' ? 'Schedule under review' : visit.repairState === 'PROPOSED' ? 'New time proposed' : needsTenantConfirmation ? 'Time change awaiting your response' : outcome?.lifecycle === 'RESULTS_NOT_RECORDED' ? 'Results not recorded' : outcome?.outcomeReportAvailable ? tenantVisitOutcomeSummaryText(outcome) : visit.status === 'STARTED' ? 'Visit in progress' : visit.status === 'DRAFT' ? 'Visit time is being arranged' : visit.status === 'CANCELLED' ? 'Visit cancelled' : visit.status === 'NO_SHOW' ? 'Visit marked no-show' : visit.status === 'EXPIRED' ? 'Visit expired' : visit.status === 'COMPLETED' ? 'Visit ended · details pending' : visit.status === 'PROVISIONAL_NO_SHOW' ? 'Attendance under review' : visit.status === 'SCHEDULED' ? 'Confirmed guided visit' : 'Scheduled';
                 const showScheduledTime = visit.status !== 'INTERRUPTED' && visit.repairState !== 'REQUIRED' && visit.status !== 'DRAFT';
-                const expiresAtMs = code ? Date.parse(code.expiresAt) : Number.NaN;
-                const secondsRemaining = Number.isFinite(expiresAtMs) ? Math.max(0, Math.ceil((expiresAtMs - visitClock) / 1000)) : null;
-                const codeExpired = secondsRemaining === 0;
+                const secondsRemaining = code ? secondsUntilVisitCodeTime(code.expiresAt, visitClock) : null;
+                const nextCodeRequestIn = code ? secondsUntilVisitCodeTime(code.nextRequestAt, visitClock) : null;
+                const codeExpired = secondsRemaining === null || secondsRemaining === 0;
                 const needsDefaultOpen = actionRequiredVisits.some(item => item.sessionId === visit.sessionId) || visit.status === 'STARTED';
                 return <article id={`visit-session-${visit.sessionId}`} key={visit.sessionId} className="min-w-0 scroll-mt-24">
                   <details open={visitSessionOpenState[visit.sessionId] ?? needsDefaultOpen}
@@ -1385,7 +1400,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                   </div>}
                   {visit.arrivedAt && <p className="mt-1 text-xs font-medium text-emerald-900">Ground Executive arrived · {formatVisitTime(visit.arrivedAt, visit.zoneId)}.</p>}
                   {visit.startedAt && <p className="mt-1 text-xs text-slate-600">Started {formatVisitTime(visit.startedAt, visit.zoneId)}{visit.expectedEndAt ? ` · expected end ${formatVisitTime(visit.expectedEndAt, visit.zoneId)}` : ''}{visit.overPlannedTime ? ' · running over planned time' : ''}</p>}
-                  {visit.tenantEtaAt && <p className="mt-1 text-xs text-slate-600">Your confirmed ETA: {formatVisitTime(visit.tenantEtaAt, visit.zoneId)}.</p>}
+                  {visit.tenantEtaAt && <p className="mt-1 text-xs text-slate-600">Reported visit ETA: {formatVisitTime(visit.tenantEtaAt, visit.zoneId)}.</p>}
                   {visit.repairState === 'PROPOSED' && <p className="mt-2 rounded-lg bg-sky-50 p-2 text-xs leading-5 text-sky-950">This time is proposed and will be confirmed only after you accept it.</p>}
                   {visit.repairState === 'REQUIRED' && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-950">Your earlier visit time can no longer be confirmed. Operations is arranging a safe option and will update you.</p>}
                   {visit.status === 'DRAFT' && visit.repairState === 'NONE' && <p className="mt-2 rounded-lg bg-slate-50 p-2 text-xs leading-5 text-slate-700">A visit time is not confirmed yet. You can request a start code after a time is scheduled.</p>}
@@ -1403,7 +1418,7 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
                       {codeExpired ? <p className="mt-2 text-sm font-semibold text-slate-900">This code has expired. Request a fresh code when you’re with your Ground Executive.</p>
                         : <><p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em] text-emerald-950 sm:text-4xl" aria-label="Visit start code">{code.code}</p><p className="mt-2 text-xs font-medium text-emerald-950">{secondsRemaining === null ? `Expires ${formatVisitTime(code.expiresAt)}` : `Expires in ${String(Math.floor(secondsRemaining / 60)).padStart(2, '0')}:${String(secondsRemaining % 60).padStart(2, '0')}`}</p></>}
                       <p className="mt-2 text-sm leading-5 text-slate-700">Share this code with your Ground Executive in person to begin your visit. Showing the code does not start the visit.</p>
-                      <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`mt-2 min-h-11 rounded-lg px-3 text-sm font-semibold text-emerald-900 underline underline-offset-2 disabled:opacity-50 ${focusClass}`}>{codeExpired ? 'Request a fresh code' : 'Get a new code'}</button>
+                      <button type="button" disabled={isPending || (nextCodeRequestIn !== null && nextCodeRequestIn > 0)} onClick={() => void issueVisitCode(visit.sessionId)} className={`mt-2 min-h-11 rounded-lg px-3 text-sm font-semibold text-emerald-900 underline underline-offset-2 disabled:opacity-50 ${focusClass}`}>{nextCodeRequestIn !== null && nextCodeRequestIn > 0 ? `New code available in ${String(Math.floor(nextCodeRequestIn / 60)).padStart(2, '0')}:${String(nextCodeRequestIn % 60).padStart(2, '0')}` : codeExpired ? 'Request a fresh code' : 'Get a new code'}</button>
                     </div> : <button type="button" disabled={isPending} onClick={() => void issueVisitCode(visit.sessionId)} className={`min-h-11 rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60 ${focusClass}`}>Get visit start code</button>}
                   </div>}
                   </div>

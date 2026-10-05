@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boundedVisitPage, operationalVisitTime, visitStartFeedback } from '../utils/visitExecutionPresentation.ts';
+import { boundedVisitPage, operationalVisitTime, secondsUntilVisitCodeTime, visitStartFeedback } from '../utils/visitExecutionPresentation.ts';
 
 test('21 repair cases allow page two and clamp after its last action', () => {
   assert.equal(boundedVisitPage(0, 2), 0);
@@ -23,7 +23,15 @@ test('missing appointment timestamps are not replaced with fabricated times', ()
   assert.equal(operationalVisitTime('not-a-timestamp', 'Asia/Kolkata'), 'Time unavailable');
 });
 
-test.todo('pass expiry, countdown, and nextRequestAt cooldown use server timestamps without implying START');
+test('pass expiry and regeneration cooldown use returned server timestamps without implying START', () => {
+  const now = Date.parse('2026-10-05T10:00:00Z');
+  assert.equal(secondsUntilVisitCodeTime('2026-10-05T10:02:00Z', now), 120);
+  assert.equal(secondsUntilVisitCodeTime('2026-10-05T10:00:30Z', now), 30);
+  assert.equal(secondsUntilVisitCodeTime('2026-10-05T09:59:00Z', now), 0);
+  assert.equal(secondsUntilVisitCodeTime(null, now), null);
+  assert.equal(secondsUntilVisitCodeTime('not-a-timestamp', now), null);
+  assert.doesNotMatch(visitStartFeedback('SCHEDULED', 'START_CODE_ISSUED'), /Visit started/);
+});
 test.todo('ARRIVED presentation states a GE report and never implies GPS/live tracking');
 test.todo('scheduled confirmation, locality, duration, and proposal wording remain neutral when fields are absent');
 test.todo('reschedule accept/reject presentation does not invent a previous time or an unstructured reason');

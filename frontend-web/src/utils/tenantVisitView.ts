@@ -27,6 +27,11 @@ export function appendUniqueVisitRequests(current: TenantVisitRequest[], next: T
   return combined;
 }
 
+/** A missing result on one history page is unknown to the UI; the POST resolves it idempotently. */
+export function tenantRequestStatusForProperty(requests: TenantVisitRequest[], propertyId: number): string | null {
+  return requests.find(request => request.propertyId === propertyId)?.status ?? null;
+}
+
 export function tenantVisitStatusLabel(status: string | null | undefined): string {
   if (typeof status !== 'string' || !status.trim()) return 'Status unavailable';
   if (status === 'RECEIVED') return 'Request received';

@@ -20,6 +20,7 @@ import { PathomeRouteShell } from './PathomeRouteShell';
 import { lessorDraftService } from '../services/lessorDraftService';
 import { favoriteService } from '../services/favoriteService';
 import { tenantVisitService } from '../services/tenantVisitService';
+import { tenantRequestStatusForProperty } from '../utils/tenantVisitView';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import {
   applyFavoriteChanges,
@@ -63,11 +64,10 @@ type PropertyVisitLookup = {
   identityKey: string | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
   requestStatus: string | null;
-  complete: boolean;
 };
 
 const emptyPropertyVisitLookup: PropertyVisitLookup = {
-  propertyId: null, identityKey: null, status: 'idle', requestStatus: null, complete: false
+  propertyId: null, identityKey: null, status: 'idle', requestStatus: null
 };
 
 const getInitialAdminTab = (): string => {
@@ -282,24 +282,22 @@ export const Home: React.FC = () => {
     }
     const identity = readTenantVisitSession(user.id);
     if (!identity) {
-      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: null, status: 'error', requestStatus: null, complete: false });
+      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: null, status: 'error', requestStatus: null });
       return undefined;
     }
     const controller = new AbortController();
-    setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'loading', requestStatus: null, complete: false });
+    setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'loading', requestStatus: null });
     tenantVisitService.list(0, controller.signal).then(page => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
       if (page.userId !== identity.userId) {
-        setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null, complete: false });
+        setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null });
         return;
       }
-      const activeRequest = page.requests.find(request => request.propertyId === publicPropertyId
-        && ['RECEIVED', 'COORDINATING', 'SCHEDULED'].includes(request.status));
       setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'ready',
-        requestStatus: activeRequest?.status ?? null, complete: !page.hasMore });
+        requestStatus: tenantRequestStatusForProperty(page.requests, publicPropertyId) });
     }).catch(() => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(identity)) return;
-      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null, complete: false });
+      setPropertyVisitLookup({ propertyId: publicPropertyId, identityKey: identity.key, status: 'error', requestStatus: null });
     });
     return () => controller.abort();
   }, [isPublicPropertyRoute, publicPropertyId, role, user?.id, propertyVisitLookupReload]);
@@ -862,7 +860,6 @@ export const Home: React.FC = () => {
           visitRequestStatus={currentPropertyVisitLookup.requestStatus}
           visitRequestStatusLoading={role === 'TENANT' && currentPropertyVisitLookup.status !== 'ready' && currentPropertyVisitLookup.status !== 'error'}
           visitRequestStatusError={currentPropertyVisitLookup.status === 'error'}
-          visitRequestStatusIncomplete={currentPropertyVisitLookup.status === 'ready' && !currentPropertyVisitLookup.complete && !currentPropertyVisitLookup.requestStatus}
           onRequestVisit={handleRequestVisit} onViewMyVisits={handleViewMyVisits}
           onRetryVisitRequestStatus={() => setPropertyVisitLookupReload(value => value + 1)} />
       )}

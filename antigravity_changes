@@ -6203,3 +6203,37 @@ Implement mobile/touch downward-swipe-to-exit for Quick View video in fullscreen
 - `git diff --check`: PASS (clean diff, 0 whitespace or formatting issues).
 
 Commit: not created. Push: not attempted.
+
+## 2026-10-05 16:45 IST — Integrated Property Card "Updated … ago" with Real Authoritative Timestamp (v0: 016f727)
+
+### Reason for Request
+Integrate the approved Vercel/v0 UI enhancement from design commit `016f727` into Pathome. Adds "Updated … ago" with a small clock icon to the shared property card across Explore Homes and Saved Homes. Desktop hover/title displays the exact timestamp in Indian Standard Time (IST).
+
+### Architecture & Real Data Verification
+- Backend contract: `Listing.java` entity defines authoritative `@Column(name = "updated_at") private LocalDateTime updatedAt;`.
+- REST contract: `PublicDiscoveryResponse.java` includes `@JsonFormat(shape = JsonFormat.Shape.STRING) Instant updatedAt;`.
+- Frontend service: `propertyService.ts` maps discovery payload items into `updatedAt: item.updatedAt ? String(item.updatedAt) : null` within `mapDiscoveryProperty`.
+- Frontend models: `Property.updatedAt?: string | null` in `frontend-web/src/types/index.ts`.
+- Unified component: Explore Homes and Saved Homes both use `SupportingPropertyCard` (SavedHomeCard delegates directly to SupportingPropertyCard), ensuring a single shared implementation without duplicate logic.
+- Real authoritative data only: No sample, prototype, or current-time timestamps used. Missing timestamps cleanly omit the row without placeholder text.
+
+### Exact Areas Changed
+- `frontend-web/src/utils/propertyTimestamp.ts` (created):
+  - `parsePropertyTimestamp(timestamp: unknown): Date | null`: Safe parser handling `Date`, epoch ms `number`, and ISO/date `string`; returns null for null/undefined/empty/invalid values.
+  - `formatPropertyRelativeTime(timestamp: unknown, nowMs?: number): string | null`: Compact relative time formatter ("just now", "N minute(s) ago", "N hour(s) ago", "yesterday", "N days ago", "N week(s) ago", "N month(s) ago", "N year(s) ago").
+  - `formatExactPropertyTimestampIST(timestamp: unknown): string | null`: Converts authoritative timestamp to `Asia/Kolkata` (IST) format: e.g. "5 Oct 2026, 2:34 PM IST". Preserves input immutability.
+- `frontend-web/src/tenantV0.css` (modified):
+  - Added `.tenant-v0-card-updated` with flex alignment, 12px/10px clock icon, muted typography, and text ellipsis.
+  - Added responsive scaling at `<=820px` (7px margin, 8px font) and `<=600px` (6px margin, 7.5px font, 10px icon) matching design commit `016f727`.
+- `frontend-web/src/components/TenantDashboard.tsx` (modified):
+  - `SupportingPropertyCard` parses `property.updatedAt` via `parsePropertyTimestamp`, derives `relativeUpdated` and `exactUpdatedIST`.
+  - Conditionally renders `<time className="tenant-v0-card-updated" dateTime={parsedUpdatedDate.toISOString()} title={exactUpdatedIST ? 'Updated ' + exactUpdatedIST : undefined}><Clock3 size={12} aria-hidden="true" /><span>Updated {relativeUpdated}</span></time>`.
+- `frontend-web/src/tests/propertyCardUpdatedTimestamp.test.mjs` (created):
+  - 6 unit and structural tests verifying parsing, relative formatting, exact IST formatting, dashboard wiring, shared component reuse, and CSS styles.
+
+### Verification Performed
+- `node --test src/tests/*.test.mjs`: PASS (563 passed, 0 failed, 4 todo).
+- `npm run build`: PASS (TypeScript and Vite production build succeeded cleanly).
+- `git diff --check`: PASS (clean diff, 0 whitespace or formatting errors).
+
+Commit: not created. Push: not attempted.

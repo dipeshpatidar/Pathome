@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { belongsToTenantVisitSession, readTenantVisitSession, isCurrentTenantVisitSession } from '../utils/tenantVisitSession.ts';
-import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantVisitAcknowledgement, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
+import { appendUniqueVisitRequests, isActiveTenantVisitRequest, tenantRequestStatusForProperty, tenantVisitAcknowledgement, tenantVisitCtaLabel, tenantVisitStatusLabel, tenantVisitSummary, tenantVisitView } from '../utils/tenantVisitView.ts';
 
 const withSession = (userId, token) => {
   const values = new Map([
@@ -67,6 +67,18 @@ test('pagination keeps prior visits and ignores repeated request IDs', () => {
   const second = { requestId: 12, propertyTitle: 'Second' };
   assert.deepEqual(appendUniqueVisitRequests([first], [first, second]), [first, second]);
   assert.deepEqual(appendUniqueVisitRequests([first], [second, second]), [first, second]);
+});
+
+test('property request status uses every backend state; an unloaded older request remains POST-idempotent', () => {
+  const requests = [
+    { requestId: 1, propertyId: 11, status: 'SCHEDULED' },
+    { requestId: 2, propertyId: 12, status: 'CANCELLED' },
+    { requestId: 3, propertyId: 13, status: 'UNAVAILABLE' }
+  ];
+  assert.equal(tenantRequestStatusForProperty(requests, 11), 'SCHEDULED');
+  assert.equal(tenantRequestStatusForProperty(requests, 12), 'CANCELLED');
+  assert.equal(tenantRequestStatusForProperty(requests, 13), 'UNAVAILABLE');
+  assert.equal(tenantRequestStatusForProperty(requests, 14), null);
 });
 
 test('a response from tenant A cannot enter tenant B session', () => {

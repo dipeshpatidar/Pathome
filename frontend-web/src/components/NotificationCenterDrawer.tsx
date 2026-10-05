@@ -89,7 +89,12 @@ export const NotificationCenterDrawer: React.FC = () => {
     await activateNotificationItem(item, {
       markAsRead,
       closeDrawer: () => setIsDrawerOpen(false),
-      navigate
+      navigate: target => {
+        if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') {
+          window.dispatchEvent(new Event('pathome_tenant_visit_notification_opened'));
+        }
+        navigate(target);
+      }
     });
   };
 

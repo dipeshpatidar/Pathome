@@ -19,3 +19,9 @@ export const visitStartFeedback = (status: string, resultCode: string) => {
 
 export const boundedVisitPage = (page: number, totalPages: number) =>
   totalPages > 0 ? Math.min(page, totalPages - 1) : 0;
+
+export const secondsUntilVisitCodeTime = (timestamp: string | null | undefined, now: number): number | null => {
+  if (!timestamp) return null;
+  const target = Date.parse(timestamp);
+  return Number.isFinite(target) ? Math.max(0, Math.ceil((target - now) / 1000)) : null;
+};
