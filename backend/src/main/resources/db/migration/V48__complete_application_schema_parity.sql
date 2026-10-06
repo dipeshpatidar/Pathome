@@ -14,11 +14,20 @@ DECLARE
     parent_table REGCLASS;
     source_attnum SMALLINT;
     target_attnum SMALLINT;
+    log_id_attnum SMALLINT;
     constraint_name TEXT;
     duplicate_found BOOLEAN;
     log_id_sequence REGCLASS;
     sequence_last_value BIGINT;
     sequence_called BOOLEAN;
+    sequence_increment BIGINT;
+    sequence_min_value BIGINT;
+    sequence_max_value BIGINT;
+    sequence_cache_size BIGINT;
+    sequence_cycles BOOLEAN;
+    sequence_next_value NUMERIC;
+    generator_identity "char";
+    generator_default TEXT;
     maximum_existing_id BIGINT;
 BEGIN
     -- V9's read-only debug view projects these bounded strings; recreate it in this migration
@@ -323,9 +332,10 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Preserve an already-ahead generator (deleted IDs may have been consumed); advance it only
-    -- when explicit historical IDs are ahead of its current state.
+    -- Preserve an already-ahead generator; reject configurations whose next value cannot be
+    -- proven greater than every preserved ID.
     IF log_table IS NOT NULL THEN
+        LOCK TABLE tenant_visit_logs IN ACCESS EXCLUSIVE MODE;
         EXECUTE format('SELECT COALESCE(MAX(id), 0) FROM %I.%I', current_schema(), 'tenant_visit_logs')
             INTO maximum_existing_id;
         log_id_sequence := pg_get_serial_sequence(
@@ -333,10 +343,50 @@ BEGIN
         IF log_id_sequence IS NULL THEN
             RAISE EXCEPTION 'tenant_visit_logs.id generator disappeared during schema reconciliation';
         END IF;
+        SELECT a.attidentity, pg_get_expr(d.adbin, d.adrelid)
+          INTO generator_identity, generator_default
+          FROM pg_attribute a
+          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE a.attrelid = log_table AND a.attname = 'id';
+        SELECT attnum INTO log_id_attnum FROM pg_attribute
+         WHERE attrelid = log_table AND attname = 'id' AND attnum > 0 AND NOT attisdropped;
+        IF generator_identity IS NULL OR generator_identity NOT IN ('a', 'd') THEN
+          IF (
+            generator_default IS NULL
+            OR generator_default !~ '^nextval[(].+::regclass[)]$'
+            OR NOT EXISTS (
+                SELECT 1
+                  FROM pg_attrdef d
+                  JOIN pg_depend dep ON dep.classid = 'pg_attrdef'::REGCLASS AND dep.objid = d.oid
+                 WHERE d.adrelid = log_table AND d.adnum = log_id_attnum
+                   AND dep.refclassid = 'pg_class'::REGCLASS
+                   AND dep.refobjid = log_id_sequence AND dep.refobjsubid = 0
+            )
+          ) THEN
+              RAISE EXCEPTION 'tenant_visit_logs.id has an incompatible sequence default';
+          END IF;
+        END IF;
+        SELECT seqincrement, seqmin, seqmax, seqcache, seqcycle
+          INTO sequence_increment, sequence_min_value, sequence_max_value, sequence_cache_size, sequence_cycles
+          FROM pg_sequence WHERE seqrelid = log_id_sequence;
+        IF sequence_increment IS NULL OR sequence_increment <= 0
+           OR sequence_cycles OR sequence_cache_size <> 1 THEN
+            RAISE EXCEPTION 'tenant_visit_logs.id requires a noncycling ascending generator with cache 1';
+        END IF;
         EXECUTE format('SELECT last_value, is_called FROM %s', log_id_sequence)
             INTO sequence_last_value, sequence_called;
-        IF maximum_existing_id > sequence_last_value
-           OR (maximum_existing_id > 0 AND maximum_existing_id = sequence_last_value AND NOT sequence_called) THEN
+        sequence_next_value := sequence_last_value::NUMERIC
+            + CASE WHEN sequence_called THEN sequence_increment ELSE 0 END;
+        IF sequence_next_value < sequence_min_value OR sequence_next_value > sequence_max_value THEN
+            RAISE EXCEPTION 'tenant_visit_logs.id generator is exhausted or outside its configured bounds';
+        END IF;
+        IF maximum_existing_id >= sequence_max_value THEN
+            RAISE EXCEPTION 'tenant_visit_logs.id generator cannot advance beyond preserved ID %', maximum_existing_id;
+        END IF;
+        IF sequence_next_value <= maximum_existing_id THEN
+            IF maximum_existing_id::NUMERIC + sequence_increment > sequence_max_value THEN
+                RAISE EXCEPTION 'tenant_visit_logs.id generator cannot advance beyond preserved ID %', maximum_existing_id;
+            END IF;
             PERFORM setval(log_id_sequence, maximum_existing_id, TRUE);
         END IF;
     END IF;

@@ -27,6 +27,15 @@ DECLARE
     model_sequence TEXT;
     maximum_model_id BIGINT;
     sequence_last_value BIGINT;
+    sequence_called BOOLEAN;
+    sequence_increment BIGINT;
+    sequence_min_value BIGINT;
+    sequence_max_value BIGINT;
+    sequence_cache_size BIGINT;
+    sequence_cycles BOOLEAN;
+    sequence_next_value NUMERIC;
+    generator_identity "char";
+    generator_default TEXT;
 BEGIN
     IF training_table IS NULL THEN
         RAISE EXCEPTION 'Cannot complete parser persistence schema: parser_training_examples is missing from the supported V1 baseline';
@@ -380,14 +389,57 @@ BEGIN
             ON parser_model_versions (model_status, created_at);
     END IF;
 
-    model_sequence := pg_get_serial_sequence(format('%I.%I', current_schema(), 'parser_model_versions'), 'id');
-    EXECUTE format('SELECT max(id) FROM %I.%I', current_schema(), 'parser_model_versions')
+    LOCK TABLE parser_model_versions IN ACCESS EXCLUSIVE MODE;
+    EXECUTE format('SELECT COALESCE(MAX(id), 0) FROM %I.%I', current_schema(), 'parser_model_versions')
        INTO maximum_model_id;
-    IF maximum_model_id IS NOT NULL THEN
-        sequence_last_value := pg_sequence_last_value(model_sequence::REGCLASS);
-        IF sequence_last_value IS NULL OR sequence_last_value < maximum_model_id THEN
-            PERFORM setval(model_sequence::REGCLASS, maximum_model_id, TRUE);
+    model_sequence := pg_get_serial_sequence(
+        format('%I.%I', current_schema(), 'parser_model_versions'), 'id');
+    IF model_sequence IS NULL THEN
+        RAISE EXCEPTION 'parser_model_versions.id has no owned identity/sequence generator';
+    END IF;
+    SELECT a.attidentity, pg_get_expr(d.adbin, d.adrelid)
+      INTO generator_identity, generator_default
+      FROM pg_attribute a
+      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+     WHERE a.attrelid = model_table AND a.attname = 'id';
+    IF generator_identity IS NULL OR generator_identity NOT IN ('a', 'd') THEN
+      IF (
+        generator_default IS NULL
+        OR generator_default !~ '^nextval[(].+::regclass[)]$'
+        OR NOT EXISTS (
+            SELECT 1
+              FROM pg_attrdef d
+              JOIN pg_depend dep ON dep.classid = 'pg_attrdef'::REGCLASS AND dep.objid = d.oid
+             WHERE d.adrelid = model_table AND d.adnum = model_id_attnum
+               AND dep.refclassid = 'pg_class'::REGCLASS
+               AND dep.refobjid = model_sequence::REGCLASS AND dep.refobjsubid = 0
+        )
+      ) THEN
+          RAISE EXCEPTION 'parser_model_versions.id has an incompatible sequence default';
+      END IF;
+    END IF;
+    SELECT seqincrement, seqmin, seqmax, seqcache, seqcycle
+      INTO sequence_increment, sequence_min_value, sequence_max_value, sequence_cache_size, sequence_cycles
+      FROM pg_sequence WHERE seqrelid = model_sequence::REGCLASS;
+    IF sequence_increment IS NULL OR sequence_increment <= 0
+       OR sequence_cycles OR sequence_cache_size <> 1 THEN
+        RAISE EXCEPTION 'parser_model_versions.id requires a noncycling ascending generator with cache 1';
+    END IF;
+    EXECUTE format('SELECT last_value, is_called FROM %s', model_sequence)
+        INTO sequence_last_value, sequence_called;
+    sequence_next_value := sequence_last_value::NUMERIC
+        + CASE WHEN sequence_called THEN sequence_increment ELSE 0 END;
+    IF sequence_next_value < sequence_min_value OR sequence_next_value > sequence_max_value THEN
+        RAISE EXCEPTION 'parser_model_versions.id generator is exhausted or outside its configured bounds';
+    END IF;
+    IF maximum_model_id >= sequence_max_value THEN
+        RAISE EXCEPTION 'parser_model_versions.id generator cannot advance beyond preserved ID %', maximum_model_id;
+    END IF;
+    IF sequence_next_value <= maximum_model_id THEN
+        IF maximum_model_id::NUMERIC + sequence_increment > sequence_max_value THEN
+            RAISE EXCEPTION 'parser_model_versions.id generator cannot advance beyond preserved ID %', maximum_model_id;
         END IF;
+        PERFORM setval(model_sequence::REGCLASS, maximum_model_id, TRUE);
     END IF;
 END
 $$;
