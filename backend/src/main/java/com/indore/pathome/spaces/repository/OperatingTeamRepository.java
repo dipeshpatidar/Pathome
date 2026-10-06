@@ -12,4 +12,6 @@ public interface OperatingTeamRepository extends JpaRepository<OperatingTeam, Lo
     List<OperatingTeam> findAllByCityIdOrderByCodeAsc(Long cityId);
 
     Optional<OperatingTeam> findByCityIdAndCode(Long cityId, String code);
+
+    Optional<OperatingTeam> findByIdAndActiveTrue(Long id);
 }

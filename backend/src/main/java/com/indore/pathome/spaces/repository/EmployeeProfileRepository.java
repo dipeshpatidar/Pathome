@@ -14,6 +14,8 @@ import java.util.Optional;
 public interface EmployeeProfileRepository extends JpaRepository<EmployeeProfile, Long> {
     Optional<EmployeeProfile> findByUserId(Long userId);
 
+    boolean existsByUserIdAndStaffActiveTrue(Long userId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from EmployeeProfile p where p.user.id = :userId")
     Optional<EmployeeProfile> findLockedByUserId(@Param("userId") Long userId);

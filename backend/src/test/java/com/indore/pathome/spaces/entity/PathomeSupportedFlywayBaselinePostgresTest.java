@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Verifies the supported pre-Flyway version-1 legacy baseline through the current migration chain. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_PACKAGE5_FLYWAY_TEST", matches = "true")
 class PathomeSupportedFlywayBaselinePostgresTest {
-    private static final String LATEST_VERSION = "43";
+    private static final String LATEST_VERSION = "44";
 
     @Test
     void supportedLegacyBaselineUpgradesThroughLatestMigrationWithoutInventingOldOutcomes() throws Exception {
@@ -97,8 +97,8 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "JOIN visit_sessions s ON s.id=r.session_id WHERE s.status='COMPLETED' "
                         + "AND r.state='LEGACY_UNRECORDED' AND r.scope_source='LEGACY_COMPLETED'"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM visit_session_item_outcomes"));
-                assertEquals(42, count(connection, "SELECT count(*) FROM flyway_schema_history "
-                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 43"));
+                assertEquals(43, count(connection, "SELECT count(*) FROM flyway_schema_history "
+                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 44"));
                 assertEquals("1", text(connection,
                         "SELECT version FROM flyway_schema_history WHERE type='BASELINE'"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_policy WHERE id=1"));
@@ -156,7 +156,7 @@ class PathomeSupportedFlywayBaselinePostgresTest {
 
     private static void verifyOptimisticVersionsAndMappings(String url, String username, String password,
                                                              String schema, long indoreId, long bhopalId,
-                                                             long puneId) {
+                                                             long puneId) throws Exception {
         String schemaUrl = url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema;
         StandardServiceRegistry registry = new StandardServiceRegistryBuilder()
                 .applySetting("hibernate.connection.driver_class", "org.postgresql.Driver")
@@ -174,6 +174,10 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                 .addAnnotatedClass(SupportedCity.class)
                 .addAnnotatedClass(OperatingTeam.class)
                 .addAnnotatedClass(Locality.class)
+                .addAnnotatedClass(User.class)
+                .addAnnotatedClass(EmployeeProfile.class)
+                .addAnnotatedClass(StaffAccessGrant.class)
+                .addAnnotatedClass(OperationalAuditEvent.class)
                 .buildMetadata()
                 .buildSessionFactory()) {
             long teamIndoreId = persistTeam(sessions, indoreId, "south", "Indore South");
@@ -205,6 +209,8 @@ class PathomeSupportedFlywayBaselinePostgresTest {
             assertEquals(0, readCityVersion(sessions, bhopalId));
             assertCanonicalCityCodeCannotBeChangedThroughEntityApi();
             assertTeamCityAssociationCannotBeChangedThroughEntityApi();
+            verifyStaffAccessMappingsAndVersions(sessions,
+                    connectionFor(url, username, password, schema), teamIndoreId);
         } finally {
             StandardServiceRegistryBuilder.destroy(registry);
         }
@@ -300,6 +306,93 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                     () -> SupportedCity.class.getMethod("setCode", String.class));
         } catch (NoSuchFieldException error) {
             fail(error);
+        }
+    }
+
+    private static Connection connectionFor(String url, String username, String password, String schema)
+            throws SQLException {
+        Connection connection = DriverManager.getConnection(url, username, password);
+        connection.setSchema(schema);
+        connection.setAutoCommit(true);
+        return connection;
+    }
+
+    private static void verifyStaffAccessMappingsAndVersions(SessionFactory sessions, Connection connection,
+                                                              long teamId) throws Exception {
+        try (connection; Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO users(email, full_name, role, free_visits_remaining) "
+                    + "VALUES ('package1b-staff@example.test', NULL, 'ROLE_TENANT', 0)");
+            long userId = scalarLong(connection,
+                    "SELECT id FROM users WHERE email='package1b-staff@example.test'");
+            statement.execute("INSERT INTO employee_profiles(user_id) VALUES (" + userId + ")");
+            assertEquals(1, count(connection, "SELECT count(*) FROM employee_profiles WHERE user_id=" + userId
+                    + " AND staff_active=FALSE AND version=0 AND role_type IS NULL AND base_salary IS NULL"));
+
+            long versionProfileId = scalarLong(connection,
+                    "SELECT id FROM employee_profiles WHERE user_id=" + userId);
+            assertEquals(0, readEmployeeVersion(sessions, versionProfileId));
+            try (Session session = sessions.openSession()) {
+                Transaction tx = session.beginTransaction();
+                EmployeeProfile profile = session.find(EmployeeProfile.class, versionProfileId);
+                profile.setStaffActive(true);
+                profile.setStaffActivatedAt(java.time.Instant.now());
+                tx.commit();
+                assertEquals(1, profile.getVersion());
+            }
+            assertStaleEmployeeProfileUpdateRejected(sessions, versionProfileId);
+
+            String grant = "INSERT INTO staff_access_grants(user_id, capability, scope_type, effective_at, "
+                    + "grant_reason_code, provisioning_source) VALUES (" + userId
+                    + ",'STAFF_ADMIN','GLOBAL','2025-01-01T00:00:00Z','TEST_GRANT','INITIAL_BOOTSTRAP')";
+            statement.execute(grant);
+            assertThrows(SQLException.class, () -> statement.execute(grant));
+            assertThrows(SQLException.class, () -> statement.execute("INSERT INTO staff_access_grants(user_id, "
+                    + "capability, scope_type, city_id, effective_at, grant_reason_code, provisioning_source) "
+                    + "VALUES (" + userId + ",'OPS_INTAKE','CITY',NULL,CURRENT_TIMESTAMP,'TEST_GRANT','ADMIN_API')"));
+            assertThrows(SQLException.class, () -> statement.execute("INSERT INTO staff_access_grants(user_id, "
+                    + "capability, scope_type, effective_at, expires_at, grant_reason_code, provisioning_source) "
+                    + "VALUES (" + userId + ",'STAFF_ADMIN','GLOBAL',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '1 day',"
+                    + "'TEST_GRANT','ADMIN_API')"));
+            assertThrows(SQLException.class, () -> statement.execute("INSERT INTO staff_access_grants(user_id, "
+                    + "capability, scope_type, city_id, team_id, effective_at, grant_reason_code, provisioning_source) "
+                    + "VALUES (" + userId + ",'OPS_INTAKE','CITY',1," + teamId + ",CURRENT_TIMESTAMP,'TEST_GRANT','ADMIN_API')"));
+
+            assertThrows(SQLException.class, () -> statement.execute("INSERT INTO operational_audit_events "
+                    + "(actor_kind, action_code, target_type, target_id, reason_code) "
+                    + "VALUES ('USER','STAFF_ACTIVATED','USER'," + userId + ",'TEST_REASON')"));
+            statement.execute("INSERT INTO operational_audit_events "
+                    + "(actor_kind, operator_reference, action_code, target_type, target_id, reason_code, details) "
+                    + "VALUES ('DEPLOYMENT_OPERATOR','DEPLOYMENT_CHANGE_1','INITIAL_ADMIN_BOOTSTRAPPED',"
+                    + "'USER'," + userId + ",'INITIAL_PROVISIONING','{}'::jsonb)");
+            assertThrows(SQLException.class, () -> statement.execute("UPDATE operational_audit_events "
+                    + "SET reason_code='CHANGED' WHERE operator_reference='DEPLOYMENT_CHANGE_1'"));
+            assertThrows(SQLException.class, () -> statement.execute("UPDATE staff_access_grants "
+                    + "SET capability='OPS_INTAKE' WHERE user_id=" + userId));
+            assertThrows(SQLException.class, () -> statement.execute("DELETE FROM staff_access_grants WHERE user_id=" + userId));
+        }
+    }
+
+    private static long readEmployeeVersion(SessionFactory sessions, long profileId) {
+        try (Session session = sessions.openSession()) {
+            return session.find(EmployeeProfile.class, profileId).getVersion();
+        }
+    }
+
+    private static void assertStaleEmployeeProfileUpdateRejected(SessionFactory sessions, long profileId) {
+        try (Session currentSession = sessions.openSession(); Session staleSession = sessions.openSession()) {
+            Transaction currentTx = currentSession.beginTransaction();
+            Transaction staleTx = staleSession.beginTransaction();
+            EmployeeProfile current = currentSession.find(EmployeeProfile.class, profileId);
+            EmployeeProfile stale = staleSession.find(EmployeeProfile.class, profileId);
+            current.setStaffActive(false);
+            current.setStaffDeactivatedAt(java.time.Instant.now());
+            stale.setStaffActive(false);
+            stale.setStaffDeactivatedAt(java.time.Instant.now());
+            currentTx.commit();
+            assertEquals(2, current.getVersion());
+            RuntimeException rejected = assertThrows(RuntimeException.class, staleTx::commit);
+            assertTrue(hasStaleObjectCause(rejected), "stale staff-state update must fail optimistically");
+            if (staleTx.isActive()) staleTx.rollback();
         }
     }
 

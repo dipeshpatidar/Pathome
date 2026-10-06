@@ -15,6 +15,8 @@ public interface SupportedCityRepository extends JpaRepository<SupportedCity, Lo
 
     List<SupportedCity> findAllByActiveTrueOrderByDisplayNameAsc();
 
+    Optional<SupportedCity> findByIdAndActiveTrue(Long id);
+
     @Query("SELECT city FROM SupportedCity city WHERE lower(trim(city.displayName)) = lower(:displayName)")
     List<SupportedCity> findExactDisplayNameMatches(@Param("displayName") String displayName);
 }

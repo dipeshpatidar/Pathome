@@ -54,6 +54,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/tenant/visit-sessions/**").hasRole("TENANT")
                 .requestMatchers("/api/v1/ground/visit-sessions/**").hasRole("GROUND_BOY")
                 .requestMatchers("/api/v1/operations/**", "/api/v1/ground/visit-sessions/**").authenticated()
+                .requestMatchers("/api/v1/staff/**").authenticated()
                 .requestMatchers("/api/v1/favorites/**").hasRole("TENANT")
                 .requestMatchers(HttpMethod.GET, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()
                 .requestMatchers(HttpMethod.PUT, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()

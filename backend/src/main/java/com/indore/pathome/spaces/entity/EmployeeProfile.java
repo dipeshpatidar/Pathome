@@ -17,17 +17,30 @@ public class EmployeeProfile {
     @JoinColumn(name = "user_id", nullable = false, unique = true)
     private User user;
 
-    @Column(name = "role_type", nullable = false)
+    @Column(name = "role_type")
     private String roleType; // GROUND_BOY or WFH_ADMIN
 
     @Column(name = "assigned_sector")
     private String assignedSector; // e.g. Vijay Nagar, Bhawarkua
 
-    @Column(name = "base_salary", nullable = false)
+    @Column(name = "base_salary")
     private BigDecimal baseSalary; // 15000 for GROUND_BOY, 8000 for WFH_ADMIN
 
     @Column(name = "closed_deals_count", nullable = false)
     private Integer closedDealsCount = 0;
+
+    @Column(name = "staff_active", nullable = false)
+    private boolean staffActive;
+
+    @Column(name = "staff_activated_at", columnDefinition = "timestamptz")
+    private java.time.Instant staffActivatedAt;
+
+    @Column(name = "staff_deactivated_at", columnDefinition = "timestamptz")
+    private java.time.Instant staffDeactivatedAt;
+
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
 
     public EmployeeProfile() {}
 
@@ -56,4 +69,15 @@ public class EmployeeProfile {
 
     public Integer getClosedDealsCount() { return closedDealsCount; }
     public void setClosedDealsCount(Integer closedDealsCount) { this.closedDealsCount = closedDealsCount; }
+
+    public boolean isStaffActive() { return staffActive; }
+    public void setStaffActive(boolean staffActive) { this.staffActive = staffActive; }
+
+    public java.time.Instant getStaffActivatedAt() { return staffActivatedAt; }
+    public void setStaffActivatedAt(java.time.Instant staffActivatedAt) { this.staffActivatedAt = staffActivatedAt; }
+
+    public java.time.Instant getStaffDeactivatedAt() { return staffDeactivatedAt; }
+    public void setStaffDeactivatedAt(java.time.Instant staffDeactivatedAt) { this.staffDeactivatedAt = staffDeactivatedAt; }
+
+    public Long getVersion() { return version; }
 }
