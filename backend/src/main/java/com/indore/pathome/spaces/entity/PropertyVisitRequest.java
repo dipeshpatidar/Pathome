@@ -68,6 +68,21 @@ public class PropertyVisitRequest {
     @JoinColumn(name = "session_id")
     private VisitSession session;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supported_city_id")
+    private SupportedCity supportedCity;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "operating_team_id")
+    private OperatingTeam operatingTeam;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "coordinator_user_id")
+    private User coordinator;
+
+    @Column(name = "operational_scope_ready", nullable = false)
+    private boolean operationalScopeReady;
+
     @Version
     @Column(nullable = false)
     private Long version = 0L;
@@ -107,6 +122,14 @@ public class PropertyVisitRequest {
     public void setStatus(VisitRequestStatus status) { this.status = status; }
     public VisitSession getSession() { return session; }
     public void setSession(VisitSession session) { this.session = session; }
+    public SupportedCity getSupportedCity() { return supportedCity; }
+    public void setSupportedCity(SupportedCity supportedCity) { this.supportedCity = supportedCity; }
+    public OperatingTeam getOperatingTeam() { return operatingTeam; }
+    public void setOperatingTeam(OperatingTeam operatingTeam) { this.operatingTeam = operatingTeam; }
+    public User getCoordinator() { return coordinator; }
+    public void setCoordinator(User coordinator) { this.coordinator = coordinator; }
+    public boolean isOperationalScopeReady() { return operationalScopeReady; }
+    public void setOperationalScopeReady(boolean operationalScopeReady) { this.operationalScopeReady = operationalScopeReady; }
     public Long getVersion() { return version; }
     public void setVersion(Long version) { this.version = version; }
     public LocalDateTime getCreatedAt() { return createdAt; }

@@ -125,6 +125,9 @@ public class PropertyController {
     private final UserRepository userRepository;
     private final PropertyVisitRequestRepository propertyVisitRequestRepository;
 
+    @Autowired
+    private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
+
     @Autowired(required = false)
     private PropertyUploadDraftRepository draftRepository;
 
@@ -206,6 +209,11 @@ public class PropertyController {
     public void setLocalityRepository(LocalityRepository localityRepository) {
         this.localityRepository = localityRepository;
         CityRegistry.syncFromDatabase(localityRepository, listingRepository);
+    }
+
+    public void setTrustedOperationalIntakeService(
+            com.indore.pathome.spaces.service.TrustedOperationalIntakeService intakeService) {
+        this.trustedOperationalIntakeService = Objects.requireNonNull(intakeService);
     }
 
     public void setDraftRepository(PropertyUploadDraftRepository draftRepository) {
@@ -667,7 +675,7 @@ public class PropertyController {
         });
         visitRequest.setTenantNote(normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note"));
         try {
-            PropertyVisitRequest saved = propertyVisitRequestRepository.saveAndFlush(visitRequest);
+            PropertyVisitRequest saved = trustedOperationalIntakeService.admitAndSave(visitRequest);
             return ResponseEntity.status(HttpStatus.CREATED).body(toVisitRequestAcknowledgement(saved));
         } catch (DataIntegrityViolationException duplicate) {
             PropertyVisitRequest saved = propertyVisitRequestRepository

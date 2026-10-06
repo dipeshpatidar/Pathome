@@ -92,6 +92,9 @@ public class PropertyControllerTest {
     @Mock
     private PropertyVisitRequestRepository propertyVisitRequestRepository;
 
+    @Mock
+    private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
+
     @InjectMocks
     private PropertyController propertyController;
 
@@ -100,6 +103,7 @@ public class PropertyControllerTest {
         MockitoAnnotations.openMocks(this);
         propertyController.setDraftRepository(draftRepository);
         propertyController.setLocalityRepository(localityRepository);
+        propertyController.setTrustedOperationalIntakeService(trustedOperationalIntakeService);
     }
 
     @Test
@@ -375,7 +379,7 @@ public class PropertyControllerTest {
         when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
         when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
         when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.empty());
-        when(propertyVisitRequestRepository.saveAndFlush(any())).thenAnswer(invocation -> {
+        when(trustedOperationalIntakeService.admitAndSave(any())).thenAnswer(invocation -> {
             var saved = invocation.getArgument(0, com.indore.pathome.spaces.entity.PropertyVisitRequest.class);
             saved.setId(15L);
             return saved;
@@ -393,7 +397,7 @@ public class PropertyControllerTest {
         assertEquals("RECEIVED", response.getBody().status());
         assertTrue(response.getBody().message().contains("before confirming"));
         var saved = org.mockito.ArgumentCaptor.forClass(PropertyVisitRequest.class);
-        verify(propertyVisitRequestRepository).saveAndFlush(saved.capture());
+        verify(trustedOperationalIntakeService).admitAndSave(saved.capture());
         assertEquals(8L, saved.getValue().getTenant().getId());
         assertEquals(java.time.Instant.parse("2099-10-02T07:30:00Z"), saved.getValue().getAvailabilityStartAt());
         assertEquals(java.time.Instant.parse("2099-10-02T08:30:00Z"), saved.getValue().getPreferredAt());

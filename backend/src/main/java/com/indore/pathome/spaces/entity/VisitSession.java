@@ -39,6 +39,21 @@ public class VisitSession {
     @JoinColumn(name = "canonical_locality_id")
     private Locality canonicalLocality;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supported_city_id")
+    private SupportedCity supportedCity;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "operating_team_id")
+    private OperatingTeam operatingTeam;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "coordinator_user_id")
+    private User coordinator;
+
+    @Column(name = "operational_scope_ready", nullable = false)
+    private boolean operationalScopeReady;
+
     @Column(name = "scheduled_at")
     private Instant scheduledAt;
 
@@ -179,6 +194,14 @@ public class VisitSession {
     public void setAreaName(String areaName) { this.areaName = areaName; }
     public Locality getCanonicalLocality() { return canonicalLocality; }
     public void setCanonicalLocality(Locality canonicalLocality) { this.canonicalLocality = canonicalLocality; }
+    public SupportedCity getSupportedCity() { return supportedCity; }
+    public void setSupportedCity(SupportedCity supportedCity) { this.supportedCity = supportedCity; }
+    public OperatingTeam getOperatingTeam() { return operatingTeam; }
+    public void setOperatingTeam(OperatingTeam operatingTeam) { this.operatingTeam = operatingTeam; }
+    public User getCoordinator() { return coordinator; }
+    public void setCoordinator(User coordinator) { this.coordinator = coordinator; }
+    public boolean isOperationalScopeReady() { return operationalScopeReady; }
+    public void setOperationalScopeReady(boolean operationalScopeReady) { this.operationalScopeReady = operationalScopeReady; }
     public Instant getScheduledAt() { return scheduledAt; }
     public void setScheduledAt(Instant scheduledAt) { this.scheduledAt = scheduledAt; }
     public Instant getReservedEndAt() { return reservedEndAt; }

@@ -18,7 +18,9 @@ import java.util.regex.Pattern;
 public class OperationalAuditService {
     private static final Pattern CODE = Pattern.compile("^[A-Z][A-Z0-9_]{0,63}$");
     private static final Set<String> ALLOWED_DETAILS = Set.of(
-            "capability", "scopeType", "cityId", "teamId", "staffActive", "provisioningSource");
+            "capability", "scopeType", "cityId", "teamId", "staffActive", "provisioningSource",
+            "coordinatorUserId", "operationalScopeReady", "sourceCityId", "destinationCityId",
+            "sourceTeamId", "destinationTeamId", "linkedRequestCount");
 
     private final OperationalAuditEventRepository events;
     private final DatabaseClock databaseClock;

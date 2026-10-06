@@ -40,6 +40,8 @@ public class VisitOperationsService {
     private final EntityManager entityManager;
     private final VisitSchedulingRecommendationService recommendations;
     private final VisitSchedulingDecisionRepository decisions;
+    private final OperationalSecurityGuards operationalGuards;
+    private final OperationalAuditService operationalAudit;
 
     public VisitOperationsService(PropertyVisitRequestRepository requests,
                                   VisitSessionRepository sessions,
@@ -52,7 +54,9 @@ public class VisitOperationsService {
                                   ApplicationEventPublisher events,
                                   EntityManager entityManager,
                                   VisitSchedulingRecommendationService recommendations,
-                                  VisitSchedulingDecisionRepository decisions) {
+                                  VisitSchedulingDecisionRepository decisions,
+                                  OperationalSecurityGuards operationalGuards,
+                                  OperationalAuditService operationalAudit) {
         this.requests = requests;
         this.sessions = sessions;
         this.users = users;
@@ -65,6 +69,8 @@ public class VisitOperationsService {
         this.entityManager = entityManager;
         this.recommendations = recommendations;
         this.decisions = decisions;
+        this.operationalGuards = operationalGuards;
+        this.operationalAudit = operationalAudit;
     }
 
     @Transactional(readOnly = true)
@@ -155,7 +161,7 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView coordinateRequest(Long actorId, Long requestId,
                                                          CoordinateVisitRequestCommand command) {
-        authorization.requireOperations(actorId);
+        User actor = authorization.requireOperations(actorId);
         requireCommand(command);
         if (requestId == null || requestId <= 0) throw new IllegalArgumentException("Visit Request ID must be positive");
         if (command.sessionId() != null && command.sessionId() <= 0)
@@ -163,6 +169,8 @@ public class VisitOperationsService {
         VisitSession requestedSession = command.sessionId() == null ? null : lockSession(command.sessionId());
         PropertyVisitRequest request = requests.findLockedById(requestId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+        acquireOperationalScopeGuards(request, actorId);
+        actor = authorization.requireOperations(actorId);
 
         if (request.getSession() != null) {
             if (command.sessionId() != null && !Objects.equals(command.sessionId(), request.getSession().getId()))
@@ -184,6 +192,7 @@ public class VisitOperationsService {
         Listing requestedListing = request.getListing();
         if (requestedListing.getStatus() != ListingStatus.ACTIVE)
             throw new VisitOperationsConflictException("The requested property is no longer active");
+        requireOperationalScopeActive(request.getSupportedCity(), request.getOperatingTeam());
         LocationSnapshot location = resolveLocation(requestedListing);
         VisitSession session;
         boolean newSession = command.sessionId() == null;
@@ -195,6 +204,10 @@ public class VisitOperationsService {
             session.setCity(location.city());
             session.setAreaName(requestedListing.getSector());
             session.setCanonicalLocality(location.locality());
+            session.setSupportedCity(request.getSupportedCity());
+            session.setOperatingTeam(request.getOperatingTeam());
+            session.setCoordinator(request.getCoordinator());
+            session.setOperationalScopeReady(request.isOperationalScopeReady());
             session = sessions.save(session);
         } else {
             if (command.expectedSessionVersion() == null)
@@ -204,6 +217,7 @@ public class VisitOperationsService {
             requireDraft(session);
             requireSameTenant(request, session);
             requireSameCity(location.city(), session.getCity());
+            requireOwnershipMirror(request, session);
         }
 
         request.setSession(session);
@@ -212,6 +226,10 @@ public class VisitOperationsService {
         entityManager.flush();
         ensureDirectItem(session, request, requestedListing);
         if (!newSession) touch(session);
+        entityManager.flush();
+        operationalAudit.recordUserEvent(actor, "REQUEST_SESSION_LINKED", "VISIT_SESSION", session.getId(),
+                "GOVERNED_LINK", session.getSupportedCity(), session.getOperatingTeam(),
+                Map.of("linkedRequestCount", 1L, "operationalScopeReady", session.isOperationalScopeReady()));
         entityManager.flush();
         return operationsView(session);
     }
@@ -435,7 +453,7 @@ public class VisitOperationsService {
         session.setAssignedAt(Instant.now());
         List<VisitSessionItem> active = requireSchedulableItems(session.getId());
         validateSessionLocations(session, active);
-        List<PropertyVisitRequest> sessionRequests = requests.findBySessionIdOrderByCreatedAtAscIdAsc(sessionId);
+        List<PropertyVisitRequest> sessionRequests = requests.findLockedBySessionIdOrderByIdAsc(sessionId);
         Set<Long> activeDirectRequestIds = active.stream().map(VisitSessionItem::getSourceRequest)
                 .filter(Objects::nonNull).map(PropertyVisitRequest::getId).collect(Collectors.toSet());
         for (PropertyVisitRequest request : sessionRequests) {
@@ -495,7 +513,7 @@ public class VisitOperationsService {
             throw new VisitOperationsConflictException("Only pre-start sessions can be cancelled");
         if (session.getRepresentative() != null)
             lockGroundExecutives(List.of(session.getRepresentative().getId()));
-        for (PropertyVisitRequest request : requests.findBySessionIdOrderByCreatedAtAscIdAsc(sessionId)) {
+        for (PropertyVisitRequest request : requests.findLockedBySessionIdOrderByIdAsc(sessionId)) {
             if (request.getStatusValue() == VisitRequestStatus.COORDINATING
                     || request.getStatusValue() == VisitRequestStatus.SCHEDULED)
                 request.setStatus(VisitRequestStatus.CANCELLED);
@@ -614,6 +632,41 @@ public class VisitOperationsService {
         return sessions.findLockedById(sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
     }
+
+    private void acquireOperationalScopeGuards(PropertyVisitRequest request, Long actorId) {
+        SupportedCity city = request.getSupportedCity();
+        OperatingTeam team = request.getOperatingTeam();
+        SupportedCity teamCity = team == null ? null : team.getCity();
+        Long cityId = city == null ? null : city.getId();
+        Long teamId = team == null ? null : team.getId();
+        if (city != null) entityManager.detach(city);
+        if (teamCity != null) entityManager.detach(teamCity);
+        if (team != null) entityManager.detach(team);
+        operationalGuards.acquire(cityId == null ? List.of() : List.of(cityId),
+                teamId == null ? List.of() : List.of(teamId), List.of(actorId));
+        if (cityId != null) request.setSupportedCity(entityManager.find(SupportedCity.class, cityId));
+        if (teamId != null) request.setOperatingTeam(entityManager.find(OperatingTeam.class, teamId));
+    }
+
+    private void requireOperationalScopeActive(SupportedCity city, OperatingTeam team) {
+        if (city != null && !operationalGuards.cityIsActive(city.getId()))
+            throw new VisitOperationsConflictException("Operational City is inactive");
+        if (team != null && (!operationalGuards.teamIsActive(team.getId()) || city == null
+                || !Objects.equals(operationalGuards.teamCityId(team.getId()), city.getId())))
+            throw new VisitOperationsConflictException("Operational Team is inactive or outside its City");
+    }
+
+    private static void requireOwnershipMirror(PropertyVisitRequest request, VisitSession session) {
+        if (!Objects.equals(id(request.getSupportedCity()), id(session.getSupportedCity()))
+                || !Objects.equals(id(request.getOperatingTeam()), id(session.getOperatingTeam()))
+                || !Objects.equals(id(request.getCoordinator()), id(session.getCoordinator()))
+                || request.isOperationalScopeReady() != session.isOperationalScopeReady())
+            throw new VisitOperationsConflictException("Request and Session operational ownership must match");
+    }
+
+    private static Long id(SupportedCity city) { return city == null ? null : city.getId(); }
+    private static Long id(OperatingTeam team) { return team == null ? null : team.getId(); }
+    private static Long id(User user) { return user == null ? null : user.getId(); }
 
     private void requireDraft(VisitSession session) {
         if (session.getStatus() != VisitSessionStatus.DRAFT)

@@ -34,6 +34,7 @@ class VisitOperationsServiceTest {
     private EntityManager entityManager;
     private VisitSchedulingRecommendationService recommendations;
     private VisitSchedulingDecisionRepository decisions;
+    private OperationalSecurityGuards operationalGuards;
     private VisitOperationsService service;
 
     @BeforeEach
@@ -50,8 +51,10 @@ class VisitOperationsServiceTest {
         entityManager = mock(EntityManager.class);
         recommendations = mock(VisitSchedulingRecommendationService.class);
         decisions = mock(VisitSchedulingDecisionRepository.class);
+        operationalGuards = mock(OperationalSecurityGuards.class);
+        OperationalAuditService operationalAudit = mock(OperationalAuditService.class);
         service = new VisitOperationsService(requests, sessions, users, visitPolicies, items, listings, localities,
-                authorization, events, entityManager, recommendations, decisions);
+                authorization, events, entityManager, recommendations, decisions, operationalGuards, operationalAudit);
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
         when(users.findLockedById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
         when(users.findById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
@@ -94,6 +97,12 @@ class VisitOperationsServiceTest {
         assertNull(created.get().getDerivedFromRequest());
         assertEquals(VisitSessionItemOrigin.TENANT_REQUESTED, created.get().getOrigin());
         verify(sessions, times(1)).save(any(VisitSession.class));
+        verify(operationalGuards).acquire(List.of(), List.of(), List.of(9L));
+        verify(authorization, times(2)).requireOperations(9L);
+        InOrder linkAuthorization = inOrder(requests, operationalGuards, authorization);
+        linkAuthorization.verify(requests).findLockedById(11L);
+        linkAuthorization.verify(operationalGuards).acquire(List.of(), List.of(), List.of(9L));
+        linkAuthorization.verify(authorization).requireOperations(9L);
         InOrder writeOrder = inOrder(entityManager, items);
         writeOrder.verify(entityManager).flush();
         writeOrder.verify(items).saveAndFlush(any(VisitSessionItem.class));
@@ -270,7 +279,7 @@ class VisitOperationsServiceTest {
         when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
         when(items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(500L)).thenReturn(List.of(confirmed));
         when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of(confirmed));
-        when(requests.findBySessionIdOrderByCreatedAtAscIdAsc(500L)).thenReturn(List.of(request));
+        when(requests.findLockedBySessionIdOrderByIdAsc(500L)).thenReturn(List.of(request));
 
         service.schedule(9L, 500L,
                 new ScheduleVisitSessionCommand(0L, Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", 41L, 30));
@@ -571,7 +580,7 @@ class VisitOperationsServiceTest {
         VisitSessionItem existing = item(700L, session, request.getListing(),
                 VisitSessionItemConfirmationStatus.PENDING, request);
         when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
-        when(requests.findBySessionIdOrderByCreatedAtAscIdAsc(500L)).thenReturn(List.of(request));
+        when(requests.findLockedBySessionIdOrderByIdAsc(500L)).thenReturn(List.of(request));
         when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of(existing));
 
         OperationsVisitSessionView result = service.cancel(9L, 500L, 0L);

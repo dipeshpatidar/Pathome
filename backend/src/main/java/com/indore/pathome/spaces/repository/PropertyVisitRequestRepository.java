@@ -16,6 +16,9 @@ import java.util.Optional;
 public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVisitRequest, Long> {
     Optional<PropertyVisitRequest> findByTenantIdAndListingId(Long tenantId, Long listingId);
 
+    @Query("select r.session.id from PropertyVisitRequest r where r.id = :requestId")
+    Optional<Long> findSessionIdByRequestId(@Param("requestId") Long requestId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from PropertyVisitRequest r where r.id = :id")
     Optional<PropertyVisitRequest> findLockedById(@Param("id") Long id);

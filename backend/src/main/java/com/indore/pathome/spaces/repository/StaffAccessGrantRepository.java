@@ -10,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Collection;
 
 public interface StaffAccessGrantRepository extends JpaRepository<StaffAccessGrant, Long> {
     @Query(value = """
@@ -105,6 +106,10 @@ public interface StaffAccessGrantRepository extends JpaRepository<StaffAccessGra
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select grant from StaffAccessGrant grant where grant.user.id = :userId and grant.revokedAt is null order by grant.id")
     List<StaffAccessGrant> findUnrevokedLockedByUserId(@Param("userId") Long userId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select grant from StaffAccessGrant grant where grant.user.id in :userIds order by grant.id")
+    List<StaffAccessGrant> findLockedByUserIdsOrderById(@Param("userIds") Collection<Long> userIds);
 
     List<StaffAccessGrant> findAllByUserIdOrderByCreatedAtDesc(Long userId);
 }

@@ -39,6 +39,7 @@ public class StaffAdministrationService {
     private final OperatingTeamRepository teams;
     private final StaffAccessService access;
     private final StaffGovernanceLock governanceLock;
+    private final OperationalSecurityGuards securityGuards;
     private final OperationalAuditService audit;
     private final DatabaseClock databaseClock;
     private final EntityManager entityManager;
@@ -50,6 +51,7 @@ public class StaffAdministrationService {
                                       OperatingTeamRepository teams,
                                       StaffAccessService access,
                                       StaffGovernanceLock governanceLock,
+                                      OperationalSecurityGuards securityGuards,
                                       OperationalAuditService audit,
                                       DatabaseClock databaseClock,
                                       EntityManager entityManager) {
@@ -60,6 +62,7 @@ public class StaffAdministrationService {
         this.teams = teams;
         this.access = access;
         this.governanceLock = governanceLock;
+        this.securityGuards = securityGuards;
         this.audit = audit;
         this.databaseClock = databaseClock;
         this.entityManager = entityManager;
@@ -81,6 +84,7 @@ public class StaffAdministrationService {
         validateReason(command.reasonCode());
         governanceLock.acquire();
         User actor = access.requireGlobalAdmin(actorUserId);
+        acquireUserScopeGuards(actor.getId(), targetUserId);
         User target = lockUser(targetUserId);
         EmployeeProfile profile = employeeProfiles.findLockedByUserId(target.getId()).orElse(null);
         if (profile == null) {
@@ -107,7 +111,9 @@ public class StaffAdministrationService {
         validateReason(command.reasonCode());
         governanceLock.acquire();
         User actor = access.requireGlobalAdmin(actorUserId);
+        List<StaffAccessGrant> observedGrants = acquireUserScopeGuards(actor.getId(), targetUserId);
         User target = lockUser(targetUserId);
+        actor = access.requireGlobalAdmin(actorUserId);
         EmployeeProfile profile = employeeProfiles.findLockedByUserId(target.getId())
                 .orElseThrow(() -> new EntityNotFoundException("Staff profile not found"));
         requireExpectedVersion(profile, command.expectedVersion());
@@ -152,22 +158,43 @@ public class StaffAdministrationService {
 
         governanceLock.acquire();
         User actor = access.requireGlobalAdmin(actorUserId);
+        if (targetUserId == null || targetUserId <= 0)
+            throw new IllegalArgumentException("User ID must be a positive stable ID");
+        validateScopeShape(command);
+        SupportedCity city = null;
+        OperatingTeam team = null;
+        if (command.scopeType() == StaffScopeType.CITY) {
+            city = cities.findById(command.cityId())
+                    .orElseThrow(() -> new IllegalArgumentException("City scope not found"));
+        } else if (command.scopeType() == StaffScopeType.TEAM) {
+            team = teams.findById(command.teamId())
+                    .orElseThrow(() -> new IllegalArgumentException("Team scope not found"));
+        }
+
+        Long guardedTeamId = team == null ? null : team.getId();
+        SupportedCity teamCity = team == null ? null : team.getCity();
+        Long guardedCityId = city != null ? city.getId() : teamCity == null ? null : teamCity.getId();
+        if (city != null) entityManager.detach(city);
+        if (teamCity != null) entityManager.detach(teamCity);
+        if (team != null) entityManager.detach(team);
+        securityGuards.acquire(guardedCityId == null ? List.of() : List.of(guardedCityId),
+                guardedTeamId == null ? List.of() : List.of(guardedTeamId), List.of(actor.getId(), targetUserId));
+        SupportedCity guardedCity = guardedCityId == null ? null : cities.findLockedById(guardedCityId)
+                .orElseThrow(() -> new IllegalArgumentException("Active City or Team scope not found"));
+        if (city != null) city = guardedCity;
+        if (guardedTeamId != null) {
+            team = teams.findLockedById(guardedTeamId)
+                    .orElseThrow(() -> new IllegalArgumentException("Active City or Team scope not found"));
+        }
+        actor = access.requireGlobalAdmin(actorUserId);
         User target = lockUser(targetUserId);
         EmployeeProfile profile = employeeProfiles.findLockedByUserId(target.getId())
                 .filter(EmployeeProfile::isStaffActive)
                 .orElseThrow(() -> new IllegalArgumentException("Target must have an active staff profile"));
-
-        SupportedCity city = null;
-        OperatingTeam team = null;
-        validateScopeShape(command);
-        if (command.scopeType() == StaffScopeType.CITY) {
-            city = cities.findByIdAndActiveTrue(command.cityId())
-                    .orElseThrow(() -> new IllegalArgumentException("Active City scope not found"));
-        } else if (command.scopeType() == StaffScopeType.TEAM) {
-            team = teams.findByIdAndActiveTrue(command.teamId())
-                    .filter(value -> value.getCity().isActive())
-                    .orElseThrow(() -> new IllegalArgumentException("Active Team scope not found"));
-        }
+        if ((city != null && !securityGuards.cityIsActive(city.getId()))
+                || (team != null && (!securityGuards.teamIsActive(team.getId())
+                    || !securityGuards.cityIsActive(team.getCity().getId()))))
+            throw new IllegalArgumentException("Active City or Team scope not found");
 
         Instant now = databaseClock.now();
         Instant effectiveAt = command.effectiveAt() == null ? now : command.effectiveAt();
@@ -205,7 +232,22 @@ public class StaffAdministrationService {
         User actor = access.requireGlobalAdmin(actorUserId);
         StaffAccessGrant observed = grants.findById(grantId)
                 .orElseThrow(() -> new EntityNotFoundException("Staff grant not found"));
-        lockUser(observed.getUser().getId());
+        Long targetUserId = observed.getUser().getId();
+        SupportedCity observedCity = observed.getCity();
+        OperatingTeam observedTeam = observed.getTeam();
+        SupportedCity observedTeamCity = observedTeam == null ? null : observedTeam.getCity();
+        Long cityId = observedCity != null ? observedCity.getId()
+                : observedTeamCity == null ? null : observedTeamCity.getId();
+        Long teamId = observedTeam == null ? null : observedTeam.getId();
+        if (observedCity != null) entityManager.detach(observedCity);
+        if (observedTeamCity != null) entityManager.detach(observedTeamCity);
+        if (observedTeam != null) entityManager.detach(observedTeam);
+        entityManager.detach(observed);
+        securityGuards.acquire(cityId == null ? List.of() : List.of(cityId),
+                teamId == null ? List.of() : List.of(teamId), List.of(actor.getId(), targetUserId));
+        actor = access.requireGlobalAdmin(actorUserId);
+        User target = lockUser(targetUserId);
+        employeeProfiles.findLockedByUserId(target.getId());
         StaffAccessGrant grant = grants.findLockedById(grantId)
                 .orElseThrow(() -> new EntityNotFoundException("Staff grant not found"));
         if (grant.getRevokedAt() != null) return toGrantView(grant);
@@ -225,6 +267,37 @@ public class StaffAdministrationService {
                 reasonCode, grant.getCity(), grant.getTeam(), grantDetails(grant));
         entityManager.flush();
         return toGrantView(grant);
+    }
+
+    private void detachGrantScope(StaffAccessGrant grant) {
+        SupportedCity city = grant.getCity();
+        OperatingTeam team = grant.getTeam();
+        SupportedCity teamCity = team == null ? null : team.getCity();
+        if (city != null) entityManager.detach(city);
+        if (teamCity != null) entityManager.detach(teamCity);
+        if (team != null) entityManager.detach(team);
+        entityManager.detach(grant);
+    }
+
+    /**
+     * Serialize authority changes with operational mutations before taking a User row lock.
+     * Ownership writes hold City/Team and employee/grant guards before their coordinator FK
+     * check takes a compatible lock on users, so staff writers must enter through those same
+     * guards before acquiring a conflicting User FOR UPDATE lock.
+     */
+    private List<StaffAccessGrant> acquireUserScopeGuards(Long actorUserId, Long targetUserId) {
+        if (targetUserId == null || targetUserId <= 0)
+            throw new IllegalArgumentException("User ID must be a positive stable ID");
+        List<StaffAccessGrant> observedGrants = grants.findAllByUserIdOrderByCreatedAtDesc(targetUserId);
+        List<Long> cityIds = observedGrants.stream()
+                .flatMap(grant -> java.util.stream.Stream.of(grant.getCity(),
+                        grant.getTeam() == null ? null : grant.getTeam().getCity()))
+                .filter(java.util.Objects::nonNull).map(SupportedCity::getId).distinct().toList();
+        List<Long> teamIds = observedGrants.stream().map(StaffAccessGrant::getTeam).filter(java.util.Objects::nonNull)
+                .map(OperatingTeam::getId).distinct().toList();
+        observedGrants.forEach(this::detachGrantScope);
+        securityGuards.acquire(cityIds, teamIds, List.of(actorUserId, targetUserId));
+        return observedGrants;
     }
 
     private User loadUser(Long userId) {
