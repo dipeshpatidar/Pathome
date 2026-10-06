@@ -19,6 +19,10 @@ public class Locality {
     @Column(nullable = false)
     private String city;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supported_city_id")
+    private SupportedCity supportedCity;
+
     @Column(nullable = false)
     private String sectorName;
 
@@ -57,6 +61,14 @@ public class Locality {
 
     public void setCity(String city) {
         this.city = city;
+    }
+
+    public SupportedCity getSupportedCity() {
+        return supportedCity;
+    }
+
+    public void setSupportedCity(SupportedCity supportedCity) {
+        this.supportedCity = supportedCity;
     }
 
     public String getSectorName() {

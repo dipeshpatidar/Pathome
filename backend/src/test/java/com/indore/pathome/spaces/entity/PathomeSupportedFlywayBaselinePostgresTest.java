@@ -2,6 +2,13 @@ package com.indore.pathome.spaces.entity;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.hibernate.StaleObjectStateException;
+import org.hibernate.Session;
+import org.hibernate.SessionFactory;
+import org.hibernate.Transaction;
+import org.hibernate.boot.MetadataSources;
+import org.hibernate.boot.registry.StandardServiceRegistry;
+import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.ClassPathResource;
@@ -11,6 +18,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.sql.SQLException;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Verifies the supported pre-Flyway version-1 legacy baseline through the current migration chain. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_PACKAGE5_FLYWAY_TEST", matches = "true")
 class PathomeSupportedFlywayBaselinePostgresTest {
-    private static final String LATEST_VERSION = "42";
+    private static final String LATEST_VERSION = "43";
 
     @Test
     void supportedLegacyBaselineUpgradesThroughLatestMigrationWithoutInventingOldOutcomes() throws Exception {
@@ -46,6 +54,8 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "SELECT id,CURRENT_DATE FROM listings WHERE title='Legacy listing'");
                 statement.execute("INSERT INTO property_media_assets(listing_id,room_tag,media_url) "
                         + "SELECT id,'GENERAL','https://example.test/legacy.jpg' FROM listings WHERE title='Legacy listing'");
+                statement.execute("INSERT INTO localities(city,sector_name,created_at) "
+                        + "VALUES (' Legacy City ','Unmapped Example Quarter',CURRENT_TIMESTAMP)");
 
                 Flyway beforeV10 = flyway(url, username, password, schema).target("9").load();
                 var preV10 = beforeV10.migrate();
@@ -87,14 +97,215 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "JOIN visit_sessions s ON s.id=r.session_id WHERE s.status='COMPLETED' "
                         + "AND r.state='LEGACY_UNRECORDED' AND r.scope_source='LEGACY_COMPLETED'"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM visit_session_item_outcomes"));
-                assertEquals(41, count(connection, "SELECT count(*) FROM flyway_schema_history "
-                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 42"));
+                assertEquals(42, count(connection, "SELECT count(*) FROM flyway_schema_history "
+                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 43"));
                 assertEquals("1", text(connection,
                         "SELECT version FROM flyway_schema_history WHERE type='BASELINE'"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_policy WHERE id=1"));
+                assertPackage1aMigrationAndJpaBehavior(connection, url, username, password, schema);
             } finally {
                 statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             }
+        }
+    }
+
+    private static void assertPackage1aMigrationAndJpaBehavior(Connection connection, String url,
+                                                                String username, String password,
+                                                                String schema) throws Exception {
+        assertEquals(3, count(connection, "SELECT count(*) FROM supported_cities"));
+        assertEquals(24, count(connection, "SELECT count(*) FROM localities WHERE supported_city_id IS NOT NULL"));
+        assertEquals(25, count(connection, "SELECT count(*) FROM localities"));
+        assertEquals(1, count(connection, "SELECT count(*) FROM localities WHERE supported_city_id IS NULL"));
+        assertEquals(" Legacy City ", text(connection, "SELECT city FROM localities "
+                + "WHERE sector_name='Unmapped Example Quarter'"));
+        assertEquals(" Legacy City ", text(connection, "SELECT city FROM localities "
+                + "WHERE sector_name='Unmapped Example Quarter' AND supported_city_id IS NULL"));
+        assertEquals(0, count(connection, "SELECT count(*) FROM localities l "
+                + "JOIN supported_cities c ON c.id=l.supported_city_id "
+                + "WHERE l.city <> c.display_name"));
+
+        long indoreId = scalarLong(connection, "SELECT id FROM supported_cities WHERE code='indore'");
+        long bhopalId = scalarLong(connection, "SELECT id FROM supported_cities WHERE code='bhopal'");
+        long puneId = scalarLong(connection, "SELECT id FROM supported_cities WHERE code='pune'");
+        assertThrows(SQLException.class, () -> execute(connection,
+                "INSERT INTO supported_cities(code,display_name) VALUES ('indore','Duplicate code')"));
+
+        execute(connection, "INSERT INTO supported_cities(code,display_name) "
+                + "VALUES ('indore-central','Indore')");
+        assertEquals(2, count(connection, "SELECT count(*) FROM supported_cities WHERE display_name='Indore'"));
+        execute(connection, "INSERT INTO operating_teams(city_id,code,display_name) VALUES (" + indoreId
+                + ",'north','North Team')");
+        execute(connection, "INSERT INTO operating_teams(city_id,code,display_name) VALUES (" + bhopalId
+                + ",'north','North Team')");
+        assertEquals(2, count(connection, "SELECT count(*) FROM operating_teams WHERE code='north'"));
+        assertThrows(SQLException.class, () -> execute(connection,
+                "INSERT INTO operating_teams(city_id,code,display_name) VALUES (" + indoreId
+                        + ",'north','Duplicate North Team')"));
+        assertThrows(SQLException.class, () -> execute(connection,
+                "INSERT INTO operating_teams(city_id,code,display_name) VALUES (9223372036854775807,'bad','Bad')"));
+        assertThrows(SQLException.class, () -> execute(connection,
+                "INSERT INTO localities(city,sector_name,supported_city_id) "
+                        + "VALUES ('Unknown','Broken FK',9223372036854775807)"));
+        execute(connection, "INSERT INTO localities(city,sector_name,supported_city_id) "
+                + "VALUES ('Unknown','Unresolved Null FK',NULL)");
+        assertEquals(1, count(connection, "SELECT count(*) FROM localities "
+                + "WHERE sector_name='Unresolved Null FK' AND supported_city_id IS NULL"));
+
+        verifyOptimisticVersionsAndMappings(url, username, password, schema, indoreId, bhopalId, puneId);
+    }
+
+    private static void verifyOptimisticVersionsAndMappings(String url, String username, String password,
+                                                             String schema, long indoreId, long bhopalId,
+                                                             long puneId) {
+        String schemaUrl = url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema;
+        StandardServiceRegistry registry = new StandardServiceRegistryBuilder()
+                .applySetting("hibernate.connection.driver_class", "org.postgresql.Driver")
+                .applySetting("hibernate.connection.url", schemaUrl)
+                .applySetting("hibernate.connection.username", username)
+                .applySetting("hibernate.connection.password", password)
+                .applySetting("hibernate.default_schema", schema)
+                .applySetting("hibernate.dialect", "org.hibernate.dialect.PostgreSQLDialect")
+                .applySetting("hibernate.physical_naming_strategy",
+                        "org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy")
+                .applySetting("hibernate.hbm2ddl.auto", "validate")
+                .applySetting("hibernate.show_sql", "false")
+                .build();
+        try (SessionFactory sessions = new MetadataSources(registry)
+                .addAnnotatedClass(SupportedCity.class)
+                .addAnnotatedClass(OperatingTeam.class)
+                .addAnnotatedClass(Locality.class)
+                .buildMetadata()
+                .buildSessionFactory()) {
+            long teamIndoreId = persistTeam(sessions, indoreId, "south", "Indore South");
+            persistTeam(sessions, puneId, "north", "Pune North");
+            long localityId = persistLocality(sessions, bhopalId);
+            try (Session session = sessions.openSession()) {
+                Locality linked = session.find(Locality.class, localityId);
+                assertEquals("Bhopal", linked.getCity());
+                assertEquals(bhopalId, linked.getSupportedCity().getId());
+            }
+            long initialCityVersion = readCityVersion(sessions, indoreId);
+            try (Session session = sessions.openSession()) {
+                Transaction tx = session.beginTransaction();
+                SupportedCity city = session.find(SupportedCity.class, indoreId);
+                city.setActive(false);
+                tx.commit();
+                assertEquals(initialCityVersion + 1, city.getVersion());
+            }
+            try (Session session = sessions.openSession()) {
+                Transaction tx = session.beginTransaction();
+                SupportedCity updated = session.find(SupportedCity.class, indoreId);
+                assertFalse(updated.isActive());
+                updated.setActive(true);
+                tx.commit();
+                assertTrue(updated.isActive());
+            }
+            assertStaleCityUpdateRejected(sessions, indoreId);
+            assertStaleTeamUpdateRejected(sessions, teamIndoreId);
+            assertEquals(0, readCityVersion(sessions, bhopalId));
+            assertCanonicalCityCodeCannotBeChangedThroughEntityApi();
+            assertTeamCityAssociationCannotBeChangedThroughEntityApi();
+        } finally {
+            StandardServiceRegistryBuilder.destroy(registry);
+        }
+    }
+
+    private static long persistTeam(SessionFactory sessions, long cityId, String code, String displayName) {
+        try (Session session = sessions.openSession()) {
+            Transaction tx = session.beginTransaction();
+            SupportedCity city = session.find(SupportedCity.class, cityId);
+            OperatingTeam team = new OperatingTeam(city, code, displayName, true);
+            session.persist(team);
+            tx.commit();
+            return team.getId();
+        }
+    }
+
+    private static long persistLocality(SessionFactory sessions, long cityId) {
+        try (Session session = sessions.openSession()) {
+            Transaction tx = session.beginTransaction();
+            SupportedCity city = session.find(SupportedCity.class, cityId);
+            Locality locality = new Locality("Bhopal", "Package 1A ORM Link", null, null, null);
+            locality.setSupportedCity(city);
+            session.persist(locality);
+            tx.commit();
+            return locality.getId();
+        }
+    }
+
+    private static long readCityVersion(SessionFactory sessions, long cityId) {
+        try (Session session = sessions.openSession()) {
+            return session.find(SupportedCity.class, cityId).getVersion();
+        }
+    }
+
+    private static void assertStaleCityUpdateRejected(SessionFactory sessions, long cityId) {
+        try (Session first = sessions.openSession(); Session stale = sessions.openSession()) {
+            Transaction firstTx = first.beginTransaction();
+            Transaction staleTx = stale.beginTransaction();
+            SupportedCity current = first.find(SupportedCity.class, cityId);
+            SupportedCity outdated = stale.find(SupportedCity.class, cityId);
+            long originalVersion = current.getVersion();
+            current.setDisplayName("Indore Updated");
+            outdated.setDisplayName("Indore Stale");
+            firstTx.commit();
+            assertEquals(originalVersion + 1, current.getVersion());
+            RuntimeException rejected = assertThrows(RuntimeException.class, staleTx::commit);
+            assertTrue(hasStaleObjectCause(rejected), "stale City update must fail through optimistic locking");
+            if (staleTx.isActive()) staleTx.rollback();
+        }
+    }
+
+    private static void assertStaleTeamUpdateRejected(SessionFactory sessions, long teamId) {
+        try (Session first = sessions.openSession(); Session stale = sessions.openSession()) {
+            Transaction firstTx = first.beginTransaction();
+            Transaction staleTx = stale.beginTransaction();
+            OperatingTeam current = first.find(OperatingTeam.class, teamId);
+            OperatingTeam outdated = stale.find(OperatingTeam.class, teamId);
+            long originalVersion = current.getVersion();
+            current.setDisplayName("Indore North Updated");
+            outdated.setDisplayName("Indore North Stale");
+            firstTx.commit();
+            assertEquals(originalVersion + 1, current.getVersion());
+            RuntimeException rejected = assertThrows(RuntimeException.class, staleTx::commit);
+            assertTrue(hasStaleObjectCause(rejected), "stale Team update must fail through optimistic locking");
+            if (staleTx.isActive()) staleTx.rollback();
+        }
+    }
+
+    private static boolean hasStaleObjectCause(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof StaleObjectStateException
+                    || cause instanceof jakarta.persistence.OptimisticLockException) return true;
+        }
+        return false;
+    }
+
+    private static void assertTeamCityAssociationCannotBeChangedThroughEntityApi() {
+        try {
+            var cityField = OperatingTeam.class.getDeclaredField("city");
+            assertFalse(cityField.getAnnotation(jakarta.persistence.JoinColumn.class).updatable());
+            assertThrows(NoSuchMethodException.class,
+                    () -> OperatingTeam.class.getMethod("setCity", SupportedCity.class));
+        } catch (NoSuchFieldException error) {
+            fail(error);
+        }
+    }
+
+    private static void assertCanonicalCityCodeCannotBeChangedThroughEntityApi() {
+        try {
+            var codeField = SupportedCity.class.getDeclaredField("code");
+            assertFalse(codeField.getAnnotation(jakarta.persistence.Column.class).updatable());
+            assertThrows(NoSuchMethodException.class,
+                    () -> SupportedCity.class.getMethod("setCode", String.class));
+        } catch (NoSuchFieldException error) {
+            fail(error);
+        }
+    }
+
+    private static void execute(Connection connection, String sql) throws Exception {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
         }
     }
 

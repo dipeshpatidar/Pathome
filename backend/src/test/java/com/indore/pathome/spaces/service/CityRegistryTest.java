@@ -1,7 +1,10 @@
 package com.indore.pathome.spaces.service;
 
+import com.indore.pathome.spaces.entity.SupportedCity;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.LocalityRepository;
+import com.indore.pathome.spaces.repository.SupportedCityRepository;
+import org.springframework.boot.ApplicationArguments;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -58,5 +61,36 @@ class CityRegistryTest {
         assertFalse(cities.contains("Areea"));
         assertFalse(cities.contains("Prestige"));
         assertFalse(cities.contains("Vijay"));
+    }
+
+    @Test
+    void capturedSupportedCityViewTracksCanonicalDatabaseRefreshes() {
+        var capturedView = CityRegistry.getSupportedCities();
+        try {
+            CityRegistry.replaceSupportedCities(List.of("Surat City"));
+            assertEquals(java.util.Set.of("surat city"), capturedView);
+            assertTrue(CityRegistry.isCitySupported("Surat City"));
+            assertFalse(CityRegistry.isCitySupported("Indore"));
+            assertTrue(CityRegistry.isKnownCity("Indore"));
+        } finally {
+            CityRegistry.replaceSupportedCities(List.of("indore", "bhopal", "pune"));
+        }
+    }
+
+    @Test
+    void startupRegistryUsesCanonicalDisplayNamesRatherThanMachineCodes() {
+        var capturedView = CityRegistry.getSupportedCities();
+        try {
+            SupportedCity city = new SupportedCity("surat-city", "Surat City", true);
+            SupportedCityRepository repository = mock(SupportedCityRepository.class);
+            when(repository.findAllByActiveTrueOrderByDisplayNameAsc()).thenReturn(List.of(city));
+
+            new SupportedCityRegistryInitializer(repository).run(mock(ApplicationArguments.class));
+
+            assertTrue(CityRegistry.isCitySupported("Surat City"));
+            assertFalse(capturedView.contains("surat-city"));
+        } finally {
+            CityRegistry.replaceSupportedCities(List.of("indore", "bhopal", "pune"));
+        }
     }
 }
