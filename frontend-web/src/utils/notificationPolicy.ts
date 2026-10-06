@@ -33,11 +33,12 @@ export function calculateUnreadCount(items: Array<{ read: boolean }>): number {
   return items.filter(item => !item.read).length;
 }
 
-export function resolveNotificationActionLabel(item: { actionType?: string; category?: string; targetRole?: string }): string {
+export function resolveNotificationActionLabel(item: { actionType?: string; actionTarget?: string; category?: string; targetRole?: string }): string {
   if (item.actionType === 'REVIEW_CHANGES') {
     return 'Review changes';
   }
-  if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') return 'View My Visits';
+  if (item.category === 'VISIT_SESSION'
+      && (item.targetRole === 'TENANT' || item.actionTarget === '/tenant#visit-history')) return 'View My Visits';
   if (item.category === 'VISIT_SESSION') return 'View update';
   return 'View property';
 }
@@ -50,7 +51,8 @@ export function resolveNotificationActionTarget(item: {
   targetRole?: string;
   category?: string;
 }): string {
-  if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') return '/tenant#visit-history';
+  if (item.category === 'VISIT_SESSION'
+      && (item.targetRole === 'TENANT' || item.actionTarget === '/tenant#visit-history')) return '/tenant#visit-history';
   const listingId = item.listingId;
   const hasListingId = typeof listingId === 'number' && Number.isSafeInteger(listingId) && listingId > 0;
   const isLessorPropertyAction = item.actionType === 'VIEW_PROPERTY' || item.actionType === 'REVIEW_CHANGES';
@@ -85,10 +87,12 @@ export async function activateNotificationItem(
   }
 ): Promise<void> {
   if (!item.read) await actions.markAsRead(item.id);
-  if (item.category === 'VISIT_SESSION' && item.targetRole !== 'TENANT'
+  const isTenantVisit = item.category === 'VISIT_SESSION'
+    && (item.targetRole === 'TENANT' || item.actionTarget === '/tenant#visit-history');
+  if (item.category === 'VISIT_SESSION' && !isTenantVisit
       && !item.actionTarget && !item.actionType) return;
   if (!item.actionTarget && !item.actionType && !item.eventKey
-      && !(item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT')) return;
+      && !isTenantVisit) return;
   actions.closeDrawer();
   actions.navigate(resolveNotificationActionTarget(item));
 }

@@ -36,6 +36,19 @@ test('tenant visit notification routes to My Visits without inventing a session 
   assert.equal(resolveNotificationActionTarget({ ...item, eventKey: 'arbitrary' }), '/tenant#visit-history');
 });
 
+test('server-derived tenant visit target keeps the recipient route after role metadata removal', async () => {
+  const item = { id: 'db-12', read: false, title: 'Visit updated', message: 'Review your visit', category: 'VISIT_SESSION', actionTarget: '/tenant#visit-history' };
+  assert.equal(resolveNotificationActionLabel(item), 'View My Visits');
+  assert.equal(resolveNotificationActionTarget(item), '/tenant#visit-history');
+  const calls = [];
+  await activateNotificationItem(item, {
+    markAsRead: async id => { calls.push(`read:${id}`); },
+    closeDrawer: () => { calls.push('close'); },
+    navigate: target => { calls.push(`navigate:${target}`); }
+  });
+  assert.deepEqual(calls, ['read:db-12', 'close', 'navigate:/tenant#visit-history']);
+});
+
 test('tenant visit presentation is not applied to another recipient role', () => {
   const item = { category: 'VISIT_SESSION', targetRole: 'GE' };
   assert.equal(resolveNotificationActionLabel(item), 'View update');

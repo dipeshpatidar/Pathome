@@ -104,13 +104,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       setIsLoading(true);
       setFetchError(null);
       const token = localStorage.getItem('pathome_auth_token');
-      const activeRole = getActiveRole();
       const headers: Record<string, string> = {};
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const response = await fetch(`${API_ROOT_URL}/notifications?role=${activeRole}`, { headers });
+      const response = await fetch(`${API_ROOT_URL}/notifications`, { headers });
       if (!response.ok) {
         if (response.status === 401) notifySessionExpired(token);
         throw new Error('Failed to fetch notifications');
@@ -125,14 +124,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           title: item.title,
           message: item.message,
           details: item.details,
-          targetRole: item.targetRole,
           createdAt: item.createdAt ? new Date(item.createdAt) : new Date(),
           read: Boolean(item.isRead),
           listingId: item.listingId,
           revisionId: item.revisionId,
           actionType: item.actionType,
-          actionTarget: item.actionTarget,
-          eventKey: item.eventKey
+          actionTarget: item.actionTarget
         }));
 
         setHistory(fetchedItems);

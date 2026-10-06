@@ -90,7 +90,8 @@ export const NotificationCenterDrawer: React.FC = () => {
       markAsRead,
       closeDrawer: () => setIsDrawerOpen(false),
       navigate: target => {
-        if (item.category === 'VISIT_SESSION' && item.targetRole === 'TENANT') {
+        if (item.category === 'VISIT_SESSION'
+            && (item.actionTarget === '/tenant#visit-history' || item.targetRole === 'TENANT')) {
           window.dispatchEvent(new Event('pathome_tenant_visit_notification_opened'));
         }
         navigate(target);

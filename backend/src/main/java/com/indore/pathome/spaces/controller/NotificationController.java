@@ -3,18 +3,15 @@ package com.indore.pathome.spaces.controller;
 import com.indore.pathome.spaces.dto.NotificationResponseDto;
 import com.indore.pathome.spaces.entity.SystemNotification;
 import com.indore.pathome.spaces.entity.TargetRole;
-import com.indore.pathome.spaces.entity.User;
-import com.indore.pathome.spaces.repository.UserRepository;
+import com.indore.pathome.spaces.security.PathomeAuthenticationIdentity;
 import com.indore.pathome.spaces.service.NotificationService;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/v1/notifications")
@@ -22,40 +19,17 @@ import java.util.Optional;
 public class NotificationController {
 
     private final NotificationService notificationService;
-    private final UserRepository users;
 
-    public NotificationController(NotificationService notificationService, UserRepository users) {
+    public NotificationController(NotificationService notificationService) {
         this.notificationService = notificationService;
-        this.users = users;
     }
 
-    /**
-     * Retrieves notifications. For authenticated users, strictly returns their own
-     * notifications. For unauthenticated callers, returns role-scoped announcements.
-     */
     @GetMapping
     public ResponseEntity<List<NotificationResponseDto>> getNotifications(
-            Authentication auth,
-            @RequestParam(value = "role", required = false, defaultValue = "ALL") String roleStr
+            Authentication auth
     ) {
-        if (auth != null && auth.isAuthenticated() && !"anonymousUser".equals(auth.getName())) {
-            Optional<User> userOpt = users.findByEmail(auth.getName());
-            if (userOpt.isPresent()) {
-                String recipientUserId = String.valueOf(userOpt.get().getId());
-                List<SystemNotification> list = notificationService.getNotificationsForUser(recipientUserId);
-                List<NotificationResponseDto> dtos = list.stream().map(NotificationResponseDto::from).toList();
-                return ResponseEntity.ok(dtos);
-            }
-        }
-
-        TargetRole role;
-        try {
-            role = TargetRole.valueOf(roleStr.toUpperCase());
-        } catch (Exception e) {
-            role = TargetRole.ALL;
-        }
-
-        List<SystemNotification> list = notificationService.getNotificationsForRole(role, null);
+        String recipientUserId = String.valueOf(PathomeAuthenticationIdentity.requireUserId(auth));
+        List<SystemNotification> list = notificationService.getNotificationsForUser(recipientUserId);
         List<NotificationResponseDto> dtos = list.stream().map(NotificationResponseDto::from).toList();
         return ResponseEntity.ok(dtos);
     }
@@ -65,12 +39,8 @@ public class NotificationController {
      */
     @GetMapping("/unread-count")
     public ResponseEntity<Map<String, Object>> getUnreadCount(Authentication auth) {
-        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-        User user = users.findByEmail(auth.getName())
-                .orElseThrow(() -> new AccessDeniedException("User not found"));
-        long count = notificationService.getUnreadCountForUser(String.valueOf(user.getId()));
+        String recipientUserId = String.valueOf(PathomeAuthenticationIdentity.requireUserId(auth));
+        long count = notificationService.getUnreadCountForUser(recipientUserId);
         return ResponseEntity.ok(Map.of("unreadCount", count));
     }
 
@@ -80,12 +50,8 @@ public class NotificationController {
      */
     @PutMapping("/{id}/read")
     public ResponseEntity<Map<String, Object>> markAsRead(Authentication auth, @PathVariable("id") Long id) {
-        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-        User user = users.findByEmail(auth.getName())
-                .orElseThrow(() -> new AccessDeniedException("User not found"));
-        boolean success = notificationService.markAsReadForUser(id, String.valueOf(user.getId()));
+        String recipientUserId = String.valueOf(PathomeAuthenticationIdentity.requireUserId(auth));
+        boolean success = notificationService.markAsReadForUser(id, recipientUserId);
         return ResponseEntity.ok(Map.of("success", success, "id", id));
     }
 
@@ -94,12 +60,8 @@ public class NotificationController {
      */
     @PutMapping("/read-all")
     public ResponseEntity<Map<String, Object>> markAllAsRead(Authentication auth) {
-        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-        User user = users.findByEmail(auth.getName())
-                .orElseThrow(() -> new AccessDeniedException("User not found"));
-        int count = notificationService.markAllAsReadForUser(String.valueOf(user.getId()));
+        String recipientUserId = String.valueOf(PathomeAuthenticationIdentity.requireUserId(auth));
+        int count = notificationService.markAllAsReadForUser(recipientUserId);
         return ResponseEntity.ok(Map.of("success", true, "count", count));
     }
 
@@ -109,8 +71,10 @@ public class NotificationController {
     }
 
     /**
-     * Admin/System Endpoint to Dispatch a Role-Scoped Notification
+     * Privileged endpoint for administrative notices. Domain workflow notifications
+     * continue to be created by backend services.
      */
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<NotificationResponseDto> createNotification(@RequestBody Map<String, Object> payload) {
         String roleStr = (String) payload.getOrDefault("targetRole", "ALL");

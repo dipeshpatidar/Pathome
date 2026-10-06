@@ -3,141 +3,121 @@ package com.indore.pathome.spaces.controller;
 import com.indore.pathome.spaces.dto.NotificationResponseDto;
 import com.indore.pathome.spaces.entity.SystemNotification;
 import com.indore.pathome.spaces.entity.TargetRole;
-import com.indore.pathome.spaces.entity.User;
-import com.indore.pathome.spaces.repository.UserRepository;
+import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
 import com.indore.pathome.spaces.service.NotificationService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.mock.web.MockHttpServletRequest;
 
+import java.lang.reflect.RecordComponent;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-public class NotificationControllerAuthTest {
+class NotificationControllerAuthTest {
+
+    private static final Long USER_A_ID = 42L;
+    private static final Long USER_B_ID = 99L;
 
     private NotificationService notificationService;
-    private UserRepository userRepository;
     private NotificationController controller;
-
-    private static final String LESSOR_A_EMAIL = "lessor.a@pathome.in";
-    private static final Long LESSOR_A_ID = 42L;
-
-    private static final String LESSOR_B_EMAIL = "lessor.b@pathome.in";
-    private static final Long LESSOR_B_ID = 99L;
-
     private Authentication authA;
-    private Authentication authB;
+    private Authentication authBWithSpoofedName;
 
     @BeforeEach
-    public void setUp() {
+    void setUp() {
         notificationService = mock(NotificationService.class);
-        userRepository = mock(UserRepository.class);
-        controller = new NotificationController(notificationService, userRepository);
-
-        User userA = new User();
-        userA.setId(LESSOR_A_ID);
-        userA.setEmail(LESSOR_A_EMAIL);
-        when(userRepository.findByEmail(LESSOR_A_EMAIL)).thenReturn(Optional.of(userA));
-
-        User userB = new User();
-        userB.setId(LESSOR_B_ID);
-        userB.setEmail(LESSOR_B_EMAIL);
-        when(userRepository.findByEmail(LESSOR_B_EMAIL)).thenReturn(Optional.of(userB));
-
-        authA = new UsernamePasswordAuthenticationToken(LESSOR_A_EMAIL, "pass", List.of());
-        authB = new UsernamePasswordAuthenticationToken(LESSOR_B_EMAIL, "pass", List.of());
+        controller = new NotificationController(notificationService);
+        authA = authentication("lessor.a@pathome.in", USER_A_ID);
+        // The signed principal name is deliberately misleading; only the verified JWT user ID is authoritative.
+        authBWithSpoofedName = authentication("lessor.a@pathome.in", USER_B_ID);
     }
 
     @Test
-    @DisplayName("1. Authenticated user receives only their own notifications")
-    public void testAuthenticatedUserReceivesOnlyOwnNotifications() {
-        SystemNotification notifA = new SystemNotification();
-        notifA.setId(1L);
-        notifA.setRecipientUserId(String.valueOf(LESSOR_A_ID));
-        notifA.setTitle("Updates needed");
+    void authenticatedUserReceivesOwnNotificationAndRecipientInternalsAreOmitted() {
+        SystemNotification notification = new SystemNotification(TargetRole.LANDLORD, "42",
+                "Listing update", "Your listing was reviewed", "Review the requested changes",
+                "PROPERTY", "info");
+        notification.setId(7L);
+        notification.setActionTarget("/lessor/listings/71");
+        when(notificationService.getNotificationsForUser("42")).thenReturn(List.of(notification));
 
-        when(notificationService.getNotificationsForUser(String.valueOf(LESSOR_A_ID)))
-                .thenReturn(List.of(notifA));
+        ResponseEntity<List<NotificationResponseDto>> response = controller.getNotifications(authA);
 
-        ResponseEntity<List<NotificationResponseDto>> response = controller.getNotifications(authA, "LANDLORD");
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
+        assertEquals(200, response.getStatusCode().value());
         assertEquals(1, response.getBody().size());
-        assertEquals(String.valueOf(LESSOR_A_ID), response.getBody().get(0).recipientUserId());
-        assertEquals("Updates needed", response.getBody().get(0).title());
-
-        verify(notificationService).getNotificationsForUser(String.valueOf(LESSOR_A_ID));
-        verify(notificationService, never()).getNotificationsForUser(String.valueOf(LESSOR_B_ID));
+        NotificationResponseDto item = response.getBody().get(0);
+        assertEquals("Listing update", item.title());
+        assertEquals("Review the requested changes", item.details());
+        assertEquals("/lessor/listings/71", item.actionTarget());
+        List<String> exposedFields = java.util.Arrays.stream(NotificationResponseDto.class.getRecordComponents())
+                .map(RecordComponent::getName).toList();
+        assertFalse(exposedFields.contains("recipientUserId"));
+        assertFalse(exposedFields.contains("targetRole"));
+        assertFalse(exposedFields.contains("eventKey"));
+        verify(notificationService).getNotificationsForUser("42");
+        verifyNoMoreInteractions(notificationService);
     }
 
     @Test
-    @DisplayName("2. Unread count is scoped strictly to authenticated user")
-    public void testUnreadCountScopedStrictlyToUser() {
-        when(notificationService.getUnreadCountForUser(String.valueOf(LESSOR_A_ID))).thenReturn(3L);
+    void anotherUserCannotSelectRecipientWithNameOrRoleInput() {
+        when(notificationService.getNotificationsForUser("99")).thenReturn(List.of());
 
-        ResponseEntity<Map<String, Object>> response = controller.getUnreadCount(authA);
+        ResponseEntity<List<NotificationResponseDto>> response = controller.getNotifications(authBWithSpoofedName);
 
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(3L, response.getBody().get("unreadCount"));
-
-        verify(notificationService).getUnreadCountForUser(String.valueOf(LESSOR_A_ID));
+        assertEquals(200, response.getStatusCode().value());
+        assertTrue(response.getBody().isEmpty());
+        verify(notificationService).getNotificationsForUser("99");
+        verify(notificationService, never()).getNotificationsForUser("42");
     }
 
     @Test
-    @DisplayName("3. Unauthenticated request to unread count returns 401 Unauthorized")
-    public void testUnauthenticatedUnreadCountReturns401() {
-        ResponseEntity<Map<String, Object>> response = controller.getUnreadCount(null);
-        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+    void unreadCountAndReadAllUseVerifiedPrincipalId() {
+        when(notificationService.getUnreadCountForUser("42")).thenReturn(2L);
+        when(notificationService.markAllAsReadForUser("42")).thenReturn(2);
+
+        ResponseEntity<Map<String, Object>> unread = controller.getUnreadCount(authA);
+        ResponseEntity<Map<String, Object>> readAll = controller.markAllAsRead(authA);
+
+        assertEquals(2L, unread.getBody().get("unreadCount"));
+        assertEquals(2, readAll.getBody().get("count"));
+        verify(notificationService).getUnreadCountForUser("42");
+        verify(notificationService).markAllAsReadForUser("42");
     }
 
     @Test
-    @DisplayName("4. Marking another user's notification as read throws AccessDeniedException")
-    public void testMarkingOtherUserNotificationThrowsAccessDenied() {
-        // notification 10 belongs to User A, but User B tries to mark it as read
-        when(notificationService.markAsReadForUser(10L, String.valueOf(LESSOR_B_ID)))
-                .thenThrow(new AccessDeniedException("Cannot access another user's notification"));
+    void recipientNavigationRemainsAvailableWithoutExposingRoleOrEventMetadata() {
+        SystemNotification tenantVisit = new SystemNotification(TargetRole.TENANT, "42",
+                "Visit session updated", "Your scheduled visit changed", null,
+                "VISIT_SESSION", "info");
+        SystemNotification lessorWorkflow = new SystemNotification(TargetRole.LANDLORD, "42",
+                "Changes requested", "Review the listing changes", null, "PROPERTY", "info");
+        lessorWorkflow.setListingId(71L);
+        lessorWorkflow.setEventKey("CHANGES_REQUIRED:listing:71");
 
-        assertThrows(AccessDeniedException.class, () -> {
-            controller.markAsRead(authB, 10L);
-        });
+        assertEquals("/tenant#visit-history", NotificationResponseDto.from(tenantVisit).actionTarget());
+        assertEquals("/lessor/listings/71", NotificationResponseDto.from(lessorWorkflow).actionTarget());
     }
 
     @Test
-    @DisplayName("5. Marking one's own notification as read succeeds")
-    public void testMarkingOwnNotificationSucceeds() {
-        when(notificationService.markAsReadForUser(10L, String.valueOf(LESSOR_A_ID))).thenReturn(true);
-
-        ResponseEntity<Map<String, Object>> response = controller.markAsRead(authA, 10L);
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(true, response.getBody().get("success"));
-        assertEquals(10L, response.getBody().get("id"));
+    void authenticatedPrincipalWithoutVerifiedUserIdIsRejected() {
+        Authentication authWithoutIdentity = new UsernamePasswordAuthenticationToken("user", null, List.of());
+        assertThrows(AccessDeniedException.class, () -> controller.getNotifications(authWithoutIdentity));
+        verifyNoInteractions(notificationService);
     }
 
-    @Test
-    @DisplayName("6. Mark all as read affects only the authenticated user")
-    public void testMarkAllAsReadAffectsOnlyCurrentUser() {
-        when(notificationService.markAllAsReadForUser(String.valueOf(LESSOR_A_ID))).thenReturn(5);
-
-        ResponseEntity<Map<String, Object>> response = controller.markAllAsRead(authA);
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(5, response.getBody().get("count"));
-
-        verify(notificationService).markAllAsReadForUser(String.valueOf(LESSOR_A_ID));
-        verify(notificationService, never()).markAllAsReadForUser(String.valueOf(LESSOR_B_ID));
+    private static Authentication authentication(String principalName, Long userId) {
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                principalName, null, List.of());
+        HttpServletRequest request = new MockHttpServletRequest();
+        authentication.setDetails(new PathomeAuthenticationDetails(request, userId));
+        return authentication;
     }
 }

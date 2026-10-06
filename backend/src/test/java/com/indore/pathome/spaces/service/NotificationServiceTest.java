@@ -9,7 +9,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,45 +27,50 @@ public class NotificationServiceTest {
     @BeforeEach
     public void setUp() {
         MockitoAnnotations.openMocks(this);
-        when(repository.findByTargetRoleInOrderByCreatedAtDesc(any())).thenReturn(new ArrayList<>());
     }
 
     @Test
-    public void testRoleScopedNotificationFiltering() {
-        SystemNotification adminNotif = new SystemNotification(TargetRole.ADMIN, null, "Admin Alert", "Payroll data", null, "PAYROLL", "warning");
-        SystemNotification allNotif = new SystemNotification(TargetRole.ALL, null, "General Notice", "Maintenance update", null, "SYSTEM", "info");
-
-        when(repository.findByTargetRoleInOrderByCreatedAtDesc(argThat(roles -> roles != null && roles.contains(TargetRole.ADMIN))))
-                .thenReturn(List.of(adminNotif, allNotif));
-
-        when(repository.findByTargetRoleInOrderByCreatedAtDesc(argThat(roles -> roles != null && roles.contains(TargetRole.TENANT) && !roles.contains(TargetRole.ADMIN))))
-                .thenReturn(List.of(allNotif));
-
-        List<SystemNotification> adminResults = notificationService.getNotificationsForRole(TargetRole.ADMIN, null);
-        assertNotNull(adminResults);
-        assertFalse(adminResults.isEmpty());
-
-        List<SystemNotification> tenantResults = notificationService.getNotificationsForRole(TargetRole.TENANT, null);
-        assertNotNull(tenantResults);
-        assertEquals(1, tenantResults.size());
-        assertEquals("General Notice", tenantResults.get(0).getTitle());
-    }
-
-    @Test
-    public void testCreateNotificationAndMarkAsRead() {
+    public void testCreateNotificationAndRecipientScopedMarkAsRead() {
         SystemNotification notif = new SystemNotification(TargetRole.EMPLOYEE, "emp123", "Lead Assigned", "New inquiry", null, "LEAD", "info");
         notif.setId(10L);
 
         when(repository.save(any(SystemNotification.class))).thenReturn(notif);
-        when(repository.findById(10L)).thenReturn(Optional.of(notif));
+        when(repository.findByIdAndRecipientUserId(10L, "emp123")).thenReturn(Optional.of(notif));
 
         SystemNotification created = notificationService.createNotification(TargetRole.EMPLOYEE, "emp123", "Lead Assigned", "New inquiry", null, "LEAD", "info");
         assertNotNull(created);
         assertEquals(10L, created.getId());
 
-        boolean readSuccess = notificationService.markAsRead(10L);
+        boolean readSuccess = notificationService.markAsReadForUser(10L, "emp123");
         assertTrue(readSuccess);
         assertTrue(notif.isRead());
+        verify(repository, never()).findById(10L);
+    }
+
+    @Test
+    public void crossUserMarkAsReadCannotLoadOrMutateNotification() {
+        when(repository.findByIdAndRecipientUserId(10L, "other-user")).thenReturn(Optional.empty());
+
+        assertFalse(notificationService.markAsReadForUser(10L, "other-user"));
+
+        verify(repository).findByIdAndRecipientUserId(10L, "other-user");
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    public void privateFeedAndUnreadCountUseRecipientScopedRepositoryQueries() {
+        SystemNotification ownNotification = new SystemNotification(TargetRole.TENANT, "tenant-a",
+                "Visit updated", "Your visit time changed", null, "VISIT_SESSION", "info");
+        when(repository.findByRecipientUserIdOrderByCreatedAtDesc("tenant-a"))
+                .thenReturn(List.of(ownNotification));
+        when(repository.countByRecipientUserIdAndIsReadFalse("tenant-a")).thenReturn(1L);
+
+        assertEquals(List.of(ownNotification), notificationService.getNotificationsForUser("tenant-a"));
+        assertEquals(1L, notificationService.getUnreadCountForUser("tenant-a"));
+
+        verify(repository).findByRecipientUserIdOrderByCreatedAtDesc("tenant-a");
+        verify(repository).countByRecipientUserIdAndIsReadFalse("tenant-a");
+        verify(repository, never()).findByTargetRoleInOrderByCreatedAtDesc(any());
     }
 
     @Test

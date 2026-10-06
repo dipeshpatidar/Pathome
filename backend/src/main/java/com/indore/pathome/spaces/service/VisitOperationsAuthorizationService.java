@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class VisitOperationsAuthorizationService {
-    private static final String OPERATIONS_PROFILE = "WFH_ADMIN";
     private static final String GROUND_PROFILE = "GROUND_BOY";
 
     private final UserRepository users;
@@ -24,14 +23,8 @@ public class VisitOperationsAuthorizationService {
 
     public User requireOperations(Long authenticatedUserId) {
         User user = loadAuthenticatedUser(authenticatedUserId);
-        if (user.getRole() == Role.ROLE_SUB_ADMIN) {
-            throw new AccessDeniedException("Sub-admin Visit Operations permission is not configured");
-        }
         if (user.getRole() == Role.ROLE_ADMIN) return user;
-
-        EmployeeProfile profile = employees.findByUserId(user.getId()).orElse(null);
-        if (profile != null && OPERATIONS_PROFILE.equalsIgnoreCase(profile.getRoleType())) return user;
-        throw new AccessDeniedException("Operations staff capability required");
+        throw new AccessDeniedException("Pathome Admin authority is required for operations access");
     }
 
     public User requireGroundExecutive(Long authenticatedUserId) {

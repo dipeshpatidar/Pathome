@@ -2,9 +2,6 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 import {
-  BarChart3,
-  Users,
-  CheckSquare,
   ShieldCheck,
   CheckCircle2,
   XCircle,
@@ -16,8 +13,6 @@ import {
   ChevronUp,
   SlidersHorizontal,
   Plus,
-  ToggleLeft,
-  ToggleRight,
   UploadCloud,
   Camera,
   Video,
@@ -45,10 +40,6 @@ import { RoomTag, Property, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { composeNextPropertyPrompt, scrollPromptTextareaToNextProperty } from '../utils/propertyPromptComposer';
 
-import { RevenueAreaChart } from './analytics/RevenueAreaChart';
-import { FunnelStepGraph } from './analytics/FunnelStepGraph';
-import { SectorPerformanceBarChart } from './analytics/SectorPerformanceBarChart';
-import { BhkDemandGaugeGrid } from './analytics/BhkDemandGaugeGrid';
 import { BatchPropertyIngestionStudio } from './BatchPropertyIngestionStudio';
 import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 import { FailedUploadsPanel } from './FailedUploadsPanel';
@@ -64,30 +55,6 @@ interface MasterAdminDashboardProps {
   canReviewVisitRepairs?: boolean;
   canReviewVisitOutcomes?: boolean;
 }
-
-const mockGroundBoys = [
-  { id: 1, name: "Rahul Verma", sector: "Vijay Nagar", basePay: 15000, dealsClosed: 6, visitsEscorted: 28, status: "PENDING_DISBURSAL" },
-  { id: 2, name: "Vikram Singh", sector: "Bhawarkua", basePay: 15000, dealsClosed: 8, visitsEscorted: 34, status: "DISBURSED" },
-  { id: 3, name: "Sandeep Joshi", sector: "Palasia", basePay: 15000, dealsClosed: 3, visitsEscorted: 15, status: "PENDING_DISBURSAL" },
-];
-
-const mockLeaseCashbacks = [
-  { id: "CB-101", tenantName: "Aman Gupta", propertyTitle: "Luxury 3 BHK Flat (Vijay Nagar)", leaseDate: "10 Sep 2026", amount: 1000, status: "PENDING" },
-  { id: "CB-102", tenantName: "Ritu Sharma", propertyTitle: "Independent House (Bhawarkua)", leaseDate: "12 Sep 2026", amount: 1000, status: "PENDING" },
-];
-
-const mockPlotApprovals = [
-  { id: "PLT-55", title: "Commercial Plot AB Road Sector B", areaSqFt: 4200, ownerName: "Rajesh Agrawal", askingPrice: "₹1.25 Cr", status: "UNDER_REVIEW" },
-  { id: "PLT-56", title: "Super Corridor Residential Plot #12", areaSqFt: 1800, ownerName: "Sunil Jain", askingPrice: "₹45 Lakhs", status: "UNDER_REVIEW" }
-];
-
-const initialBhkConfigs = [
-  { id: '1RK', label: '1 RK Studio', enabled: true, demandScore: '88%', avgRent: '₹8,500' },
-  { id: '1BHK', label: '1 BHK Apartment', enabled: true, demandScore: '92%', avgRent: '₹11,000' },
-  { id: '2BHK', label: '2 BHK Family Flat', enabled: true, demandScore: '98%', avgRent: '₹17,500' },
-  { id: '3BHK', label: '3 BHK Gated Flat', enabled: true, demandScore: '95%', avgRent: '₹24,000' },
-  { id: '4BHK', label: '4 BHK+ Luxury Villa', enabled: true, demandScore: '85%', avgRent: '₹40,000' }
-];
 
 const PRESET_PROMPTS = [
   {
@@ -196,31 +163,20 @@ const cardVariants: Variants = {
   }
 };
 
-const mockEmployeeRoster = [
-  { id: "EMP-101", name: "Rahul Verma", role: "Ground Boy Escort", sector: "Vijay Nagar", status: "ONLINE", phone: "+91 98765 43210", lastActive: "2 mins ago", rating: "4.9/5", loginIp: "103.22.41.12 (Mobile App)" },
-  { id: "EMP-102", name: "Vikram Singh", role: "Field Verification Lead", sector: "Bhawarkua", status: "ON_LEAVE", phone: "+91 98765 43211", lastActive: "Yesterday", rating: "4.8/5", loginIp: "103.22.41.15 (Mobile App)" },
-  { id: "EMP-103", name: "Sandeep Joshi", role: "Customer Support Executive", sector: "Palasia HQ", status: "ONLINE", phone: "+91 98765 43212", lastActive: "Just now", rating: "4.7/5", loginIp: "103.22.41.18 (Web Console)" },
-];
-
-const mockLeaveRequests = [
-  { id: "LV-301", empId: "EMP-102", empName: "Vikram Singh", leaveType: "Casual Leave", startDate: "14 Sep 2026", endDate: "16 Sep 2026", reason: "Family Function", status: "PENDING" },
-  { id: "LV-302", empId: "EMP-101", empName: "Rahul Verma", leaveType: "Medical Leave", startDate: "20 Sep 2026", endDate: "21 Sep 2026", reason: "Health Checkup", status: "APPROVED" }
-];
-
 export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false, canReviewVisitOutcomes = false }) => {
   const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
 
   const [internalTab, setInternalTab] = useState<string>(() => {
+    const availableTabs = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes']);
     try {
       const saved = localStorage.getItem('pathome_active_admin_tab');
-      if (saved) return saved;
+      if (saved && availableTabs.has(saved)) return saved;
     } catch (_) {}
-    return 'funnel';
+    return 'media';
   });
   const activeTab = externalActiveTab || internalTab;
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
-  const [showMobileListingTools, setShowMobileListingTools] = useState<boolean>(false);
   const [activeAttributeTab, setActiveAttributeTab] = useState<'all' | 'location' | 'pricing' | 'specs'>('all');
 
   const handleTabSelect = (tabId: string) => {
@@ -235,15 +191,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   };
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
-  const [groundBoys, setGroundBoys] = useState(mockGroundBoys);
-  const [cashbacks, setCashbacks] = useState(mockLeaseCashbacks);
-  const [plots, setPlots] = useState(mockPlotApprovals);
-  const [employees, setEmployees] = useState(mockEmployeeRoster);
-  const [leaves, setLeaves] = useState(mockLeaveRequests);
 
   const uploadConsoleRef = useRef<HTMLDivElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const [bhkConfigs, setBhkConfigs] = useState<any[]>(initialBhkConfigs);
   const [newBhkLabel, setNewBhkLabel] = useState('');
   const [failedUploadsCount, setFailedUploadsCount] = useState<number>(0);
   const [attachedMediaFiles, setAttachedMediaFiles] = useState<File[]>([]);
@@ -1485,10 +1435,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     localStorage.removeItem('pathome_tenant_filters');
   }, []);
 
-  const handleToggleBhk = (id: string) => {
-    setBhkConfigs(bhkConfigs.map((c: any) => c.id === id ? { ...c, enabled: !c.enabled } : c));
-  };
-
   const liveExtractedPreview = lastExtractedResult;
 
   const handleAddCustomBhk = async (e: React.FormEvent) => {
@@ -1643,41 +1589,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
   };
 
-  const handleDisbursePayroll = (id: number) => {
-    const gb = groundBoys.find(g => g.id === id);
-    setGroundBoys(groundBoys.map(g => g.id === id ? { ...g, status: "DISBURSED" } : g));
-    notifySuccess('💸 Payroll Disbursed', `Base salary ₹15,000 disbursed to ${gb?.name || 'Ground Escort Staff'}`, `Sector: ${gb?.sector} • ${gb?.dealsClosed} Deals Closed`, 'PAYROLL');
-  };
-
-  const handleApproveCashback = (id: string) => {
-    const item = cashbacks.find(c => c.id === id);
-    setCashbacks(cashbacks.map(c => c.id === id ? { ...c, status: "APPROVED" } : c));
-    notifySuccess('💰 ₹1,000 Cashback Approved', `Tenant lease cashback released for ${item?.tenantName || 'Tenant'}`, `Direct Bank UPI Payout • ${item?.propertyTitle}`, 'APPROVAL');
-  };
-
-  const handleApprovePlot = (id: string) => {
-    setPlots(plots.map(p => p.id === id ? { ...p, status: "APPROVED" } : p));
-    notifySuccess('📌 Plot Approval Verified', `Commercial plot listing ${id} approved & published`, undefined, 'APPROVAL');
-  };
-
-  const handleApproveLeave = (id: string) => {
-    setLeaves(leaves.map(l => l.id === id ? { ...l, status: "APPROVED" } : l));
-    notifyInfo('📅 Staff Leave Approved', `Leave request ID ${id} approved`, 'Staff Roster updated in realtime', 'SYSTEM');
-  };
-
-  const handleRejectLeave = (id: string) => {
-    setLeaves(leaves.map(l => l.id === id ? { ...l, status: "REJECTED" } : l));
-    notifyWarning('📅 Staff Leave Rejected', `Leave request ID ${id} rejected`, 'Staff Roster updated', 'SYSTEM');
-  };
-
   const adminNavItems = [
-    { id: 'funnel', label: 'Funnel & Analytics', badge: '18%', icon: BarChart3, color: 'text-emerald-600' },
-    { id: 'crm', label: 'Staff CRM & Telemetry', badge: `${employees.length} Staff`, icon: Users, color: 'text-indigo-600' },
-    { id: 'approval', label: 'Approvals Queue', badge: `${cashbacks.filter(c => c.status === 'PENDING').length} New`, icon: CheckSquare, color: 'text-amber-600' },
-    { id: 'learning', label: 'Learning review', badge: 'Private', icon: ShieldCheck, color: 'text-emerald-600' },
+    { id: 'learning', label: 'Learning review', badge: 'Review', icon: ShieldCheck, color: 'text-emerald-600' },
     ...(canReviewVisitRepairs ? [{ id: 'visit-repairs', label: 'Visit repairs', badge: 'Operations', icon: Wrench, color: 'text-amber-600' }] : []),
     ...(canReviewVisitOutcomes ? [{ id: 'visit-outcomes', label: 'Visit outcome exceptions', badge: 'Operations', icon: FileText, color: 'text-amber-600' }] : []),
-    { id: 'config', label: 'Listing settings', badge: 'Ready', icon: SlidersHorizontal, color: 'text-purple-600' },
     { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' },
     { id: 'failed-uploads', label: 'Failed Uploads', badge: failedUploadsCount > 0 ? `${failedUploadsCount} Issue${failedUploadsCount > 1 ? 's' : ''}` : 'Clear', icon: AlertTriangle, color: 'text-rose-600' }
   ];
@@ -1693,7 +1608,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           </div>
           <div className="min-w-0">
             <h2 className="truncate text-xs font-black font-['Outfit'] text-white leading-tight">Pathome Admin Portal</h2>
-            <span className="text-[10px] text-emerald-400 font-mono font-bold block">Indore Region HQ</span>
+            <span className="text-[10px] text-emerald-400 font-mono font-bold block">Property and operations workspace</span>
           </div>
         </div>
 
@@ -1740,7 +1655,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               </div>
               <div className="grid grid-cols-1 gap-2">
                 {adminNavItems.map((item, index) => {
-                  const isActive = activeTab === item.id || (activeTab === 'overview' && item.id === 'funnel');
+                  const isActive = activeTab === item.id;
                   const Icon = item.icon;
                   return (
                     <motion.button
@@ -1810,7 +1725,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 <h2 className="text-sm font-black font-['Outfit'] text-slate-900 leading-none truncate">
                   Admin Portal
                 </h2>
-                <span className="text-[10px] text-slate-500 font-semibold truncate block mt-0.5">Indore Region HQ</span>
+                <span className="text-[10px] text-slate-500 font-semibold truncate block mt-0.5">Property and operations</span>
               </motion.div>
             )}
           </div>
@@ -1818,7 +1733,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           {/* NAV ITEMS LIST WITH MAGNETIC LIQUID SLIDING TRANSITION */}
           <nav className="space-y-1.5 relative">
             {adminNavItems.map((item) => {
-              const isActive = activeTab === item.id || (activeTab === 'overview' && item.id === 'funnel');
+              const isActive = activeTab === item.id;
               const Icon = item.icon;
               return (
                 <motion.button
@@ -1884,11 +1799,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           >
             <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-3.5 space-y-1">
               <div className="flex items-center justify-between text-xs font-bold text-emerald-900 font-['Outfit']">
-                <span>System Status</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Workspace</span>
               </div>
               <p className="text-[11px] text-emerald-700 font-medium leading-relaxed">
-                Property management is ready.
+                Manage property listings and available review queues from this workspace.
               </p>
             </div>
           </motion.div>
@@ -1898,309 +1812,18 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       {/* 2. MAIN ADMIN CONTENT CONTAINER */}
       <main className="flex-1 min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-6 w-full">
 
-        {/* EXECUTIVE PORTAL HEADER */}
-        <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} relative overflow-hidden rounded-3xl border border-slate-200/90 bg-white p-4 text-slate-900 shadow-sm sm:p-6 lg:p-8`}>
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-extrabold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5 font-mono">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  Executive Analytics Portal
-                </span>
-                <span className="text-xs text-slate-500 font-mono font-semibold">Indore Region HQ</span>
-              </div>
-              <h1 className="text-2xl sm:text-3xl font-black font-['Outfit'] mt-2 text-slate-900 tracking-tight">
-                Operations & Property Analytics Hub
-              </h1>
-              <p className="text-xs text-slate-500 mt-1">
-                Visual Area Graphs, Conversion Funnels, GPS Telemetry Radar & Automated Property Ingestion.
-              </p>
-            </div>
+        <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6`}>
+          <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Admin workspace</h1>
+          <p className="mt-1 text-sm text-slate-600">Manage property listings and available review queues.</p>
+        </div>
 
-            <div className="flex items-center gap-3 shrink-0 flex-wrap">
-              <div className="bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-200 text-right font-mono">
-                <span className="text-[10px] text-slate-500 block uppercase font-bold">Monthly Revenue</span>
-                <span className="text-base sm:text-lg font-black text-emerald-700">₹14.2 Lakhs</span>
-              </div>
-              <div className="bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-200 text-right font-mono">
-                <span className="text-[10px] text-slate-500 block uppercase font-bold">Active Employees</span>
-                <span className="text-base sm:text-lg font-black text-amber-700">{employees.length} Staff</span>
-              </div>
-            </div>
-          </div>
-
-          {/* AMBIENT AURORA MESH */}
-          <div className="absolute -top-24 -right-24 w-80 h-80 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-teal-500/5 rounded-full blur-3xl pointer-events-none" />
-
-          {/* 4 STAT BADGES WITH INTERACTIVE SPRING HOVER & GLOW */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-6 pt-6 border-t border-slate-100 relative z-10">
-            <motion.div
-              whileHover={{ y: -4, scale: 1.02, transition: { type: 'spring', stiffness: 450, damping: 18 } }}
-              whileTap={{ scale: 0.98 }}
-              className="bg-slate-50/80 hover:bg-white p-3.5 rounded-2xl border border-slate-200/80 hover:border-slate-400 hover:shadow-lg hover:shadow-slate-200/60 transition-all cursor-pointer group"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider block group-hover:text-slate-900 transition-colors">Meta Ads Leads</span>
-                <span className="text-[9px] font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">+18%</span>
-              </div>
-              <span className="text-xl font-black text-slate-900 font-mono mt-1 block">482 Total</span>
-            </motion.div>
-
-            <motion.div
-              whileHover={{ y: -4, scale: 1.02, transition: { type: 'spring', stiffness: 450, damping: 18 } }}
-              whileTap={{ scale: 0.98 }}
-              className="bg-slate-50/80 hover:bg-white p-3.5 rounded-2xl border border-slate-200/80 hover:border-emerald-400 hover:shadow-lg hover:shadow-emerald-500/10 transition-all cursor-pointer group"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider block group-hover:text-emerald-800 transition-colors">Escorted Tours</span>
-                <span className="text-[9px] font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">Active</span>
-              </div>
-              <span className="text-xl font-black text-emerald-700 font-mono mt-1 block">184 Passes</span>
-            </motion.div>
-
-            <motion.div
-              whileHover={{ y: -4, scale: 1.02, transition: { type: 'spring', stiffness: 450, damping: 18 } }}
-              whileTap={{ scale: 0.98 }}
-              className="bg-slate-50/80 hover:bg-white p-3.5 rounded-2xl border border-slate-200/80 hover:border-amber-400 hover:shadow-lg hover:shadow-amber-500/10 transition-all cursor-pointer group"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider block group-hover:text-amber-800 transition-colors">Staff Online</span>
-                <span className="text-[9px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">GPS Live</span>
-              </div>
-              <span className="text-xl font-black text-amber-700 font-mono mt-1 block">2 / 3 Staff</span>
-            </motion.div>
-
-            <motion.div
-              whileHover={{ y: -4, scale: 1.02, transition: { type: 'spring', stiffness: 450, damping: 18 } }}
-              whileTap={{ scale: 0.98 }}
-              className="bg-slate-50/80 hover:bg-white p-3.5 rounded-2xl border border-slate-200/80 hover:border-indigo-400 hover:shadow-lg hover:shadow-indigo-500/10 transition-all cursor-pointer group"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider block group-hover:text-indigo-800 transition-colors">Pending Leaves</span>
-                <span className="text-[9px] font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">Audit</span>
-              </div>
-              <span className="text-xl font-black text-indigo-700 font-mono mt-1 block">{leaves.filter(l => l.status === 'PENDING').length} Requests</span>
-            </motion.div>
-          </div>
+        <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6`}>
+          <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Admin workspace</h1>
+          <p className="mt-1 text-sm text-slate-600">Manage property listings and available review queues.</p>
         </div>
 
         {/* 3. DYNAMIC TAB VIEW DISPLAY */}
         <AnimatePresence mode="wait">
-
-          {/* TAB 1: FUNNEL HUB & GOOGLE VISUAL ANALYTICS GRAPH */}
-          {(activeTab === 'funnel' || activeTab === 'overview') && (
-            <motion.div
-              key="tab-funnel"
-              variants={containerVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-              className="space-y-6"
-            >
-              {/* GOOGLE ANALYTICS REVENUE & TOUR AREA GRAPH */}
-              <motion.div variants={cardVariants}>
-                <RevenueAreaChart />
-              </motion.div>
-
-              {/* STEPPED FUNNEL FLOW GRAPH */}
-              <motion.div variants={cardVariants}>
-                <FunnelStepGraph />
-              </motion.div>
-
-              {/* INDORE SECTOR PERFORMANCE COMPARISON BAR CHART */}
-              <motion.div variants={cardVariants}>
-                <SectorPerformanceBarChart />
-              </motion.div>
-            </motion.div>
-          )}
-
-          {/* TAB 2: STAFF CRM & TELEMETRY */}
-          {(activeTab === 'crm' || activeTab === 'employees' || activeTab === 'payroll') && (
-            <motion.div
-              key="tab-crm"
-              variants={containerVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-              className="space-y-6"
-            >
-              {/* GPS Telemetry Console */}
-              <motion.div variants={cardVariants} className="bg-white text-slate-900 rounded-3xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 mb-6 border-b border-slate-100">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-black text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 uppercase font-mono flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                        Real-Time GPS Radar
-                      </span>
-                    </div>
-                    <h3 className="text-xl font-black text-slate-900 font-['Outfit'] mt-1 flex items-center gap-2">
-                      🌐 Live Field Escort GPS Telemetry & Tracking Console
-                    </h3>
-                  </div>
-
-                  <button
-                    onClick={() => notifyInfo('Location update complete', 'Escort locations have been refreshed for Indore.', undefined, 'SYSTEM')}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition-all shadow-md shadow-emerald-600/20 flex items-center gap-1.5"
-                  >
-                    📡 Ping Live GPS Signals
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 hover:border-emerald-500/40 transition-all">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-100 border border-emerald-200 text-emerald-800 flex items-center justify-center font-bold text-sm">
-                          RV
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
-                            Rahul Verma <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-mono">Active Escort</span>
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-mono">ID: EMP-101 • Field Escort Lead</p>
-                        </div>
-                      </div>
-                      <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 animate-pulse">
-                        ● Live GPS Active
-                      </span>
-                    </div>
-
-                    <div className="bg-white p-3.5 rounded-xl border border-slate-200/90 space-y-2 text-xs font-mono">
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500 flex items-center gap-1"><Zap className="w-3.5 h-3.5 text-emerald-600" /> GPS Telemetry:</span>
-                        <span className="text-emerald-700 font-bold">22.7533° N, 75.8937° E</span>
-                      </div>
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500 flex items-center gap-1"><FileText className="w-3.5 h-3.5 text-indigo-600" /> Sector Landmark:</span>
-                        <span className="text-slate-900 font-bold">Vijay Nagar (C21 Mall Hub)</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 hover:border-indigo-500/40 transition-all">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-10 h-10 rounded-xl bg-indigo-100 border border-indigo-200 text-indigo-800 flex items-center justify-center font-bold text-sm">
-                          VS
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
-                            Vikram Singh <span className="text-[10px] text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 font-mono">Verification Lead</span>
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-mono">ID: EMP-102 • Field Inspector</p>
-                        </div>
-                      </div>
-                      <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-cyan-50 text-cyan-800 border border-cyan-200">
-                        ● Live GPS Active
-                      </span>
-                    </div>
-
-                    <div className="bg-white p-3.5 rounded-xl border border-slate-200/90 space-y-2 text-xs font-mono">
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500 flex items-center gap-1"><Zap className="w-3.5 h-3.5 text-cyan-600" /> GPS Telemetry:</span>
-                        <span className="text-cyan-700 font-bold">22.6900° N, 75.8650° E</span>
-                      </div>
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500 flex items-center gap-1"><FileText className="w-3.5 h-3.5 text-indigo-600" /> Sector Landmark:</span>
-                        <span className="text-slate-900 font-bold">Bhawarkua Coaching Hub</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-
-              {/* Staff Roster */}
-              <motion.div variants={cardVariants} className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-900 font-['Outfit']">Staff Roster & Performance Audit</h3>
-                    <span className="text-xs text-slate-500">Employee profiles, assigned sectors & rating metrics</span>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                    {employees.filter(e => e.status === 'ONLINE').length} Staff Online Now
-                  </span>
-                </div>
-
-                <div className="space-y-3">
-                  {employees.map((emp) => (
-                    <div key={emp.id} className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">{emp.id}</span>
-                          <span className="font-extrabold text-sm text-slate-900">{emp.name}</span>
-                          <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">{emp.role}</span>
-                        </div>
-                        <p className="text-xs text-slate-500 font-mono">
-                          Sector: <span className="font-bold text-slate-800">{emp.sector}</span> • Phone: <span className="font-bold text-slate-800">{emp.phone}</span>
-                        </p>
-                      </div>
-
-                      <span className={`px-3 py-1 rounded-xl text-xs font-extrabold font-mono border ${emp.status === 'ONLINE' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-200 text-slate-600 border-slate-300'
-                        }`}>
-                        {emp.status === 'ONLINE' ? '● Online' : '○ On Leave'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-
-          {/* TAB 3: APPROVALS QUEUE */}
-          {activeTab === 'approval' && (
-            <motion.div
-              key="tab-approval"
-              variants={containerVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-              className="space-y-6"
-            >
-              {/* Lease Cashback Approvals */}
-              <motion.div variants={cardVariants} className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-900 font-['Outfit']">Tenant Lease Cashback Approvals (₹1,000)</h3>
-                    <span className="text-xs text-slate-500">Verify uploaded rent agreement PDFs to release ₹1,000 tenant cashback</span>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                    Direct Bank UPI Transfer
-                  </span>
-                </div>
-
-                <div className="space-y-3">
-                  {cashbacks.map((item) => (
-                    <div key={item.id} className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-slate-900">{item.id}</span>
-                          <span className="text-xs font-bold text-slate-900">{item.tenantName}</span>
-                        </div>
-                        <p className="text-xs text-slate-600">{item.propertyTitle}</p>
-                      </div>
-
-                      {item.status === 'APPROVED' ? (
-                        <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 flex items-center gap-1">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" /> ₹1,000 Cashback Sent
-                        </span>
-                      ) : (
-                        <motion.button
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          onClick={() => handleApproveCashback(item.id)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2 rounded-xl shadow-md shadow-emerald-600/20"
-                        >
-                          Approve ₹1,000 Cashback
-                        </motion.button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
 
           {activeTab === 'learning' && <ParserLearningReviewPanel />}
 
@@ -2212,7 +1835,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           )}
 
           {/* TAB 4: BHK ENGINE & CLOUDINARY MEDIA CDN */}
-          {(activeTab === 'config' || activeTab === 'media') && (
+          {activeTab === 'media' && (
             <motion.div
               key={`tab-${activeTab}`}
               variants={containerVariants}
@@ -3628,87 +3251,6 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
               </motion.div>
 
-              <button
-                type="button"
-                onClick={() => setShowMobileListingTools((current) => !current)}
-                aria-expanded={showMobileListingTools}
-                className="flex min-h-12 w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-bold text-slate-800 shadow-sm transition-colors hover:border-emerald-300 lg:hidden"
-              >
-                <span>
-                  <span className="block">Demand insights and listing options</span>
-                  <span className="mt-0.5 block text-[11px] font-medium text-slate-500">
-                    Open only when you need to manage search options.
-                  </span>
-                </span>
-                <ChevronRight className={`h-5 w-5 shrink-0 text-emerald-600 transition-transform ${showMobileListingTools ? 'rotate-90' : ''}`} />
-              </button>
-
-              <div className={`${showMobileListingTools ? 'contents' : 'hidden'} lg:contents`}>
-              {/* BHK DEMAND VISUAL SCORE GAUGES */}
-              <motion.div variants={cardVariants}>
-                <BhkDemandGaugeGrid />
-              </motion.div>
-
-              {/* BHK CONFIGURATION MANAGER HEADER */}
-              <motion.div variants={cardVariants} className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/90 shadow-sm">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 mb-6 border-b border-slate-100">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-black text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 uppercase font-mono">
-                        Listing options
-                      </span>
-                      <span className="text-xs text-slate-500 font-mono">Tenant search</span>
-                    </div>
-                    <h3 className="text-xl font-black text-slate-900 font-['Outfit'] mt-1">
-                      Property layout options
-                    </h3>
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 px-4 py-2 rounded-2xl text-emerald-800 font-mono text-xs font-bold">
-                    {bhkConfigs.filter((c: any) => c.enabled).length} / {bhkConfigs.length} Active Options
-                  </div>
-                </div>
-
-                {/* BHK CONFIGURATION GRID TABLE */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {bhkConfigs.map((config: any) => (
-                    <div
-                      key={config.id}
-                      className={`p-4 rounded-2xl border transition-all ${config.enabled
-                          ? 'bg-slate-900 text-white border-slate-800 shadow-md'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-mono font-bold uppercase text-slate-400">
-                          ID: {config.id}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() => handleToggleBhk(config.id)}
-                          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold transition-all ${config.enabled
-                              ? 'bg-emerald-500 text-white shadow-sm'
-                              : 'bg-slate-300 text-slate-700'
-                            }`}
-                        >
-                          {config.enabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
-                          {config.enabled ? 'Enabled' : 'Disabled'}
-                        </button>
-                      </div>
-
-                      <h4 className="text-base font-extrabold font-['Outfit'] mb-1">
-                        {config.label}
-                      </h4>
-
-                      <div className="flex items-center justify-between text-xs pt-2 mt-2 border-t border-slate-800/40 font-mono">
-                        <span>Demand: <strong className={config.enabled ? 'text-emerald-300' : 'text-slate-600'}>{config.demandScore}</strong></span>
-                        <span>Avg Rent: <strong className={config.enabled ? 'text-amber-300' : 'text-slate-600'}>{config.avgRent}</strong></span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-              </div>
             </motion.div>
           )}
 

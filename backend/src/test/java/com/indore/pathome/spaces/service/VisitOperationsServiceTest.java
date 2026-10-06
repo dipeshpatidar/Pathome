@@ -130,6 +130,18 @@ class VisitOperationsServiceTest {
     }
 
     @Test
+    void deniedOperationsActorCannotUseRawIdDetailOrMutation() {
+        doThrow(new AccessDeniedException("Admin required")).when(authorization).requireOperations(4L);
+
+        assertThrows(AccessDeniedException.class, () -> service.getOperationsSession(4L, 500L));
+        assertThrows(AccessDeniedException.class, () -> service.markRequestUnavailable(4L, 11L,
+                new ExpectedVisitRequestVersion(0L)));
+
+        verify(sessions, never()).findById(500L);
+        verify(requests, never()).findLockedById(11L);
+    }
+
+    @Test
     void nearbyItemsCarryEitherApprovedDerivedOriginAndRejectMixedCity() {
         for (VisitSessionItemOrigin origin : List.of(VisitSessionItemOrigin.OE_ADDED,
                 VisitSessionItemOrigin.LESSOR_SUGGESTED)) {

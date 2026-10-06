@@ -43,16 +43,11 @@ import { clearPersistedUser, readPersistedUser } from '../utils/authSession';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
 
 const VALID_ADMIN_TABS = new Set([
-  'overview',
-  'funnel',
-  'crm',
-  'employees',
-  'payroll',
-  'approval',
   'learning',
-  'config',
   'media',
-  'failed-uploads'
+  'failed-uploads',
+  'visit-repairs',
+  'visit-outcomes'
 ]);
 
 type PropertyVisitLookup = {
@@ -75,7 +70,7 @@ const getInitialAdminTab = (): string => {
   } catch (err) {
     console.warn('Failed to load active admin tab from localStorage', err);
   }
-  return 'overview';
+  return 'media';
 };
 
 export const Home: React.FC = () => {

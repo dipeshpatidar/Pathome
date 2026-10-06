@@ -27,21 +27,28 @@ class VisitOperationsAuthorizationServiceTest {
     }
 
     @Test
-    void adminAndExistingWfhCapabilityCanOperateButTenantAndSubAdminCannot() {
+    void onlyAdminCanUseSensitiveOperationsUntilScopedStaffAuthorizationExists() {
         User admin = user(1L, Role.ROLE_ADMIN);
         User tenant = user(2L, Role.ROLE_TENANT);
         User subAdmin = user(3L, Role.ROLE_SUB_ADMIN);
         User operations = user(4L, Role.ROLE_TENANT);
+        User lessor = user(5L, Role.ROLE_LANDLORD);
+        User groundExecutive = user(6L, Role.ROLE_GROUND_BOY);
         when(users.findById(1L)).thenReturn(Optional.of(admin));
         when(users.findById(2L)).thenReturn(Optional.of(tenant));
         when(users.findById(3L)).thenReturn(Optional.of(subAdmin));
         when(users.findById(4L)).thenReturn(Optional.of(operations));
+        when(users.findById(5L)).thenReturn(Optional.of(lessor));
+        when(users.findById(6L)).thenReturn(Optional.of(groundExecutive));
         when(employees.findByUserId(4L)).thenReturn(Optional.of(profile("WFH_ADMIN")));
 
         assertSame(admin, authorization.requireOperations(1L));
-        assertSame(operations, authorization.requireOperations(4L));
         assertThrows(AccessDeniedException.class, () -> authorization.requireOperations(2L));
         assertThrows(AccessDeniedException.class, () -> authorization.requireOperations(3L));
+        assertThrows(AccessDeniedException.class, () -> authorization.requireOperations(4L));
+        assertThrows(AccessDeniedException.class, () -> authorization.requireOperations(5L));
+        assertThrows(AccessDeniedException.class, () -> authorization.requireOperations(6L));
+        verify(employees, never()).findByUserId(4L);
     }
 
     @Test

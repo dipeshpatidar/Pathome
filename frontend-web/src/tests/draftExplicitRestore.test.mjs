@@ -362,16 +362,11 @@ describe('Draft Explicit Restore & Independence State Machine', () => {
 
   test('M. Admin section refresh persistence: preserves valid admin sections across reload', () => {
     const VALID_ADMIN_TABS = new Set([
-      'overview',
-      'funnel',
-      'crm',
-      'employees',
-      'payroll',
-      'approval',
       'learning',
-      'config',
       'media',
-      'failed-uploads'
+      'failed-uploads',
+      'visit-repairs',
+      'visit-outcomes'
     ]);
 
     const getInitialAdminTab = (storage) => {
@@ -381,11 +376,11 @@ describe('Draft Explicit Restore & Independence State Machine', () => {
           return saved;
         }
       } catch (_) {}
-      return 'overview';
+      return 'media';
     };
 
-    // 1. Fresh state: defaults to overview
-    assert.equal(getInitialAdminTab(localStorage), 'overview');
+    // 1. Fresh state: opens a real property management workspace
+    assert.equal(getInitialAdminTab(localStorage), 'media');
 
     // 2. Admin on Property Upload (media) -> reload preserves media
     localStorage.setItem('pathome_active_admin_tab', 'media');
@@ -395,14 +390,14 @@ describe('Draft Explicit Restore & Independence State Machine', () => {
     localStorage.setItem('pathome_active_admin_tab', 'failed-uploads');
     assert.equal(getInitialAdminTab(localStorage), 'failed-uploads');
 
-    // 4. Invalid or obsolete section -> falls back safely to overview
+    // 4. Invalid or obsolete section -> falls back to a real workspace
     localStorage.setItem('pathome_active_admin_tab', 'malicious_tab');
-    assert.equal(getInitialAdminTab(localStorage), 'overview');
+    assert.equal(getInitialAdminTab(localStorage), 'media');
 
     // 5. Logout removes persisted tab
     localStorage.setItem('pathome_active_admin_tab', 'crm');
     localStorage.removeItem('pathome_active_admin_tab');
-    assert.equal(getInitialAdminTab(localStorage), 'overview');
+    assert.equal(getInitialAdminTab(localStorage), 'media');
   });
 
   test('N. Property Upload refresh does NOT auto-inject draft; editor starts empty', async () => {

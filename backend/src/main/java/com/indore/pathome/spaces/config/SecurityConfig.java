@@ -55,11 +55,14 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/ground/visit-sessions/**").hasRole("GROUND_BOY")
                 .requestMatchers("/api/v1/operations/**", "/api/v1/ground/visit-sessions/**").authenticated()
                 .requestMatchers("/api/v1/favorites/**").hasRole("TENANT")
+                .requestMatchers(HttpMethod.GET, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()
+                .requestMatchers(HttpMethod.PUT, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()
+                .requestMatchers(HttpMethod.POST, "/api/v1/notifications/mark-all-read").authenticated()
+                .requestMatchers(HttpMethod.POST, "/api/v1/notifications").hasRole("ADMIN")
                 .requestMatchers(
                     "/api/v1/auth/**",
                     "/api/v1/lessor/guest/**",
                     "/api/v1/webhooks/**",
-                    "/api/v1/notifications/**",
                     "/login/oauth2/**",
                     "/oauth2/**",
                     "/actuator/health",
