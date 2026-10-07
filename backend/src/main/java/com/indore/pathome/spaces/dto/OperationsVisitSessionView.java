@@ -17,4 +17,5 @@ public record OperationsVisitSessionView(
         String zoneId,
         Long representativeUserId,
         Instant assignedAt,
-        List<VisitSessionItemView> items) {}
+        List<VisitSessionItemView> items,
+        List<LinkedRequestVersion> linkedRequestVersions) {}

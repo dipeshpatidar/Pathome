@@ -1,85 +1,90 @@
 package com.indore.pathome.spaces.service;
 
-import com.indore.pathome.spaces.entity.TargetRole;
-import com.indore.pathome.spaces.entity.NotificationAuthorizationClass;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.event.TransactionPhase;
 
 import java.lang.reflect.Method;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 class VisitSessionNotificationListenerTest {
     @Test
-    void notificationTransitionsAreRecipientScopedAndUseVersionedStableKeys() {
-        NotificationService notifications = mock(NotificationService.class);
-        VisitSessionNotificationListener listener = new VisitSessionNotificationListener(notifications);
+    void sessionTransitionsAreQueuedWithStableKeysAndAuthorizationContext() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        List<Object[]> queued = new ArrayList<>();
+        doAnswer(invocation -> {
+            queued.add(java.util.Arrays.copyOfRange(invocation.getArguments(), 1,
+                    invocation.getArguments().length));
+            return 1;
+        }).when(jdbc).update(anyString(), any(Object[].class));
+        VisitSessionNotificationListener listener = new VisitSessionNotificationListener(jdbc);
         Instant appointment = Instant.parse("2099-10-02T11:00:00Z");
 
-        listener.onVisitSessionEvent(event(VisitSessionNotificationEvent.Type.SCHEDULED, 2L, appointment));
-        listener.onVisitSessionEvent(event(VisitSessionNotificationEvent.Type.RESCHEDULED, 3L, appointment));
-        listener.onVisitSessionEvent(event(VisitSessionNotificationEvent.Type.CANCELLED, 4L, null));
-        listener.onVisitSessionEvent(event(VisitSessionNotificationEvent.Type.ASSIGNED, 5L, appointment));
-        listener.onVisitSessionEvent(new VisitSessionNotificationEvent(VisitSessionNotificationEvent.Type.REASSIGNED,
+        listener.enqueueVisitSessionEvent(event(VisitSessionNotificationEvent.Type.SCHEDULED, 2L, appointment));
+        listener.enqueueVisitSessionEvent(event(VisitSessionNotificationEvent.Type.RESCHEDULED, 3L, appointment));
+        listener.enqueueVisitSessionEvent(event(VisitSessionNotificationEvent.Type.CANCELLED, 4L, null));
+        listener.enqueueVisitSessionEvent(event(VisitSessionNotificationEvent.Type.ASSIGNED, 5L, appointment));
+        listener.enqueueVisitSessionEvent(new VisitSessionNotificationEvent(VisitSessionNotificationEvent.Type.REASSIGNED,
                 500L, 10L, 41L, 40L, 6L, appointment, "Asia/Kolkata"));
+        listener.enqueueVisitSessionEvent(event(VisitSessionNotificationEvent.Type.ITINERARY_CHANGED, 7L, null));
 
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
-                eq("Visit session scheduled"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
-                eq("VISIT_SESSION_SCHEDULED:500:v2:10"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
-                eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_ASSIGNED:500:v2:40"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
-                eq("Visit session rescheduled"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
-                eq("VISIT_SESSION_RESCHEDULED:500:v3:10"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
-                eq("Visit Session time changed"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_RESCHEDULED:500:v3:40"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
-                eq("Visit session cancelled"), eq("Operations cancelled your Visit Session."), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
-                eq("VISIT_SESSION_CANCELLED:500:v4:10"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
-                eq("Visit Session cancelled"), contains("cancelled by Operations"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_CANCELLED:500:v4:40"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
-                eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_ASSIGNED:500:v5:40"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("41"),
-                eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_ASSIGNED:500:v6:41"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
-                eq("Ground Executive updated"), contains("different Ground Executive"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
-                eq("VISIT_SESSION_REASSIGNED:500:v6:10"));
-        verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
-                eq("Visit Session reassigned"), contains("no longer assigned"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
-                eq("VISIT_SESSION_REASSIGNED_FROM:500:v6:40"));
-        verifyNoMoreInteractions(notifications);
+        assertEquals(11, queued.size());
+        assertQueued(queued, "VISIT_SESSION_SCHEDULED:500:v2:10", 10L, "TENANT", "RECIPIENT", null);
+        assertQueued(queued, "VISIT_SESSION_ASSIGNED:500:v2:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_RESCHEDULED:500:v3:10", 10L, "TENANT", "RECIPIENT", null);
+        assertQueued(queued, "VISIT_SESSION_RESCHEDULED:500:v3:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_CANCELLED:500:v4:10", 10L, "TENANT", "RECIPIENT", null);
+        assertQueued(queued, "VISIT_SESSION_CANCELLED:500:v4:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_ASSIGNED:500:v5:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_REASSIGNED:500:v6:10", 10L, "TENANT", "RECIPIENT", null);
+        assertQueued(queued, "VISIT_SESSION_ASSIGNED:500:v6:41", 41L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_REASSIGNED_FROM:500:v6:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertQueued(queued, "VISIT_SESSION_ITINERARY_CHANGED:500:v7:40", 40L, "GROUND_BOY", "OPERATIONS_SESSION", 500L);
+        assertTrue(queuedRow(queued, "VISIT_SESSION_SCHEDULED:500:v2:10")[5].toString()
+                .contains("2099-10-02T16:30:00+05:30 (Asia/Kolkata)"));
+        verify(jdbc, times(11)).update(anyString(), any(Object[].class));
+        verifyNoMoreInteractions(jdbc);
     }
 
     @Test
-    void notificationsAreRegisteredOnlyForAfterCommit() throws Exception {
-        Method method = VisitSessionNotificationListener.class.getMethod("onVisitSessionEvent",
+    void enqueueListenerRunsBeforeCommitAndHasNoSecondDeliveryListener() throws Exception {
+        Method method = VisitSessionNotificationListener.class.getMethod("enqueueVisitSessionEvent",
                 VisitSessionNotificationEvent.class);
         TransactionalEventListener listener = method.getAnnotation(TransactionalEventListener.class);
+
         assertNotNull(listener);
-        assertEquals(TransactionPhase.AFTER_COMMIT, listener.phase());
+        assertEquals(TransactionPhase.BEFORE_COMMIT, listener.phase());
+        assertEquals(1, java.util.Arrays.stream(VisitSessionNotificationListener.class.getMethods())
+                .filter(candidate -> candidate.isAnnotationPresent(TransactionalEventListener.class)).count());
+    }
+
+    private static void assertQueued(List<Object[]> rows, String eventKey, Long recipient,
+            String role, String authorizationClass, Long sessionId) {
+        Object[] row = queuedRow(rows, eventKey);
+        assertEquals(recipient, row[1]);
+        assertEquals(role, row[2]);
+        String eventType = eventKey.substring("VISIT_SESSION_".length(), eventKey.indexOf(':'));
+        assertEquals(eventType, row[3]);
+        assertEquals(authorizationClass, row[6]);
+        assertEquals(sessionId, row[7]);
+    }
+
+    private static Object[] queuedRow(List<Object[]> rows, String eventKey) {
+        return rows.stream().filter(row -> Objects.equals(eventKey, row[0])).findFirst()
+                .orElseThrow(() -> new AssertionError("Outbox event was not queued: " + eventKey));
     }
 
     private static VisitSessionNotificationEvent event(VisitSessionNotificationEvent.Type type,
-                                                        Long version, Instant scheduledAt) {
+            Long version, Instant scheduledAt) {
         return new VisitSessionNotificationEvent(type, 500L, 10L, 40L, null, version, scheduledAt, "Asia/Kolkata");
     }
 }

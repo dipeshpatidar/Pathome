@@ -16,6 +16,37 @@ import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface VisitSessionRepository extends JpaRepository<VisitSession, Long> {
+    interface OwnershipVersionSnapshotRow {
+        Long getVersion();
+        String getLinkedRequestVersions();
+    }
+
+    @Query(value = """
+            SELECT s.version AS version,
+                   COALESCE(jsonb_agg(jsonb_build_object('requestId', r.id, 'version', r.version)
+                                      ORDER BY r.id ASC) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb)::text
+                       AS "linkedRequestVersions"
+            FROM visit_sessions s
+            LEFT JOIN property_visit_requests r ON r.session_id = s.id
+            WHERE s.id = :sessionId
+            GROUP BY s.id, s.version
+            """, nativeQuery = true)
+    Optional<OwnershipVersionSnapshotRow> findOwnershipVersionSnapshotById(@Param("sessionId") Long sessionId);
+
+    @Query(value = """
+            SELECT s.version AS version,
+                   COALESCE(jsonb_agg(jsonb_build_object('requestId', r.id, 'version', r.version)
+                                      ORDER BY r.id ASC) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb)::text
+                       AS "linkedRequestVersions"
+            FROM visit_sessions s
+            LEFT JOIN property_visit_requests r ON r.session_id = s.id
+            WHERE s.id = :sessionId AND
+            """ + OperationalVisibilitySql.STAFF_SESSION_VISIBLE + """
+            GROUP BY s.id, s.version
+            """, nativeQuery = true)
+    Optional<OwnershipVersionSnapshotRow> findVisibleOwnershipVersionSnapshotById(@Param("userId") Long userId,
+                                                                                    @Param("sessionId") Long sessionId);
+
     @Query(value = "SELECT s.* FROM visit_sessions s WHERE s.id = :sessionId AND "
             + OperationalVisibilitySql.STAFF_SESSION_VISIBLE, nativeQuery = true)
     Optional<VisitSession> findVisibleToStaffById(@Param("userId") Long userId,

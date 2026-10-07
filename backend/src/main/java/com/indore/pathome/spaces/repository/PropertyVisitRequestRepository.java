@@ -37,6 +37,7 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
         Long getId();
         String getStatus();
         Long getVersion();
+        Long getSessionId();
         java.time.LocalDateTime getCreatedAt();
         Long getListingId();
         String getListingTitle();
@@ -45,7 +46,8 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
     }
 
     @Query(value = """
-            SELECT r.id AS id, r.status AS status, r.version AS version, r.created_at AS "createdAt",
+            SELECT r.id AS id, r.status AS status, r.version AS version, r.session_id AS "sessionId",
+                   r.created_at AS "createdAt",
                    l.id AS "listingId", l.title AS "listingTitle",
                    COALESCE(loc.city, l.city) AS city, l.sector AS sector
             FROM property_visit_requests r

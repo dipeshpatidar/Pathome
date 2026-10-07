@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.exception;
 
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.OptimisticLockException;
 import jakarta.servlet.http.HttpServletRequest;
 import com.indore.pathome.spaces.exception.MediaUploadException;
 import org.slf4j.Logger;
@@ -9,6 +10,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -61,6 +63,13 @@ public class GlobalExceptionHandler {
             VisitOperationsConflictException ex, HttpServletRequest request) {
         ErrorResponseDTO error = new ErrorResponseDTO(
                 HttpStatus.CONFLICT.value(), "Conflict", ex.getMessage(), request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
+    @ExceptionHandler({OptimisticLockException.class, OptimisticLockingFailureException.class})
+    public ResponseEntity<ErrorResponseDTO> handleOptimisticLockConflict(Exception ex, HttpServletRequest request) {
+        ErrorResponseDTO error = new ErrorResponseDTO(HttpStatus.CONFLICT.value(), "Conflict",
+                "The record changed while this request was in progress. Refresh and retry.", request.getRequestURI());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 

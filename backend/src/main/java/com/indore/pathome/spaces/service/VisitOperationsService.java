@@ -1,5 +1,7 @@
 package com.indore.pathome.spaces.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.dto.*;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
@@ -25,6 +27,8 @@ import java.util.stream.StreamSupport;
 
 @Service
 public class VisitOperationsService {
+    private static final TypeReference<List<LinkedRequestVersion>> LINKED_REQUEST_VERSIONS = new TypeReference<>() {};
+    private static final ObjectMapper OWNERSHIP_VERSION_MAPPER = new ObjectMapper();
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 100;
 
@@ -153,7 +157,7 @@ public class VisitOperationsService {
                 PageRequest.of(page, size == 0 ? DEFAULT_PAGE_SIZE : size));
         List<OperationsVisitRequestItem> rows = result.getContent().stream().map(row ->
                 new OperationsVisitRequestItem(row.getId(), row.getStatus(), row.getVersion(), row.getCreatedAt(),
-                        row.getListingId(), row.getListingTitle(), row.getCity(), row.getSector())).toList();
+                        row.getListingId(), row.getListingTitle(), row.getCity(), row.getSector(), row.getSessionId())).toList();
         return new OperationsVisitRequestPage(rows, result.getTotalElements(), result.getNumber(),
                 result.getSize(), result.getTotalPages());
     }
@@ -255,9 +259,12 @@ public class VisitOperationsService {
     public OperationsVisitSessionView getOperationsSession(Long actorId, Long sessionId) {
         authorization.requireScopedOperationalRead(actorId);
         if (sessionId == null || sessionId <= 0) throw new IllegalArgumentException("Visit Session ID must be positive");
-        VisitSession session = sessions.findVisibleToStaffById(actorId, sessionId)
+        VisitSessionRepository.OwnershipVersionSnapshotRow snapshot =
+                sessions.findVisibleOwnershipVersionSnapshotById(actorId, sessionId)
+                        .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        VisitSession session = sessions.findById(sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
-        return operationsView(session);
+        return operationsView(session, snapshot);
     }
 
     @Transactional
@@ -862,16 +869,32 @@ public class VisitOperationsService {
     }
 
     private OperationsVisitSessionView operationsView(VisitSession session) {
+        VisitSessionRepository.OwnershipVersionSnapshotRow snapshot =
+                sessions.findOwnershipVersionSnapshotById(session.getId())
+                        .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        return operationsView(session, snapshot);
+    }
+
+    private OperationsVisitSessionView operationsView(VisitSession session,
+            VisitSessionRepository.OwnershipVersionSnapshotRow ownershipSnapshot) {
         List<VisitSessionItem> sessionItems = items.findBySessionIdOrderByPositionAsc(session.getId());
         Map<Long, Locality> localityById = localitiesFor(sessionItems.stream()
                 .map(VisitSessionItem::getListing).toList());
         List<VisitSessionItemView> itemViews = sessionItems.stream()
                 .map(item -> itemView(item, resolveLocation(item.getListing(), localityById).city())).toList();
-        return new OperationsVisitSessionView(session.getId(), session.getStatus(), session.getVersion(),
+        return new OperationsVisitSessionView(session.getId(), session.getStatus(), ownershipSnapshot.getVersion(),
                 session.getCity(), session.getAreaName(), session.getScheduledAt(), session.getReservedEndAt(),
                 session.getDurationSnapshotMinutes(), session.getZoneId(),
                 session.getRepresentative() == null ? null : session.getRepresentative().getId(),
-                session.getAssignedAt(), itemViews);
+                session.getAssignedAt(), itemViews, linkedRequestVersions(ownershipSnapshot.getLinkedRequestVersions()));
+    }
+
+    private List<LinkedRequestVersion> linkedRequestVersions(String json) {
+        try {
+            return List.copyOf(OWNERSHIP_VERSION_MAPPER.readValue(json, LINKED_REQUEST_VERSIONS));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Could not map Visit Session ownership version snapshot", exception);
+        }
     }
 
     private VisitSessionItemView itemView(VisitSessionItem item, String authoritativeCity) {
@@ -910,7 +933,8 @@ public class VisitOperationsService {
         Listing listing = request.getListing();
         LocationSnapshot location = resolveLocation(listing);
         return new OperationsVisitRequestItem(request.getId(), request.getStatus(), request.getVersion(),
-                request.getCreatedAt(), listing.getId(), listing.getTitle(), location.city(), listing.getSector());
+                request.getCreatedAt(), listing.getId(), listing.getTitle(), location.city(), listing.getSector(),
+                request.getSession() == null ? null : request.getSession().getId());
     }
 
     private void publishSessionEvent(VisitSession session, VisitSessionNotificationEvent.Type type, Long formerGroundId) {

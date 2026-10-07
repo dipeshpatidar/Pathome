@@ -3328,3 +3328,62 @@ Verification performed:
 Outstanding checks: None for this bounded correction. No UI changed; browser/device verification is not applicable.
 
 Commit/push status: No commit or push.
+
+2026-10-07 22:49 IST — Pathome Phase 1E reconciliation and production cutover
+Reason: Prove the frozen Phase 1A–1D operational chain against the local V49 schema, classify existing request/session records without guessing, and expose only ownership actions already governed by Phase 1C capabilities.
+Files changed:
+- backend/src/main/java/com/indore/pathome/spaces/controller/OperationalOwnershipController.java (new)
+- backend/src/main/java/com/indore/pathome/spaces/dto/VisitRequestOwnershipCommand.java (new)
+- backend/src/main/java/com/indore/pathome/spaces/dto/VisitSessionOwnershipCommand.java (new)
+- backend/src/main/java/com/indore/pathome/spaces/service/VisitSessionNotificationListener.java
+- backend/src/test/java/com/indore/pathome/spaces/controller/OperationalOwnershipControllerTest.java (new)
+- backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java
+- backend/src/test/java/com/indore/pathome/spaces/service/VisitSessionNotificationListenerTest.java
+Areas investigated: local PostgreSQL request/session evidence; V43/V45/V49 ownership and authorization constraints; scoped operations reads; notification feed/count/read/delivery; Visit Operations controllers/services/workers; repair, scheduling, no-show and outcome flows; existing PostgreSQL security, queue, and migration tests. No historical data updates and no migration changes.
+Outcome: Six unlinked legacy Requests have no authoritative canonical City, Team, coordinator, or linked Session evidence; classified all six AMBIGUOUS and left them unchanged/hidden. Exposed claim, coordinator assignment, same-City Team transfer, and release endpoints through existing versioned OperationalOwnershipService guards; no reconciliation/deactivation/FIELD_EXECUTE/scheduling/repair/outcome route was added. Fixed reproducible notification duplication/bypass: VisitSessionNotificationListener now atomically queues outbox rows only; delivery and authorization remain owned by the worker.
+Verification: VisitOperationsPostgresIntegrationTest + VisitSessionNotificationListenerTest — 83 passed; VisitOperationsQueuePostgresTest — 8 passed; StaffAccessGovernancePostgresTest — 1 passed; PathomeSupportedFlywayBaselinePostgresTest — 3 passed (including supported V1-to-V49 chain); OperationalOwnershipControllerTest + VisitOperationsControllerIdentityTest — 5 passed. Startup smoke on temporary port 18080: Flyway validated 49 migrations, public schema was current at V49, Hibernate initialized, Tomcat/application started, unauthenticated operational queue returned 401; temporary process stopped. git diff --check passed. Browser/device checks NOT TESTED (no UI change).
+Outstanding: Independent final security/cutover review is still requested separately. Commit/push: none. Main branch unchanged.
+
+2026-10-07 23:34 IST — Phase 1E claimable work contract implementation
+Reason: Implement the frozen dedicated claimable-work discovery API and expose the concurrency tokens required by already-authorized operational reads without broadening ordinary visibility or changing the ownership service.
+Files and areas implemented:
+- `backend/src/main/java/com/indore/pathome/spaces/controller/ClaimableWorkController.java` (new collection and metadata routes; no-store and 400 parsing)
+- `backend/src/main/java/com/indore/pathome/spaces/service/ClaimableWorkService.java` (eligibility response, bounded pagination, metadata refresh)
+- `backend/src/main/java/com/indore/pathome/spaces/repository/ClaimableWorkRepository.java` (single-statement PostgreSQL snapshots, exact OPS_COORDINATE Team grant scope, canonical Request/Session targets, full ordered child versions)
+- `backend/src/main/java/com/indore/pathome/spaces/dto/ClaimableWorkItem.java`, `ClaimableWorkPage.java`, `ClaimableWorkTargetType.java`, `LinkedRequestVersion.java` (minimal response allowlist)
+- `backend/src/main/java/com/indore/pathome/spaces/dto/OperationsVisitRequestItem.java`, `backend/src/main/java/com/indore/pathome/spaces/dto/OperationsVisitSessionView.java`, `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyVisitRequestRepository.java`, `backend/src/main/java/com/indore/pathome/spaces/repository/VisitSessionRepository.java`, `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java` (nullable linkage and coherent authorized Session/child version metadata; visibility predicates unchanged)
+- `backend/src/main/java/com/indore/pathome/spaces/exception/GlobalExceptionHandler.java` (map persistence optimistic-lock race to HTTP 409)
+- `backend/src/test/java/com/indore/pathome/spaces/repository/ClaimableWorkRepositoryPostgresTest.java` and `backend/src/test/java/com/indore/pathome/spaces/service/ClaimableWorkHttpPostgresTest.java` (PostgreSQL query and real HTTP acceptance coverage, including version rejection, linkage and claim races, exact fields, scope, pagination, and read-to-action tokens)
+Preserved pre-existing Phase 1E worktree changes: ownership routes/commands/controller tests and outbox-only notification listener correction. No claim service, capability definition, notification authorization, migration, or UI change. No index was added.
+Outcome: Claimable discovery is independent of normal queue/detail/notification visibility; SQL scopes before count/pagination and samples database time once per statement. Linked Requests appear only as ordered Session tokens. Existing six ambiguous unlinked Requests remain hidden: read-only local PostgreSQL query returned 6 rows with null canonical City, Team, coordinator and Session, `operational_scope_ready=false`, and claim-eligible Request lifecycle statuses.
+Verification:
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -f backend/pom.xml -Dtest=ClaimableWorkHttpPostgresTest test` — passed; real Spring/Tomcat HTTP, Flyway V1→V49, authenticated and unauthenticated discovery, Request/Session Claim, race 204/409, wrong/missing/extra/null/stale version rejection with no audit/ownership side effect, Request-linkage race, and authorized read→assignment→transfer→release.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -f backend/pom.xml -Dtest=ClaimableWorkRepositoryPostgresTest,OperationalOwnershipControllerTest,VisitOperationsQueuePostgresTest,VisitSessionNotificationListenerTest,NotificationServiceTest,NotificationSecurityTest test` — passed (3, 3, 8, 2, 9, and 5 tests respectively).
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -f backend/pom.xml -Dtest=VisitOperationsPostgresIntegrationTest test` — passed, 81 tests.
+- `mvn -q -f backend/pom.xml -Dtest=StaffAccessGovernancePostgresTest test` — passed, including fresh-authority, lock, expiry, and deactivation scenarios.
+- `PATHOME_PACKAGE5_FLYWAY_TEST=true mvn -q -f backend/pom.xml -Dtest=PathomeSupportedFlywayBaselinePostgresTest test` — passed, 3 tests.
+- `mvn -q -f backend/pom.xml -DskipTests test-compile` — passed.
+- Real HTTP test startup validated/migrated through V49, initialized Hibernate and started Tomcat; unauthenticated claimable GET returned 401. Browser checks NOT REQUIRED (no UI change).
+- Read-only ambiguous-history query — 6 matching rows; no writes. Migration files V45–V49 untouched; no V50 or new index.
+- Final `git diff --check` and `git diff --cached --check` — passed; untracked implementation/test sources were checked for trailing whitespace and had no matches.
+Outstanding: No implementation blockers. `EXPLAIN (ANALYZE, BUFFERS)` was not run because no material performance concern was found in this bounded local fixture and no index is proposed. Commit/push: none. Main unchanged.
+
+## 2026-10-07 23:45 IST — Phase 1E inactive-scope endpoint eligibility correction
+
+Reason: Correct the final narrow security-gate finding where a current coordinator grant for an inactive Team or City incorrectly counted as endpoint-level claimable-work eligibility.
+
+Files changed:
+- `backend/src/main/java/com/indore/pathome/spaces/repository/ClaimableWorkRepository.java`
+- `backend/src/test/java/com/indore/pathome/spaces/repository/ClaimableWorkRepositoryPostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ClaimableWorkHttpPostgresTest.java`
+- `chat_gpt_changes`
+
+Outcome: Both collection and metadata SQL now derive `caller_eligible` from the existing `eligible_teams` CTE, reusing the exact active Team, active canonical City, and Team/City relationship predicate. Row visibility and the frozen Claim service were not changed. Regression coverage confirms inactive-Team-only and inactive-City-only callers receive 403 for collection and metadata; a caller with another active Team still gets 404 for a target in an inactive Team; a valid active caller with no claimable work gets 200 with an empty page; and a caller without a coordinator grant remains 403.
+
+Verification:
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -f backend/pom.xml -Dtest=ClaimableWorkRepositoryPostgresTest,ClaimableWorkHttpPostgresTest,StaffAccessGovernancePostgresTest test` — passed: 4 repository tests, 2 real HTTP tests, and 1 governance test; zero failures/errors/skips.
+- `mvn -q -f backend/pom.xml -DskipTests test-compile` — passed.
+- `git diff --check` and `git diff --cached --check` — passed; untracked sources were also checked for trailing whitespace.
+- No migration, entity, index, normal visibility, notification, or UI changes. Browser testing not required.
+
+Outstanding: None for this bounded correction. Commit: none. Push: none. Main unchanged.

@@ -241,28 +241,43 @@ class VisitOperationsPostgresIntegrationTest {
         groundProfile.setStaffActive(true);
         employees.saveAndFlush(groundProfile);
         Long sessionId = draftSession(actors, "Transactional notification");
+        Long expectedSessionVersion = setCanonicalNotificationCity(sessionId);
+        Long scheduledVersion = expectedSessionVersion + 1;
         Instant scheduledAt = Instant.parse("2099-10-04T11:00:00Z");
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
 
         assertThrows(IllegalStateException.class, () -> tx.execute(status -> {
             operations.schedule(actors.admin().getId(), sessionId,
-                    new ScheduleVisitSessionCommand(0L, scheduledAt, "Asia/Kolkata", actors.ground().getId(), 30));
+                    new ScheduleVisitSessionCommand(expectedSessionVersion, scheduledAt, "Asia/Kolkata", actors.ground().getId(), 30));
             throw new IllegalStateException("rollback booking after event publication");
         }));
 
-        String tenantEventKey = "VISIT_SESSION_SCHEDULED:" + sessionId + ":v1:" + actors.tenant().getId();
-        String groundEventKey = "VISIT_SESSION_ASSIGNED:" + sessionId + ":v1:" + actors.ground().getId();
+        String tenantEventKey = "VISIT_SESSION_SCHEDULED:" + sessionId + ":v" + scheduledVersion + ":" + actors.tenant().getId();
+        String groundEventKey = "VISIT_SESSION_ASSIGNED:" + sessionId + ":v" + scheduledVersion + ":" + actors.ground().getId();
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(sessionId).orElseThrow().getStatus());
         assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
                 Integer.class, tenantEventKey, groundEventKey));
 
         operations.schedule(actors.admin().getId(), sessionId,
-                new ScheduleVisitSessionCommand(0L, scheduledAt, "Asia/Kolkata", actors.ground().getId(), 30));
+                new ScheduleVisitSessionCommand(expectedSessionVersion, scheduledAt, "Asia/Kolkata", actors.ground().getId(), 30));
         assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(sessionId).orElseThrow().getStatus());
         assertEquals(2, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
                 Integer.class, tenantEventKey, groundEventKey));
+        assertTrue(notifications.findByEventKey(tenantEventKey).isEmpty(),
+                "session notifications must wait for the outbox worker after commit");
+        assertTrue(notifications.findByEventKey(groundEventKey).isEmpty(),
+                "the event listener must not bypass outbox authorization and terminal state handling");
+        deliverOutboxUntilSettled(tenantEventKey, groundEventKey);
+        assertEquals("SENT", jdbc.queryForObject(
+                "select state from visit_notification_outbox where event_key=?", String.class, tenantEventKey),
+                "tenant outbox delivery error: " + jdbc.queryForObject(
+                        "select last_error_code from visit_notification_outbox where event_key=?", String.class, tenantEventKey));
         assertTrue(notifications.findByEventKey(tenantEventKey).isPresent());
         assertTrue(notifications.findByEventKey(groundEventKey).isPresent());
+        assertEquals("SENT", jdbc.queryForObject(
+                "select state from visit_notification_outbox where event_key=?", String.class, tenantEventKey));
+        assertEquals("SENT", jdbc.queryForObject(
+                "select state from visit_notification_outbox where event_key=?", String.class, groundEventKey));
         assertEquals("RECIPIENT", jdbc.queryForObject(
                 "select authorization_class from visit_notification_outbox where event_key=?", String.class, tenantEventKey));
         assertEquals("OPERATIONS_SESSION", jdbc.queryForObject(
@@ -273,45 +288,31 @@ class VisitOperationsPostgresIntegrationTest {
 
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    void afterCommitNotificationIsAbsentOnRollbackAndPresentOnceOnCommit() {
+    void sessionTransitionOutboxRowsAreAtomicIdempotentAndNotDeliveredByTheListener() {
+        Actors actors = actors();
+        Long sessionId = draftSession(actors, "Outbox event transaction");
+        setCanonicalNotificationCity(sessionId);
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
-        String eventKey = "VISIT_SESSION_SCHEDULED:99001:v1:99002";
+        Long version = 90L;
+        String eventKey = "VISIT_SESSION_SCHEDULED:" + sessionId + ":v" + version + ":" + actors.tenant().getId();
+        String groundEventKey = "VISIT_SESSION_ASSIGNED:" + sessionId + ":v" + version + ":" + actors.ground().getId();
         VisitSessionNotificationEvent event = new VisitSessionNotificationEvent(
-                VisitSessionNotificationEvent.Type.SCHEDULED, 99001L, 99002L, 99003L, null, 1L,
+                VisitSessionNotificationEvent.Type.SCHEDULED, sessionId, actors.tenant().getId(), actors.ground().getId(), null, version,
                 Instant.parse("2099-10-04T11:00:00Z"), "Asia/Kolkata");
 
         assertThrows(IllegalStateException.class, () -> tx.execute(status -> {
             events.publishEvent(event);
             throw new IllegalStateException("rollback test");
         }));
-        assertTrue(notifications.findByEventKey(eventKey).isEmpty());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
+                Integer.class, eventKey, groundEventKey));
 
         tx.executeWithoutResult(status -> events.publishEvent(event));
         tx.executeWithoutResult(status -> events.publishEvent(event));
-        assertTrue(notifications.findByEventKey(eventKey).isPresent());
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM system_notifications WHERE event_key = ?", Integer.class, eventKey));
-
-        VisitSessionNotificationEvent rescheduled = new VisitSessionNotificationEvent(
-                VisitSessionNotificationEvent.Type.RESCHEDULED, 99001L, 99002L, 99003L, null, 2L,
-                Instant.parse("2099-10-04T12:00:00Z"), "Asia/Kolkata");
-        VisitSessionNotificationEvent cancelled = new VisitSessionNotificationEvent(
-                VisitSessionNotificationEvent.Type.CANCELLED, 99001L, 99002L, 99003L, null, 3L, null, null);
-        VisitSessionNotificationEvent reassigned = new VisitSessionNotificationEvent(
-                VisitSessionNotificationEvent.Type.REASSIGNED, 99001L, 99002L, 99004L, 99003L, 4L,
-                Instant.parse("2099-10-04T12:00:00Z"), "Asia/Kolkata");
-        VisitSessionNotificationEvent itineraryChanged = new VisitSessionNotificationEvent(
-                VisitSessionNotificationEvent.Type.ITINERARY_CHANGED, 99001L, 99002L, 99004L, null, 5L,
-                Instant.parse("2099-10-04T12:00:00Z"), "Asia/Kolkata");
-        tx.executeWithoutResult(status -> events.publishEvent(rescheduled));
-        tx.executeWithoutResult(status -> events.publishEvent(cancelled));
-        tx.executeWithoutResult(status -> events.publishEvent(reassigned));
-        tx.executeWithoutResult(status -> events.publishEvent(itineraryChanged));
-
-        assertTrue(notifications.findByEventKey("VISIT_SESSION_RESCHEDULED:99001:v2:99003").isPresent());
-        assertTrue(notifications.findByEventKey("VISIT_SESSION_CANCELLED:99001:v3:99003").isPresent());
-        assertTrue(notifications.findByEventKey("VISIT_SESSION_ASSIGNED:99001:v4:99004").isPresent());
-        assertTrue(notifications.findByEventKey("VISIT_SESSION_REASSIGNED_FROM:99001:v4:99003").isPresent());
-        assertTrue(notifications.findByEventKey("VISIT_SESSION_ITINERARY_CHANGED:99001:v5:99004").isPresent());
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
+                Integer.class, eventKey, groundEventKey), "repeated publication uses stable event keys");
+        assertEquals(0, jdbc.queryForObject("select count(*) from system_notifications where event_key in (?,?)",
+                Integer.class, eventKey, groundEventKey), "only the outbox worker delivers session notifications");
     }
 
     @Test
@@ -361,6 +362,8 @@ class VisitOperationsPostgresIntegrationTest {
         assertFalse(decision.isOverride());
         assertNull(decision.getOverrideReason());
         assertEquals(1, decisions.countBySessionId(scenario.sessionId()));
+        deliverOutboxUntilSettled("VISIT_SESSION_SCHEDULED:" + scenario.sessionId()
+                + ":v1:" + scenario.tenant().getId());
         assertTrue(notifications.findByEventKey("VISIT_SESSION_SCHEDULED:" + scenario.sessionId()
                 + ":v1:" + scenario.tenant().getId()).isPresent());
     }
@@ -4109,6 +4112,28 @@ class VisitOperationsPostgresIntegrationTest {
         item.setConfirmedBy(actors.admin());
         items.saveAndFlush(item);
         return session.getId();
+    }
+
+    private Long setCanonicalNotificationCity(Long sessionId) {
+        SupportedCity city = supportedCities.saveAndFlush(new SupportedCity(
+                "notification-" + UUID.randomUUID().toString().replace("-", ""), "Notification City", true));
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession session = sessions.findLockedById(sessionId).orElseThrow();
+            session.setSupportedCity(city);
+            requests.findLockedBySessionIdOrderByIdAsc(sessionId)
+                    .forEach(request -> request.setSupportedCity(city));
+        });
+        return sessions.findById(sessionId).orElseThrow().getVersion();
+    }
+
+    private void deliverOutboxUntilSettled(String... eventKeys) {
+        for (int attempt = 0; attempt < 10; attempt++) {
+            boolean pending = java.util.Arrays.stream(eventKeys).anyMatch(eventKey ->
+                    "QUEUED".equals(jdbc.queryForObject(
+                            "select state from visit_notification_outbox where event_key=?", String.class, eventKey)));
+            if (!pending) return;
+            outboxWorker.deliverBatch();
+        }
     }
 
     private record Actors(User admin, User tenant, User ground) {}

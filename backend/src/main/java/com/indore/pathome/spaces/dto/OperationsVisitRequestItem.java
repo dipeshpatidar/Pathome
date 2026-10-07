@@ -10,4 +10,5 @@ public record OperationsVisitRequestItem(
         Long listingId,
         String listingTitle,
         String city,
-        String sector) {}
+        String sector,
+        Long sessionId) {}
