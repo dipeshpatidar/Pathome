@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.TargetRole;
+import com.indore.pathome.spaces.entity.NotificationAuthorizationClass;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.event.TransactionPhase;
@@ -93,7 +94,8 @@ public class VisitSessionNotificationListener {
 
     private void notifyTenant(VisitSessionNotificationEvent event, String keyType, String title, String message) {
         notifications.createNotificationWithEventKey(TargetRole.TENANT, String.valueOf(event.tenantUserId()),
-                title, message, null, "VISIT_SESSION", "info", eventKey(event, keyType, event.tenantUserId()));
+                title, message, null, "VISIT_SESSION", "info", NotificationAuthorizationClass.RECIPIENT,
+                null, eventKey(event, keyType, event.tenantUserId()));
     }
 
     private void notifyGroundAssigned(VisitSessionNotificationEvent event, String keyType) {
@@ -109,8 +111,10 @@ public class VisitSessionNotificationListener {
     private void notifyGround(VisitSessionNotificationEvent event, String keyType, String title,
                               String message, Long groundExecutiveUserId) {
         if (groundExecutiveUserId == null) return;
+        if (event.sessionId() == null) return;
         notifications.createNotificationWithEventKey(TargetRole.GROUND_BOY,
                 String.valueOf(groundExecutiveUserId), title, message, null, "VISIT_SESSION", "info",
+                NotificationAuthorizationClass.OPERATIONS_SESSION, event.sessionId(),
                 eventKey(event, keyType, groundExecutiveUserId));
     }
 
@@ -119,7 +123,8 @@ public class VisitSessionNotificationListener {
     }
 
     private void enqueueTenant(VisitSessionNotificationEvent event, String keyType, String title, String message) {
-        enqueue(event, keyType, TargetRole.TENANT, event.tenantUserId(), title, message);
+        enqueue(event, keyType, TargetRole.TENANT, event.tenantUserId(), title, message,
+                NotificationAuthorizationClass.RECIPIENT, null);
     }
 
     private void enqueueGroundAssigned(VisitSessionNotificationEvent event, String keyType) {
@@ -129,15 +134,22 @@ public class VisitSessionNotificationListener {
 
     private void enqueueGround(VisitSessionNotificationEvent event, String keyType, String title,
                                String message, Long recipientId) {
-        if (recipientId != null) enqueue(event, keyType, TargetRole.GROUND_BOY, recipientId, title, message);
+        if (recipientId == null) return;
+        NotificationAuthorizationClass authorizationClass = event.sessionId() == null
+                ? NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED
+                : NotificationAuthorizationClass.OPERATIONS_SESSION;
+        enqueue(event, keyType, TargetRole.GROUND_BOY, recipientId, title, message,
+                authorizationClass, event.sessionId());
     }
 
     private void enqueue(VisitSessionNotificationEvent event, String keyType, TargetRole role, Long recipientId,
-                         String title, String message) {
+                         String title, String message, NotificationAuthorizationClass authorizationClass,
+                         Long operationalSessionId) {
         if (recipientId == null) return;
         String key = eventKey(event, keyType, recipientId);
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,?,?,?,?) on conflict(event_key) do nothing",
-                key, recipientId, role.name(), keyType, title, message);
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) "
+                        + "values (?,?,?,?,?,?,?,?) on conflict(event_key) do nothing",
+                key, recipientId, role.name(), keyType, title, message, authorizationClass.name(), operationalSessionId);
     }
 
     private String formatSchedule(VisitSessionNotificationEvent event) {

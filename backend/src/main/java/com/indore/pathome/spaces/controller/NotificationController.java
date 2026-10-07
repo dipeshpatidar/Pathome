@@ -92,7 +92,8 @@ public class NotificationController {
         String category = (String) payload.getOrDefault("category", "SYSTEM");
         String type = (String) payload.getOrDefault("type", "info");
 
-        SystemNotification created = notificationService.createNotification(targetRole, recipientUserId, title, message, details, category, type);
+        SystemNotification created = notificationService.createAdminNotification(targetRole, recipientUserId, title,
+                message, details, category, type);
         return ResponseEntity.ok(NotificationResponseDto.from(created));
     }
 }

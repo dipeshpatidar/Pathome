@@ -4,6 +4,7 @@ import com.indore.pathome.spaces.entity.EmployeeProfile;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
+import com.indore.pathome.spaces.repository.StaffAccessGrantRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,13 +18,15 @@ import static org.mockito.Mockito.*;
 class VisitOperationsAuthorizationServiceTest {
     private UserRepository users;
     private EmployeeProfileRepository employees;
+    private StaffAccessGrantRepository grants;
     private VisitOperationsAuthorizationService authorization;
 
     @BeforeEach
     void setUp() {
         users = mock(UserRepository.class);
         employees = mock(EmployeeProfileRepository.class);
-        authorization = new VisitOperationsAuthorizationService(users, employees);
+        grants = mock(StaffAccessGrantRepository.class);
+        authorization = new VisitOperationsAuthorizationService(users, employees, grants);
     }
 
     @Test

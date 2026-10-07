@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.indore.pathome.spaces.entity.PropertyUploadDraft;
 import com.indore.pathome.spaces.entity.SystemNotification;
 import com.indore.pathome.spaces.entity.TargetRole;
+import com.indore.pathome.spaces.entity.NotificationAuthorizationClass;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyDraftMediaRepository;
 import com.indore.pathome.spaces.repository.PropertyUploadDraftRepository;
@@ -53,7 +54,6 @@ public class PropertyPublishNotificationTest {
         notificationRepository = mock(SystemNotificationRepository.class);
 
         notificationService = spy(new NotificationService(notificationRepository));
-        when(notificationRepository.findByTargetRoleInOrderByCreatedAtDesc(any())).thenReturn(new ArrayList<>());
 
         draftService = new PropertyDraftService(
                 draftRepository,
@@ -314,7 +314,7 @@ public class PropertyPublishNotificationTest {
 
         // Act: Thread 2 attempts to create notification with same eventKey
         Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
-                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: " + draftId, "PROPERTY", "success", eventKey
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: " + draftId, "PROPERTY", "success", NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, null, eventKey
         );
 
         // Assert: Cleanly caught DataIntegrityViolationException and returned winner without error

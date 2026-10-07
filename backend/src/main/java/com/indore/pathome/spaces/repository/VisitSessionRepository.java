@@ -16,6 +16,17 @@ import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface VisitSessionRepository extends JpaRepository<VisitSession, Long> {
+    @Query(value = "SELECT s.* FROM visit_sessions s WHERE s.id = :sessionId AND "
+            + OperationalVisibilitySql.STAFF_SESSION_VISIBLE, nativeQuery = true)
+    Optional<VisitSession> findVisibleToStaffById(@Param("userId") Long userId,
+                                                   @Param("sessionId") Long sessionId);
+
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM visit_sessions s WHERE s.id = :sessionId AND "
+            + OperationalVisibilitySql.NOTIFICATION_SESSION_VISIBLE + ")", nativeQuery = true)
+    boolean isVisibleForNotification(@Param("userId") Long userId,
+                                     @Param("sessionId") Long sessionId,
+                                     @Param("recipientRole") String recipientRole);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from VisitSession s where s.id = :id")
     Optional<VisitSession> findLockedById(@Param("id") Long id);

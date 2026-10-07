@@ -45,7 +45,7 @@ class ParserPersistenceMigrationPostgresTest {
                 assertEquals(0, count(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema=current_schema() AND table_name='parser_model_versions'"));
 
-                Flyway latest = flyway(url, username, password, schema).load();
+                Flyway latest = flyway(url, username, password, schema).target("48").load();
                 var migrated = latest.migrate();
                 assertTrue(migrated.success);
                 assertEquals(2, migrated.migrationsExecuted);
@@ -112,7 +112,7 @@ class ParserPersistenceMigrationPostgresTest {
                 }
 
                 assertTrue(flyway(url, username, password, schema).target("46").load().migrate().success);
-                Flyway latest = flyway(url, username, password, schema).load();
+                Flyway latest = flyway(url, username, password, schema).target("48").load();
                 var migrated = latest.migrate();
                 assertTrue(migrated.success);
                 assertEquals(2, migrated.migrationsExecuted);

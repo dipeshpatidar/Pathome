@@ -188,7 +188,7 @@ public class VisitExecutionService {
             invalidateUnconsumedChallenge(sessionId, now);
             audit(sessionId, groundExecutiveId, "NO_SHOW_SUPERSEDED_BY_CONTACT", outcome,
                     "NO_SHOW_CONTACT_RECOVERED:" + sessionId + ":" + command.operationId());
-            enqueue(session.getTenant().getId(), "TENANT", "NO_SHOW_CONTACT_RECOVERED:" + sessionId + ":" + command.operationId(),
+            enqueueTenant(session.getTenant().getId(), "NO_SHOW_CONTACT_RECOVERED:" + sessionId + ":" + command.operationId(),
                     "Visit needs a new confirmation", "Your response was recorded and the provisional no-show review stopped. The visit has not started; Operations will confirm the next safe step.",
                     "VISIT_REPAIR_REQUIRED");
             enqueueOperations(sessionId, groundExecutiveId, command.operationId(),
@@ -215,7 +215,7 @@ public class VisitExecutionService {
             session.setRepairOperationId(command.operationId());
             session.setExecutionStateChangedAt(now);
             invalidateUnconsumedChallenge(sessionId, now);
-            enqueue(session.getTenant().getId(), "TENANT", "GE_DECLINED_RESCHEDULE:" + sessionId + ":" + command.operationId(),
+            enqueueTenant(session.getTenant().getId(), "GE_DECLINED_RESCHEDULE:" + sessionId + ":" + command.operationId(),
                     "Visit time needs review", "Your Ground Executive recorded that you declined the proposed time. Operations will arrange another safe option.", "VISIT_REPAIR_REQUIRED");
             enqueueOperations(sessionId, groundExecutiveId, command.operationId(),
                     "The tenant declined a pending visit-time proposal; arrange another safe option.");
@@ -227,7 +227,7 @@ public class VisitExecutionService {
             session.setTenantConfirmedAt(now);
             session.setTenantConfirmedBy(users.getReferenceById(groundExecutiveId));
             session.setExecutionStateChangedAt(now);
-            enqueue(session.getTenant().getId(), "TENANT", "VERBAL_TENANT_CONFIRM:" + sessionId + ":" + now.toEpochMilli(),
+            enqueueTenant(session.getTenant().getId(), "VERBAL_TENANT_CONFIRM:" + sessionId + ":" + now.toEpochMilli(),
                     "Visit time confirmed", "Your Ground Executive recorded your verbal confirmation for "
                             + formatSessionTime(command.tenantEtaAt(), session) + ". Contact Pathome support if this does not match what you agreed.", "TENANT_TIME_CONFIRMED");
         }
@@ -275,13 +275,13 @@ public class VisitExecutionService {
                 invalidateUnconsumedChallenge(session.getId(), now);
                 audit(session.getId(), actorId, consentOutcome, reason,
                         "ASSISTED_RESCHEDULE:" + operationId);
-                enqueue(session.getTenant().getId(), "TENANT", "ASSISTED_RESCHEDULE_CONFIRMED:" + operationId,
+                enqueueTenant(session.getTenant().getId(), "ASSISTED_RESCHEDULE_CONFIRMED:" + operationId,
                         "Visit time confirmed", "Your visit is confirmed for " + formatSessionTime(agreedAt, session) + ".",
                         "VISIT_RESCHEDULED");
                 if (!chosen.geId().equals(currentGeId)) {
-                    enqueue(currentGeId, "EMPLOYEE", "ASSISTED_RESCHEDULE_FORMER_GE:" + operationId,
+                    enqueueGroundExecutiveRecipient(session.getId(), currentGeId, "ASSISTED_RESCHEDULE_FORMER_GE:" + operationId,
                             "Visit reassigned", "This visit has been reassigned. Its tenant contact and execution access are no longer available to you.", "GE_REASSIGNED");
-                    enqueue(chosen.geId(), "EMPLOYEE", "ASSISTED_RESCHEDULE_NEW_GE:" + operationId,
+                    enqueueGroundExecutiveRecipient(session.getId(), chosen.geId(), "ASSISTED_RESCHEDULE_NEW_GE:" + operationId,
                             "Visit assigned", "A visit has been assigned to you at " + formatSessionTime(agreedAt, session) + ". Refresh your assigned visits for details.", "GE_REASSIGNED");
                 }
                 repairDownstream(downstream, operationId, session.getId(), chosen.geId(), fresh.end());
@@ -298,7 +298,7 @@ public class VisitExecutionService {
         session.setExecutionStateChangedAt(now);
         audit(session.getId(), actorId, consentOutcome, reason,
                 "ASSISTED_RESCHEDULE:" + operationId);
-        enqueue(session.getTenant().getId(), "TENANT", "RESCHEDULE_REPAIR_REQUIRED:" + operationId,
+        enqueueTenant(session.getTenant().getId(), "RESCHEDULE_REPAIR_REQUIRED:" + operationId,
                 "Operations is checking your requested time", "Your Ground Executive recorded your agreement. We could not confirm that time against the visit and property availability yet, so Operations will contact you with a safe option.",
                 "VISIT_REPAIR_REQUIRED");
         enqueueOperations(session.getId(), actorId, repairOperationId,
@@ -426,7 +426,7 @@ public class VisitExecutionService {
             jdbc.update("update visit_start_challenges set invalidated_at=?,version=version+1 where id=? and invalidated_at is null",
                     java.sql.Timestamp.from(now), challenge.id());
             audit(sessionId, groundExecutiveId, "REPAIR_REQUIRED", "GE_ALREADY_HAS_ACTIVE_VISIT", "ACTIVE_GE_REPAIR:" + command.operationId());
-            enqueue(session.getTenant().getId(), "TENANT", "ACTIVE_GE_RECOVERY:" + command.operationId(),
+            enqueueTenant(session.getTenant().getId(), "ACTIVE_GE_RECOVERY:" + command.operationId(),
                     "Visit needs immediate recovery", "Your Ground Executive is still completing another active visit. Operations is arranging a safe recovery; this visit has not started or used a credit.", "VISIT_REPAIR_REQUIRED");
             enqueueOperations(sessionId, groundExecutiveId, command.operationId(),
                     "Visit Session " + sessionId + " arrived while its assigned Ground Executive had another active visit. Arrange immediate recovery.");
@@ -452,7 +452,7 @@ public class VisitExecutionService {
         sessions.saveAndFlush(session);
         outcomes.captureSuccessfulStart(session, groundExecutiveId, command.operationId());
         repairDownstream(downstream, command.operationId(), sessionId, groundExecutiveId, expectedEnd);
-        enqueue(session.getTenant().getId(), "TENANT", "VISIT_STARTED:" + sessionId + ":" + command.operationId(),
+        enqueueTenant(session.getTenant().getId(), "VISIT_STARTED:" + sessionId + ":" + command.operationId(),
                 "Visit started", "Your visit has started.", "VISIT_STARTED");
         return executionView(session);
     }
@@ -489,11 +489,11 @@ public class VisitExecutionService {
         sessions.saveAndFlush(session);
         invalidateUnconsumedChallenge(session.getId(), now);
         audit(session.getId(), formerGeId, "GE_REASSIGNED", "ACTIVE_VISIT_RECOVERY", "ACTIVE_GE_ALT:" + operationId);
-        enqueue(formerGeId, "EMPLOYEE", "GE_REMOVED:" + session.getId() + ":" + operationId,
+        enqueueGroundExecutiveRecipient(session.getId(), formerGeId, "GE_REMOVED:" + session.getId() + ":" + operationId,
                 "Visit reassigned", "This visit has been reassigned. Its tenant contact and execution access are no longer available to you.", "GE_REASSIGNED");
-        enqueue(alternate.geId(), "EMPLOYEE", "GE_ASSIGNED:" + session.getId() + ":" + operationId,
+        enqueueGroundExecutiveRecipient(session.getId(), alternate.geId(), "GE_ASSIGNED:" + session.getId() + ":" + operationId,
                 "Visit assigned", "A visit has been assigned to you at " + formatSessionTime(alternate.start(), session) + ". Refresh your assigned visits for details.", "GE_REASSIGNED");
-        enqueue(session.getTenant().getId(), "TENANT", "VISIT_GE_REASSIGNED:" + session.getId() + ":" + operationId,
+        enqueueTenant(session.getTenant().getId(), "VISIT_GE_REASSIGNED:" + session.getId() + ":" + operationId,
                 "Ground Executive updated", "Your Ground Executive changed. Your confirmed visit time is unchanged. Request the latest start code near the visit.", "GE_REASSIGNED");
         return executionView(session, "ALTERNATE_GE_ASSIGNED");
     }
@@ -612,7 +612,7 @@ public class VisitExecutionService {
                 audit(downstream.getId(), null, "VISIT_TIME_PROPOSED",
                         material ? "LIVE_REPAIR_MATERIAL_CHANGE" : "LIVE_REPAIR_PENDING_UPDATE",
                         "LIVE_REPAIR_PROPOSED:" + operationId + ":" + downstream.getId());
-                enqueue(downstream.getTenant().getId(), "TENANT", "LIVE_REPAIR_PROPOSED:" + operationId + ":" + downstream.getId(),
+                enqueueTenant(downstream.getTenant().getId(), "LIVE_REPAIR_PROPOSED:" + operationId + ":" + downstream.getId(),
                         "A revised visit time needs your confirmation", "The current proposed visit is "
                                 + formatSessionTime(chosen.start(), downstream)
                                 + ". It is not confirmed; review and accept this current option in the app.", "VISIT_TIME_PROPOSED");
@@ -621,16 +621,16 @@ public class VisitExecutionService {
                         + operationId + ":" + downstream.getId();
                 audit(downstream.getId(), null, reassigned ? "GE_REASSIGNED" : "VISIT_TIME_UPDATED",
                         "LIVE_REPAIR_AUTOMATIC", eventKey);
-                enqueue(downstream.getTenant().getId(), "TENANT", eventKey,
+                enqueueTenant(downstream.getTenant().getId(), eventKey,
                         reassigned ? "Ground Executive updated" : "Visit time updated",
                         reassigned ? "Your Ground Executive changed. Your confirmed visit time is unchanged."
                                 : "Your visit is now expected at " + formatSessionTime(chosen.start(), downstream) + ".",
                         reassigned ? "GE_REASSIGNED" : "VISIT_TIME_UPDATED");
             }
             if (reassigned) {
-                enqueue(originalGeId, "EMPLOYEE", "LIVE_REPAIR_FORMER_GE:" + operationId + ":" + downstream.getId(),
+                enqueueGroundExecutiveRecipient(downstream.getId(), originalGeId, "LIVE_REPAIR_FORMER_GE:" + operationId + ":" + downstream.getId(),
                         "Visit reassigned", "This visit has been reassigned. Its tenant contact and execution access are no longer available to you.", "GE_REASSIGNED");
-                enqueue(chosen.geId(), "EMPLOYEE", "LIVE_REPAIR_NEW_GE:" + operationId + ":" + downstream.getId(),
+                enqueueGroundExecutiveRecipient(downstream.getId(), chosen.geId(), "LIVE_REPAIR_NEW_GE:" + operationId + ":" + downstream.getId(),
                         "Visit assigned", "A visit has been assigned to you at " + formatSessionTime(chosen.start(), downstream) + ". Refresh your assigned visits for details.", "GE_REASSIGNED");
             }
             if (material) enqueueOperations(downstream.getId(), null, operationId,
@@ -674,7 +674,7 @@ public class VisitExecutionService {
     }
 
     private void notifyRepairRequired(Long sessionId, Long tenantId, UUID operationId, String context) {
-        enqueue(tenantId, "TENANT", "VISIT_REPAIR_REQUIRED:" + sessionId + ":" + operationId,
+        enqueueTenant(tenantId, "VISIT_REPAIR_REQUIRED:" + sessionId + ":" + operationId,
                 "Visit time needs review", "Your visit time needs Operations review. We will update you when a safe time is confirmed.", "VISIT_REPAIR_REQUIRED");
         enqueueOperations(sessionId, null, operationId, "Visit Session " + sessionId
                 + " needs urgent repair. " + context);
@@ -778,7 +778,7 @@ public class VisitExecutionService {
             session.setRepairOperationId(repairOperationId);
             enqueueOperations(sessionId, tenantId, repairOperationId,
                     "Visit Session " + sessionId + " has a tenant-disputed provisional no-show and needs immediate review.");
-            enqueue(tenantId, "TENANT", "NO_SHOW_DISPUTED:" + sessionId + ":" + command.operationId(),
+            enqueueTenant(tenantId, "NO_SHOW_DISPUTED:" + sessionId + ":" + command.operationId(),
                     "Attendance review opened", "Your attendance dispute is recorded. Operations will review the visit.", "NO_SHOW_DISPUTED");
         } else {
             if (action.equals("CONFIRM") && session.getStatus() != VisitSessionStatus.SCHEDULED)
@@ -797,7 +797,7 @@ public class VisitExecutionService {
                 invalidateUnconsumedChallenge(sessionId, now);
                 enqueueOperations(sessionId, tenantId, command.operationId(),
                         "A tenant accepted a proposed visit time that is no longer feasible; prepare a current safe option.");
-                enqueue(tenantId, "TENANT", "RESCHEDULE_REVALIDATION_FAILED:" + sessionId + ":" + command.operationId(),
+                enqueueTenant(tenantId, "RESCHEDULE_REVALIDATION_FAILED:" + sessionId + ":" + command.operationId(),
                         "Visit time needs another review", "The proposed time is no longer available. Your visit credit remains held while Operations checks another safe option.",
                         "VISIT_REPAIR_REQUIRED");
                 proposalRejectedAsStale = true;
@@ -817,7 +817,7 @@ public class VisitExecutionService {
                     session.setRepairOperationId(repairOperationId);
                     enqueueOperations(sessionId, tenantId, repairOperationId,
                             "Visit Session " + sessionId + " has a tenant-rejected proposed time and needs a new option.");
-                    enqueue(tenantId, "TENANT", "RESCHEDULE_REJECTED:" + sessionId + ":" + command.operationId(),
+                    enqueueTenant(tenantId, "RESCHEDULE_REJECTED:" + sessionId + ":" + command.operationId(),
                             "Another visit time will be reviewed", "You declined the proposed time. Operations will check another safe option.", "RESCHEDULE_REJECTED");
                 }
             }
@@ -826,7 +826,7 @@ public class VisitExecutionService {
         audit(sessionId, tenantId, "TENANT_" + action, null,
                 idempotencyKey);
         if (!action.equals("DISPUTE_NO_SHOW") && !action.equals("REJECT_RESCHEDULE") && !proposalRejectedAsStale)
-            enqueue(tenantId, "TENANT", "TENANT_CONFIRMATION:" + sessionId + ":" + command.operationId(),
+            enqueueTenant(tenantId, "TENANT_CONFIRMATION:" + sessionId + ":" + command.operationId(),
                     action.equals("ACCEPT_RESCHEDULE") ? "Visit time confirmed" : "Visit update received",
                     action.equals("ACCEPT_RESCHEDULE") ? "Your new visit time is confirmed for "
                             + formatSessionTime(session.getScheduledAt(), session) + "." : "Your visit update has been recorded.",
@@ -892,7 +892,7 @@ public class VisitExecutionService {
         session.setNoShowDisputeUntil(now.plus(Duration.ofHours(properties.getTenantDisputeWindowHours())));
         session.setExecutionStateChangedAt(now);
         audit(sessionId, groundExecutiveId, "PROVISIONAL_NO_SHOW", "CONTACT_EVIDENCE_RECORDED", "PROVISIONAL_NO_SHOW:" + sessionId);
-        enqueue(session.getTenant().getId(), "TENANT", "PROVISIONAL_NO_SHOW:" + sessionId,
+        enqueueTenant(session.getTenant().getId(), "PROVISIONAL_NO_SHOW:" + sessionId,
                 "Visit attendance needs review", "Your visit was marked provisional after the Ground Executive could not reach you. You can dispute this in the app.", "PROVISIONAL_NO_SHOW");
         return executionView(session);
     }
@@ -1085,16 +1085,32 @@ public class VisitExecutionService {
                 sessionId, actorId, type, reason, key);
     }
 
-    private void enqueue(Long recipient, String role, String key, String title, String message, String type) {
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,?,?,?,?) on conflict(event_key) do nothing",
-                key, recipient, role, type, title, message);
+    private void enqueueTenant(Long recipient, String key, String title, String message, String type) {
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'TENANT',?,?,?,'RECIPIENT',null) on conflict(event_key) do nothing",
+                key, recipient, type, title, message);
+    }
+
+    private void enqueueOperationsRecipient(Long sessionId, Long recipient, String key,
+            String title, String message, String type) {
+        enqueueOperationalSessionNotification(sessionId, recipient, TargetRole.EMPLOYEE, key, title, message, type);
+    }
+
+    private void enqueueGroundExecutiveRecipient(Long sessionId, Long recipient, String key,
+            String title, String message, String type) {
+        enqueueOperationalSessionNotification(sessionId, recipient, TargetRole.GROUND_BOY, key, title, message, type);
+    }
+
+    private void enqueueOperationalSessionNotification(Long sessionId, Long recipient, TargetRole recipientRole,
+            String key, String title, String message, String type) {
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,?,?,?,?,'OPERATIONS_SESSION',?) on conflict(event_key) do nothing",
+                key, recipient, recipientRole.name(), type, title, message, sessionId);
     }
 
     private void enqueueOperations(Long sessionId, Long actorId, UUID operationId, String message) {
         List<Long> operationsUsers = jdbc.query("select u.id from users u left join employee_profiles ep on ep.user_id=u.id where u.role='ROLE_ADMIN' or upper(coalesce(ep.role_type,''))='WFH_ADMIN' order by u.id limit 100",
                 (rs, row) -> rs.getLong(1));
         for (Long operationsUser : operationsUsers) {
-            enqueue(operationsUser, "EMPLOYEE", "ASSISTED_RESCHEDULE:" + sessionId + ":" + operationId + ":" + operationsUser,
+            enqueueOperationsRecipient(sessionId, operationsUser, "ASSISTED_RESCHEDULE:" + sessionId + ":" + operationId + ":" + operationsUser,
                     "Tenant-assisted reschedule", message, "VISIT_RESCHEDULE_REVIEW");
         }
         audit(sessionId, actorId, "OPERATIONS_REPAIR_QUEUED", "REVIEW_REQUIRED",

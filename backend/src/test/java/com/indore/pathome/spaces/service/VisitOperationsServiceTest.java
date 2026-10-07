@@ -140,6 +140,7 @@ class VisitOperationsServiceTest {
 
     @Test
     void deniedOperationsActorCannotUseRawIdDetailOrMutation() {
+        doThrow(new AccessDeniedException("Scoped staff required")).when(authorization).requireScopedOperationalRead(4L);
         doThrow(new AccessDeniedException("Admin required")).when(authorization).requireOperations(4L);
 
         assertThrows(AccessDeniedException.class, () -> service.getOperationsSession(4L, 500L));
@@ -147,7 +148,19 @@ class VisitOperationsServiceTest {
                 new ExpectedVisitRequestVersion(0L)));
 
         verify(sessions, never()).findById(500L);
+        verify(sessions, never()).findVisibleToStaffById(anyLong(), anyLong());
         verify(requests, never()).findLockedById(11L);
+    }
+
+    @Test
+    void visibleDetailIsResolvedThroughScopedQueryAndOutOfScopeIdIsNotFound() {
+        doNothing().when(authorization).requireScopedOperationalRead(8L);
+        when(sessions.findVisibleToStaffById(8L, 500L)).thenReturn(Optional.empty());
+
+        assertThrows(EntityNotFoundException.class, () -> service.getOperationsSession(8L, 500L));
+
+        verify(sessions).findVisibleToStaffById(8L, 500L);
+        verify(sessions, never()).findById(500L);
     }
 
     @Test

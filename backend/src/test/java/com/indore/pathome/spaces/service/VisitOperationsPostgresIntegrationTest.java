@@ -71,6 +71,8 @@ import static org.mockito.Mockito.when;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({VisitOperationsService.class, VisitOperationsAuthorizationService.class,
+        OperationalSecurityGuards.class, OperationalAuditService.class, DatabaseClock.class,
+        OperationalNotificationAuthorizationService.class,
         VisitSessionNotificationListener.class, NotificationService.class, VisitSchedulingRecommendationService.class,
         ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class,
         VisitExecutionService.class, VisitExecutionProperties.class, VisitEntitlementStore.class,
@@ -137,6 +139,8 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private GroundExecutiveCoverageRepository coverage;
     @Autowired private GroundExecutiveShiftRepository shifts;
     @Autowired private GroundExecutiveUnavailabilityRepository unavailability;
+    @Autowired private SupportedCityRepository supportedCities;
+    @Autowired private OperatingTeamRepository operatingTeams;
     @Autowired private LocalityRepository localities;
     @Autowired private VisitPolicyRepository visitPolicies;
     @Autowired private SchedulingRecommendationPolicy recommendationPolicy;
@@ -233,6 +237,9 @@ class VisitOperationsPostgresIntegrationTest {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void realScheduleTransactionRollbackSuppressesNotificationsAndCommitPersistsThem() {
         Actors actors = actors();
+        EmployeeProfile groundProfile = employees.findByUserId(actors.ground().getId()).orElseThrow();
+        groundProfile.setStaffActive(true);
+        employees.saveAndFlush(groundProfile);
         Long sessionId = draftSession(actors, "Transactional notification");
         Instant scheduledAt = Instant.parse("2099-10-04T11:00:00Z");
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
@@ -246,14 +253,22 @@ class VisitOperationsPostgresIntegrationTest {
         String tenantEventKey = "VISIT_SESSION_SCHEDULED:" + sessionId + ":v1:" + actors.tenant().getId();
         String groundEventKey = "VISIT_SESSION_ASSIGNED:" + sessionId + ":v1:" + actors.ground().getId();
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(sessionId).orElseThrow().getStatus());
-        assertTrue(notifications.findByEventKey(tenantEventKey).isEmpty());
-        assertTrue(notifications.findByEventKey(groundEventKey).isEmpty());
+        assertEquals(0, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
+                Integer.class, tenantEventKey, groundEventKey));
 
         operations.schedule(actors.admin().getId(), sessionId,
                 new ScheduleVisitSessionCommand(0L, scheduledAt, "Asia/Kolkata", actors.ground().getId(), 30));
         assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(sessionId).orElseThrow().getStatus());
+        assertEquals(2, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key in (?,?)",
+                Integer.class, tenantEventKey, groundEventKey));
         assertTrue(notifications.findByEventKey(tenantEventKey).isPresent());
         assertTrue(notifications.findByEventKey(groundEventKey).isPresent());
+        assertEquals("RECIPIENT", jdbc.queryForObject(
+                "select authorization_class from visit_notification_outbox where event_key=?", String.class, tenantEventKey));
+        assertEquals("OPERATIONS_SESSION", jdbc.queryForObject(
+                "select authorization_class from visit_notification_outbox where event_key=?", String.class, groundEventKey));
+        assertEquals(sessionId, jdbc.queryForObject(
+                "select operational_session_id from visit_notification_outbox where event_key=?", Long.class, groundEventKey));
     }
 
     @Test
@@ -712,6 +727,11 @@ class VisitOperationsPostgresIntegrationTest {
                         + "and event_type='OUTCOME_SCOPE_CAPTURED'", Integer.class, scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
                 Integer.class, "VISIT_STARTED:" + scenario.sessionId() + ":" + operationId));
+        String startedKey = "VISIT_STARTED:" + scenario.sessionId() + ":" + operationId;
+        assertEquals("RECIPIENT", jdbc.queryForObject(
+                "select authorization_class from visit_notification_outbox where event_key=?", String.class, startedKey));
+        assertNull(jdbc.queryForObject(
+                "select operational_session_id from visit_notification_outbox where event_key=?", Long.class, startedKey));
     }
 
     @Test
@@ -1075,6 +1095,8 @@ class VisitOperationsPostgresIntegrationTest {
                         || component.getName().toLowerCase().contains("actor")));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=?",
                 Integer.class, "VISIT_OUTCOME_READY:" + scenario.sessionId()));
+        assertEquals("RECIPIENT", jdbc.queryForObject("select authorization_class from visit_notification_outbox where event_key=?",
+                String.class, "VISIT_OUTCOME_READY:" + scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=? "
                         + "and event_type='OUTCOME_REPORT_FINALIZED'", Integer.class, scenario.sessionId()));
 
@@ -1109,6 +1131,9 @@ class VisitOperationsPostgresIntegrationTest {
                 + "and event_type='OUTCOME_ITEM_CORRECTED' and metadata->>'previousPrivateNote'='Access was not available'",
                 Integer.class, scenario.sessionId()));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?",
+                Integer.class, "VISIT_OUTCOME_UPDATED:" + scenario.sessionId() + ":%"));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ? "
+                        + "and authorization_class='RECIPIENT' and operational_session_id is null",
                 Integer.class, "VISIT_OUTCOME_UPDATED:" + scenario.sessionId() + ":%"));
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
                 Integer.class, scenario.sessionId()));
@@ -1529,7 +1554,7 @@ class VisitOperationsPostgresIntegrationTest {
     void staleOutboxClaimIsReclaimedAndCompetingWorkersPersistOneNotification() throws Exception {
         User tenant = user("outbox-tenant", Role.ROLE_TENANT);
         String eventKey = "OUTBOX_RECLAIM:" + UUID.randomUUID();
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,state,attempts,claimed_at) values (?,?, 'TENANT','TEST','Retry test','Durable retry test','PROCESSING',1,?)",
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id,state,attempts,claimed_at) values (?,?, 'TENANT','TEST','Retry test','Durable retry test','RECIPIENT',null,'PROCESSING',1,?)",
                 eventKey, tenant.getId(), java.sql.Timestamp.from(Instant.now().minus(Duration.ofMinutes(10))));
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch gate = new CountDownLatch(1);
@@ -1559,7 +1584,7 @@ class VisitOperationsPostgresIntegrationTest {
     void outboxRetryAfterNotificationCommitBeforeAcknowledgementDoesNotDuplicateDelivery() {
         User tenant = user("outbox-crash-tenant", Role.ROLE_TENANT);
         String eventKey = "OUTBOX_CRASH:" + UUID.randomUUID();
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,state,attempts,claimed_at,available_at) values (?,?, 'TENANT','TEST','Crash recovery','Deliver once','QUEUED',0,null,?)",
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id,state,attempts,claimed_at,available_at) values (?,?, 'TENANT','TEST','Crash recovery','Deliver once','RECIPIENT',null,'QUEUED',0,null,?)",
                 eventKey, tenant.getId(), java.sql.Timestamp.from(Instant.parse("2000-01-01T00:00:00Z")));
         outboxWorker.deliverBatch();
         assertEquals(1, jdbc.queryForObject("select count(*) from system_notifications where event_key=?",
@@ -1612,6 +1637,9 @@ class VisitOperationsPostgresIntegrationTest {
         assertEquals(VisitSessionStatus.NO_SHOW, finalized.getStatus());
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='FORFEIT_NO_SHOW'",
                 Integer.class, scenario.sessionId()));
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=? "
+                        + "and authorization_class='RECIPIENT' and operational_session_id is null",
+                Integer.class, "NO_SHOW_FINAL:" + scenario.sessionId()));
         assertThrows(VisitOperationsConflictException.class,
                 () -> execution.reportContact(scenario.geA().getId(), scenario.sessionId(),
                         new GroundVisitContactCommand("CONNECTED", null, "OTHER_APPROVED", UUID.randomUUID())));
@@ -1931,6 +1959,10 @@ class VisitOperationsPostgresIntegrationTest {
         var interruption = new VisitEntitlementRestoreCommand(started.getVersion(), "GE_FAILURE", interruptionId);
         entitlementOperations.documentInterruption(scenario.admin().getId(), scenario.sessionId(), interruption);
         entitlementOperations.documentInterruption(scenario.admin().getId(), scenario.sessionId(), interruption);
+        String interruptedNoticeKey = "VISIT_INTERRUPTED:" + scenario.sessionId() + ":" + interruptionId;
+        assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key=? "
+                        + "and authorization_class='RECIPIENT' and operational_session_id is null",
+                Integer.class, interruptedNoticeKey));
         VisitSession interrupted = sessions.findById(scenario.sessionId()).orElseThrow();
         assertEquals(VisitSessionStatus.INTERRUPTED, interrupted.getStatus());
         Integer balanceBeforeRestore = jdbc.queryForObject(
@@ -2358,6 +2390,39 @@ class VisitOperationsPostgresIntegrationTest {
                 () -> execution.getAssignedExecution(pair.current().geA().getId(), repaired.getId()));
         assertEquals(repaired.getId(), execution.getAssignedExecution(pair.current().geB().getId(), repaired.getId()).sessionId());
         assertEquals(repaired.getId(), execution.getTenantContact(pair.current().geB().getId(), repaired.getId()).sessionId());
+
+        SupportedCity canonicalCity = supportedCities.saveAndFlush(new SupportedCity(
+                "test-ge-notification-" + UUID.randomUUID(), "GE Notification Test", true));
+        OperatingTeam canonicalTeam = operatingTeams.saveAndFlush(new OperatingTeam(canonicalCity,
+                "test-ge-notification-" + UUID.randomUUID(), "GE Notification Test Team", true));
+        EmployeeProfile activeNewGe = employees.findByUserId(pair.downstream().geB().getId()).orElseThrow();
+        activeNewGe.setStaffActive(true);
+        employees.saveAndFlush(activeNewGe);
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession scoped = sessions.findLockedById(repaired.getId()).orElseThrow();
+            scoped.setSupportedCity(canonicalCity);
+            scoped.setOperatingTeam(canonicalTeam);
+            scoped.setOperationalScopeReady(true);
+            sessions.saveAndFlush(scoped);
+        });
+
+        String newGeEventKey = "LIVE_REPAIR_NEW_GE:" + operationId + ":" + pair.downstream().sessionId();
+        assertEquals("GROUND_BOY", jdbc.queryForObject(
+                "select recipient_role from visit_notification_outbox where event_key=?", String.class, newGeEventKey));
+        assertEquals("OPERATIONS_SESSION", jdbc.queryForObject(
+                "select authorization_class from visit_notification_outbox where event_key=?", String.class, newGeEventKey));
+        assertEquals(pair.downstream().sessionId(), jdbc.queryForObject(
+                "select operational_session_id from visit_notification_outbox where event_key=?", Long.class, newGeEventKey));
+        outboxWorker.deliverBatch();
+        assertEquals("SENT", jdbc.queryForObject(
+                "select state from visit_notification_outbox where event_key=?", String.class, newGeEventKey));
+        SystemNotification newGeNotice = notifications.findByEventKey(newGeEventKey).orElseThrow();
+        assertEquals(TargetRole.GROUND_BOY, newGeNotice.getTargetRole());
+        assertEquals(NotificationAuthorizationClass.OPERATIONS_SESSION, newGeNotice.getAuthorizationClass());
+        assertEquals(pair.downstream().sessionId(), newGeNotice.getOperationalSessionId());
+        assertTrue(notifications.findCurrentlyVisibleForUser(pair.downstream().geB().getId()).stream()
+                .anyMatch(visible -> visible.getId().equals(newGeNotice.getId())));
+
         assertNoV36Overlaps();
         assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=? and event_type='CONSUME'",
                 Integer.class, pair.current().sessionId()));

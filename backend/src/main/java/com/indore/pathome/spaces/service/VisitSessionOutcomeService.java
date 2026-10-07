@@ -432,9 +432,9 @@ public class VisitSessionOutcomeService {
             enqueueOutcomeReady(session);
         } else if (report.getState() == VisitSessionOutcomeReportState.FINALIZED
                 && tenantVisibleChanged) {
-            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) "
+            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) "
                             + "values (?,?,'TENANT','VISIT_OUTCOME_UPDATED','Visit details were updated',"
-                            + "'Pathome Operations updated details for your visit. Open visit history to review the latest information.') "
+                            + "'Pathome Operations updated details for your visit. Open visit history to review the latest information.','RECIPIENT',null) "
                             + "on conflict(event_key) do nothing",
                     "VISIT_OUTCOME_UPDATED:" + sessionId + ":" + command.itemId() + ":" + command.operationId(),
                     session.getTenant().getId());
@@ -596,9 +596,9 @@ public class VisitSessionOutcomeService {
     }
 
     private void enqueueOutcomeReady(VisitSession session) {
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) "
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) "
                         + "values (?,?,'TENANT','VISIT_OUTCOME_READY','Visit details are ready',"
-                        + "'Your visit details are ready to review in visit history.') on conflict(event_key) do nothing",
+                        + "'Your visit details are ready to review in visit history.','RECIPIENT',null) on conflict(event_key) do nothing",
                 "VISIT_OUTCOME_READY:" + session.getId(), session.getTenant().getId());
     }
 

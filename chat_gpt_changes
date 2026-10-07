@@ -3199,3 +3199,132 @@ Files changed: backend/src/main/resources/db/migration/V47__complete_parser_pers
 Outcome: V47 and V48 now validate sequence ownership/default binding, ascending direction, noncycling behavior, cache size, bounds, and actual next-value semantics while table writes are locked. A safe lagging ascending sequence advances past preserved IDs; descending, cycling, cached, missing-default, and wrong-sequence defaults fail clearly. Historical rows are preserved. V46 and V48 FK-action validation were not modified.
 Verification: `mvn -q -DskipTests test-compile` passed. `PATHOME_PACKAGE5_FLYWAY_TEST=true mvn -q -Dtest=ParserPersistenceMigrationPostgresTest,PathomeSupportedFlywayBaselinePostgresTest test` passed (7 PostgreSQL tests, 0 failures/errors/skips). Coverage includes normal and lagging ascending identity, BIGSERIAL, IDs 900001/900002, descending/cycling/cached generators, invalid sequence bindings, row preservation, the V48 cascade FK rejection case, and generated IDs greater than preserved maxima. `git diff --check` passed. Disposable schemas were dropped by the tests.
 Outstanding: Correction delta awaits review and a separate correction commit. No commit or push performed; main and Phase 1D were untouched.
+
+## 2026-10-07 12:08:01 IST — Pathome Phase 1D scoped authorization and notification integration
+
+Reason: Implement the approved Phase 1D backend/security scope on `feature/phase1d-scoped-auth-notifications`, starting at `88ad3f754fdda66b7e753edfe8026bd5346f2e2c`, without broadening Phase 0 cutover or changing frozen Phase 1A–1C behavior.
+
+Changed areas/files:
+- `backend/src/main/java/com/indore/pathome/spaces/controller/NotificationController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/NotificationAuthorizationClass.java` (new)
+- `backend/src/main/java/com/indore/pathome/spaces/entity/SystemNotification.java`
+- `backend/src/main/java/com/indore/pathome/spaces/entity/VisitNotificationOutbox.java`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/OperationalVisibilitySql.java` (new)
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyVisitRequestRepository.java`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/SystemNotificationRepository.java`
+- `backend/src/main/java/com/indore/pathome/spaces/repository/VisitSessionRepository.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/NotificationService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/OperationalNotificationAuthorizationService.java` (new)
+- `backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitNotificationOutboxWorker.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsAuthorizationService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitSessionNotificationListener.java`
+- `backend/src/main/resources/db/migration/V49__scoped_operational_notifications.sql` (new; V45–V48 unchanged)
+- `backend/src/test/java/com/indore/pathome/spaces/entity/ParserPersistenceMigrationPostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/entity/PathomeSupportedFlywayBaselinePostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/repository/VisitOperationsQueuePostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/security/NotificationSecurityTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/NotificationServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/ParserFieldReviewConfiguredStartupPostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/PropertyPublishNotificationTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsAuthorizationServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitSessionNotificationListenerTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitSessionPackage5EndToEndTest.java`
+
+Outcome: SQL-scoped queue/count/detail visibility uses current grants, database time, canonical City/Team ownership, and coordinator/supervisor relationships. Scoped staff reads are integrated for the approved queue and Session-detail routes; sensitive operational mutations remain Admin-only. Customer notification recipient authorization remains recipient-owned. Staff notifications are classified as recipient, Session-scoped operations, or quarantined legacy; operational feed/count/read paths and bounded outbox delivery recheck current visibility. Authorization denial is terminal `SUPPRESSED`; transient failures remain retryable. V49 adds authorization context constraints/indexes and preserves ambiguous legacy history in quarantine. No UI changes or Phase 1E cutover.
+
+Verification performed:
+- `mvn -q -DskipTests test-compile` — passed.
+- Focused unit/security tests — 53 passed: NotificationServiceTest, VisitOperationsAuthorizationServiceTest, VisitOperationsServiceTest, VisitSessionNotificationListenerTest, NotificationSecurityTest, PropertyPublishNotificationTest.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitOperationsQueuePostgresTest -Dspring.jpa.show-sql=false test` — 4 PostgreSQL tests passed, covering scoped pagination/count/detail, grant revocation/expiry and transfer, notification read/delivery visibility, quarantine/missing Session, and retry vs suppression.
+- `PATHOME_PACKAGE5_FLYWAY_TEST=true mvn -q -Dtest=PathomeSupportedFlywayBaselinePostgresTest test` — 3 PostgreSQL tests passed; clean V1→V49, backfill/quarantine and data-preservation assertions passed. The test also verifies the intentional V48 rollback case.
+- `PATHOME_PARSER_REVIEW_STARTUP_TEST=true mvn -q -Dtest=ParserFieldReviewConfiguredStartupPostgresTest test` — 1 PostgreSQL/Spring startup test passed from clean V1 through V49 with Hibernate validation and application context startup.
+- `PATHOME_PACKAGE5_FLYWAY_TEST=true mvn -q -Dtest=ParserPersistenceMigrationPostgresTest test` — 4 PostgreSQL migration tests passed.
+- Real local backend startup with normal beans passed after applying V49 to the existing V48 `pathome_db`; Hibernate `ddl-auto=update` and a second `ddl-auto=validate` startup both reached running state. Unauthenticated `/api/v1/notifications` returned 401. The process used ephemeral local Cloudinary/JWT verification placeholders because those environment variables were absent; no configuration files were changed, and the test process was stopped.
+- `git diff --check` and `mvn -q -DskipTests test-compile` passed after the final assertion correction. No browser run was needed because UI was untouched.
+
+Outstanding checks: None for the approved backend scope. Browser/device checks are not applicable to this no-UI change.
+
+Git status: Started clean on the required branch and HEAD; implementation remains uncommitted. No commit, push, merge, or main change. V45–V48 remain unchanged.
+
+## 2026-10-07 12:42:22 IST — Pathome Phase 1D Sol security correction batch
+
+Reason: Resolve the four bounded Sol findings on the required Phase 1D branch: trusted producer quarantine defaults, CITY_TEAM_ADMIN operational visibility, inactive assigned GE notification visibility, and direct customer notifications using targetRole=ALL.
+
+Correction files changed:
+- `backend/src/main/java/com/indore/pathome/spaces/repository/OperationalVisibilitySql.java`
+- `backend/src/main/resources/db/migration/V49__scoped_operational_notifications.sql`
+- `backend/src/main/java/com/indore/pathome/spaces/service/NotificationService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/controller/NotificationController.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitExecutionService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitNoShowSettlementWorker.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitEntitlementOperationsService.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitEntitlementReservationWorker.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitSilentOverrunAlertWorker.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitSessionOutcomeService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/repository/VisitOperationsQueuePostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/NotificationServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/security/NotificationSecurityTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/entity/PathomeSupportedFlywayBaselinePostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/entity/VisitSessionMigrationPostgresTest.java`
+- `chat_gpt_changes`
+
+Outcome: Audited all seven current Java outbox insert sites (10 inserts) and SystemNotification creation paths. Trusted customer notices explicitly use RECIPIENT; known-Session staff notices use OPERATIONS_SESSION with that persisted Session ID; intentionally ambiguous property-publish admin notices stay quarantined. Quarantine remains the DB default and no trusted modern producer relies on it. CITY_TEAM_ADMIN no longer grants ordinary Request/Session read access by itself. The shared GE operational visibility predicate now requires active staff state, covering feed/count/read/delivery while preserving assignment. Admin direct notifications classify from persisted customer recipient identity; customer targetRole=ALL remains visible while staff recipients remain quarantined. V49 only reclassifies historical rows where persisted customer role and absence of an EmployeeProfile establish the customer relationship; no Session IDs are fabricated. V45–V48 were not modified.
+
+Verification: `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitOperationsQueuePostgresTest -Dspring.jpa.show-sql=false test` passed (5 tests). `PATHOME_PACKAGE5_FLYWAY_TEST=true mvn -q -Dtest=PathomeSupportedFlywayBaselinePostgresTest test` passed (3 tests; clean V1 baseline through V49 and V48→V49 upgrade coverage). `mvn -q -Dtest=NotificationServiceTest,VisitOperationsAuthorizationServiceTest,NotificationSecurityTest,VisitSessionNotificationListenerTest test` passed (17 tests). Focused producer regressions passed: `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitExecutionServiceTest,VisitOperationsPostgresIntegrationTest#realScheduleTransactionRollbackSuppressesNotificationsAndCommitPersistsThem+itemOutcomeWritesAreIdempotentAndDirectFinishLeavesReportOpenUntilFinalized+provisionalNoShowRequiresSpacedUnansweredContactEvidenceAndKeepsDisputeWindow -Dspring.jpa.show-sql=false test` (VisitExecutionService tests plus targeted schedule, event, outcome, and no-show PostgreSQL paths); `PATHOME_VISIT_SESSION_SCHEMA_TEST=true mvn -q -Dtest=VisitSessionMigrationPostgresTest test` passed (1 PostgreSQL test covering reservation and silent-overrun producer classes); and the focused interruption producer test passed. `mvn -q -DskipTests test-compile` and `git diff --check` passed. `PATHOME_PARSER_REVIEW_STARTUP_TEST=true mvn -q -Dtest=ParserFieldReviewConfiguredStartupPostgresTest test` passed from a disposable V1 baseline through Flyway V49, Hibernate initialized with `ddl-auto=validate`, the Spring application context started, and the disposable schema was dropped afterward. No UI/browser checks were required.
+
+Runtime startup follow-up (2026-10-07 12:43:46 IST): The actual `PathomeSpacesApplication` web server started on port 18081 against a second disposable PostgreSQL schema, Flyway reached V49, Hibernate initialized with `ddl-auto=validate`, and unauthenticated `GET /api/v1/notifications` returned 401. The process used only ephemeral process environment placeholders for JWT/Cloudinary values, was stopped cleanly, and the disposable schema was dropped (verified absent). The application database schema was not modified.
+
+Outstanding checks: None for the approved correction scope. No unrelated changes were made by this batch. Existing Phase 1D worktree modifications were preserved. No commit, push, merge, main change, or Phase 1E work.
+
+## 2026-10-07 19:35:27 IST — Pathome Phase 1D final customer notification correction
+
+Reason: Resolve the last bounded Phase 1D defect where an explicitly customer-targeted direct notice was quarantined when the persisted customer User also had an EmployeeProfile.
+
+Correction files changed:
+- `backend/src/main/java/com/indore/pathome/spaces/service/NotificationService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/NotificationServiceTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/repository/VisitOperationsQueuePostgresTest.java`
+- `chat_gpt_changes`
+
+Outcome: Explicit TENANT notices use persisted customer identity and remain `RECIPIENT` even when an EmployeeProfile exists. Explicit LANDLORD notices use persisted landlord role or linked LessorProfile evidence, including a tenant-plus-lessor User with an EmployeeProfile. `targetRole=ALL` remains conservative: a customer can be recipient-scoped only when there is no EmployeeProfile; staff and ambiguous recipients remain `STAFF_LEGACY_QUARANTINED`. No request recipient ID alone grants `RECIPIENT`. The PostgreSQL regression verifies the dual-capability tenant notice is in the customer feed, included in unread count, markable by its owner, and inaccessible to another user. No notification migration or historical backfill changed in this correction; V45–V48 remain untouched.
+
+Verification performed:
+- `mvn -q -Dtest=NotificationServiceTest,NotificationSecurityTest,VisitSessionNotificationListenerTest test` — passed (16 tests; zero failures/errors).
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitOperationsQueuePostgresTest -Dspring.jpa.show-sql=false test` — passed (6 PostgreSQL tests, including dual-capability customer feed/count/read/isolation and staff ALL quarantine).
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitExecutionServiceTest,VisitOperationsPostgresIntegrationTest#realScheduleTransactionRollbackSuppressesNotificationsAndCommitPersistsThem -Dspring.jpa.show-sql=false test` — passed (3 VisitExecutionService tests and the real PostgreSQL schedule producer regression).
+- `mvn -q -DskipTests test-compile` — passed.
+- Real `PathomeSpacesApplication` startup against a disposable V1 baseline schema — Flyway validated and applied through V49, Hibernate `ddl-auto=validate` initialized, Spring/Tomcat reached running state, and unauthenticated `GET /api/v1/notifications` returned 401. The process was stopped and the disposable schema was verified absent.
+- Final `git diff --check` and `git diff --cached --check` — passed.
+
+Outstanding checks: None for the bounded backend correction. UI/browser checks are not applicable; UI was unchanged.
+
+Git status: Existing dirty Phase 1D worktree preserved. No commit or push; main was not modified; Phase 1E was not started.
+
+## 2026-10-07 20:44:54 IST — Pathome Phase 1D Astra GE notification corrections
+
+Reason: Resolve Astra's two bounded Phase 1D findings: assigned GE notification authority remaining after canonical City/Team deactivation, and GE assignment notices being produced with the generic EMPLOYEE recipient role.
+
+Files changed for this correction batch:
+- `backend/src/main/java/com/indore/pathome/spaces/repository/OperationalVisibilitySql.java`
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitExecutionService.java`
+- `backend/src/test/java/com/indore/pathome/spaces/repository/VisitOperationsQueuePostgresTest.java`
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java`
+- `chat_gpt_changes`
+
+Outcome: The shared assigned-GE notification visibility predicate now requires an active canonical SupportedCity and, when present, an active OperatingTeam belonging to that City. A canonical City with no Team remains valid. Feed, unread count, read mutations, and delivery use the shared predicate, with assignments retained after deactivation. GE-targeted producers now use `GROUND_BOY`; generic operations notifications remain `EMPLOYEE`. Added independent Team and City deactivation regressions, a valid City/null-Team case, generic Employee denial coverage, and an active-topology producer-to-worker delivery assertion. The producer integration fixture marks its assigned recipient active to satisfy the established delivery authorization contract. No migrations were changed in this correction batch; V45–V49 remain untouched by this work.
+
+Verification performed:
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitOperationsQueuePostgresTest -Dspring.jpa.show-sql=false test` — passed, 8 PostgreSQL tests.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=VisitOperationsPostgresIntegrationTest#liveRepairReassignsHardWindowVisitAndFormerGeLosesAccess -Dspring.jpa.show-sql=false test` — passed, 1 producer-to-worker PostgreSQL test.
+- `mvn -q -Dtest=NotificationServiceTest,NotificationSecurityTest,VisitSessionNotificationListenerTest test` — passed, 16 tests.
+- `mvn -q -DskipTests test-compile` — passed.
+- Fresh disposable-schema smoke — Flyway validated 48 migrations and migrated clean V1 baseline through V49; Hibernate `validate` succeeded; Spring ApplicationContext and Tomcat started; unauthenticated `GET /api/v1/notifications` returned 401. The app was stopped and the disposable schema was dropped.
+- `git diff --check` and `git diff --cached --check` — passed.
+
+Outstanding checks: None for this bounded correction. No UI changed; browser/device verification is not applicable.
+
+Commit/push status: No commit or push.

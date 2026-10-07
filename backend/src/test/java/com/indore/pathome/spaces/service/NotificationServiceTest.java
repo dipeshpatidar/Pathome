@@ -1,8 +1,15 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.SystemNotification;
+import com.indore.pathome.spaces.entity.NotificationAuthorizationClass;
+import com.indore.pathome.spaces.entity.EmployeeProfile;
+import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.TargetRole;
 import com.indore.pathome.spaces.repository.SystemNotificationRepository;
+import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
+import com.indore.pathome.spaces.repository.LessorProfileRepository;
+import com.indore.pathome.spaces.repository.UserRepository;
+import com.indore.pathome.spaces.entity.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
@@ -21,6 +28,15 @@ public class NotificationServiceTest {
     @Mock
     private SystemNotificationRepository repository;
 
+    @Mock
+    private UserRepository users;
+
+    @Mock
+    private EmployeeProfileRepository employeeProfiles;
+
+    @Mock
+    private LessorProfileRepository lessorProfiles;
+
     @InjectMocks
     private NotificationService notificationService;
 
@@ -31,29 +47,102 @@ public class NotificationServiceTest {
 
     @Test
     public void testCreateNotificationAndRecipientScopedMarkAsRead() {
-        SystemNotification notif = new SystemNotification(TargetRole.EMPLOYEE, "emp123", "Lead Assigned", "New inquiry", null, "LEAD", "info");
+        SystemNotification notif = new SystemNotification(TargetRole.EMPLOYEE, "123", "Lead Assigned", "New inquiry", null, "LEAD", "info");
         notif.setId(10L);
 
         when(repository.save(any(SystemNotification.class))).thenReturn(notif);
-        when(repository.findByIdAndRecipientUserId(10L, "emp123")).thenReturn(Optional.of(notif));
+        when(repository.markVisibleReadForUser(eq(10L), eq(123L), any())).thenReturn(1);
 
-        SystemNotification created = notificationService.createNotification(TargetRole.EMPLOYEE, "emp123", "Lead Assigned", "New inquiry", null, "LEAD", "info");
+        SystemNotification created = notificationService.createNotification(TargetRole.EMPLOYEE, "123", "Lead Assigned", "New inquiry", null, "LEAD", "info", NotificationAuthorizationClass.RECIPIENT);
         assertNotNull(created);
         assertEquals(10L, created.getId());
 
-        boolean readSuccess = notificationService.markAsReadForUser(10L, "emp123");
+        boolean readSuccess = notificationService.markAsReadForUser(10L, "123");
         assertTrue(readSuccess);
-        assertTrue(notif.isRead());
         verify(repository, never()).findById(10L);
     }
 
     @Test
+    public void adminDefaultAllDirectNoticeUsesPersistedCustomerRecipientAndKeepsStaffQuarantined() {
+        User customer = user(71L, Role.ROLE_TENANT);
+        when(users.findById(71L)).thenReturn(Optional.of(customer));
+        when(employeeProfiles.findByUserId(71L)).thenReturn(Optional.empty());
+        when(repository.save(any(SystemNotification.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        SystemNotification directCustomerNotice = notificationService.createAdminNotification(TargetRole.ALL, "71",
+                "Direct notice", "Customer message", null, "SYSTEM", "info");
+
+        assertEquals(NotificationAuthorizationClass.RECIPIENT, directCustomerNotice.getAuthorizationClass());
+        assertNull(directCustomerNotice.getOperationalSessionId());
+
+        User bootstrapStaffWithCustomerRole = user(72L, Role.ROLE_TENANT);
+        when(users.findById(72L)).thenReturn(Optional.of(bootstrapStaffWithCustomerRole));
+        when(employeeProfiles.findByUserId(72L)).thenReturn(Optional.of(
+                new EmployeeProfile(bootstrapStaffWithCustomerRole, "OPERATIONS", null, null)));
+        SystemNotification staffNotice = notificationService.createAdminNotification(TargetRole.ALL, "72",
+                "Direct staff notice", "Must remain scoped", null, "SYSTEM", "info");
+        assertEquals(NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, staffNotice.getAuthorizationClass());
+
+        User administrator = user(73L, Role.ROLE_ADMIN);
+        when(users.findById(73L)).thenReturn(Optional.of(administrator));
+        SystemNotification adminNotice = notificationService.createAdminNotification(TargetRole.ALL, "73",
+                "Admin notice", "Must not become recipient scoped", null, "SYSTEM", "info");
+        assertEquals(NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, adminNotice.getAuthorizationClass());
+    }
+
+    @Test
+    public void adminExplicitCustomerTargetingKeepsDualCapabilityTenantAndLessorNoticesRecipientScoped() {
+        User tenantWithStaffProfile = user(81L, Role.ROLE_TENANT);
+        when(users.findById(81L)).thenReturn(Optional.of(tenantWithStaffProfile));
+        when(employeeProfiles.findByUserId(81L)).thenReturn(Optional.of(
+                new EmployeeProfile(tenantWithStaffProfile, "OPERATIONS", null, null)));
+        when(repository.save(any(SystemNotification.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        SystemNotification tenantNotice = notificationService.createAdminNotification(TargetRole.TENANT, "81",
+                "Tenant notice", "Customer message", null, "SYSTEM", "info");
+
+        assertEquals(Role.ROLE_TENANT, tenantWithStaffProfile.getRole(), "staff activation does not replace customer identity");
+        assertEquals(NotificationAuthorizationClass.RECIPIENT, tenantNotice.getAuthorizationClass());
+        assertNull(tenantNotice.getOperationalSessionId());
+
+        User tenantLessorWithStaffProfile = user(82L, Role.ROLE_TENANT);
+        when(users.findById(82L)).thenReturn(Optional.of(tenantLessorWithStaffProfile));
+        when(employeeProfiles.findByUserId(82L)).thenReturn(Optional.of(
+                new EmployeeProfile(tenantLessorWithStaffProfile, "OPERATIONS", null, null)));
+        when(lessorProfiles.existsByLinkedUserId(82L)).thenReturn(true);
+
+        SystemNotification lessorNotice = notificationService.createAdminNotification(TargetRole.LANDLORD, "82",
+                "Lessor notice", "Lessor customer message", null, "SYSTEM", "info");
+
+        assertEquals(Role.ROLE_TENANT, tenantLessorWithStaffProfile.getRole());
+        assertEquals(NotificationAuthorizationClass.RECIPIENT, lessorNotice.getAuthorizationClass());
+        assertNull(lessorNotice.getOperationalSessionId());
+
+        User tenantWithoutLessorProfile = user(83L, Role.ROLE_TENANT);
+        when(users.findById(83L)).thenReturn(Optional.of(tenantWithoutLessorProfile));
+        when(employeeProfiles.findByUserId(83L)).thenReturn(Optional.of(
+                new EmployeeProfile(tenantWithoutLessorProfile, "OPERATIONS", null, null)));
+        when(lessorProfiles.existsByLinkedUserId(83L)).thenReturn(false);
+        SystemNotification unprovenLessorNotice = notificationService.createAdminNotification(TargetRole.LANDLORD, "83",
+                "Unproven lessor notice", "Must remain quarantined", null, "SYSTEM", "info");
+        assertEquals(NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED,
+                unprovenLessorNotice.getAuthorizationClass());
+    }
+
+    private static User user(Long id, Role role) {
+        User user = new User();
+        user.setId(id);
+        user.setRole(role);
+        return user;
+    }
+
+    @Test
     public void crossUserMarkAsReadCannotLoadOrMutateNotification() {
-        when(repository.findByIdAndRecipientUserId(10L, "other-user")).thenReturn(Optional.empty());
+        when(repository.markVisibleReadForUser(eq(10L), eq(42L), any())).thenReturn(0);
 
-        assertFalse(notificationService.markAsReadForUser(10L, "other-user"));
+        assertFalse(notificationService.markAsReadForUser(10L, "42"));
 
-        verify(repository).findByIdAndRecipientUserId(10L, "other-user");
+        verify(repository).markVisibleReadForUser(eq(10L), eq(42L), any());
         verify(repository, never()).save(any());
     }
 
@@ -61,16 +150,15 @@ public class NotificationServiceTest {
     public void privateFeedAndUnreadCountUseRecipientScopedRepositoryQueries() {
         SystemNotification ownNotification = new SystemNotification(TargetRole.TENANT, "tenant-a",
                 "Visit updated", "Your visit time changed", null, "VISIT_SESSION", "info");
-        when(repository.findByRecipientUserIdOrderByCreatedAtDesc("tenant-a"))
+        when(repository.findCurrentlyVisibleForUser(42L))
                 .thenReturn(List.of(ownNotification));
-        when(repository.countByRecipientUserIdAndIsReadFalse("tenant-a")).thenReturn(1L);
+        when(repository.countCurrentlyVisibleUnreadForUser(42L)).thenReturn(1L);
 
-        assertEquals(List.of(ownNotification), notificationService.getNotificationsForUser("tenant-a"));
-        assertEquals(1L, notificationService.getUnreadCountForUser("tenant-a"));
+        assertEquals(List.of(ownNotification), notificationService.getNotificationsForUser("42"));
+        assertEquals(1L, notificationService.getUnreadCountForUser("42"));
 
-        verify(repository).findByRecipientUserIdOrderByCreatedAtDesc("tenant-a");
-        verify(repository).countByRecipientUserIdAndIsReadFalse("tenant-a");
-        verify(repository, never()).findByTargetRoleInOrderByCreatedAtDesc(any());
+        verify(repository).findCurrentlyVisibleForUser(42L);
+        verify(repository).countCurrentlyVisibleUnreadForUser(42L);
     }
 
     @Test
@@ -83,7 +171,7 @@ public class NotificationServiceTest {
         when(repository.findByEventKey(eventKey)).thenReturn(Optional.of(existingNotif));
 
         Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
-                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-123", "PROPERTY", "success", eventKey
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-123", "PROPERTY", "success", NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, null, eventKey
         );
 
         assertTrue(result.isPresent());
@@ -107,7 +195,7 @@ public class NotificationServiceTest {
                 .thenThrow(new org.springframework.dao.DataIntegrityViolationException("duplicate key value violates unique constraint"));
 
         Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
-                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-race", "PROPERTY", "success", eventKey
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-race", "PROPERTY", "success", NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, null, eventKey
         );
 
         assertTrue(result.isPresent());
@@ -132,7 +220,7 @@ public class NotificationServiceTest {
         when(repository.saveAndFlush(any(SystemNotification.class))).thenReturn(created);
 
         Optional<SystemNotification> result = notificationService.createNotificationWithEventKey(
-                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-tx-requires-new", "PROPERTY", "success", eventKey
+                TargetRole.ADMIN, null, "Property published successfully", "1 property was published successfully.", "Draft ID: draft-tx-requires-new", "PROPERTY", "success", NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED, null, eventKey
         );
 
         assertTrue(result.isPresent());

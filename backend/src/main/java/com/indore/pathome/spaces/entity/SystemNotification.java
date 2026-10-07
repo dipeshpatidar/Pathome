@@ -25,6 +25,14 @@ public class SystemNotification {
     @Column(name = "recipient_user_id")
     private String recipientUserId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "authorization_class", nullable = false, length = 32,
+            columnDefinition = "VARCHAR(32) NOT NULL DEFAULT 'STAFF_LEGACY_QUARANTINED'")
+    private NotificationAuthorizationClass authorizationClass = NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED;
+
+    @Column(name = "operational_session_id")
+    private Long operationalSessionId;
+
     @Column(nullable = false)
     private String title;
 
@@ -86,6 +94,15 @@ public class SystemNotification {
 
     public String getRecipientUserId() { return recipientUserId; }
     public void setRecipientUserId(String recipientUserId) { this.recipientUserId = recipientUserId; }
+
+    public NotificationAuthorizationClass getAuthorizationClass() { return authorizationClass; }
+    public void setAuthorizationClass(NotificationAuthorizationClass authorizationClass) {
+        this.authorizationClass = authorizationClass == null
+                ? NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED : authorizationClass;
+    }
+
+    public Long getOperationalSessionId() { return operationalSessionId; }
+    public void setOperationalSessionId(Long operationalSessionId) { this.operationalSessionId = operationalSessionId; }
 
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }

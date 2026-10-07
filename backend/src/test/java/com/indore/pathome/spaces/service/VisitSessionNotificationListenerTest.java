@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.TargetRole;
+import com.indore.pathome.spaces.entity.NotificationAuthorizationClass;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.event.TransactionPhase;
@@ -27,34 +28,44 @@ class VisitSessionNotificationListenerTest {
 
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
                 eq("Visit session scheduled"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_SCHEDULED:500:v2:10"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
+                eq("VISIT_SESSION_SCHEDULED:500:v2:10"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_ASSIGNED:500:v2:40"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_ASSIGNED:500:v2:40"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
                 eq("Visit session rescheduled"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_RESCHEDULED:500:v3:10"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
+                eq("VISIT_SESSION_RESCHEDULED:500:v3:10"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session time changed"), contains("2099-10-02T16:30:00+05:30"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_RESCHEDULED:500:v3:40"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_RESCHEDULED:500:v3:40"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
                 eq("Visit session cancelled"), eq("Operations cancelled your Visit Session."), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_CANCELLED:500:v4:10"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
+                eq("VISIT_SESSION_CANCELLED:500:v4:10"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session cancelled"), contains("cancelled by Operations"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_CANCELLED:500:v4:40"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_CANCELLED:500:v4:40"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_ASSIGNED:500:v5:40"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_ASSIGNED:500:v5:40"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("41"),
                 eq("Visit Session assigned"), contains("Visit Session 500"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_ASSIGNED:500:v6:41"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_ASSIGNED:500:v6:41"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.TENANT), eq("10"),
                 eq("Ground Executive updated"), contains("different Ground Executive"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_REASSIGNED:500:v6:10"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.RECIPIENT), isNull(),
+                eq("VISIT_SESSION_REASSIGNED:500:v6:10"));
         verify(notifications).createNotificationWithEventKey(eq(TargetRole.GROUND_BOY), eq("40"),
                 eq("Visit Session reassigned"), contains("no longer assigned"), isNull(),
-                eq("VISIT_SESSION"), eq("info"), eq("VISIT_SESSION_REASSIGNED_FROM:500:v6:40"));
+                eq("VISIT_SESSION"), eq("info"), eq(NotificationAuthorizationClass.OPERATIONS_SESSION), eq(500L),
+                eq("VISIT_SESSION_REASSIGNED_FROM:500:v6:40"));
         verifyNoMoreInteractions(notifications);
     }
 

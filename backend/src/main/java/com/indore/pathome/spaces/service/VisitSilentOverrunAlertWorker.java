@@ -35,8 +35,9 @@ public class VisitSilentOverrunAlertWorker {
                     row.sessionId(), row.groundExecutiveId(), row.sessionId());
             if (inserted == 0) continue;
             for (Long operationsUser : operationsUsers) {
-                jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,'EMPLOYEE','SILENT_OVERRUN_ALERT','Visit is still in progress','Visit Session '||?||' is still active beyond its expected end. Contact the Ground Executive and tenant; the system has not marked it complete.') on conflict(event_key) do nothing",
-                        "SILENT_OVERRUN:" + row.sessionId() + ":" + operationsUser, operationsUser, row.sessionId());
+                jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'EMPLOYEE','SILENT_OVERRUN_ALERT','Visit is still in progress','Visit Session '||?||' is still active beyond its expected end. Contact the Ground Executive and tenant; the system has not marked it complete.','OPERATIONS_SESSION',?) on conflict(event_key) do nothing",
+                        "SILENT_OVERRUN:" + row.sessionId() + ":" + operationsUser, operationsUser,
+                        row.sessionId(), row.sessionId());
             }
         }
     }

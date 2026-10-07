@@ -85,7 +85,7 @@ class ParserFieldReviewConfiguredStartupPostgresTest {
     @Test
     void cleanFlywaySchemaValidatesAndApplicationContextStartsWithoutBootstrapOrFabricatedData() {
         assertNotNull(flyway);
-        assertEquals(48, jdbc.queryForObject(
+        assertEquals(49, jdbc.queryForObject(
                 "SELECT max(version::integer) FROM flyway_schema_history WHERE type='SQL' AND success", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM information_schema.tables "
                 + "WHERE table_schema=current_schema() AND table_name='parser_field_reviews'", Integer.class));

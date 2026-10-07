@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Verifies the supported pre-Flyway version-1 legacy baseline through the current migration chain. */
 @EnabledIfEnvironmentVariable(named = "PATHOME_PACKAGE5_FLYWAY_TEST", matches = "true")
 class PathomeSupportedFlywayBaselinePostgresTest {
-    private static final String LATEST_VERSION = "48";
+    private static final String LATEST_VERSION = "49";
 
     @Test
     void supportedLegacyBaselineUpgradesThroughLatestMigrationWithoutInventingOldOutcomes() throws Exception {
@@ -104,11 +104,41 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         "SELECT id FROM users WHERE email='package5-legacy-tenant@example.test'");
                 statement.execute("INSERT INTO visit_sessions(tenant_id,status,city) VALUES (" + tenantId
                         + ",'COMPLETED','Legacy City')");
+                statement.execute("INSERT INTO users(email,full_name,role) "
+                        + "VALUES ('package5-legacy-landlord@example.test','Legacy Lessor','ROLE_LANDLORD')");
+                long landlordId = scalarLong(connection,
+                        "SELECT id FROM users WHERE email='package5-legacy-landlord@example.test'");
+                statement.execute("INSERT INTO system_notifications(recipient_user_id,target_role,title,message) VALUES "
+                        + "('" + tenantId + "','TENANT','Legacy tenant notice','Tenant body'),"
+                        + "('" + landlordId + "','LANDLORD','Legacy lessor notice','Lessor body'),"
+                        + "('" + tenantId + "','EMPLOYEE','Legacy staff notice','Staff body'),"
+                        + "('" + tenantId + "','ALL','Legacy ALL customer notice','Direct customer body'),"
+                        + "(NULL,'TENANT','Unbound tenant notice','Unbound body')");
+                statement.execute("INSERT INTO visit_notification_outbox "
+                        + "(event_key,recipient_user_id,recipient_role,event_type,title,message) VALUES "
+                        + "('legacy-tenant-outbox'," + tenantId + ",'TENANT','SCHEDULED','Tenant queued','Tenant body'),"
+                        + "('legacy-ground-outbox'," + tenantId + ",'GROUND_BOY','ASSIGNED','Legacy GE queued','GE body')");
 
-                Flyway latest = flyway(url, username, password, schema).load();
-                var third = latest.migrate();
+                Flyway throughV48 = flyway(url, username, password, schema).target("48").load();
+                var third = throughV48.migrate();
                 assertTrue(third.success);
-                assertEquals(LATEST_VERSION, third.targetSchemaVersion.toString());
+                assertEquals("48", third.targetSchemaVersion.toString());
+                statement.execute("INSERT INTO users(email,full_name,role,free_visits_remaining) "
+                        + "VALUES ('package5-legacy-staff-tenant@example.test','Legacy Staff Tenant','ROLE_TENANT',5)");
+                long staffTenantId = scalarLong(connection,
+                        "SELECT id FROM users WHERE email='package5-legacy-staff-tenant@example.test'");
+                statement.execute("INSERT INTO employee_profiles(user_id,role_type,staff_active,closed_deals_count) "
+                        + "VALUES (" + staffTenantId + ",'OPERATIONS',FALSE,0)");
+                statement.execute("INSERT INTO system_notifications(recipient_user_id,target_role,title,message) VALUES "
+                        + "('" + staffTenantId + "','ALL','Ambiguous staff ALL notice','Do not promote')");
+                statement.execute("INSERT INTO visit_notification_outbox "
+                        + "(event_key,recipient_user_id,recipient_role,event_type,title,message) VALUES "
+                        + "('ambiguous-staff-tenant-outbox'," + staffTenantId
+                        + ",'TENANT','SCHEDULED','Ambiguous staff tenant','Do not promote')");
+                Flyway latest = flyway(url, username, password, schema).load();
+                var fourth = latest.migrate();
+                assertTrue(fourth.success);
+                assertEquals(LATEST_VERSION, fourth.targetSchemaVersion.toString());
                 assertDoesNotThrow(latest::validate);
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_session_outcome_reports r "
                         + "JOIN visit_sessions s ON s.id=r.session_id WHERE s.status='COMPLETED' "
@@ -117,6 +147,50 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                 assertEquals(1, count(connection, "SELECT count(*) FROM tenant_visit_logs "
                         + "WHERE txn_id='legacy-txn' AND otp_code='legacy-otp' AND commitment_deposit_amount=1250.00"),
                         "V48 must preserve the historical tenant visit log row and values");
+                assertEquals(6, count(connection, "SELECT count(*) FROM system_notifications"),
+                        "V49 must preserve all legacy notification rows");
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE target_role='TENANT' AND recipient_user_id='" + tenantId + "' "
+                        + "AND authorization_class='RECIPIENT' AND title='Legacy tenant notice' AND message='Tenant body'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE target_role='LANDLORD' AND recipient_user_id='" + landlordId + "' "
+                        + "AND authorization_class='RECIPIENT' AND title='Legacy lessor notice' AND message='Lessor body'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE title='Legacy staff notice' AND authorization_class='STAFF_LEGACY_QUARANTINED' "
+                        + "AND operational_session_id IS NULL"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE title='Unbound tenant notice' AND authorization_class='STAFF_LEGACY_QUARANTINED'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE title='Legacy ALL customer notice' AND recipient_user_id='" + tenantId
+                        + "' AND authorization_class='RECIPIENT'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM system_notifications "
+                        + "WHERE title='Ambiguous staff ALL notice' AND recipient_user_id='" + staffTenantId
+                        + "' AND authorization_class='STAFF_LEGACY_QUARANTINED'"));
+                assertEquals(3, count(connection, "SELECT count(*) FROM visit_notification_outbox"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_notification_outbox "
+                        + "WHERE event_key='legacy-tenant-outbox' AND authorization_class='RECIPIENT' "
+                        + "AND operational_session_id IS NULL AND state='QUEUED'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_notification_outbox "
+                        + "WHERE event_key='legacy-ground-outbox' "
+                        + "AND authorization_class='STAFF_LEGACY_QUARANTINED' AND operational_session_id IS NULL"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM visit_notification_outbox "
+                        + "WHERE event_key='ambiguous-staff-tenant-outbox' "
+                        + "AND authorization_class='STAFF_LEGACY_QUARANTINED' AND operational_session_id IS NULL"));
+                statement.execute("UPDATE visit_notification_outbox SET state='SUPPRESSED' "
+                        + "WHERE event_key='legacy-tenant-outbox'");
+                statement.execute("UPDATE visit_notification_outbox SET state='QUEUED' "
+                        + "WHERE event_key='legacy-tenant-outbox'");
+                assertEquals(1, count(connection, "SELECT count(*) FROM pg_constraint "
+                        + "WHERE conrelid='visit_notification_outbox'::regclass "
+                        + "AND conname='ck_visit_notification_outbox_state' "
+                        + "AND pg_get_constraintdef(oid) LIKE '%SUPPRESSED%'"));
+                assertEquals(1, count(connection, "SELECT count(*) FROM pg_constraint "
+                        + "WHERE conrelid='system_notifications'::regclass "
+                        + "AND conname='ck_system_notifications_authorization_context'"));
+                assertThrows(SQLException.class, () -> statement.execute("INSERT INTO system_notifications "
+                        + "(recipient_user_id,target_role,title,authorization_class) VALUES ('" + tenantId
+                        + "','EMPLOYEE','Missing session reference','OPERATIONS_SESSION')"),
+                        "OPERATIONS_SESSION must require a persisted Visit Session reference");
                 assertEquals(2, count(connection, "SELECT count(*) FROM pg_constraint "
                         + "WHERE conrelid='tenant_visit_logs'::regclass AND contype='f' AND convalidated "
                         + "AND confupdtype='a' AND confdeltype='a' AND confmatchtype='s' "
@@ -142,8 +216,8 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "WHERE u.email='package5-legacy-tenant@example.test' AND l.title='Legacy listing'");
                 assertTrue(scalarLong(connection, "SELECT max(id) FROM tenant_visit_logs") > legacyVisitLogId,
                         "V48 must leave the historical identity generator ready for the next row");
-                assertEquals(47, count(connection, "SELECT count(*) FROM flyway_schema_history "
-                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 48"));
+                assertEquals(48, count(connection, "SELECT count(*) FROM flyway_schema_history "
+                        + "WHERE type='SQL' AND success AND version::integer BETWEEN 2 AND 49"));
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_sessions "
                         + "WHERE status='COMPLETED' AND operational_scope_ready=FALSE "
                         + "AND supported_city_id IS NULL AND operating_team_id IS NULL AND coordinator_user_id IS NULL"));
@@ -191,7 +265,7 @@ class PathomeSupportedFlywayBaselinePostgresTest {
                         + "AND indexname='idx_parser_model_status_created'"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM parser_training_examples"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM parser_model_versions"));
-                assertEquals(48, count(connection, "SELECT max(version::integer) FROM flyway_schema_history "
+                assertEquals(49, count(connection, "SELECT max(version::integer) FROM flyway_schema_history "
                         + "WHERE type='SQL' AND success"));
                 assertDeferredOwnershipMirror(connection, statement);
                 assertEquals("1", text(connection,

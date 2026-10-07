@@ -17,6 +17,12 @@ public class VisitNotificationOutbox {
     private Long recipientUserId;
     @Column(name = "recipient_role", nullable = false, length = 24)
     private String recipientRole;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "authorization_class", nullable = false, length = 32,
+            columnDefinition = "VARCHAR(32) NOT NULL DEFAULT 'STAFF_LEGACY_QUARANTINED'")
+    private NotificationAuthorizationClass authorizationClass = NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED;
+    @Column(name = "operational_session_id")
+    private Long operationalSessionId;
     @Column(name = "event_type", nullable = false, length = 48)
     private String eventType;
     @Column(nullable = false, length = 180)
@@ -39,4 +45,12 @@ public class VisitNotificationOutbox {
     @Column(name = "created_at", nullable = false, updatable = false,
             columnDefinition = "TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP")
     private Instant createdAt = Instant.now();
+
+    public Long getId() { return id; }
+    public String getEventKey() { return eventKey; }
+    public Long getRecipientUserId() { return recipientUserId; }
+    public String getRecipientRole() { return recipientRole; }
+    public NotificationAuthorizationClass getAuthorizationClass() { return authorizationClass; }
+    public Long getOperationalSessionId() { return operationalSessionId; }
+    public String getState() { return state; }
 }

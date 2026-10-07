@@ -1,47 +1,50 @@
 package com.indore.pathome.spaces.repository;
 
 import com.indore.pathome.spaces.entity.SystemNotification;
-import com.indore.pathome.spaces.entity.TargetRole;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.util.Collection;
 import java.util.List;
 
 @Repository
 public interface SystemNotificationRepository extends JpaRepository<SystemNotification, Long> {
 
-    @Query("SELECT n FROM SystemNotification n WHERE n.targetRole IN :roles OR n.recipientUserId = :recipientUserId ORDER BY n.createdAt DESC")
-    List<SystemNotification> findForUserRoleAndRecipient(
-            @Param("roles") Collection<TargetRole> roles,
-            @Param("recipientUserId") String recipientUserId
-    );
+    @Query(value = "SELECT n.* FROM system_notifications n "
+            + "WHERE n.recipient_user_id = CAST(:userId AS VARCHAR) AND "
+            + OperationalVisibilitySql.NOTIFICATION_ROW_VISIBLE
+            + " ORDER BY n.created_at DESC, n.id DESC", nativeQuery = true)
+    List<SystemNotification> findCurrentlyVisibleForUser(@Param("userId") Long userId);
 
-    List<SystemNotification> findByTargetRoleInOrderByCreatedAtDesc(Collection<TargetRole> targetRoles);
-
-    long countByTargetRoleInAndIsReadFalse(Collection<TargetRole> targetRoles);
-
-    List<SystemNotification> findByRecipientUserIdOrderByCreatedAtDesc(String recipientUserId);
-
-    long countByRecipientUserIdAndIsReadFalse(String recipientUserId);
-
-    java.util.Optional<SystemNotification> findByIdAndRecipientUserId(Long id, String recipientUserId);
+    @Query(value = "SELECT count(*) FROM system_notifications n "
+            + "WHERE n.recipient_user_id = CAST(:userId AS VARCHAR) AND n.is_read = FALSE AND "
+            + OperationalVisibilitySql.NOTIFICATION_ROW_VISIBLE, nativeQuery = true)
+    long countCurrentlyVisibleUnreadForUser(@Param("userId") Long userId);
 
     @org.springframework.data.jpa.repository.Modifying
-    @Query("UPDATE SystemNotification n SET n.isRead = true, n.readAt = :readAt WHERE n.recipientUserId = :recipientUserId AND n.isRead = false")
-    int markAllReadForUser(@Param("recipientUserId") String recipientUserId, @Param("readAt") java.time.LocalDateTime readAt);
+    @Query(value = "UPDATE system_notifications n SET is_read = TRUE, read_at = :readAt "
+            + "WHERE n.id = :id AND n.recipient_user_id = CAST(:userId AS VARCHAR) AND "
+            + OperationalVisibilitySql.NOTIFICATION_ROW_VISIBLE, nativeQuery = true)
+    int markVisibleReadForUser(@Param("id") Long id, @Param("userId") Long userId,
+                               @Param("readAt") java.time.LocalDateTime readAt);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query(value = "UPDATE system_notifications n SET is_read = TRUE, read_at = :readAt "
+            + "WHERE n.recipient_user_id = CAST(:userId AS VARCHAR) AND n.is_read = FALSE AND "
+            + OperationalVisibilitySql.NOTIFICATION_ROW_VISIBLE, nativeQuery = true)
+    int markAllCurrentlyVisibleReadForUser(@Param("userId") Long userId,
+                                           @Param("readAt") java.time.LocalDateTime readAt);
 
     java.util.Optional<SystemNotification> findByEventKey(String eventKey);
 
     @org.springframework.data.jpa.repository.Modifying
     @Query(value = """
             INSERT INTO system_notifications
-                (event_key, target_role, recipient_user_id, title, message, category, type,
+                (event_key, target_role, recipient_user_id, authorization_class, title, message, category, type,
                  is_read, created_at, listing_id, revision_id, action_type, action_target)
             VALUES
-                (:eventKey, 'LANDLORD', :recipientUserId, :title, :message, 'PROPERTY', :type,
+                (:eventKey, 'LANDLORD', :recipientUserId, 'RECIPIENT', :title, :message, 'PROPERTY', :type,
                  false, :createdAt, :listingId, :revisionId, :actionType, :actionTarget)
             ON CONFLICT (event_key) DO NOTHING
             """, nativeQuery = true)

@@ -1211,6 +1211,8 @@ public class PropertyDraftService {
                     detailsBuilder.toString(),
                     "PROPERTY",
                     "success",
+                    com.indore.pathome.spaces.entity.NotificationAuthorizationClass.STAFF_LEGACY_QUARANTINED,
+                    null,
                     eventKey
             );
         } catch (Exception e) {

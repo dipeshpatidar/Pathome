@@ -34,7 +34,7 @@ public class VisitNoShowSettlementWorker {
             entitlements.forfeitNoShow(row.tenantId(), row.sessionId());
             jdbc.update("insert into visit_execution_events(session_id,event_type,reason_code,idempotency_key) values (?,'NO_SHOW_FINALIZED','DISPUTE_WINDOW_ELAPSED','NO_SHOW_FINAL:'||?) on conflict(idempotency_key) do nothing",
                     row.sessionId(), row.sessionId());
-            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,'TENANT','NO_SHOW_FINALIZED','Visit attendance review closed','The visit attendance review window has closed.') on conflict(event_key) do nothing",
+            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'TENANT','NO_SHOW_FINALIZED','Visit attendance review closed','The visit attendance review window has closed.','RECIPIENT',null) on conflict(event_key) do nothing",
                     "NO_SHOW_FINAL:" + row.sessionId(), row.tenantId());
         }
     }

@@ -145,11 +145,11 @@ public class VisitOperationsService {
     @Transactional(readOnly = true)
     public OperationsVisitRequestPage listRequests(Long actorId, VisitRequestStatus status, String city,
                                                     int page, int size) {
-        authorization.requireOperations(actorId);
+        authorization.requireScopedOperationalRead(actorId);
         validatePage(page, size);
         String cityFilter = normalizeCityFilter(city);
-        Page<PropertyVisitRequestRepository.OperationsQueueRow> result = requests.findOperationsQueue(
-                status == null ? null : status.name(), cityFilter,
+        Page<PropertyVisitRequestRepository.OperationsQueueRow> result = requests.findVisibleOperationsQueue(
+                actorId, status == null ? null : status.name(), cityFilter,
                 PageRequest.of(page, size == 0 ? DEFAULT_PAGE_SIZE : size));
         List<OperationsVisitRequestItem> rows = result.getContent().stream().map(row ->
                 new OperationsVisitRequestItem(row.getId(), row.getStatus(), row.getVersion(), row.getCreatedAt(),
@@ -253,9 +253,9 @@ public class VisitOperationsService {
 
     @Transactional(readOnly = true)
     public OperationsVisitSessionView getOperationsSession(Long actorId, Long sessionId) {
-        authorization.requireOperations(actorId);
+        authorization.requireScopedOperationalRead(actorId);
         if (sessionId == null || sessionId <= 0) throw new IllegalArgumentException("Visit Session ID must be positive");
-        VisitSession session = sessions.findById(sessionId)
+        VisitSession session = sessions.findVisibleToStaffById(actorId, sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
         return operationsView(session);
     }

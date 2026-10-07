@@ -350,6 +350,12 @@ class VisitSessionMigrationPostgresTest {
                 assertTrue(jdbc.queryForObject("select reconciliation_required from tenant_visit_entitlement_accounts where user_id=8", Boolean.class));
                 assertEquals(1, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=8", Integer.class));
 
+                // This migration fixture exercises current workers before V49. Add the V49
+                // outbox columns temporarily, then remove them before continuing the migration chain.
+                execute(connection, "ALTER TABLE visit_notification_outbox ADD COLUMN authorization_class "
+                        + "VARCHAR(32) NOT NULL DEFAULT 'STAFF_LEGACY_QUARANTINED'");
+                execute(connection, "ALTER TABLE visit_notification_outbox ADD COLUMN operational_session_id BIGINT");
+
                 VisitEntitlementReservationWorker historicalWorker = new VisitEntitlementReservationWorker(
                         jdbc, entitlementStore, new VisitExecutionProperties());
                 tx.executeWithoutResult(status -> historicalWorker.reserveDueBatch());
@@ -357,6 +363,12 @@ class VisitSessionMigrationPostgresTest {
                 assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=712 AND event_type='RESERVE'"));
                 assertEquals(0, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=713 AND event_type='RESERVE'"));
                 assertEquals(1, jdbc.queryForObject("select reserved_credits from tenant_visit_entitlement_accounts where user_id=6", Integer.class));
+                assertEquals("RECIPIENT", text(connection, "SELECT authorization_class FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_TENANT:712'"));
+                assertEquals("OPERATIONS_SESSION", text(connection, "SELECT authorization_class FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_OE:712:5'"));
+                assertEquals(712L, Long.parseLong(text(connection, "SELECT operational_session_id FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_OE:712:5'")));
                 tx.executeWithoutResult(status -> historicalWorker.reserveDueBatch());
                 assertEquals(1, count(connection, "SELECT count(*) FROM visit_entitlement_ledger WHERE session_id=711 AND event_type='RESERVE'"));
 
@@ -401,6 +413,10 @@ class VisitSessionMigrationPostgresTest {
                 tx.executeWithoutResult(status -> overrunWorker.enqueueDueAlerts());
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_execution_events where session_id=600 and event_type='SILENT_OVERRUN_ALERT'", Integer.class));
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key='SILENT_OVERRUN:600:5'", Integer.class));
+                assertEquals("OPERATIONS_SESSION", text(connection, "SELECT authorization_class FROM visit_notification_outbox "
+                        + "WHERE event_key='SILENT_OVERRUN:600:5'"));
+                assertEquals(600L, Long.parseLong(text(connection, "SELECT operational_session_id FROM visit_notification_outbox "
+                        + "WHERE event_key='SILENT_OVERRUN:600:5'")));
 
                 execute(connection, "INSERT INTO visit_sessions(id,tenant_id,status,version,city,scheduled_at,zone_id,representative_user_id,assigned_at,duration_snapshot_minutes,reserved_end_at) VALUES "
                         + "(702,1,'SCHEDULED',0,'One City',CURRENT_TIMESTAMP+INTERVAL '10 days','UTC',3,CURRENT_TIMESTAMP,30,CURRENT_TIMESTAMP+INTERVAL '10 days 30 minutes'),"
@@ -415,6 +431,15 @@ class VisitSessionMigrationPostgresTest {
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_entitlement_ledger where session_id=702 and event_type='RESERVE'", Integer.class));
                 assertEquals("REPAIR_REQUIRED", text(connection, "SELECT status FROM visit_sessions WHERE id=703"));
                 assertEquals(1, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key='ENTITLEMENT_REPAIR_TENANT:703'", Integer.class));
+                assertEquals("RECIPIENT", text(connection, "SELECT authorization_class FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_TENANT:703'"));
+                assertEquals("OPERATIONS_SESSION", text(connection, "SELECT authorization_class FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_OE:703:5'"));
+                assertEquals(703L, Long.parseLong(text(connection, "SELECT operational_session_id FROM visit_notification_outbox "
+                        + "WHERE event_key='ENTITLEMENT_REPAIR_OE:703:5'")));
+
+                execute(connection, "ALTER TABLE visit_notification_outbox DROP COLUMN operational_session_id");
+                execute(connection, "ALTER TABLE visit_notification_outbox DROP COLUMN authorization_class");
 
                 // V41 preserves pre-migration completion as unknown and snapshots active scope without outcomes.
                 execute(connection, "UPDATE visit_sessions SET status='COMPLETED', completed_at=CURRENT_TIMESTAMP, "

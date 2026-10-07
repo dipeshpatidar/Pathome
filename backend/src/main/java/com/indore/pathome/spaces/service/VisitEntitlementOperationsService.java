@@ -84,7 +84,7 @@ public class VisitEntitlementOperationsService {
         sessions.saveAndFlush(session);
         jdbc.update("insert into visit_execution_events(session_id,actor_user_id,event_type,reason_code,idempotency_key) values (?,?,'VISIT_INTERRUPTED',?,?)",
                 sessionId, actorId, reason, key);
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,'TENANT','VISIT_INTERRUPTED','Visit needs Operations recovery','Operations recorded that your visit was interrupted. Your visit is not marked complete; Pathome will review the next step.') on conflict(event_key) do nothing",
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'TENANT','VISIT_INTERRUPTED','Visit needs Operations recovery','Operations recorded that your visit was interrupted. Your visit is not marked complete; Pathome will review the next step.','RECIPIENT',null) on conflict(event_key) do nothing",
                 key, session.getTenant().getId());
     }
 }

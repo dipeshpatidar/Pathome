@@ -68,7 +68,7 @@ class NotificationSecurityTest {
         SystemNotification created = new SystemNotification(TargetRole.ADMIN, null,
                 "Maintenance notice", "Scheduled maintenance", null, "SYSTEM", "info");
         created.setId(5L);
-        when(notificationService.createNotification(any(), any(), anyString(), anyString(), any(), anyString(), anyString()))
+        when(notificationService.createAdminNotification(any(), any(), anyString(), anyString(), any(), anyString(), anyString()))
                 .thenReturn(created);
 
         mockMvc.perform(post("/api/v1/notifications")

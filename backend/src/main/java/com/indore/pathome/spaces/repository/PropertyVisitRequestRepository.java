@@ -51,8 +51,10 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
             FROM property_visit_requests r
             JOIN listings l ON l.id = r.listing_id
             LEFT JOIN localities loc ON loc.id = l.canonical_locality_id
+            LEFT JOIN visit_sessions s ON s.id = r.session_id
             WHERE (:status IS NULL OR r.status = :status)
               AND (:city IS NULL OR lower(btrim(COALESCE(loc.city, l.city))) = lower(btrim(:city)))
+              AND """ + OperationalVisibilitySql.REQUEST_VISIBLE + """
             ORDER BY CASE r.status
                          WHEN 'RECEIVED' THEN 0
                          WHEN 'COORDINATING' THEN 1
@@ -63,15 +65,17 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
             countQuery = """
             SELECT count(*)
             FROM property_visit_requests r
+            LEFT JOIN visit_sessions s ON s.id = r.session_id
             JOIN listings l ON l.id = r.listing_id
             LEFT JOIN localities loc ON loc.id = l.canonical_locality_id
             WHERE (:status IS NULL OR r.status = :status)
               AND (:city IS NULL OR lower(btrim(COALESCE(loc.city, l.city))) = lower(btrim(:city)))
-            """,
+              AND """ + OperationalVisibilitySql.REQUEST_VISIBLE,
             nativeQuery = true)
-    Page<OperationsQueueRow> findOperationsQueue(@Param("status") String status,
-                                                  @Param("city") String city,
-                                                  Pageable pageable);
+    Page<OperationsQueueRow> findVisibleOperationsQueue(@Param("userId") Long userId,
+                                                         @Param("status") String status,
+                                                         @Param("city") String city,
+                                                         Pageable pageable);
 
     @EntityGraph(attributePaths = "listing")
     Page<PropertyVisitRequest> findByTenantId(Long tenantId, Pageable pageable);

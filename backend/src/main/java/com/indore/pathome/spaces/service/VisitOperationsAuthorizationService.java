@@ -4,6 +4,7 @@ import com.indore.pathome.spaces.entity.EmployeeProfile;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
+import com.indore.pathome.spaces.repository.StaffAccessGrantRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.security.access.AccessDeniedException;
@@ -15,10 +16,21 @@ public class VisitOperationsAuthorizationService {
 
     private final UserRepository users;
     private final EmployeeProfileRepository employees;
+    private final StaffAccessGrantRepository grants;
 
-    public VisitOperationsAuthorizationService(UserRepository users, EmployeeProfileRepository employees) {
+    public VisitOperationsAuthorizationService(UserRepository users, EmployeeProfileRepository employees,
+                                               StaffAccessGrantRepository grants) {
         this.users = users;
         this.employees = employees;
+        this.grants = grants;
+    }
+
+    public void requireScopedOperationalRead(Long authenticatedUserId) {
+        User user = loadAuthenticatedUser(authenticatedUserId);
+        if (!employees.existsByUserIdAndStaffActiveTrue(user.getId())
+                || grants.findEffectiveForUser(user.getId()).isEmpty()) {
+            throw new AccessDeniedException("Current scoped staff authority is required for operational reads");
+        }
     }
 
     public User requireOperations(Long authenticatedUserId) {

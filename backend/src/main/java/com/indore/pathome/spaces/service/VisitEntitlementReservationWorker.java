@@ -43,13 +43,14 @@ public class VisitEntitlementReservationWorker {
                 operationId, Timestamp.from(now), Timestamp.from(now), booking.sessionId());
         jdbc.update("insert into visit_execution_events(session_id,event_type,reason_code,idempotency_key) values (?,'REPAIR_REQUIRED','ENTITLEMENT_UNAVAILABLE','ENTITLEMENT_REPAIR:'||?) on conflict(idempotency_key) do nothing",
                 booking.sessionId(), booking.sessionId());
-        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,'TENANT','VISIT_REPAIR_REQUIRED','Visit needs a new confirmation','Your visit is entering the free-visit confirmation window, but a credit could not be reserved. Operations is reviewing the booking and will contact you before the visit.') on conflict(event_key) do nothing",
+        jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'TENANT','VISIT_REPAIR_REQUIRED','Visit needs a new confirmation','Your visit is entering the free-visit confirmation window, but a credit could not be reserved. Operations is reviewing the booking and will contact you before the visit.','RECIPIENT',null) on conflict(event_key) do nothing",
                 "ENTITLEMENT_REPAIR_TENANT:" + booking.sessionId(), booking.tenantId());
         List<Long> operationsUsers = jdbc.query("select u.id from users u left join employee_profiles ep on ep.user_id=u.id where u.role='ROLE_ADMIN' or upper(coalesce(ep.role_type,''))='WFH_ADMIN' order by u.id limit 100",
                 (rs, row) -> rs.getLong(1));
         for (Long operationsUser : operationsUsers) {
-            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message) values (?,?,'EMPLOYEE','VISIT_REPAIR_REQUIRED','Visit entitlement needs review','Visit Session '||?||' has no available credit hold inside the reservation horizon and needs a safe Operations outcome.') on conflict(event_key) do nothing",
-                    "ENTITLEMENT_REPAIR_OE:" + booking.sessionId() + ":" + operationsUser, operationsUser, booking.sessionId());
+            jdbc.update("insert into visit_notification_outbox(event_key,recipient_user_id,recipient_role,event_type,title,message,authorization_class,operational_session_id) values (?,?,'EMPLOYEE','VISIT_REPAIR_REQUIRED','Visit entitlement needs review','Visit Session '||?||' has no available credit hold inside the reservation horizon and needs a safe Operations outcome.','OPERATIONS_SESSION',?) on conflict(event_key) do nothing",
+                    "ENTITLEMENT_REPAIR_OE:" + booking.sessionId() + ":" + operationsUser, operationsUser,
+                    booking.sessionId(), booking.sessionId());
         }
     }
 
