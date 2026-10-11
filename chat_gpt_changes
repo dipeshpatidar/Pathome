@@ -3416,6 +3416,127 @@ Outstanding:
 
 Commit: none. Push: none. Main unchanged.
 
+--------------------------------------------------------------------------------
+2026-10-11 18:34 IST — Phase 2A A1a: secure lessor-contact read seam (backend only)
+
+Request: implement and verify the already-approved Phase 2A A1a backend lessor-contact capability on
+branch feature/phase2a-oe-workspace (initial HEAD a3886976, clean worktree). No architecture reopening,
+no commit/push.
+
+Added (production, new files only; no existing file modified):
+- backend/src/main/java/com/indore/pathome/spaces/dto/OperationsLessorContactStatus.java
+- backend/src/main/java/com/indore/pathome/spaces/dto/OperationsLessorContactView.java
+  Exactly four fields (listingId, name, mobile, status) with CONTACT_AVAILABLE / CONTACT_UNAVAILABLE.
+- backend/src/main/java/com/indore/pathome/spaces/service/OperationsLessorContactResolver.java
+  Pure, fail-closed resolver keyed only on Listing.lessorProfileId -> LessorProfile. Self-service
+  requires ownerUserId == profile.linkedUserId; internally sourced requires an unlinked non-SELF_SERVICE
+  profile. Legacy owner name/phone and User fields are never a contact source. Reuses
+  LandlordContactService genuine-name / Indian-mobile validation and canonical normalization.
+- backend/src/main/java/com/indore/pathome/spaces/service/OperationsLessorContactService.java
+  Writable @Transactional reveal: coarse 403 eligibility (no usable OPS_COORDINATE@TEAM), locks the
+  authoritative Request/Session root, then City/Team/EmployeeProfile/grant guards in the frozen
+  OperationalOwnershipService order, re-checks fresh authorization and ownership/status/item-liveness
+  as 404, resolves the profile, records the synchronous audit event, commits before PII is returned.
+- backend/src/main/java/com/indore/pathome/spaces/controller/OperationsLessorContactController.java
+  GET /api/v1/operations/visit-requests/{requestId}/lessor-contact and
+  GET /api/v1/operations/visit-sessions/{sessionId}/items/{itemId}/lessor-contact, Cache-Control
+  no-store set on the response before work runs (covers success and error responses).
+
+Added (tests only):
+- OperationsLessorContactResolverTest (9 unit tests) and OperationsLessorContactHttpPostgresTest
+  (5 real-PostgreSQL HTTP/authorization/audit/concurrency tests).
+
+Audit: LESSOR_CONTACT_REVEALED / COORDINATION_CONTACT targeting PROPERTY_VISIT_REQUEST or
+VISIT_SESSION_ITEM, actor = authenticated User, scope = root City/Team, empty details map. No schema,
+migration, index, DTO-contract, permission, dependency or config change.
+
+Evidence:
+- `mvn -o -Dtest=OperationsLessorContactResolverTest test` — 9/9 pass.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -Dtest=OperationsLessorContactHttpPostgresTest test`
+  against real PostgreSQL — 5/5 pass (ownership/privacy/400/401/403/404, fail-closed resolution, all
+  approved vs denied Session statuses, item liveness, two-lessor isolation, audit content and
+  audit-failure-withholds-PII, and a deterministic lock-serialization test where an ownership transfer
+  is provably blocked while a live reveal holds the Session root lock).
+- Regression: `OperationsMyWorkHttpPostgresTest` 7/7, `ClaimableWorkHttpPostgresTest` 2/2,
+  `VisitOperationsPostgresIntegrationTest` 81/81, `VisitOperationsControllerIdentityTest` 2/2,
+  `TenantVisitRequestSecurityTest` 3/3 all pass.
+- Legacy coverage diagnostic (read-only, counts only): 5 visit-linked listings, 0 trusted usable,
+  5 missing profile association, 0 missing profile row, 0 unresolved provenance, 0 invalid contact.
+
+Outstanding / NOT TESTED:
+- `PublicPropertySecurityTest` fails 10 errors with a pre-existing `@WebMvcTest` slice context error
+  (no @MockBean for PropertyController's TrustedOperationalIntakeService). Unrelated to A1a; no existing
+  file was modified in this pass. Login/UI NOT TESTED (backend-only; browser pass intentionally skipped).
+
+Commit: none. Push: none. Left as an inspectable uncommitted diff on feature/phase2a-oe-workspace.
+
+--------------------------------------------------------------------------------
+2026-10-11 19:20 IST — Phase 2A A1a: concurrency verification closure (test-only)
+
+Request: close the exact verification gaps from the independent Sol A1a security review
+(A1a CONDITIONAL PASS — specific verification gaps) on feature/phase2a-oe-workspace at HEAD a3886976.
+Test-only: no production, contract, migration, schema, index, dependency or configuration change.
+
+Preflight: root /Users/dipeshpatidar/Documents/Pathome-tenant-ui-v0, branch feature/phase2a-oe-workspace,
+HEAD a3886976d2b1a78c1fb2fbaacd5a5db1ff6377cd, AGENTS.md present; the seven untracked A1a files and the
+existing chat_gpt_changes modification preserved. No reset, stash, stage, commit, push or branch switch.
+
+Changed (test only):
+- backend/src/test/java/com/indore/pathome/spaces/service/OperationsLessorContactHttpPostgresTest.java
+  Added eight deterministic concurrency tests plus one unauthenticated caching-header test, using real
+  production commands, real independent PostgreSQL transactions, latch/barrier ordering, bounded waits
+  and exact before/after assertions. New helpers: exact-status privacy-safe denial, version/clock reads,
+  an independent-connection Request->Session linkage, and a FOR UPDATE grant-row lock holder. The five
+  pre-existing A1a HTTP tests are unchanged and no existing assertion was weakened.
+
+Scenarios proven (real PostgreSQL 14.14, disposable schema):
+1. Grant revocation vs reveal - real StaffAdministrationService.revokeGrant blocks behind the reveal's
+   City/Team/staff/grant guards; after it commits the reveal is 403 with no PII and no extra audit row.
+2. EmployeeProfile deactivation vs reveal - real deactivateStaff blocks, then the reveal is 403 and
+   staff_active is false.
+3. Team deactivation vs reveal - real deactivateTeam blocks; after the reveal commits it is refused by
+   the drain guard (VisitOperationsConflictException); a Team retired while idle makes the reveal a fresh
+   active-Team 404 (coarse eligibility preserved by a second active-Team grant).
+4. City deactivation vs reveal - real deactivateCity blocks and the live-City attempt is refused; a City
+   retired through the real command chain (Team then City) makes the reveal a fresh active-City 404 with
+   the Team row re-activated so the City is the sole failing condition.
+5. Request->Session linkage vs reveal - the linkage commits only after the reveal's Request-root lock
+   releases; once it wins the standalone Request route is 404 and adds no audit row.
+6. Session item removal vs reveal - real removeItem blocks behind the Session root lock; once removal
+   wins that item is 404.
+7. Ownership-service transfer vs reveal - real OperationalOwnershipService.assignCoordinator blocks on
+   the Session root lock; after commit the former owner is 404 and the successor 200.
+8. Grant expiry - coarse eligibility passes while the grant is valid, the reveal parks on the grant row
+   lock, the authoritative database clock passes expires_at, and the fresh check then denies 404; a
+   control run with a non-expiring grant returns 200.
+Security header: unauthenticated GET on both A1a routes returns 401 with Cache-Control containing
+no-store (Spring Security default headers); no production security-header change was required.
+
+Evidence (exact commands):
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -Dtest=OperationsLessorContactHttpPostgresTest test`
+  — Tests run: 14, Failures: 0, Errors: 0, Skipped: 0; BUILD SUCCESS (16.8 s). Log /private/tmp/a1a_http_postgres2.log.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -Dtest=OperationsLessorContactResolverTest,VisitOperationsServiceTest,OperationsMyWorkHttpPostgresTest,ClaimableWorkHttpPostgresTest,VisitOperationsPostgresIntegrationTest test`
+  — Tests run: 126, Failures: 0, Errors: 0, Skipped: 0; BUILD SUCCESS (9 / 27 / 7 / 2 / 81). Log /private/tmp/a1a_regression.log.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -Dtest=StaffAccessGovernancePostgresTest test`
+  — passed; BUILD SUCCESS. Log /private/tmp/a1a_staff_gov.log.
+- `mvn -o -DskipTests test-compile` — BUILD SUCCESS. `git diff --check` — clean.
+
+Unchanged contract evidence: no production file was modified; the frozen A1a contract (linked
+LessorProfile-only resolution, no legacy/User/owner phone fallback, current-owned standalone RECEIVED
+Request, current-owned DRAFT/SCHEDULED/STARTED/INTERRUPTED Session, all other Session-status
+restrictions, exact City/Team/staff/grant checks, root-then-guard lock order, synchronous PII-free
+audit, four-field response DTO, 401/403/404 semantics) still holds and is re-asserted by the suite.
+
+Outstanding / NOT TESTED:
+- PublicPropertySecurityTest still fails 10/10 with the pre-existing @WebMvcTest slice error
+  (propertyController -> TrustedOperationalIntakeService bean missing). Reproduced here, unrelated to
+  A1a, left untouched. Log /private/tmp/a1a_public_property.log.
+- Contact-data readiness unchanged and reported separately: five distinct local visit-linked listings,
+  zero canonical lessor_profile_id links; no dummy phone, stale legacy value or repair migration used.
+- Physical-device and browser UI checks NOT TESTED (backend-only verification).
+
+Commit: none. Push: none. Left as an inspectable uncommitted diff on feature/phase2a-oe-workspace.
+
 ## 2026-10-11 15:48 IST — Phase 2A-1 F1 transaction-safety correction (nested detail read)
 
 Reason: Close the remaining HIGH-severity F1 blocker on `feature/phase2a-oe-workspace`: the scoped
@@ -3459,5 +3580,69 @@ Outstanding:
 - Browser/UI verification NOT TESTED and not required (backend-only, no frontend change). Dedicated
   parser startup gate NOT TESTED (unrelated module).
 - No migration, index, entity, dependency, permission, or API-contract change.
+
+Commit: none. Push: none. Main unchanged.
+
+## 2026-10-11 19:47 IST — Phase 2A A1a final two test-evidence fixes
+
+Reason: Close the final Sol conditional security-review findings on the Phase 2A A1a secure lessor-contact
+seam — (1) repair the retired-City negative so its 404 is meaningful, and (2) replace timing-only concurrency
+evidence with real PostgreSQL lock-wait evidence.
+
+Changed (test-only): `backend/src/test/java/com/indore/pathome/spaces/service/OperationsLessorContactHttpPostgresTest.java`.
+- `cityDeactivationSerializesAndFreshActiveCityCheckFailsClosed`: the retired-City negative now uses a
+  coordinator holding a current `OPS_COORDINATE@TEAM` grant for the exact target Team and owning the target
+  standalone Request. A positive control proves retrieval returns 200 (name/mobile plus exactly one reveal
+  audit row) while the City and Team are active. The City is then retired through the real command chain
+  (`deactivateTeam` then `deactivateCity`, respecting the operational drain guards). Because the drain guard
+  refuses to retire scope that still holds nonterminal work, the Request status was recorded terminal as a
+  clearly-labelled historical/idle-work fixture before retirement; afterwards the Team row was re-activated (a
+  state the production chain cannot produce, since City deactivation requires every Team inactive) and the
+  Request restored to RECEIVED, so the inactive City is the sole failing predicate. Assertions pin City
+  inactive, Team active, Team still belonging to the retired City, the exact Team grant still
+  current/unrevoked and staff still active, then require a privacy-safe 404 with no new audit row, plus a
+  separate active control City/Team that still returns 200.
+- Added deterministic PostgreSQL blocking evidence for every A1a race. New helpers capture the parked
+  reveal's backend pid from `pg_stat_activity` (`idle in transaction`) and poll (bounded 15s at 25ms, no fixed
+  sleeps) until `pg_blocking_pids` reports the competing backend waiting on a `Lock`, then assert the blocked
+  statement targets the expected relation and record the observation. Every `assertFalse(done.await(700ms))`
+  and `Thread.sleep(500)`/`assertNull` evidence was replaced in
+  `contactRevealSerializesWithConcurrentOwnershipTransfer`,
+  `requestSessionLinkageSerializesWithStandaloneRequestReveal`,
+  `sessionItemRemovalSerializesWithItemContactReveal`,
+  `grantRevocationSerializesWithStandaloneRequestReveal`,
+  `staffDeactivationSerializesWithStandaloneRequestReveal`,
+  `teamDeactivationSerializesAndFreshActiveTeamCheckFailsClosed`,
+  `cityDeactivationSerializesAndFreshActiveCityCheckFailsClosed`,
+  `operationalOwnershipServiceTransferSerializesWithItemContactReveal`, and the grant-expiry control/expiry
+  cases. A `MutationTrace` records worker start, transaction entry, conflicting statement and completion for
+  explicit stage proof; raw-JDBC competing connections report their own backend pid, asserted equal to the
+  blocked pid. `resetBarriers` now releases a barrier a failed assertion left parked so no transaction leaks
+  between tests. Production transaction paths (`revokeGrant`, `deactivateStaff`, `deactivateTeam`,
+  `deactivateCity`, `assignCoordinator`, `removeItem`) are unchanged and still exercised.
+
+Evidence (observations of the live suite, no sensitive data):
+- competing backend 91006 blocked by reveal backend 91004 running `select ... from supported_cities ... for no
+  key update` — Team deactivation, City deactivation race, grant revocation, staff deactivation.
+- competing backend 91006 blocked by 91004 running `select ... from visit_sessions ... for no key update` —
+  item removal, ownership-service transfer.
+- competing backend 91028 blocked by 91004 running `update property_visit_requests set session_id = $1 ...` —
+  Request->Session linkage.
+- competing backend 91032 blocked by 91004 running `update visit_sessions set coordinator_user_id = $1 ...` —
+  raw ownership transfer.
+- reveal backend 91004 blocked by raw holder backends 91030/91031 running `select ... from staff_access_grants
+  ... for no key update` — grant-expiry control and expiry.
+
+Verification: `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -f backend/pom.xml
+-Dtest=OperationsLessorContactHttpPostgresTest,OperationsLessorContactResolverTest test` — 23/23 pass (14
+HTTP/PostgreSQL A1a + 9 resolver), three consecutive runs all green.
+`PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -f backend/pom.xml
+-Dtest=StaffAccessGovernancePostgresTest,OperationalOwnershipControllerTest test` — 4/4 pass.
+`mvn -q -f backend/pom.xml -DskipTests test-compile` passed. `git diff --check` and `git diff --cached --check`
+clean; the A1a files are untracked, so the diff was reviewed directly.
+
+Outstanding: browser/UI NOT TESTED (backend-only, no frontend change). No production Java, schema, migration,
+API/DTO, capability, dependency, or frontend change; no known remaining gap. Tracker: DEP-012, DEP-034, DEP-051
+and the A1a approval gate are advanced by this evidence but not closed here.
 
 Commit: none. Push: none. Main unchanged.
