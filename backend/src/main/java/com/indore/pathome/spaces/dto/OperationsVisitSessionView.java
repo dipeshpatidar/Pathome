@@ -18,4 +18,12 @@ public record OperationsVisitSessionView(
         Long representativeUserId,
         Instant assignedAt,
         List<VisitSessionItemView> items,
-        List<LinkedRequestVersion> linkedRequestVersions) {}
+        List<LinkedRequestVersion> linkedRequestVersions,
+        Long teamId,
+        String teamDisplayName,
+        Long coordinatorUserId,
+        Instant updatedAt,
+        String tenantConfirmationState,
+        Instant startedAt,
+        Instant expiresAt,
+        Instant executionStateChangedAt) {}

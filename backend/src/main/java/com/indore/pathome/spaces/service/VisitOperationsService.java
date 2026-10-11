@@ -13,6 +13,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.context.ApplicationEventPublisher;
 
@@ -255,15 +257,31 @@ public class VisitOperationsService {
         return requestItem(request);
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Scoped Session detail.
+     *
+     * Authorization and the returned row are taken from one scoped statement, and the whole read
+     * runs inside a single repeatable-read snapshot, so a concurrent ownership transfer can never
+     * hand a previously authorized caller data it is no longer entitled to see. The version tokens
+     * are re-checked against the authorized row's version before they are returned.
+     *
+     * <p>REQUIRES_NEW is required, not incidental: when this entry point is reached from a caller
+     * that already owns a transaction, REQUIRED would join that transaction and PostgreSQL would
+     * silently keep the caller's isolation level, so the authorization statement, the authoritative
+     * row, the ownership/version tokens and the item and locality reads could be served from
+     * different snapshots.
+     */
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW,
+            isolation = Isolation.REPEATABLE_READ)
     public OperationsVisitSessionView getOperationsSession(Long actorId, Long sessionId) {
         authorization.requireScopedOperationalRead(actorId);
         if (sessionId == null || sessionId <= 0) throw new IllegalArgumentException("Visit Session ID must be positive");
-        VisitSessionRepository.OwnershipVersionSnapshotRow snapshot =
-                sessions.findVisibleOwnershipVersionSnapshotById(actorId, sessionId)
-                        .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
-        VisitSession session = sessions.findById(sessionId)
+        VisitSession session = sessions.findVisibleToStaffById(actorId, sessionId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
+        VisitSessionRepository.OwnershipVersionSnapshotRow snapshot =
+                sessions.findOwnershipVersionSnapshotById(session.getId())
+                        .filter(row -> Objects.equals(row.getVersion(), session.getVersion()))
+                        .orElseThrow(() -> new EntityNotFoundException("Visit Session not found"));
         return operationsView(session, snapshot);
     }
 
@@ -886,7 +904,12 @@ public class VisitOperationsService {
                 session.getCity(), session.getAreaName(), session.getScheduledAt(), session.getReservedEndAt(),
                 session.getDurationSnapshotMinutes(), session.getZoneId(),
                 session.getRepresentative() == null ? null : session.getRepresentative().getId(),
-                session.getAssignedAt(), itemViews, linkedRequestVersions(ownershipSnapshot.getLinkedRequestVersions()));
+                session.getAssignedAt(), itemViews, linkedRequestVersions(ownershipSnapshot.getLinkedRequestVersions()),
+                session.getOperatingTeam() == null ? null : session.getOperatingTeam().getId(),
+                session.getOperatingTeam() == null ? null : session.getOperatingTeam().getDisplayName(),
+                session.getCoordinator() == null ? null : session.getCoordinator().getId(),
+                session.getUpdatedAt(), session.getTenantConfirmationState(), session.getStartedAt(),
+                session.getExpiresAt(), session.getExecutionStateChangedAt());
     }
 
     private List<LinkedRequestVersion> linkedRequestVersions(String json) {

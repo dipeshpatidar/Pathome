@@ -61,6 +61,39 @@ class VisitOperationsServiceTest {
         when(authorization.requireGroundExecutiveTarget(anyLong())).thenAnswer(invocation -> user(invocation.getArgument(0), Role.ROLE_GROUND_BOY));
         VisitPolicy policy = new VisitPolicy();
         when(visitPolicies.findById(VisitPolicy.SINGLETON_ID)).thenReturn(Optional.of(policy));
+        stubOwnershipVersionSnapshot(0L);
+    }
+
+    /**
+     * Every operations Session view is rendered from the authoritative ownership/version snapshot,
+     * so production always reads it. The version is a scenario fact rather than a constant: a
+     * Session that has never been mutated is at {@code 0L} (the {@code @Version} initial value),
+     * while a Session that has already advanced must be stubbed with its real version so that the
+     * mocked authoritative row matches the scenario it stands for.
+     */
+    private void stubOwnershipVersionSnapshot(long version) {
+        stubOwnershipVersionSnapshot(version, "[]");
+    }
+
+    /** Stubs the snapshot with the ordered linked-Request version tokens the scenario actually has. */
+    private void stubOwnershipVersionSnapshot(long version, String linkedRequestVersionsJson) {
+        when(sessions.findOwnershipVersionSnapshotById(anyLong()))
+                .thenReturn(Optional.of(snapshotRow(version, linkedRequestVersionsJson)));
+    }
+
+    private static VisitSessionRepository.OwnershipVersionSnapshotRow snapshotRow(
+            long version, String linkedRequestVersionsJson) {
+        return new VisitSessionRepository.OwnershipVersionSnapshotRow() {
+            @Override
+            public Long getVersion() {
+                return version;
+            }
+
+            @Override
+            public String getLinkedRequestVersions() {
+                return linkedRequestVersionsJson;
+            }
+        };
     }
 
     @Test
@@ -116,11 +149,14 @@ class VisitOperationsServiceTest {
         when(requests.findLockedById(11L)).thenReturn(Optional.of(request));
         when(sessions.findById(500L)).thenReturn(Optional.of(session));
         when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of());
+        // This Session has already advanced to version 2, so its authoritative snapshot does too.
+        stubOwnershipVersionSnapshot(2L);
 
         OperationsVisitSessionView result = service.coordinateRequest(9L, 11L,
                 new CoordinateVisitRequestCommand(0L, null, null));
 
         assertEquals(500L, result.sessionId());
+        assertEquals(2L, result.version());
         verify(sessions, never()).save(any());
         verify(items, never()).saveAndFlush(any());
     }
@@ -164,6 +200,38 @@ class VisitOperationsServiceTest {
     }
 
     @Test
+    void scopedDetailSurfacesTheAuthoritativeVersionTokenAndLinkedRequestVersions() {
+        doNothing().when(authorization).requireScopedOperationalRead(8L);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 5L);
+        when(sessions.findVisibleToStaffById(8L, 500L)).thenReturn(Optional.of(session));
+        stubOwnershipVersionSnapshot(5L, "[{\"requestId\":11,\"version\":3}]");
+        when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of());
+
+        OperationsVisitSessionView view = service.getOperationsSession(8L, 500L);
+
+        assertEquals(5L, view.version());
+        assertEquals(List.of(new LinkedRequestVersion(11L, 3L)), view.linkedRequestVersions());
+    }
+
+    @Test
+    void scopedDetailRejectsASnapshotVersionThatDisagreesWithTheAuthoritativeRow() {
+        doNothing().when(authorization).requireScopedOperationalRead(8L);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 5L);
+        when(sessions.findVisibleToStaffById(8L, 500L)).thenReturn(Optional.of(session));
+        when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of());
+
+        // A snapshot read at the authoritative version is accepted and rendered as current...
+        stubOwnershipVersionSnapshot(5L);
+        assertEquals(5L, service.getOperationsSession(8L, 500L).version());
+
+        // ...but a snapshot left behind at an older version must never be returned as current, and
+        // the rejected read must not touch Session item data.
+        stubOwnershipVersionSnapshot(4L);
+        assertThrows(EntityNotFoundException.class, () -> service.getOperationsSession(8L, 500L));
+        verify(items, times(1)).findBySessionIdOrderByPositionAsc(500L);
+    }
+
+    @Test
     void nearbyItemsCarryEitherApprovedDerivedOriginAndRejectMixedCity() {
         for (VisitSessionItemOrigin origin : List.of(VisitSessionItemOrigin.OE_ADDED,
                 VisitSessionItemOrigin.LESSOR_SUGGESTED)) {
@@ -192,6 +260,7 @@ class VisitOperationsServiceTest {
             assertEquals(origin, created.get().getOrigin());
             reset(sessions, requests, listings, items);
             when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
+            stubOwnershipVersionSnapshot(0L);
         }
 
         VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);

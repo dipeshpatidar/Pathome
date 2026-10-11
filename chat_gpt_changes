@@ -3387,3 +3387,77 @@ Verification:
 - No migration, entity, index, normal visibility, notification, or UI changes. Browser testing not required.
 
 Outstanding: None for this bounded correction. Commit: none. Push: none. Main unchanged.
+
+## 2026-10-11 15:42 IST — Phase 2A-1 Operations My Work read foundation (backend slice) verification
+
+Reason: Complete and truthfully verify the uncommitted Phase 2A-1 coordinator "My Work" read foundation on `feature/phase2a-oe-workspace` — coordinator-owned root discovery, scoped standalone Request detail, the additive Session-detail coordination fields, and the Session-detail read correction that prevents a committed ownership transfer from being served to a formerly authorized coordinator — and restore the affected-module unit suite to green before reporting.
+
+Changed in this pass:
+- `backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsServiceTest.java` (test-only). Added the default authoritative ownership/version snapshot stub that every operations Session view is now rendered from, and re-applied it after the existing in-test `reset(sessions, requests, listings, items)` inside the nearby-item loop. No production behavior, contract, or assertion was changed.
+- `chat_gpt_changes`.
+
+Verified unchanged (uncommitted slice present before this pass; not authored here):
+- Added `backend/src/main/java/com/indore/pathome/spaces/controller/OperationsMyWorkController.java`; `dto/OperationsMyWorkItem.java`, `OperationsMyWorkPage.java`, `OperationsRootType.java`, `OperationsStandaloneRequestDetailView.java`; `repository/OperationsMyWorkRepository.java`; `service/OperationsMyWorkService.java`; `backend/src/test/java/com/indore/pathome/spaces/service/OperationsMyWorkHttpPostgresTest.java`.
+- Modified `backend/src/main/java/com/indore/pathome/spaces/dto/OperationsVisitSessionView.java` (additive coordination fields: team identity, coordinator, updated/started/expires/execution-state timestamps, tenant confirmation state) and `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java` (scoped Session detail now resolves the authorized row and the version token from one repeatable-read snapshot instead of a scoped snapshot read followed by an unrestricted by-id read).
+
+Outcome: `GET /api/v1/operations/my-work` and `GET /api/v1/operations/visit-requests/{requestId}` resolve coordinator-owned REQUEST/SESSION roots, totals, pagination and ownership entirely inside PostgreSQL in one statement per request; a caller with no current usable OPS_COORDINATE Team is 403 while a specific non-owned target is 404 so existence never leaks. Linked Requests collapse into their Session root and surface only as ordered version tokens. All responses are `Cache-Control: no-store`. The Session-detail read cannot hand a previously authorized coordinator data it is no longer entitled to, and its version tokens always belong to the same snapshot as the authorized row.
+
+Verification:
+- `mvn -q -f backend/pom.xml -Dtest=VisitOperationsServiceTest test` — passed 25/25 after the test-only repair (zero failures/errors/skips).
+- HEAD reproduction, read-only: `git archive HEAD backend` into `/tmp/pathome-head`, then `mvn -q -f /tmp/pathome-head/backend/pom.xml -Dtest=VisitOperationsServiceTest test` — failed with 12 errors and 1 failure, proving the class was already red at committed HEAD `165a97c` and that the uncommitted production correction already resolved the scoped-query failure.
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -f backend/pom.xml -Dtest=OperationsMyWorkHttpPostgresTest,VisitOperationsPostgresIntegrationTest,VisitOperationsQueuePostgresTest test` — passed 7, 81, and 8 tests respectively; zero failures/errors/skips. Real Spring/Tomcat HTTP against PostgreSQL 14.14 with a disposable schema migrated V1→V49, covering owner scoping, collapsed roots, truthful needs-attention filtering, pagination bounds and validation (403/404/400), scoped Request detail privacy, additive Session-detail coordination fields, immediate post-transfer access revocation, and deterministic committed-transfer interleaving through a test-only repository proxy (production code is unaware of the seam).
+- `mvn -q -f backend/pom.xml -DskipTests test-compile` — passed.
+- `git diff --check` and `git diff --cached --check` — passed; untracked new sources were also checked for trailing whitespace with no matches.
+
+Outstanding:
+- `VisitSessionRepository.findVisibleOwnershipVersionSnapshotById` now has no callers after the Session-detail read change. Left in place deliberately: deleting a committed repository method is unrelated cleanup beyond this slice and would expand the diff without changing behavior.
+- Browser/UI verification NOT TESTED and not required: this slice is backend-only and ships no frontend, layout, copy, or navigation change.
+- No migration, entity, index, dependency, permission, or API-removal change was made; `EXPLAIN (ANALYZE, BUFFERS)` was not run because no new index is proposed and the queries scope before counting/paginating.
+
+Commit: none. Push: none. Main unchanged.
+
+## 2026-10-11 15:48 IST — Phase 2A-1 F1 transaction-safety correction (nested detail read)
+
+Reason: Close the remaining HIGH-severity F1 blocker on `feature/phase2a-oe-workspace`: the scoped
+Operations Session detail read requested `REPEATABLE_READ` but used Spring's default
+`Propagation.REQUIRED`, so a caller that already owned a transaction silently downgraded the read to
+the caller's isolation and the detail operation lost its single-snapshot guarantee.
+
+Changed in this pass:
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java` (production).
+  `getOperationsSession` is now `@Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW,
+  isolation = Isolation.REPEATABLE_READ)` with the `Propagation` import and clarifying Javadoc. No
+  other behavior, query, authorization rule, response field, lock or ownership semantics changed.
+- Added `backend/src/test/java/com/indore/pathome/spaces/service/OperationsSessionNestedTransactionIsolationPostgresTest.java`
+  (test-only, 2 tests): real PostgreSQL, real Spring transactional proxy, a real outer READ_COMMITTED
+  transaction, a real ownership transfer committed from a separate connection at a deterministic point
+  inside the operation, and isolation read from the operation's own persistence context and connection.
+- `chat_gpt_changes`.
+
+Evidence:
+- Negative control at the pre-correction `Propagation.REQUIRED`: the new class failed with
+  `expected: <repeatable read> but was: <read committed>` (probe inside the detail operation) and
+  `EntityNotFoundException: Visit Session not found` (the version guard rejecting the drifted snapshot
+  mid-response). Log: /private/tmp/nested_isolation_before.log
+- After the correction: same class passes 2/2, both the persistence-context probe and the JDBC probe of
+  the detail operation report `repeatable read` while the caller's transaction still reports
+  `read committed` before and after the nested call. Log: /private/tmp/nested_isolation_after.log
+- Batch `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -f backend/pom.xml -Dtest=OperationsSessionNestedTransactionIsolationPostgresTest,OperationsMyWorkHttpPostgresTest,VisitOperationsQueuePostgresTest,VisitOperationsServiceTest,VisitOperationsPostgresIntegrationTest test`
+  — Tests run: 123, Failures: 0, Errors: 0, Skipped: 0, BUILD SUCCESS (2 / 7 / 8 / 25 / 81 per class),
+  including the pre-existing direct HTTP F1 concurrency regressions and real HTTP 200/403/404 detail
+  semantics. Log: /private/tmp/f1_verification_batch.log
+- `mvn -q -f backend/pom.xml -DskipTests test-compile` passed; `git diff --check` and
+  `git diff --cached --check` clean.
+
+Outstanding:
+- The twelve `VisitOperationsServiceTest` errors were repaired earlier in this same uncommitted pass by
+  a delegated agent (test-only snapshot stub in `VisitOperationsServiceTest.java`), with a committed-HEAD
+  reproduction proving the class was already red at `165a97c`. That repair is outside the F1 brief's
+  authorized scope and is left in place for explicit review rather than reverted.
+- `VisitSessionRepository.findVisibleOwnershipVersionSnapshotById` has no remaining callers after the
+  earlier scoped-read correction; removal is unrelated cleanup and was not performed.
+- Browser/UI verification NOT TESTED and not required (backend-only, no frontend change). Dedicated
+  parser startup gate NOT TESTED (unrelated module).
+- No migration, index, entity, dependency, permission, or API-contract change.
+
+Commit: none. Push: none. Main unchanged.
