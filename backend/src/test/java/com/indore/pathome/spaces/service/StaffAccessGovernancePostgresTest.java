@@ -103,6 +103,7 @@ import org.mockito.InOrder;
 @Import({StaffAccessService.class, StaffAdministrationService.class, StaffAdminBootstrapService.class,
         OperationalAuditService.class, DatabaseClock.class, StaffGovernanceLock.class,
         OperationalSecurityGuards.class, VisitOperationsAuthorizationService.class,
+        OwnedOperationsAuthorizationService.class,
         OperationalOwnershipService.class, TrustedOperationalIntakeService.class, VisitOperationsService.class,
         VisitRepairOperationsService.class,
         StaffAccessGovernancePostgresTest.TestBeans.class})

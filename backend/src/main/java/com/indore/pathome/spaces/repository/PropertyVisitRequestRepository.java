@@ -27,6 +27,15 @@ public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVi
     @Query("select r from PropertyVisitRequest r where r.id = :id and r.tenant.id = :tenantId")
     Optional<PropertyVisitRequest> findLockedByIdAndTenantId(@Param("id") Long id, @Param("tenantId") Long tenantId);
 
+    /**
+     * Session-scoped locked lookup. The owning Session is part of the database predicate rather than a
+     * post-fetch membership test, so a Request linked to another Session is never locked, never read
+     * and cannot be distinguished from a Request that does not exist.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from PropertyVisitRequest r where r.id = :id and r.session.id = :sessionId")
+    Optional<PropertyVisitRequest> findLockedByIdAndSessionId(@Param("id") Long id, @Param("sessionId") Long sessionId);
+
     List<PropertyVisitRequest> findBySessionIdOrderByCreatedAtAscIdAsc(Long sessionId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

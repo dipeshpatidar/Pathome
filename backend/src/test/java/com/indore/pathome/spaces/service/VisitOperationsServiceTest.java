@@ -30,6 +30,7 @@ class VisitOperationsServiceTest {
     private ListingRepository listings;
     private LocalityRepository localities;
     private VisitOperationsAuthorizationService authorization;
+    private OwnedOperationsAuthorizationService ownedAuthorization;
     private ApplicationEventPublisher events;
     private EntityManager entityManager;
     private VisitSchedulingRecommendationService recommendations;
@@ -47,6 +48,7 @@ class VisitOperationsServiceTest {
         listings = mock(ListingRepository.class);
         localities = mock(LocalityRepository.class);
         authorization = mock(VisitOperationsAuthorizationService.class);
+        ownedAuthorization = mock(OwnedOperationsAuthorizationService.class);
         events = mock(ApplicationEventPublisher.class);
         entityManager = mock(EntityManager.class);
         recommendations = mock(VisitSchedulingRecommendationService.class);
@@ -54,7 +56,10 @@ class VisitOperationsServiceTest {
         operationalGuards = mock(OperationalSecurityGuards.class);
         OperationalAuditService operationalAudit = mock(OperationalAuditService.class);
         service = new VisitOperationsService(requests, sessions, users, visitPolicies, items, listings, localities,
-                authorization, events, entityManager, recommendations, decisions, operationalGuards, operationalAudit);
+                authorization, ownedAuthorization, events, entityManager, recommendations, decisions,
+                operationalGuards, operationalAudit);
+        when(ownedAuthorization.admit(9L))
+                .thenAnswer(invocation -> new OwnedOperationsAuthorizationService.Actor(user(9L, Role.ROLE_ADMIN), true));
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
         when(users.findLockedById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
         when(users.findById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
@@ -131,7 +136,8 @@ class VisitOperationsServiceTest {
         assertEquals(VisitSessionItemOrigin.TENANT_REQUESTED, created.get().getOrigin());
         verify(sessions, times(1)).save(any(VisitSession.class));
         verify(operationalGuards).acquire(List.of(), List.of(), List.of(9L));
-        verify(authorization, times(2)).requireOperations(9L);
+        // Admin authority is admitted once, then re-established under the operational scope locks.
+        verify(authorization, times(1)).requireOperations(9L);
         InOrder linkAuthorization = inOrder(requests, operationalGuards, authorization);
         linkAuthorization.verify(requests).findLockedById(11L);
         linkAuthorization.verify(operationalGuards).acquire(List.of(), List.of(), List.of(9L));
@@ -178,6 +184,7 @@ class VisitOperationsServiceTest {
     void deniedOperationsActorCannotUseRawIdDetailOrMutation() {
         doThrow(new AccessDeniedException("Scoped staff required")).when(authorization).requireScopedOperationalRead(4L);
         doThrow(new AccessDeniedException("Admin required")).when(authorization).requireOperations(4L);
+        doThrow(new AccessDeniedException("Admin required")).when(ownedAuthorization).admit(4L);
 
         assertThrows(AccessDeniedException.class, () -> service.getOperationsSession(4L, 500L));
         assertThrows(AccessDeniedException.class, () -> service.markRequestUnavailable(4L, 11L,
@@ -273,6 +280,68 @@ class VisitOperationsServiceTest {
         assertThrows(VisitOperationsConflictException.class, () -> service.addNearbyProperty(9L, 500L,
                 new AddVisitSessionItemCommand(0L, 103L, 11L, VisitSessionItemOrigin.OE_ADDED)));
         verify(items, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void ownedExecutiveResolvesTheOriginatingRequestOnlyInsideTheLockedSession() {
+        when(ownedAuthorization.admit(9L)).thenAnswer(invocation ->
+                new OwnedOperationsAuthorizationService.Actor(user(9L, Role.ROLE_TENANT), false));
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        PropertyVisitRequest source = request(11L, session.getTenant(), listing(101L, "Example City"),
+                VisitRequestStatus.COORDINATING, 0L, session);
+        Listing nearby = listing(102L, "Example City");
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        when(requests.findLockedByIdAndSessionId(11L, 500L)).thenReturn(Optional.of(source));
+        when(listings.findByIdAndStatus(102L, ListingStatus.ACTIVE)).thenReturn(Optional.of(nearby));
+        when(items.existsBySessionIdAndListingId(500L, 102L)).thenReturn(false);
+        when(items.findMaximumPosition(500L)).thenReturn(1);
+        AtomicReference<VisitSessionItem> created = new AtomicReference<>();
+        when(items.saveAndFlush(any(VisitSessionItem.class))).thenAnswer(invocation -> {
+            VisitSessionItem item = invocation.getArgument(0);
+            created.set(item);
+            return item;
+        });
+        when(items.findBySessionIdOrderByPositionAsc(500L)).thenAnswer(invocation ->
+                created.get() == null ? List.of() : List.of(created.get()));
+
+        service.addNearbyProperty(9L, 500L,
+                new AddVisitSessionItemCommand(0L, 102L, 11L, VisitSessionItemOrigin.OE_ADDED));
+
+        assertSame(source, created.get().getDerivedFromRequest());
+        assertSame(session, created.get().getSession());
+        // The owned route never performs the global Request lookup, so a Request outside this Session
+        // cannot be read, locked or probed.
+        verify(requests, never()).findLockedById(anyLong());
+        verify(requests).findLockedByIdAndSessionId(11L, 500L);
+    }
+
+    @Test
+    void ownedExecutiveGetsOneGenericNotFoundForMissingAndForeignOriginatingRequests() {
+        when(ownedAuthorization.admit(9L)).thenAnswer(invocation ->
+                new OwnedOperationsAuthorizationService.Actor(user(9L, Role.ROLE_TENANT), false));
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        VisitSession foreignSession = session(501L, 2L, "Exact City", VisitSessionStatus.DRAFT, 0L);
+        PropertyVisitRequest foreign = request(11L, session.getTenant(), listing(101L, "Example City"),
+                VisitRequestStatus.COORDINATING, 0L, foreignSession);
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        // The Request row exists globally, but the Session-scoped predicate resolves it as no row.
+        when(requests.findLockedById(11L)).thenReturn(Optional.of(foreign));
+        when(requests.findLockedByIdAndSessionId(11L, 500L)).thenReturn(Optional.empty());
+        when(requests.findLockedByIdAndSessionId(12L, 500L)).thenReturn(Optional.empty());
+
+        EntityNotFoundException foreignDenial = assertThrows(EntityNotFoundException.class, () ->
+                service.addNearbyProperty(9L, 500L,
+                        new AddVisitSessionItemCommand(0L, 102L, 11L, VisitSessionItemOrigin.OE_ADDED)));
+        EntityNotFoundException missingDenial = assertThrows(EntityNotFoundException.class, () ->
+                service.addNearbyProperty(9L, 500L,
+                        new AddVisitSessionItemCommand(0L, 102L, 12L, VisitSessionItemOrigin.OE_ADDED)));
+
+        // One generic message with no identifier in it: the two cases are indistinguishable.
+        assertEquals(foreignDenial.getMessage(), missingDenial.getMessage());
+        assertFalse(foreignDenial.getMessage().matches(".*\\d.*"), foreignDenial.getMessage());
+        verify(requests, never()).findLockedById(anyLong());
+        verify(items, never()).saveAndFlush(any());
+        verify(events, never()).publishEvent(any());
     }
 
     @Test

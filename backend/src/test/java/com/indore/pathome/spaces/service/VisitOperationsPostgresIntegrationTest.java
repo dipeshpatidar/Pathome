@@ -71,6 +71,7 @@ import static org.mockito.Mockito.when;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({VisitOperationsService.class, VisitOperationsAuthorizationService.class,
+        OwnedOperationsAuthorizationService.class, StaffAccessService.class,
         OperationalSecurityGuards.class, OperationalAuditService.class, DatabaseClock.class,
         OperationalNotificationAuthorizationService.class,
         VisitSessionNotificationListener.class, NotificationService.class, VisitSchedulingRecommendationService.class,

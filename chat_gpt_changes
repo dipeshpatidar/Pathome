@@ -3646,3 +3646,149 @@ API/DTO, capability, dependency, or frontend change; no known remaining gap. Tra
 and the A1a approval gate are advanced by this evidence but not closed here.
 
 Commit: none. Push: none. Main unchanged.
+
+## 2026-10-12 01:37 IST — Phase 2A-3A owned Request & Draft Session coordination (OE permissions)
+
+Reason: Implement exactly the approved Phase 2A-3A delta — let an authenticated, currently
+owning OPS_COORDINATE@TEAM Operations Executive run only six owned Visit Operations actions while
+Pathome Admin authority and every frozen behaviour is preserved. Phase 2A-3B is NOT implemented.
+
+Preflight: repo root correct, branch feature/phase2a-oe-workspace, HEAD 1dd7f07856e753b0cbb98f51d04cce23eb78462c
+(matches the expected base), clean worktree, remote github.com/dipeshpatidar/Pathome.
+
+Changed (production, 2 files):
+- NEW backend/src/main/java/com/indore/pathome/spaces/service/OwnedOperationsAuthorizationService.java.
+  Dedicated owned-action seam. Coarse admission (403) unless the caller is a Pathome Admin or holds a
+  current usable OPS_COORDINATE@TEAM grant; then fresh definitive authorization inside the caller's
+  writable transaction after the authoritative root lock and the canonical City -> Team ->
+  EmployeeProfile -> grant guard rows are locked. Requires active scope, current capability, ready
+  scope and current coordinator ownership of the authoritative root; a root that is not owned (or a
+  linked Request reached through standalone authority) fails closed as one generic 404 so a hidden
+  root is indistinguishable from a missing one. Owns the Session-root-first lock helpers used by the
+  OE branch. No new SQL, migration, index, entity, DTO, dependency, role or route.
+- backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java. The six
+  approved actions (coordinateRequest, markRequestUnavailable, addNearbyProperty, removeItem,
+  reorderItems, setAvailability) now branch on the admitted actor: the Admin path is byte-for-byte the
+  previous flow, the OE path locks the root(s), runs the fresh owned checks, then reuses the existing
+  version/status/mirror/provenance/duplicate/audit logic unchanged. requireOperations() is untouched
+  and still the sole gate for every excluded action (recommendation, schedule, reschedule,
+  assignment, cancel, repair/override).
+
+Changed (tests, 4 files): new backend/src/test/java/com/indore/pathome/spaces/service/
+OwnedOperationsHttpPostgresTest.java (20 real-HTTP/real-PostgreSQL tests); VisitOperationsServiceTest
+(new seam stub, one admin-comment/verification update); VisitOperationsPostgresIntegrationTest and
+StaffAccessGovernancePostgresTest (added the new collaborator + StaffAccessService to their
+@DataJpaTest @Import slices so the sliced contexts still start).
+
+Verification executed:
+- PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -f backend/pom.xml
+  -Dtest=OwnedOperationsHttpPostgresTest test — Tests run: 20, Failures: 0, Errors: 0, BUILD SUCCESS.
+  Covers 401/403 admission (no grant, supervise-only, revoked, expired, future, inactive staff/Team/
+  City), all six owned actions succeeding for the current owner, another coordinator, wrong Team/City,
+  linked-Request hiding, stale Request and Session versions (409), OE read-only SCHEDULED itinerary
+  (409), invalid status / duplicate / ineligible property, idempotent repeats that stopped being
+  idempotent after a transfer, tenant-mismatch attach, unanswered-lessor truthfulness, no booking/
+  notification/OTP/entitlement side effects, and two real-PostgreSQL blocking proofs
+  ([owned-ops-lock-evidence] ownership-transfer-vs-unavailable: action queued on
+  property_visit_requests behind the real OperationalOwnershipService.assignRequestCoordinator;
+  grant-revocation-vs-remove-item: revocation queued on staff_access_grants behind the holder and the
+  enabled action queued on supported_cities behind the revocation's guard rows). Log
+  /private/tmp/owned_ops_7.log.
+- Regression batch: VisitOperationsPostgresIntegrationTest 81, StaffAccessGovernancePostgresTest 1,
+  OperationsLessorContactHttpPostgresTest 14, VisitOperationsAuthorizationServiceTest 2 = 98/98 pass;
+  OperationsSessionNestedTransactionIsolationPostgresTest 2, OperationsLessorContactResolverTest 9,
+  OperationalOwnershipControllerTest 3 = 14/14 pass; VisitOperationsServiceTest 27, OperationsMyWork
+  HttpPostgresTest 7, ClaimableWorkHttpPostgresTest 2 = 36/36 pass. Logs /private/tmp/
+  owned_ops_regression2.log and /private/tmp/owned_ops_regression3.log.
+- mvn -q -o -f backend/pom.xml -DskipTests test-compile — BUILD SUCCESS. git diff --check — clean.
+- Spring startup evidence: OwnedOperationsHttpPostgresTest is a full @SpringBootTest RANDOM_PORT
+  context with no mocked beans, so the real backend startup and dependency wiring were exercised.
+
+Outstanding / NOT TESTED: browser and physical-device checks NOT TESTED (backend-only change, no
+frontend/v0 UI work). No frontend, scheduling, repair, migration or frozen-behaviour change.
+Canonical DEP tracker still unavailable locally.
+
+Tracker: DEP-034, DEP-051 and the A1a DEP-012 handoff are advanced by this evidence (2A-3A
+implemented, 2A-3B explicitly not implemented) but not closed here.
+
+Commit: none. Push: none. Not staged. Left as an inspectable uncommitted diff on
+feature/phase2a-oe-workspace.
+
+## 2026-10-12 09:26 IST — Phase 2A-3A originating-Request privacy correction (owned Add Nearby Property)
+
+Reason: Close the one concrete information-disclosure finding from the independent Sol review of Phase 2A-3A.
+On the owned Operations Executive Add Nearby Property route the originating Request was resolved with a global
+`findLockedById` followed by a Java membership test, so a Request that did not exist produced 404 while a
+Request that existed outside the caller's Session produced 403. The two outcomes were distinguishable, which
+made the route an existence oracle for other teams' and tenants' Request identifiers. The same statement also
+locked the foreign Request row before rejecting it.
+
+Reproduced before any production change, with the new regressions in
+`backend/src/test/java/com/indore/pathome/spaces/service/OwnedOperationsHttpPostgresTest.java`
+(real HTTP, real PostgreSQL, currently owning OE with an owned DRAFT Session):
+- `ownedAddNearbyPropertyNeverDistinguishesMissingFromForeignOriginatingRequest` failed 403-vs-404. Recorded
+  bodies (log /tmp/origin_before_bodies.log): missing id `{"status":404,"error":"Resource Not Found",
+  "message":"Originating Visit Request not found"}`, same-tenant foreign id, other-team foreign id and owned
+  standalone id all `{"status":403,"error":"Forbidden","message":"You do not have permission to perform this
+  action."}`.
+- `ownedAddNearbyPropertyNeverLocksAForeignOriginatingRequest` failed because the action queued behind a raw
+  `for update` holder of the foreign Request row; PostgreSQL reported the blocked statement as
+  `select ... from property_visit_requests pvr1_0 where pvr1_0.id=$1 for no key update` — no Session predicate.
+- `concurrentOriginatingRequestLinkageCannotInvertOwnedActionLockOrder` failed 403 instead of the fail-closed
+  404 after the Request was relinked away from the Session.
+
+Changed (production, 2 files):
+- `backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java`.
+  `addNearbyProperty` now branches on the admitted actor, keeping the authoritative Session root lock first in
+  both cases. The Admin path is byte-for-byte the previous flow (global `findLockedById`,
+  `requireRequestBelongsToSession`, its previous 403 for a Request outside the Session and its previous 404 for
+  a missing Request). The owned Executive path resolves and locks the originating Request only when it belongs
+  to that exact Session, so missing and inaccessible identifiers produce the same generic privacy-safe 404;
+  the existing same-tenant rule is preserved through `requireSameTenant`. No other rule, status, provenance,
+  eligibility, version or Session-status behaviour changed.
+- `backend/src/main/java/com/indore/pathome/spaces/repository/PropertyVisitRequestRepository.java`.
+  Added only `findLockedByIdAndSessionId(id, sessionId)`: `@Lock(PESSIMISTIC_WRITE)` with the Session in the
+  database predicate. No schema, migration, index, entity, DTO, dependency or route change.
+
+Changed (tests, 2 files): 4 new real-HTTP/PostgreSQL tests in `OwnedOperationsHttpPostgresTest` (indistinguishable
+denial with identical payloads, no foreign-row lock footprint plus in-Session lock control, concurrent relink
+without lock inversion, and Admin behaviour unchanged) and 2 new service-level tests in
+`VisitOperationsServiceTest` (owned route uses only the Session-scoped lookup; one generic message for missing
+and foreign ids). The class now runs 24 tests and `VisitOperationsServiceTest` 29.
+
+Evidence after the correction:
+- Both denial variants are now identical 404s against real HTTP (logs /tmp/origin_after2.log, /tmp/origin_sql.log):
+  `{"timestamp":"...","status":404,"error":"Resource Not Found","message":"Originating Visit Request not
+  found","path":"/api/v1/operations/visit-sessions/9/items"}` for the missing id, the same-tenant foreign id,
+  the other-team foreign id and the owned standalone id — equal field-for-field apart from the response
+  timestamp, and the message contains no identifier at all.
+- Real PostgreSQL scope evidence: the statement the owned action waits on when the genuinely linked Request is
+  held is `select ... from property_visit_requests pvr1_0 where pvr1_0.id=$1 and pvr1_0.session_id=$2
+  for no key update`; with a foreign row held the same action returned 404 immediately and `pg_stat_activity`
+  showed no backend blocked by that holder.
+- Lock-order evidence: with the Session root and the Request row both held, the pending owned action waited on
+  `select ... from visit_sessions vs1_0 where vs1_0.id=$1 for no key update` first
+  (`[owned-ops-lock-evidence] originating-request-lock-order-session-first-first-wait`), and the concurrent
+  Request→Session relink committed while the action was still parked on the Session root — so the Session root
+  is locked before the Request, no inversion is introduced, and the relinked Request then failed closed as the
+  generic 404 with no item, no audit row and no Session version change.
+- No denial created an item, audit row or notification, and no foreign Request was mutated (asserted row-by-row
+  against the pre-call Session linkage, status and version).
+
+Verification executed:
+- `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -f backend/pom.xml -Dtest=OwnedOperationsHttpPostgresTest,VisitOperationsServiceTest,VisitOperationsPostgresIntegrationTest,StaffAccessGovernancePostgresTest,OperationsLessorContactHttpPostgresTest,OperationsLessorContactResolverTest,VisitOperationsAuthorizationServiceTest,OperationsMyWorkHttpPostgresTest,ClaimableWorkHttpPostgresTest,OperationalOwnershipControllerTest,OperationsSessionNestedTransactionIsolationPostgresTest,VisitOperationsQueuePostgresTest test`
+  — Tests run: 182, Failures: 0, Errors: 0, Skipped: 0, BUILD SUCCESS (24 / 29 / 81 / 1 / 14 / 9 / 2 / 7 / 2 / 3 / 2 / 8). Log /tmp/origin_batch.log.
+- The four new regressions ran three further consecutive green times (4/4 each). Logs /tmp/origin_repeat_1..3.log.
+- `mvn -o -q -f backend/pom.xml -DskipTests test-compile` passed; `git diff --check` and
+  `git diff --cached --check` clean.
+
+Log hygiene: the previous checkpoint's diff had also relocated the committed 2026-10-11 15:48 (F1) and 19:47
+(A1a) entries ahead of the 18:34/19:20 A1a entries. That unrelated history movement was removed: this file is
+now the committed log plus a pure append (`git diff --numstat chat_gpt_changes` = 67 insertions, 0 deletions),
+with every historical entry preserved byte-for-byte in its committed order.
+
+Outstanding / NOT TESTED: browser, responsive and physical-device checks NOT TESTED (backend-only change, no
+frontend). No frontend, 2A-3B, scheduling, repair, migration, permission or API-contract change. Canonical DEP
+tracker still unavailable locally.
+
+Commit: none. Push: none. Not staged. Left as an inspectable uncommitted diff on feature/phase2a-oe-workspace.

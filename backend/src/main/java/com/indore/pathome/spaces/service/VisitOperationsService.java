@@ -42,6 +42,7 @@ public class VisitOperationsService {
     private final ListingRepository listings;
     private final LocalityRepository localities;
     private final VisitOperationsAuthorizationService authorization;
+    private final OwnedOperationsAuthorizationService ownedAuthorization;
     private final ApplicationEventPublisher events;
     private final EntityManager entityManager;
     private final VisitSchedulingRecommendationService recommendations;
@@ -57,6 +58,7 @@ public class VisitOperationsService {
                                   ListingRepository listings,
                                   LocalityRepository localities,
                                   VisitOperationsAuthorizationService authorization,
+                                  OwnedOperationsAuthorizationService ownedAuthorization,
                                   ApplicationEventPublisher events,
                                   EntityManager entityManager,
                                   VisitSchedulingRecommendationService recommendations,
@@ -71,6 +73,7 @@ public class VisitOperationsService {
         this.listings = listings;
         this.localities = localities;
         this.authorization = authorization;
+        this.ownedAuthorization = ownedAuthorization;
         this.events = events;
         this.entityManager = entityManager;
         this.recommendations = recommendations;
@@ -167,16 +170,28 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView coordinateRequest(Long actorId, Long requestId,
                                                          CoordinateVisitRequestCommand command) {
-        User actor = authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
         if (requestId == null || requestId <= 0) throw new IllegalArgumentException("Visit Request ID must be positive");
         if (command.sessionId() != null && command.sessionId() <= 0)
             throw new IllegalArgumentException("Visit Session ID must be positive");
-        VisitSession requestedSession = command.sessionId() == null ? null : lockSession(command.sessionId());
-        PropertyVisitRequest request = requests.findLockedById(requestId)
-                .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
-        acquireOperationalScopeGuards(request, actorId);
-        actor = authorization.requireOperations(actorId);
+        VisitSession requestedSession;
+        PropertyVisitRequest request;
+        User actor;
+        if (admission.admin()) {
+            requestedSession = command.sessionId() == null ? null : lockSession(command.sessionId());
+            request = requests.findLockedById(requestId)
+                    .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+            acquireOperationalScopeGuards(request, actorId);
+            actor = authorization.requireOperations(actorId);
+        } else {
+            // Session-root lock still precedes the Request root, so no Request -> Session order is introduced.
+            requestedSession = command.sessionId() == null ? null
+                    : ownedAuthorization.lockTargetSession(command.sessionId());
+            request = ownedAuthorization.lockTargetRequest(requestId);
+            ownedAuthorization.requireCoordinateAuthority(admission, request, requestedSession);
+            actor = admission.user();
+        }
 
         if (request.getSession() != null) {
             if (command.sessionId() != null && !Objects.equals(command.sessionId(), request.getSession().getId()))
@@ -243,11 +258,16 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitRequestItem markRequestUnavailable(Long actorId, Long requestId,
                                                               ExpectedVisitRequestVersion command) {
-        authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
         if (requestId == null || requestId <= 0) throw new IllegalArgumentException("Visit Request ID must be positive");
-        PropertyVisitRequest request = requests.findLockedById(requestId)
-                .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+        PropertyVisitRequest request = admission.admin()
+                ? requests.findLockedById(requestId)
+                        .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"))
+                : ownedAuthorization.lockTargetRequest(requestId);
+        if (!admission.admin()) ownedAuthorization.requireOwnedStandaloneRequest(admission, request);
+        // Fresh authority and current ownership are established above, so the already-completed
+        // repeat is idempotent only for the caller that still owns this Request.
         if (request.getStatusValue() == VisitRequestStatus.UNAVAILABLE) return requestItem(request);
         requireVersion(request.getVersion(), command.expectedRequestVersion(), "Visit Request");
         if (request.getStatusValue() != VisitRequestStatus.RECEIVED || request.getSession() != null)
@@ -288,21 +308,36 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView addNearbyProperty(Long actorId, Long sessionId,
                                                          AddVisitSessionItemCommand command) {
-        authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
         if (command.listingId() == null || command.listingId() <= 0
                 || command.originatingRequestId() == null || command.originatingRequestId() <= 0)
             throw new IllegalArgumentException("Listing and originating request IDs must be positive");
-        VisitSession session = lockSession(sessionId);
+        VisitSession session = admission.admin() ? lockSession(sessionId)
+                : ownedAuthorization.lockTargetSession(sessionId);
+        if (!admission.admin()) ownedAuthorization.requireOwnedDraftSession(admission, session);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         requireDraft(session);
         if (command.origin() != VisitSessionItemOrigin.OE_ADDED
                 && command.origin() != VisitSessionItemOrigin.LESSOR_SUGGESTED)
             throw new IllegalArgumentException("Nearby properties must use an approved derived origin");
 
-        PropertyVisitRequest originRequest = requests.findLockedById(command.originatingRequestId())
-                .orElseThrow(() -> new EntityNotFoundException("Originating Visit Request not found"));
-        requireRequestBelongsToSession(originRequest, session);
+        // The authoritative Session root is already locked above, so the originating Request is the only
+        // remaining reference to resolve. Pathome Admin keeps its previous global lookup and its previous
+        // distinguishable outcome for a Request outside the Session. An owned Operations Executive
+        // resolves it with a Session-scoped database predicate under the same lock, so a Request linked to
+        // another Session is never locked, never read, and is reported exactly like one that does not
+        // exist: one generic 404 that leaks neither the existence nor the owner of the named Request.
+        PropertyVisitRequest originRequest;
+        if (admission.admin()) {
+            originRequest = requests.findLockedById(command.originatingRequestId())
+                    .orElseThrow(() -> new EntityNotFoundException("Originating Visit Request not found"));
+            requireRequestBelongsToSession(originRequest, session);
+        } else {
+            originRequest = requests.findLockedByIdAndSessionId(command.originatingRequestId(), session.getId())
+                    .orElseThrow(() -> new EntityNotFoundException("Originating Visit Request not found"));
+            requireSameTenant(originRequest, session);
+        }
         if (originRequest.getStatusValue() != VisitRequestStatus.COORDINATING
                 && originRequest.getStatusValue() != VisitRequestStatus.UNAVAILABLE)
             throw new VisitOperationsConflictException("Originating request is not available for itinerary assembly");
@@ -329,13 +364,18 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView removeItem(Long actorId, Long sessionId, Long itemId,
                                                   RemoveVisitSessionItemCommand command) {
-        User actor = authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
         if (command.reason() != null && command.reason().length() > 500)
             throw new IllegalArgumentException("Removal reason must be 500 characters or fewer");
-        VisitSession session = lockSession(sessionId);
+        VisitSession session = admission.admin() ? lockSession(sessionId)
+                : ownedAuthorization.lockTargetSession(sessionId);
+        // OE authority is DRAFT-only; the authoritative root and its guards are locked before this.
+        if (!admission.admin()) ownedAuthorization.requireOwnedDraftSession(admission, session);
+        User actor = admission.admin() ? authorization.requireOperations(actorId) : admission.user();
         VisitSessionItem item = items.findBySessionIdAndId(sessionId, itemId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session Item not found"));
+        // An already-removed item is only a no-op for a caller whose current ownership was just proven.
         if (item.getRemovedAt() != null) return operationsView(session);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         requireBeforeStart(session);
@@ -362,9 +402,11 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView reorderItems(Long actorId, Long sessionId,
                                                     ReorderVisitSessionItemsCommand command) {
-        authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
-        VisitSession session = lockSession(sessionId);
+        VisitSession session = admission.admin() ? lockSession(sessionId)
+                : ownedAuthorization.lockTargetSession(sessionId);
+        if (!admission.admin()) ownedAuthorization.requireOwnedDraftSession(admission, session);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         requireBeforeStart(session);
         List<VisitSessionItem> all = items.findBySessionIdOrderByPositionAsc(sessionId);
@@ -401,9 +443,12 @@ public class VisitOperationsService {
     @Transactional
     public OperationsVisitSessionView setAvailability(Long actorId, Long sessionId, Long itemId,
                                                        VisitSessionAvailabilityCommand command) {
-        User actor = authorization.requireOperations(actorId);
+        OwnedOperationsAuthorizationService.Actor admission = ownedAuthorization.admit(actorId);
         requireCommand(command);
-        VisitSession session = lockSession(sessionId);
+        VisitSession session = admission.admin() ? lockSession(sessionId)
+                : ownedAuthorization.lockTargetSession(sessionId);
+        if (!admission.admin()) ownedAuthorization.requireOwnedDraftSession(admission, session);
+        User actor = admission.admin() ? authorization.requireOperations(actorId) : admission.user();
         VisitSessionItem item = items.findBySessionIdAndId(sessionId, itemId)
                 .orElseThrow(() -> new EntityNotFoundException("Visit Session Item not found"));
         if (item.getRemovedAt() != null)
