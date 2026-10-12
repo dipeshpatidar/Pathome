@@ -57,6 +57,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -103,6 +104,7 @@ class VisitOperationsPostgresIntegrationTest {
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
         registry.add("spring.jpa.show-sql", () -> "false");
+        registry.add("app.jwt.secret", () -> "visit-operations-postgres-test-jwt-secret-32-bytes-minimum");
         registry.add("pathome.visit.otp.hmac-secret", () -> "postgres-test-only-secret-value-32-bytes-minimum");
     }
 
@@ -145,8 +147,536 @@ class VisitOperationsPostgresIntegrationTest {
     @Autowired private LocalityRepository localities;
     @Autowired private VisitPolicyRepository visitPolicies;
     @Autowired private SchedulingRecommendationPolicy recommendationPolicy;
+    @Autowired private StaffAccessGrantRepository staffGrants;
     @Autowired private ConservativeTravelTimeEstimator travelEstimator;
     @MockBean private LocationSnapshotProvider locations;
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedRecommendationsShareCityGePoolButNeverShareTeamSessionAccess() {
+        RecommendationScenario first = recommendationScenario(false);
+        RecommendationScenario second = additionalRecommendationSession(first);
+        activateGroundExecutives(first);
+        SupportedCity city = supportedCities.saveAndFlush(new SupportedCity(
+                "oe-pool-" + UUID.randomUUID().toString().replace("-", ""), first.locality().getCity(), true));
+        OperatingTeam teamA = operatingTeams.saveAndFlush(new OperatingTeam(city,
+                "oe-team-a-" + UUID.randomUUID().toString().substring(0, 8), "Team A", true));
+        OperatingTeam teamB = operatingTeams.saveAndFlush(new OperatingTeam(city,
+                "oe-team-b-" + UUID.randomUUID().toString().substring(0, 8), "Team B", true));
+        User ownerA = ownedScheduler("oe-owner-a", teamA);
+        User ownerB = ownedScheduler("oe-owner-b", teamB);
+        setOwnedScope(first.sessionId(), city, teamA, ownerA);
+        setOwnedScope(second.sessionId(), city, teamB, ownerB);
+
+        var firstView = operations.recommendForOwner(ownerA.getId(), first.sessionId(),
+                new RecommendationRequest(sessionVersion(first.sessionId())), false);
+        var secondView = operations.recommendForOwner(ownerB.getId(), second.sessionId(),
+                new RecommendationRequest(sessionVersion(second.sessionId())), true);
+        assertEquals(2, firstView.candidates().size());
+        assertEquals(2, secondView.candidates().size());
+        assertTrue(firstView.rejectedGroundExecutives().isEmpty());
+        assertTrue(secondView.candidates().stream().anyMatch(c -> c.groundExecutiveUserId().equals(first.geA().getId())));
+        assertTrue(secondView.candidates().stream().anyMatch(c -> c.groundExecutiveUserId().equals(first.geB().getId())));
+
+        EntityNotFoundException foreign = assertThrows(EntityNotFoundException.class, () ->
+                operations.recommendForOwner(ownerA.getId(), second.sessionId(),
+                        new RecommendationRequest(sessionVersion(second.sessionId())), false));
+        EntityNotFoundException missing = assertThrows(EntityNotFoundException.class, () ->
+                operations.recommendForOwner(ownerA.getId(), Long.MAX_VALUE,
+                        new RecommendationRequest(0L), false));
+        assertEquals(missing.getMessage(), foreign.getMessage());
+        assertThrows(EntityNotFoundException.class, () -> operations.selectForOwner(ownerA.getId(),
+                second.sessionId(), new ApproveVisitRecommendationCommand(sessionVersion(second.sessionId()),
+                        firstView.candidates().get(0).groundExecutiveUserId(),
+                        firstView.candidates().get(0).scheduledAt(), "Asia/Kolkata", null)));
+
+        var lower = firstView.candidates().get(1);
+        long version = sessionVersion(first.sessionId());
+        assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(ownerA.getId(),
+                first.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        lower.groundExecutiveUserId(), lower.scheduledAt(), lower.zoneId(), null)));
+        assertEquals(VisitSessionStatus.DRAFT, sessions.findById(first.sessionId()).orElseThrow().getStatus());
+        var approved = operations.selectForOwner(ownerA.getId(), first.sessionId(),
+                new ApproveVisitRecommendationCommand(version, lower.groundExecutiveUserId(),
+                        lower.scheduledAt(), lower.zoneId(), "Selected for local availability"));
+        assertEquals(VisitSessionStatus.SCHEDULED, approved.session().status());
+        VisitSchedulingDecision decision = decisions.findById(approved.decisionId()).orElseThrow();
+        assertEquals(ownerA.getId(), decision.getApprovedBy().getId());
+        assertEquals(lower.groundExecutiveUserId(), decision.getSelectedGroundExecutive().getId());
+        assertEquals("Selected for local availability", decision.getOverrideReason());
+        assertTrue(decision.isOverride());
+        assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(ownerA.getId(),
+                first.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        lower.groundExecutiveUserId(), lower.scheduledAt(), lower.zoneId(),
+                        "Selected for local availability")));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedSelectionRejectsGeDeactivationAfterRecommendation() {
+        RecommendationScenario scenario = recommendationScenario(false);
+        activateGroundExecutives(scenario);
+        SupportedCity city = supportedCities.saveAndFlush(new SupportedCity(
+                "oe-stale-" + UUID.randomUUID().toString().replace("-", ""), scenario.locality().getCity(), true));
+        OperatingTeam team = operatingTeams.saveAndFlush(new OperatingTeam(city,
+                "oe-stale-team", "Team", true));
+        User owner = ownedScheduler("oe-stale-owner", team);
+        setOwnedScope(scenario.sessionId(), city, team, owner);
+        long version = sessionVersion(scenario.sessionId());
+        var candidate = operations.recommendForOwner(owner.getId(), scenario.sessionId(),
+                new RecommendationRequest(version), false).candidates().get(0);
+        new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                employees.findByUserId(candidate.groundExecutiveUserId()).orElseThrow().setStaffActive(false));
+        assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(owner.getId(),
+                scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        candidate.groundExecutiveUserId(), candidate.scheduledAt(), candidate.zoneId(), null)));
+        assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+        assertEquals(0, decisions.countBySessionId(scenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedSelectionRequiresReasonForAlternateTimeAndRechecksPropertyWindow() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-time");
+        RecommendationScenario scenario = fixture.scenario();
+        long version = sessionVersion(scenario.sessionId());
+        var top = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), false).candidates().get(0);
+        Instant alternate = top.scheduledAt().plusSeconds(60);
+        assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(fixture.owner().getId(),
+                scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        top.groundExecutiveUserId(), alternate, top.zoneId(), null)));
+        var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(version, top.groundExecutiveUserId(), alternate,
+                        top.zoneId(), "Tenant requested a nearby time"));
+        assertEquals(alternate, approval.session().scheduledAt());
+        assertEquals("Tenant requested a nearby time",
+                decisions.findById(approval.decisionId()).orElseThrow().getOverrideReason());
+
+        OwnedRecommendationFixture pending = ownedRecommendationFixture("oe-property");
+        long pendingVersion = sessionVersion(pending.scenario().sessionId());
+        var planned = operations.recommendForOwner(pending.owner().getId(), pending.scenario().sessionId(),
+                new RecommendationRequest(pendingVersion), false).candidates().get(0);
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSessionItem item = items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(
+                    pending.scenario().sessionId()).get(0);
+            item.setConfirmationStatus(VisitSessionItemConfirmationStatus.PENDING);
+            item.setAvailabilityStartAt(null);
+            item.setAvailabilityEndAt(null);
+            item.setAvailabilityZoneId(null);
+            item.setAvailabilitySource(null);
+        });
+        assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                pending.owner().getId(), pending.scenario().sessionId(),
+                new ApproveVisitRecommendationCommand(pendingVersion, planned.groundExecutiveUserId(),
+                        planned.scheduledAt(), planned.zoneId(), null)));
+        assertEquals(VisitSessionStatus.DRAFT,
+                sessions.findById(pending.scenario().sessionId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedSelectionRejectsUncoveredGeAndRevokedOwner() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-scope");
+        RecommendationScenario scenario = fixture.scenario();
+        long version = sessionVersion(scenario.sessionId());
+        var top = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), false).candidates().get(0);
+        User foreignGe = user("oe-foreign-ge", Role.ROLE_GROUND_BOY);
+        EmployeeProfile employee = new EmployeeProfile(foreignGe, "GROUND_BOY", null, BigDecimal.ZERO);
+        employee.setStaffActive(true);
+        employee = employees.saveAndFlush(employee);
+        GroundExecutiveSchedulingProfile profile = schedulingProfile(employee, scenario.admin());
+        saveCityCoverage(profile, scenario.admin(), "Another City");
+        saveShift(profile, scenario.admin(), scenario.desiredAt().minus(Duration.ofHours(4)),
+                scenario.desiredAt().plus(Duration.ofHours(4)));
+        VisitOperationsConflictException foreign = assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        foreignGe.getId(), top.scheduledAt(), top.zoneId(), "Requested")));
+        VisitOperationsConflictException missing = assertThrows(VisitOperationsConflictException.class,
+                () -> operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
+                        new ApproveVisitRecommendationCommand(version, Long.MAX_VALUE,
+                                top.scheduledAt(), top.zoneId(), "Requested")));
+        assertEquals(missing.getMessage(), foreign.getMessage());
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                staffGrants.findEffectiveForUser(fixture.owner().getId()).get(0).revoke(
+                        users.getReferenceById(scenario.admin().getId()), Instant.now(), "TEST_REVOKE"));
+        assertThrows(AccessDeniedException.class, () -> operations.recommendForOwner(fixture.owner().getId(),
+                scenario.sessionId(), new RecommendationRequest(version), false));
+        assertThrows(AccessDeniedException.class, () -> operations.selectForOwner(fixture.owner().getId(),
+                scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
+                        top.groundExecutiveUserId(), top.scheduledAt(), top.zoneId(), null)));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void twoTeamsCannotConcurrentlyBookSameGeAndTime() throws Exception {
+        OwnedRecommendationFixture first = ownedRecommendationFixture("oe-race");
+        RecommendationScenario secondScenario = additionalRecommendationSession(first.scenario());
+        OperatingTeam otherTeam = operatingTeams.saveAndFlush(new OperatingTeam(first.city(),
+                "oe-race-other", "Other Team", true));
+        User otherOwner = ownedScheduler("oe-race-other", otherTeam);
+        setOwnedScope(secondScenario.sessionId(), first.city(), otherTeam, otherOwner);
+        Long geId = first.scenario().geA().getId();
+        var firstOptions = operations.recommendForOwner(first.owner().getId(), first.scenario().sessionId(),
+                new RecommendationRequest(sessionVersion(first.scenario().sessionId())), true).candidates();
+        var secondOptions = operations.recommendForOwner(otherOwner.getId(), secondScenario.sessionId(),
+                new RecommendationRequest(sessionVersion(secondScenario.sessionId())), true).candidates();
+        var firstCandidate = firstOptions.stream().filter(c -> c.groundExecutiveUserId().equals(geId))
+                .findFirst().orElseThrow();
+        var secondCandidate = secondOptions.stream().filter(c -> c.groundExecutiveUserId().equals(geId))
+                .findFirst().orElseThrow();
+        assertEquals(firstCandidate.scheduledAt(), secondCandidate.scheduledAt());
+        var firstTop = operations.recommendForOwner(first.owner().getId(), first.scenario().sessionId(),
+                new RecommendationRequest(sessionVersion(first.scenario().sessionId())), false).candidates().get(0);
+        var secondTop = operations.recommendForOwner(otherOwner.getId(), secondScenario.sessionId(),
+                new RecommendationRequest(sessionVersion(secondScenario.sessionId())), false).candidates().get(0);
+        var firstCommand = new ApproveVisitRecommendationCommand(sessionVersion(first.scenario().sessionId()),
+                geId, firstCandidate.scheduledAt(), firstCandidate.zoneId(),
+                firstTop.groundExecutiveUserId().equals(geId)
+                        && firstTop.scheduledAt().equals(firstCandidate.scheduledAt())
+                        ? null : "Selected for coverage");
+        var secondCommand = new ApproveVisitRecommendationCommand(sessionVersion(secondScenario.sessionId()),
+                geId, secondCandidate.scheduledAt(), secondCandidate.zoneId(),
+                secondTop.groundExecutiveUserId().equals(geId)
+                        && secondTop.scheduledAt().equals(secondCandidate.scheduledAt())
+                        ? null : "Selected for coverage");
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch gate = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> firstResult = pool.submit(() -> ownedBook(first.owner().getId(),
+                    first.scenario().sessionId(), firstCommand, ready, gate));
+            Future<String> secondResult = pool.submit(() -> ownedBook(otherOwner.getId(),
+                    secondScenario.sessionId(), secondCommand, ready, gate));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            gate.countDown();
+            List<String> results = List.of(firstResult.get(20, TimeUnit.SECONDS),
+                    secondResult.get(20, TimeUnit.SECONDS));
+            assertEquals(1, results.stream().filter("COMMITTED"::equals).count());
+            assertEquals(1, results.stream().filter("CONFLICT"::equals).count());
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(1, decisions.countBySessionId(first.scenario().sessionId())
+                + decisions.countBySessionId(secondScenario.sessionId()));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedRecommendationShowsThreeThenAllWithTransparentLocationFallback() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-ranking");
+        RecommendationScenario scenario = fixture.scenario();
+        for (int index = 0; index < 2; index++) {
+            User ge = user("oe-extra-ge-" + index, Role.ROLE_GROUND_BOY);
+            EmployeeProfile employee = new EmployeeProfile(ge, "GROUND_BOY", null, BigDecimal.ZERO);
+            employee.setStaffActive(true);
+            employee = employees.saveAndFlush(employee);
+            GroundExecutiveSchedulingProfile profile = schedulingProfile(employee, scenario.admin());
+            saveCityCoverage(profile, scenario.admin(), scenario.locality().getCity());
+            saveShift(profile, scenario.admin(), scenario.desiredAt().minus(Duration.ofHours(4)),
+                    scenario.desiredAt().plus(Duration.ofHours(4)));
+        }
+        long version = sessionVersion(scenario.sessionId());
+        var first = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), false);
+        var all = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true);
+        assertEquals(3, first.candidates().size());
+        assertEquals(4, all.candidates().size());
+        assertEquals("RECOMMENDATIONS", first.mode());
+        assertEquals("DISCOVERY", all.mode());
+        assertNull(all.nextCursor());
+        assertTrue(all.candidates().stream().allMatch(candidate -> candidate.rank() == 0));
+        assertTrue(all.candidates().stream().allMatch(candidate -> candidate.groundExecutiveName() != null));
+        assertTrue(all.candidates().stream().allMatch(candidate -> candidate.reasons().contains(
+                com.indore.pathome.spaces.dto.RecommendationReason.LOCATION_UNAVAILABLE_FALLBACK_USED)));
+        assertTrue(all.rejectedGroundExecutives().isEmpty());
+        var top = first.candidates().get(0);
+        var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(version, top.groundExecutiveUserId(),
+                        top.scheduledAt(), top.zoneId(), null));
+        assertFalse(approval.override());
+        assertNull(decisions.findById(approval.decisionId()).orElseThrow().getOverrideReason());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedSelectionCanValidateEligibleGeBeyondRecommendationSearchBound() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-bound");
+        long version = sessionVersion(fixture.scenario().sessionId());
+        var other = operations.recommendForOwner(fixture.owner().getId(), fixture.scenario().sessionId(),
+                new RecommendationRequest(version), true).candidates().stream()
+                .filter(candidate -> candidate.groundExecutiveUserId().equals(fixture.scenario().geB().getId()))
+                .findFirst().orElseThrow();
+        int previousMaximum = recommendationPolicy.getMaximumGroundExecutives();
+        try {
+            recommendationPolicy.setMaximumGroundExecutives(1);
+            var bounded = operations.recommendForOwner(fixture.owner().getId(), fixture.scenario().sessionId(),
+                    new RecommendationRequest(version), false);
+            assertTrue(bounded.candidateSearchTruncated());
+            assertEquals(1, bounded.candidates().size());
+            var approved = operations.selectForOwner(fixture.owner().getId(), fixture.scenario().sessionId(),
+                    new ApproveVisitRecommendationCommand(version, other.groundExecutiveUserId(),
+                            other.scheduledAt(), other.zoneId(), "Selected beyond the displayed search"));
+            assertEquals(other.groundExecutiveUserId(), approved.session().representativeUserId());
+        } finally {
+            recommendationPolicy.setMaximumGroundExecutives(previousMaximum);
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedSelectionWithEmptyBoundedBaselineCanBookEligibleDiscoveredGe() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-empty-baseline");
+        RecommendationScenario scenario = fixture.scenario();
+        jdbc.update("DELETE FROM ground_executive_shifts WHERE employee_profile_id = "
+                + "(SELECT id FROM employee_profiles WHERE user_id = ?)", scenario.geA().getId());
+        int previousMaximum = recommendationPolicy.getMaximumGroundExecutives();
+        try {
+            recommendationPolicy.setMaximumGroundExecutives(1);
+            long version = sessionVersion(scenario.sessionId());
+            var baseline = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new RecommendationRequest(version), false);
+            assertTrue(baseline.candidates().isEmpty());
+            assertEquals(RecommendationStatus.NO_FEASIBLE_TIME, baseline.status());
+            assertTrue(baseline.candidateSearchTruncated());
+            var selected = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new RecommendationRequest(version), true, scenario.geB().getId().toString(), null, 20)
+                    .candidates().get(0);
+            assertEquals(scenario.geB().getId(), selected.groundExecutiveUserId());
+            var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new ApproveVisitRecommendationCommand(version, selected.groundExecutiveUserId(),
+                            selected.scheduledAt(), selected.zoneId(), "Eligible GE found through search"));
+            assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+            assertEquals(scenario.geB().getId(), approval.session().representativeUserId());
+            assertTrue(approval.override());
+            assertNull(approval.topRecommendedGroundExecutiveUserId());
+            assertNull(approval.topRecommendedAt());
+            VisitSchedulingDecision decision = decisions.findById(approval.decisionId()).orElseThrow();
+            assertNull(decision.getRecommendedGroundExecutive());
+            assertNull(decision.getRecommendedScheduledAt());
+            assertEquals(scenario.geB().getId(), decision.getSelectedGroundExecutive().getId());
+            assertEquals(selected.scheduledAt(), decision.getSelectedScheduledAt());
+            assertEquals(fixture.owner().getId(), decision.getApprovedBy().getId());
+            assertEquals(version, decision.getSessionVersionBefore());
+            assertTrue(decision.isOverride());
+            assertEquals("Eligible GE found through search", decision.getOverrideReason());
+            assertEquals(1, decisions.countBySessionId(scenario.sessionId()));
+        } finally {
+            recommendationPolicy.setMaximumGroundExecutives(previousMaximum);
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void ownedEmptyBaselineStillRequiresReasonAndAllBookingGuards() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-empty-guards");
+        RecommendationScenario scenario = fixture.scenario();
+        jdbc.update("DELETE FROM ground_executive_shifts WHERE employee_profile_id = "
+                + "(SELECT id FROM employee_profiles WHERE user_id = ?)", scenario.geA().getId());
+        int previousMaximum = recommendationPolicy.getMaximumGroundExecutives();
+        try {
+            recommendationPolicy.setMaximumGroundExecutives(1);
+            long version = sessionVersion(scenario.sessionId());
+            assertTrue(operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new RecommendationRequest(version), false).candidates().isEmpty());
+            var selected = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new RecommendationRequest(version), true).candidates().get(0);
+            for (String reason : new String[] {null, "   ", "x".repeat(501)}) {
+                assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(
+                        fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
+                                version, selected.groundExecutiveUserId(), selected.scheduledAt(),
+                                selected.zoneId(), reason)));
+            }
+            var command = new ApproveVisitRecommendationCommand(version, selected.groundExecutiveUserId(),
+                    selected.scheduledAt(), selected.zoneId(), "Eligible selection with no top recommendation");
+            assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                    fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
+                            version, scenario.geA().getId(), selected.scheduledAt(), selected.zoneId(), "Cannot bypass shift")));
+            assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                    fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
+                            version + 1, selected.groundExecutiveUserId(), selected.scheduledAt(), selected.zoneId(), "Stale version")));
+            User foreignOwner = ownedScheduler("oe-empty-foreign", fixture.team());
+            assertThrows(EntityNotFoundException.class, () -> operations.selectForOwner(
+                    foreignOwner.getId(), scenario.sessionId(), command));
+            assertThrows(AccessDeniedException.class, () -> operations.selectForOwner(
+                    scenario.tenant().getId(), scenario.sessionId(), command));
+            jdbc.update("UPDATE employee_profiles SET staff_active = false WHERE user_id = ?", scenario.geB().getId());
+            assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                    fixture.owner().getId(), scenario.sessionId(), command));
+            jdbc.update("UPDATE employee_profiles SET staff_active = true WHERE user_id = ?", scenario.geB().getId());
+            jdbc.update("UPDATE visit_session_items SET confirmation_status = 'PENDING' WHERE session_id = ?", scenario.sessionId());
+            assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                    fixture.owner().getId(), scenario.sessionId(), command));
+            jdbc.update("UPDATE visit_session_items SET confirmation_status = 'CONFIRMED' WHERE session_id = ?", scenario.sessionId());
+            RecommendationScenario competing = additionalRecommendationSession(scenario);
+            operations.schedule(scenario.admin().getId(), competing.sessionId(),
+                    new ScheduleVisitSessionCommand(sessionVersion(competing.sessionId()), selected.scheduledAt(),
+                            selected.zoneId(), selected.groundExecutiveUserId(), selected.durationMinutes()));
+            assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
+                    fixture.owner().getId(), scenario.sessionId(), command));
+            assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
+            assertEquals(0, decisions.countBySessionId(scenario.sessionId()));
+        } finally {
+            recommendationPolicy.setMaximumGroundExecutives(previousMaximum);
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void discoveryScansBeyondTwoHundredWithSparsePagesAndSearchesLateDuplicateNames() {
+        OwnedRecommendationFixture fixture = ownedRecommendationFixture("oe-discovery-large");
+        RecommendationScenario scenario = fixture.scenario();
+        for (int index = 0; index < 205; index++) {
+            User ge = user("unavailable-browse-" + index, Role.ROLE_GROUND_BOY);
+            EmployeeProfile employee = new EmployeeProfile(ge, "GROUND_BOY", null, BigDecimal.ZERO);
+            employee.setStaffActive(true);
+            GroundExecutiveSchedulingProfile profile = schedulingProfile(employees.saveAndFlush(employee), scenario.admin());
+            saveCityCoverage(profile, scenario.admin(), scenario.locality().getCity());
+        }
+        List<Long> lateIds = new ArrayList<>();
+        for (int index = 0; index < 2; index++) {
+            User ge = user("late-ravi-" + index, Role.ROLE_GROUND_BOY);
+            ge.setFullName("Ravi O'Neil_100%");
+            users.saveAndFlush(ge);
+            EmployeeProfile employee = new EmployeeProfile(ge, "GROUND_BOY", null, BigDecimal.ZERO);
+            employee.setStaffActive(true);
+            GroundExecutiveSchedulingProfile profile = schedulingProfile(employees.saveAndFlush(employee), scenario.admin());
+            saveCityCoverage(profile, scenario.admin(), scenario.locality().getCity());
+            saveShift(profile, scenario.admin(), scenario.desiredAt().minus(Duration.ofHours(4)),
+                    scenario.desiredAt().plus(Duration.ofHours(4)));
+            lateIds.add(ge.getId());
+        }
+        User punctuationDecoy = user("punctuation-decoy", Role.ROLE_GROUND_BOY);
+        punctuationDecoy.setFullName("Other O'NeilX100X");
+        users.saveAndFlush(punctuationDecoy);
+        EmployeeProfile decoyEmployee = new EmployeeProfile(punctuationDecoy, "GROUND_BOY", null, BigDecimal.ZERO);
+        decoyEmployee.setStaffActive(true);
+        GroundExecutiveSchedulingProfile decoyProfile = schedulingProfile(
+                employees.saveAndFlush(decoyEmployee), scenario.admin());
+        saveCityCoverage(decoyProfile, scenario.admin(), scenario.locality().getCity());
+        saveShift(decoyProfile, scenario.admin(), scenario.desiredAt().minus(Duration.ofHours(4)),
+                scenario.desiredAt().plus(Duration.ofHours(4)));
+        User inactive = user("inactive-ravi", Role.ROLE_GROUND_BOY);
+        inactive.setFullName("Ravi O'Neil_100%");
+        users.saveAndFlush(inactive);
+        GroundExecutiveSchedulingProfile inactiveProfile = schedulingProfile(
+                employees.saveAndFlush(new EmployeeProfile(inactive, "GROUND_BOY", null, BigDecimal.ZERO)),
+                scenario.admin());
+        saveCityCoverage(inactiveProfile, scenario.admin(), scenario.locality().getCity());
+        User uncovered = user("uncovered-ravi", Role.ROLE_GROUND_BOY);
+        uncovered.setFullName("Ravi O'Neil_100%");
+        users.saveAndFlush(uncovered);
+        EmployeeProfile uncoveredEmployee = new EmployeeProfile(uncovered, "GROUND_BOY", null, BigDecimal.ZERO);
+        uncoveredEmployee.setStaffActive(true);
+        GroundExecutiveSchedulingProfile uncoveredProfile = schedulingProfile(
+                employees.saveAndFlush(uncoveredEmployee), scenario.admin());
+        saveCityCoverage(uncoveredProfile, scenario.admin(), "Another City");
+        jdbc.execute("ANALYZE ground_executive_coverage, ground_executive_scheduling_profiles, "
+                + "employee_profiles, users");
+        List<String> searchPlan = jdbc.query("EXPLAIN (ANALYZE, BUFFERS) "
+                        + "SELECT p.employee_profile_id FROM ground_executive_scheduling_profiles p "
+                        + "JOIN employee_profiles ep ON ep.id = p.employee_profile_id "
+                        + "JOIN users u ON u.id = ep.user_id "
+                        + "WHERE u.id > 0 AND p.scheduling_active AND ep.staff_active "
+                        + "AND ep.role_type = 'GROUND_BOY' AND u.role = 'ROLE_GROUND_BOY' "
+                        + "AND (lower(u.full_name) LIKE '%ravi%' ESCAPE '!' OR u.id = 0) "
+                        + "AND EXISTS (SELECT 1 FROM ground_executive_coverage c "
+                        + "WHERE c.employee_profile_id = p.employee_profile_id "
+                        + "AND lower(c.city) = lower(?)) ORDER BY u.id LIMIT 21",
+                (row, index) -> row.getString(1), scenario.locality().getCity());
+        System.out.println("OE_GE_SEARCH_EXPLAIN\n" + String.join("\n", searchPlan));
+        long version = sessionVersion(scenario.sessionId());
+        var defaultView = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), false);
+        assertEquals(2, defaultView.candidates().size());
+        assertTrue(defaultView.candidateSearchTruncated());
+        List<Long> discovered = new ArrayList<>();
+        String cursor = null;
+        boolean sawEmptyContinuation = false;
+        int pages = 0;
+        do {
+            var page = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                    new RecommendationRequest(version), true, null, cursor, 20);
+            assertEquals("DISCOVERY", page.mode());
+            assertTrue(page.scannedCandidateCount() <= 20);
+            assertTrue(page.candidates().size() <= 20);
+            assertTrue(page.candidates().stream().allMatch(candidate -> candidate.rank() == 0));
+            if (page.candidates().isEmpty() && page.nextCursor() != null) sawEmptyContinuation = true;
+            page.candidates().forEach(candidate -> discovered.add(candidate.groundExecutiveUserId()));
+            cursor = page.nextCursor();
+            pages++;
+            assertTrue(pages <= 12, "keyset discovery must progress");
+        } while (cursor != null);
+        assertEquals(11, pages);
+        assertTrue(sawEmptyContinuation);
+        assertEquals(5, discovered.size());
+        assertEquals(5, discovered.stream().distinct().count());
+        assertTrue(discovered.containsAll(lateIds));
+        assertEquals(discovered.stream().sorted().toList(), discovered);
+
+        var matching = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "rAvI", null, 1);
+        assertEquals(1, matching.candidates().size());
+        assertNotNull(matching.nextCursor());
+        var next = operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "RAVI", matching.nextCursor(), 1);
+        assertEquals(1, next.candidates().size());
+        assertNull(next.nextCursor());
+        assertEquals(lateIds, List.of(matching.candidates().get(0).groundExecutiveUserId(),
+                next.candidates().get(0).groundExecutiveUserId()));
+        assertEquals("Ravi O'Neil_100%", matching.candidates().get(0).groundExecutiveName());
+        assertTrue(operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, lateIds.get(0).toString(), null, 20)
+                .candidates().stream().anyMatch(candidate ->
+                        candidate.groundExecutiveUserId().equals(lateIds.get(0))));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, "different", matching.nextCursor(), 1));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, "ravi", matching.nextCursor() + "A", 1));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, "ravi", matching.nextCursor(), 2));
+        assertEquals(2, operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "O'NEIL_100%", null, 20).candidates().size());
+        new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                employees.findByUserId(lateIds.get(1)).orElseThrow().setStaffActive(false));
+        assertTrue(operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "ravi", matching.nextCursor(), 1)
+                .candidates().isEmpty());
+        new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                employees.findByUserId(lateIds.get(1)).orElseThrow().setStaffActive(true));
+        assertTrue(operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "missing name", null, 20).candidates().isEmpty());
+        assertTrue(operations.recommendForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new RecommendationRequest(version), true, "unavailable-browse-200", null, 20)
+                .candidates().isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                false, "ravi", null, 20));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, " ", null, 20));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, "x".repeat(81), null, 20));
+        assertThrows(IllegalArgumentException.class, () -> operations.recommendForOwner(
+                fixture.owner().getId(), scenario.sessionId(), new RecommendationRequest(version),
+                true, null, null, 51));
+
+        var selected = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
+                new ApproveVisitRecommendationCommand(version,
+                        matching.candidates().get(0).groundExecutiveUserId(),
+                        matching.candidates().get(0).scheduledAt(),
+                        matching.candidates().get(0).zoneId(), "Known local GE for this visit"));
+        assertEquals(matching.candidates().get(0).groundExecutiveUserId(),
+                selected.session().representativeUserId());
+        assertTrue(selected.override());
+    }
 
     @BeforeEach
     void enableDatabaseOverlapConstraint() {
@@ -3763,6 +4293,57 @@ class VisitOperationsPostgresIntegrationTest {
         return new RecommendationScenario(admin, tenant, geA, geB, sessionId, desiredAt, locality);
     }
 
+    private void activateGroundExecutives(RecommendationScenario scenario) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            employees.findByUserId(scenario.geA().getId()).orElseThrow().setStaffActive(true);
+            employees.findByUserId(scenario.geB().getId()).orElseThrow().setStaffActive(true);
+        });
+    }
+
+    private OwnedRecommendationFixture ownedRecommendationFixture(String prefix) {
+        RecommendationScenario scenario = recommendationScenario(false);
+        activateGroundExecutives(scenario);
+        SupportedCity city = supportedCities.saveAndFlush(new SupportedCity(
+                prefix + "-" + UUID.randomUUID().toString().replace("-", ""),
+                scenario.locality().getCity(), true));
+        OperatingTeam team = operatingTeams.saveAndFlush(new OperatingTeam(city,
+                prefix + "-team", "Operations Team", true));
+        User owner = ownedScheduler(prefix + "-owner", team);
+        setOwnedScope(scenario.sessionId(), city, team, owner);
+        return new OwnedRecommendationFixture(scenario, owner, city, team);
+    }
+
+    private User ownedScheduler(String name, OperatingTeam team) {
+        User owner = user(name, Role.ROLE_TENANT);
+        EmployeeProfile profile = new EmployeeProfile(owner, "OPERATIONS", null, BigDecimal.ZERO);
+        profile.setStaffActive(true);
+        employees.saveAndFlush(profile);
+        staffGrants.saveAndFlush(new StaffAccessGrant(owner, StaffCapability.OPS_COORDINATE,
+                StaffScopeType.TEAM, null, team, Instant.now().minusSeconds(60), null,
+                null, Instant.now(), "OE_SCHEDULING_TEST", StaffGrantProvisioningSource.ADMIN_API));
+        return owner;
+    }
+
+    private void setOwnedScope(Long sessionId, SupportedCity city, OperatingTeam team, User owner) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            VisitSession session = sessions.findLockedById(sessionId).orElseThrow();
+            session.setSupportedCity(city);
+            session.setOperatingTeam(team);
+            session.setCoordinator(owner);
+            session.setOperationalScopeReady(true);
+            requests.findLockedBySessionIdOrderByIdAsc(sessionId).forEach(request -> {
+                request.setSupportedCity(city);
+                request.setOperatingTeam(team);
+                request.setCoordinator(owner);
+                request.setOperationalScopeReady(true);
+            });
+        });
+    }
+
+    private long sessionVersion(Long sessionId) {
+        return sessions.findById(sessionId).orElseThrow().getVersion();
+    }
+
     private RecommendationScenario additionalRecommendationSession(RecommendationScenario existing) {
         VisitSession session = new VisitSession();
         session.setTenant(existing.tenant());
@@ -4058,6 +4639,21 @@ class VisitOperationsPostgresIntegrationTest {
         }
     }
 
+    private String ownedBook(Long ownerId, Long sessionId, ApproveVisitRecommendationCommand command,
+            CountDownLatch ready, CountDownLatch gate) {
+        ready.countDown();
+        try {
+            if (!gate.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("booking gate timed out");
+            operations.selectForOwner(ownerId, sessionId, command);
+            return "COMMITTED";
+        } catch (VisitOperationsConflictException expected) {
+            return "CONFLICT";
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+    }
+
     private Actors actors() {
         User admin = user("admin", Role.ROLE_ADMIN);
         User tenant = user("tenant", Role.ROLE_TENANT);
@@ -4142,4 +4738,6 @@ class VisitOperationsPostgresIntegrationTest {
             com.indore.pathome.spaces.dto.GroundVisitSessionOutcomeView outcomes) {}
     private record RecommendationScenario(User admin, User tenant, User geA, User geB,
             Long sessionId, Instant desiredAt, Locality locality) {}
+    private record OwnedRecommendationFixture(RecommendationScenario scenario, User owner,
+            SupportedCity city, OperatingTeam team) {}
 }

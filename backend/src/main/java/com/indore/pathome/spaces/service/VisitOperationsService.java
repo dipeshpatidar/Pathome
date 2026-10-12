@@ -88,17 +88,49 @@ public class VisitOperationsService {
     }
 
     @Transactional
+    public VisitSchedulingRecommendationView recommendForOwner(Long actorId, Long sessionId,
+            RecommendationRequest command, boolean all) {
+        return recommendForOwner(actorId, sessionId, command, all, null, null, 20);
+    }
+
+    @Transactional
+    public VisitSchedulingRecommendationView recommendForOwner(Long actorId, Long sessionId,
+            RecommendationRequest command, boolean all, String q, String cursor, int size) {
+        OwnedOperationsAuthorizationService.Actor actor = ownedAuthorization.admit(actorId);
+        if (actor.admin()) throw new AccessDeniedException("Use the Admin recommendation endpoint");
+        VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
+        ownedAuthorization.requireOwnedDraftSession(actor, session);
+        return recommendations.recommendOwned(actor.id(), session, command, all, q, cursor, size);
+    }
+
+    @Transactional
+    public VisitSchedulingApprovalView selectForOwner(Long actorId, Long sessionId,
+            ApproveVisitRecommendationCommand command) {
+        OwnedOperationsAuthorizationService.Actor actor = ownedAuthorization.admit(actorId);
+        if (actor.admin()) throw new AccessDeniedException("Use the Admin recommendation endpoint");
+        requireSelectionCommand(command);
+        VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
+        ownedAuthorization.requireOwnedDraftSession(actor, session);
+        requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
+        if (!recommendations.isPotentialOwnedGe(command.groundExecutiveUserId(), session.getCity()))
+            throw new VisitOperationsConflictException(VisitSchedulingRecommendationService.OWNED_SELECTION_STALE);
+        users.findLockedById(command.groundExecutiveUserId()).orElseThrow(() ->
+                new VisitOperationsConflictException(VisitSchedulingRecommendationService.OWNED_SELECTION_STALE));
+        VisitSchedulingRecommendationService.ApprovalAssessment assessment = recommendations.validateOwnedSelection(
+                session, command.expectedSessionVersion(), command.groundExecutiveUserId(),
+                command.scheduledAt(), command.zoneId());
+        String reason = validatedSelectionReason(command, assessment);
+        ScheduleVisitSessionCommand booking = new ScheduleVisitSessionCommand(session.getVersion(),
+                command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
+        OperationsVisitSessionView scheduled = scheduleLocked(session, booking);
+        return recordSelection(session, actor.user(), command, assessment, reason, scheduled);
+    }
+
+    @Transactional
     public VisitSchedulingApprovalView approveRecommendation(Long actorId, Long sessionId,
             ApproveVisitRecommendationCommand command) {
         User actor = authorization.requireOperations(actorId);
-        requireCommand(command);
-        if (command.expectedSessionVersion() == null)
-            throw new IllegalArgumentException("Expected Visit Session version is required");
-        if (command.groundExecutiveUserId() == null || command.groundExecutiveUserId() <= 0)
-            throw new IllegalArgumentException("Ground Executive user ID must be positive");
-        if (command.scheduledAt() == null) throw new IllegalArgumentException("Scheduled time is required");
-        if (command.overrideReason() != null && command.overrideReason().length() > 500)
-            throw new IllegalArgumentException("Override reason must be 500 characters or fewer");
+        requireSelectionCommand(command);
 
         VisitSession session = lockSession(sessionId);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
@@ -109,11 +141,7 @@ public class VisitOperationsService {
         VisitSchedulingRecommendationService.ApprovalAssessment assessment = recommendations.validateApproval(
                 session, command.expectedSessionVersion(), command.groundExecutiveUserId(),
                 command.scheduledAt(), command.zoneId());
-        String reason = command.overrideReason() == null ? null : command.overrideReason().trim();
-        if (assessment.override() && (reason == null || reason.isBlank()))
-            throw new IllegalArgumentException("An override reason is required when selecting a different candidate");
-        if (!assessment.override() && reason != null && !reason.isBlank())
-            throw new IllegalArgumentException("Override reason is only allowed when selecting a different candidate");
+        String reason = validatedSelectionReason(command, assessment);
 
         if (repairApproval) {
             // This state change is transaction-local. Any scheduling or persistence
@@ -130,12 +158,20 @@ public class VisitOperationsService {
                 command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
         OperationsVisitSessionView scheduled = schedule(actorId, sessionId, booking);
 
+        return recordSelection(session, actor, command, assessment, reason, scheduled);
+    }
+
+    private VisitSchedulingApprovalView recordSelection(VisitSession session, User actor,
+            ApproveVisitRecommendationCommand command,
+            VisitSchedulingRecommendationService.ApprovalAssessment assessment, String reason,
+            OperationsVisitSessionView scheduled) {
         VisitSchedulingDecision decision = new VisitSchedulingDecision();
         decision.setSession(session);
         decision.setSessionVersionBefore(command.expectedSessionVersion());
         decision.setRecommendationGeneratedAt(assessment.validatedAt());
         decision.setPolicyVersion(assessment.policyVersion());
-        decision.setRecommendedGroundExecutive(users.getReferenceById(assessment.topGeId()));
+        decision.setRecommendedGroundExecutive(assessment.topGeId() == null
+                ? null : users.getReferenceById(assessment.topGeId()));
         decision.setRecommendedScheduledAt(assessment.topStart());
         decision.setSelectedGroundExecutive(users.getReferenceById(assessment.selectedGeId()));
         decision.setSelectedScheduledAt(assessment.selectedStart());
@@ -149,6 +185,29 @@ public class VisitOperationsService {
         decisions.saveAndFlush(decision);
         return new VisitSchedulingApprovalView(scheduled, decision.getId(), assessment.override(),
                 assessment.topGeId(), assessment.topStart());
+    }
+
+    private void requireSelectionCommand(ApproveVisitRecommendationCommand command) {
+        requireCommand(command);
+        if (command.expectedSessionVersion() == null)
+            throw new IllegalArgumentException("Expected Visit Session version is required");
+        if (command.groundExecutiveUserId() == null || command.groundExecutiveUserId() <= 0)
+            throw new IllegalArgumentException("Ground Executive user ID must be positive");
+        if (command.scheduledAt() == null) throw new IllegalArgumentException("Scheduled time is required");
+        if (command.overrideReason() != null && command.overrideReason().length() > 500)
+            throw new IllegalArgumentException("Override reason must be 500 characters or fewer");
+    }
+
+    private String validatedSelectionReason(ApproveVisitRecommendationCommand command,
+            VisitSchedulingRecommendationService.ApprovalAssessment assessment) {
+        String reason = command.overrideReason() == null ? null : command.overrideReason().trim();
+        if (assessment.override() && (reason == null || reason.isBlank()))
+            throw new IllegalArgumentException(assessment.topGeId() == null
+                    ? "A selection reason is required when no feasible top recommendation is available"
+                    : "An override reason is required when selecting a different candidate");
+        if (!assessment.override() && reason != null && !reason.isBlank())
+            throw new IllegalArgumentException("Override reason is only allowed when selecting a different candidate");
+        return reason;
     }
 
     @Transactional(readOnly = true)
@@ -508,6 +567,12 @@ public class VisitOperationsService {
                 && Objects.equals(session.getRepresentative() == null ? null : session.getRepresentative().getId(),
                     command.groundExecutiveUserId())
                 && Objects.equals(session.getDurationSnapshotMinutes(), command.durationMinutes())) return operationsView(session);
+        return scheduleLocked(session, command);
+    }
+
+    /** Shared booking core; caller holds the Session lock and has already established authority. */
+    private OperationsVisitSessionView scheduleLocked(VisitSession session, ScheduleVisitSessionCommand command) {
+        requireScheduleCommand(command);
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         if (session.getStatus() != VisitSessionStatus.DRAFT)
             throw new VisitOperationsConflictException("Only draft sessions can be scheduled");
@@ -523,7 +588,7 @@ public class VisitOperationsService {
         session.setAssignedAt(Instant.now());
         List<VisitSessionItem> active = requireSchedulableItems(session.getId());
         validateSessionLocations(session, active);
-        List<PropertyVisitRequest> sessionRequests = requests.findLockedBySessionIdOrderByIdAsc(sessionId);
+        List<PropertyVisitRequest> sessionRequests = requests.findLockedBySessionIdOrderByIdAsc(session.getId());
         Set<Long> activeDirectRequestIds = active.stream().map(VisitSessionItem::getSourceRequest)
                 .filter(Objects::nonNull).map(PropertyVisitRequest::getId).collect(Collectors.toSet());
         for (PropertyVisitRequest request : sessionRequests) {

@@ -3792,3 +3792,148 @@ frontend). No frontend, 2A-3B, scheduling, repair, migration, permission or API-
 tracker still unavailable locally.
 
 Commit: none. Push: none. Not staged. Left as an inspectable uncommitted diff on feature/phase2a-oe-workspace.
+
+## 2026-10-12 14:45 IST — Phase 2A-3B scheduling prerequisite review (approval gate)
+
+Request: implement governed OE scheduling with explainable GE recommendations and selection on
+`feature/phase2a-oe-workspace` at `003d59c3889aa07fb8a1e37a5c102a44b15183a9`.
+
+Investigated: `AGENTS.md`; owned OE authorization, Visit Operations scheduling and recommendation services,
+GE profile/coverage and staff-grant entities and repositories, V37/V44/V45 schema, existing scheduling
+decision audit and API DTOs. The branch, HEAD and working tree matched the requested clean checkpoint.
+
+Outcome: stopped before implementation because GE coverage is City/locality text, while Team scope is
+attached to OE grants and Visit Sessions. No authoritative GE-to-Team assignment or GE Team capability
+exists. The requested rule that selected GEs have applicable City/Team authorization cannot be enforced
+without a product decision on cross-Team GE assignment, or a new GE Team relationship and migration.
+Existing recommendation code also requires explicit scoping and active-staff enforcement before OE use.
+No backend behavior, API, schema, dependency or frontend file was changed.
+
+Verification: repository inspection only. Tests, build, PostgreSQL and browser checks NOT TESTED because
+implementation stopped at the requested architecture approval gate. No stage, commit or push.
+
+## 2026-10-12 15:19 IST — Phase 2A-3B governed OE scheduling implementation
+
+Reason: resumed after approval of the shared city GE pool and the existing deviation-rationale rule.
+
+Changed backend production files: `VisitOperationsController.java` (two OE-specific routes),
+`GroundExecutiveSchedulingProfileRepository.java` (active-staff city candidate and targeted preflight queries),
+`VisitOperationsService.java` (owned authorization, transactional selection, shared booking core and decision audit),
+and `VisitSchedulingRecommendationService.java` (OE top-three/all bounded candidate view, active-staff filtering,
+current-baseline rationale comparison and selected-GE revalidation beyond the search bound).
+
+Changed tests: `VisitOperationsServiceTest.java`, `VisitOperationsPostgresIntegrationTest.java`, and
+`OwnedOperationsHttpPostgresTest.java`. They cover scoped ownership, shared-city GE eligibility, foreign and
+missing identifiers, inactive/uncovered/revoked actors, top and lower-ranked selection, alternate-time rationale,
+property confirmation changes, bounded search, duplicate booking, HTTP admission and a real PostgreSQL
+cross-Team GE collision. Existing Admin, tenant confirmation, entitlement and OTP regressions ran.
+
+Verification: `mvn -o -q -f backend/pom.xml -DskipTests test-compile` passed. Final PostgreSQL-backed
+batch: `PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -o -q -f backend/pom.xml
+-Dtest=VisitOperationsPostgresIntegrationTest,VisitOperationsServiceTest,OwnedOperationsHttpPostgresTest,VisitOperationsAuthorizationServiceTest,StaffAccessGovernancePostgresTest test`
+passed 147 tests, 0 failures, 0 errors, 0 skipped (88 / 31 / 25 / 2 / 1). Cross-Team race passed
+two additional targeted repeats. `git diff --check` and `git diff --cached --check` passed.
+
+Remaining limitation: recommendation discovery uses the existing configured GE search bound (default 100);
+`candidateSearchTruncated` reports when the bound is hit. An eligible selected GE outside that page is
+independently revalidated before booking. Browser, responsive and physical-device checks NOT TESTED because
+this package is backend only. No migration, dependency, frontend, tracker, stage, commit or push.
+
+## 2026-10-12 15:33 IST — Paginated GE discovery architecture gate
+
+Reason: inspect the approved requirement for exhaustive, globally ranked GE pages before editing pagination.
+Investigated the existing uncommitted Phase 2A-3B recommendation service, GE repository and scheduling policy,
+location and travel provider interfaces, and V37 coverage indexes. The branch and committed HEAD remained the
+requested checkpoint; only the previously expected eight uncommitted files were present before this entry.
+
+Finding: the candidate query orders by GE user ID and caps the fetched population, while eligibility and rank
+are calculated after loading each GE's shifts, unavailability, reservations, coverage and optional live location.
+The comparator uses tenant-time gap, travel confidence/minutes, location quality, locality fit, future workload,
+GE ID and start time. A page of database-ordered GEs cannot be independently filtered/ranked into a globally
+ordered page. Exact ranking requires evaluating the city-wide candidate population first, or a new persisted
+ranking snapshot/workflow. The former violates bounded per-request work and the latter is a material redesign
+potentially requiring a migration. No safe no-migration, bounded-query pagination change was made.
+
+Verification: targeted code/schema inspection and `git diff --check` / `git diff --cached --check` only.
+Pagination tests, build and browser checks NOT TESTED because implementation stopped at the explicit gate.
+All previous implementation and test changes remain untouched. No stage, commit or push.
+
+## 2026-10-12 16:15 IST — Phase 2A-3B complete GE discovery and search
+
+Reason: final approval separated bounded intelligent top-three recommendations from comprehensive,
+ID-ordered live GE discovery and approved server-side name/operational-ID search.
+
+Changed backend: `VisitOperationsController.java`, `RecommendationCandidate.java`,
+`VisitSchedulingRecommendationView.java`, `GroundExecutiveSchedulingProfileRepository.java`,
+`VisitOperationsService.java`, `VisitSchedulingRecommendationService.java`, and new
+`OeDiscoveryCursor.java`. Added `backend/docs/OE_GE_DISCOVERY.md`. The earlier uncommitted OE
+scheduling implementation remains: owned authorization, shared-city GE eligibility, fresh top
+recommendation rationale, existing booking locks, collision constraints, audit and Admin isolation.
+Discovery scans one bounded keyset batch per request without the old 100-GE total cap; signed
+10-minute cursors bind actor, Session/version, City/Team, normalized query and page size.
+
+Changed tests: `OwnedOperationsHttpPostgresTest.java`, `VisitOperationsPostgresIntegrationTest.java`,
+`VisitOperationsServiceTest.java`, and new `OeDiscoveryCursorTest.java`. The PostgreSQL fixture
+covered 210 active city candidates, sparse/empty continuation pages, later-page eligible GEs,
+name punctuation and duplicate names, numeric GE User ID lookup, cursor tampering/context,
+live staff changes, selection and cross-Team collision. A populated fixture `EXPLAIN (ANALYZE,
+BUFFERS)` after `ANALYZE` showed 0.995 ms execution for the representative filtered query;
+`lower(city)` and partial `lower(full_name)` predicates currently use scans rather than a
+matching expression/trigram index. This is small-fixture evidence only, not a production-scale
+latency claim. No migration or dependency was added.
+
+Verification: `mvn -q -DskipTests compile` and `mvn -q -DskipTests test-compile` passed.
+`PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=OeDiscoveryCursorTest,VisitOperationsServiceTest,VisitOperationsPostgresIntegrationTest,OwnedOperationsHttpPostgresTest,LocationSnapshotProviderConfigurationTest test`
+passed 148 tests (1/31/89/25/2), 0 failures/errors/skips. A second focused batch of
+`VisitOperationsAuthorizationServiceTest,StaffAccessGovernancePostgresTest` passed 3 tests
+(2/1), 0 failures/errors/skips. The populated-plan discovery test was rerun after adding plan
+capture and passed. `git diff --check` and `git diff --cached --check` passed.
+
+Outstanding / NOT TESTED: production-scale search latency and browser, responsive, physical-device
+checks (backend-only scope). No frontend, schema, dependency, tracker, auth redesign, stage,
+commit or push. Branch and committed HEAD remain `feature/phase2a-oe-workspace` /
+`003d59c3889aa07fb8a1e37a5c102a44b15183a9`.
+
+Final consolidated rerun at 16:16 IST: the seven-class PostgreSQL/unit/HTTP command combining all classes
+listed above passed 151 tests, 0 failures, 0 errors, 0 skipped (89/31/25/2/2/1/1). The analyzed
+210-candidate search plan in that run executed in 0.366 ms; this remains fixture-scale evidence.
+
+## 2026-10-12 16:38 IST — Phase 2A-3B empty recommendation baseline correction
+
+Reason: explicitly approved correction after an independent reviewer reproduced rejection of an
+eligible later GE when every GE inside the bounded recommendation pool was infeasible.
+
+Confirmed root cause in `VisitSchedulingRecommendationService.validateApproval`: the selected GE/time
+passed independent feasibility evaluation, then the empty OE baseline threw "Current top recommendation
+is unavailable; refresh recommendations". Added the permanent PostgreSQL test
+`ownedSelectionWithEmptyBoundedBaselineCanBookEligibleDiscoveredGe` first and executed it against the
+uncorrected code: 1 test, 0 failures, 1 error with that exact exception.
+
+Correction files: `backend/src/main/java/com/indore/pathome/spaces/service/VisitSchedulingRecommendationService.java`
+(absent OE top becomes null, reason-bearing decision required),
+`backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java`
+(nullable top audit reference and truthful missing-reason validation),
+`backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java`
+(two permanent regressions for booking and negative guards),
+`backend/src/test/java/com/indore/pathome/spaces/service/OwnedOperationsHttpPostgresTest.java`
+(101-city-GE HTTP acceptance with first 100 infeasible), and `backend/docs/OE_GE_DISCOVERY.md`
+(approved absent-baseline behavior). This log is append-only. Previous uncommitted work is preserved.
+
+V38 already permits the recommended GE/time pair to be null. Successful absent-baseline decisions
+persist both null, `was_override=true`, the validated reason, selected GE/time, actor and Session
+context. Existing feasible-top comparison and Admin behavior remain. No migration, entity/DTO change,
+new query/cache, search/pagination/ranking redesign, or permission expansion was necessary.
+
+Verification: three new PostgreSQL/HTTP tests passed in the focused run. `mvn -q -DskipTests test-compile`
+passed. One consolidated final batch from backend:
+`PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true mvn -q -Dtest=OeDiscoveryCursorTest,VisitOperationsServiceTest,VisitOperationsPostgresIntegrationTest,OwnedOperationsHttpPostgresTest,LocationSnapshotProviderConfigurationTest,VisitOperationsAuthorizationServiceTest,StaffAccessGovernancePostgresTest test`
+passed 154 tests (1/31/91/26/2/2/1), 0 failures, 0 errors, 0 skipped. Missing/blank/oversized reasons,
+ineligible/inactive GE, unconfirmed property, foreign ownership, unauthorized actor, stale version and
+GE collision remain rejected. Existing top/non-top, shared-city cross-Team concurrency, Admin,
+entitlement, tenant-confirmation, OTP and foreign-Request regressions passed. Diff whitespace checks
+passed for unstaged and staged diffs.
+
+NOT TESTED: browser/responsive/physical-device checks (backend-only correction); production-scale
+performance benchmarking (query/cache architecture unchanged by this correction). No new approval
+blocker identified. No frontend, dependency, migration, tracker, stage, commit, push or merge.
+Branch `feature/phase2a-oe-workspace`, committed HEAD `003d59c3889aa07fb8a1e37a5c102a44b15183a9`.

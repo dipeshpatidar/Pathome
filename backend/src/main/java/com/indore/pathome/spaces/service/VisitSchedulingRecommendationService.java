@@ -7,6 +7,7 @@ import com.indore.pathome.spaces.repository.*;
 import com.indore.pathome.spaces.service.field.*;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +19,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class VisitSchedulingRecommendationService {
+    static final String OWNED_SELECTION_STALE = "Selected Ground Executive or time is no longer eligible; refresh recommendations";
     private static final List<VisitSessionStatus> ACTIVE_RESERVATION_STATUSES =
             List.of(VisitSessionStatus.SCHEDULED, VisitSessionStatus.STARTED);
 
@@ -36,6 +38,8 @@ public class VisitSchedulingRecommendationService {
     private final LocationSnapshotProvider locations;
     private final TravelTimeEstimator travelEstimator;
     private final SchedulingRecommendationPolicy policy;
+    @Value("${app.jwt.secret:}")
+    private String discoveryCursorSecret;
 
     public VisitSchedulingRecommendationService(VisitSessionRepository sessions,
             VisitSessionItemRepository items, PropertyVisitRequestRepository requests,
@@ -74,6 +78,98 @@ public class VisitSchedulingRecommendationService {
         requireVersion(session, command.expectedSessionVersion());
         boolean repairPreview = session.getStatus() == VisitSessionStatus.REPAIR_REQUIRED;
         return evaluate(session, Instant.now(), null, false, null, repairPreview).view();
+    }
+
+    /** The caller holds the owned DRAFT Session and its operational scope guards. */
+    VisitSchedulingRecommendationView recommendOwned(Long actorId, VisitSession session,
+            RecommendationRequest command, boolean all, String q, String cursor, int size) {
+        if (command == null || command.expectedSessionVersion() == null)
+            throw new IllegalArgumentException("Expected Visit Session version is required");
+        requireVersion(session, command.expectedSessionVersion());
+        if (session.getStatus() != VisitSessionStatus.DRAFT)
+            throw new VisitOperationsConflictException("Only draft sessions can be recommended");
+        if (!all) {
+            if (q != null || cursor != null || size != 20)
+                throw new IllegalArgumentException("Search, cursor and page size require all=true");
+            VisitSchedulingRecommendationView view = sanitizeOwned(evaluate(session, Instant.now(), List.of(),
+                    false, null, false, 3, true).view());
+            List<String> diagnostics = new ArrayList<>(view.diagnostics());
+            diagnostics.add("RANKED_WITHIN_FIRST_" + policy.getMaximumGroundExecutives()
+                    + "_CITY_GE_ID_CANDIDATES");
+            return new VisitSchedulingRecommendationView(view.sessionId(), view.sessionVersion(),
+                    view.recommendationGeneratedAt(), view.policyVersion(), view.status(),
+                    view.candidateSearchTruncated(), diagnostics, List.of(), view.candidates());
+        }
+        if (actorId == null || actorId <= 0)
+            throw new IllegalArgumentException("Authenticated discovery actor is required");
+        if (discoveryCursorSecret == null || discoveryCursorSecret.isBlank())
+            throw new IllegalStateException("Discovery cursor signing secret is unavailable");
+        if (size < 1 || size > 50)
+            throw new IllegalArgumentException("Discovery page size must be between 1 and 50");
+        String query = normalizeDiscoveryQuery(q);
+        Instant now = Instant.now();
+        long afterId = cursor == null ? 0 : OeDiscoveryCursor.decode(discoveryCursorSecret,
+                cursor, actorId, session, query, size, now);
+        PageRequest batchLimit = PageRequest.of(0, size + 1);
+        List<GroundExecutiveSchedulingProfile> found = query.isEmpty()
+                ? profiles.scanActiveStaffCoveringCity(session.getCity(), afterId, batchLimit)
+                : profiles.scanActiveStaffCoveringCityMatching(session.getCity(), afterId,
+                        discoveryNamePattern(query), exactGeUserId(query), batchLimit);
+        boolean moreCandidates = found.size() > size;
+        List<GroundExecutiveSchedulingProfile> batch = found.subList(0, Math.min(size, found.size()));
+        Evaluation evaluation = evaluate(session, now, List.of(), false, null, false,
+                size, true, null, batch);
+        Map<Long, String> names = new HashMap<>();
+        for (GroundExecutiveSchedulingProfile profile : batch)
+            names.put(profile.getEmployeeProfile().getUser().getId(),
+                    profile.getEmployeeProfile().getUser().getFullName());
+        List<RecommendationCandidate> candidates = evaluation.ranked().stream()
+                .sorted(Comparator.comparing(CandidatePlan::geId))
+                .map(plan -> toView(plan, 0, names.get(plan.geId()))).toList();
+        String next = moreCandidates ? OeDiscoveryCursor.encode(discoveryCursorSecret, actorId,
+                session, query, size, batch.get(batch.size() - 1).getEmployeeProfile().getUser().getId(), now) : null;
+        VisitSchedulingRecommendationView view = sanitizeOwned(evaluation.view());
+        return new VisitSchedulingRecommendationView(view.sessionId(), view.sessionVersion(),
+                view.recommendationGeneratedAt(), view.policyVersion(), view.status(),
+                view.candidateSearchTruncated(), view.diagnostics(), List.of(), candidates,
+                "DISCOVERY", next, size, batch.size());
+    }
+
+    private VisitSchedulingRecommendationView sanitizeOwned(VisitSchedulingRecommendationView view) {
+        // A scoped OE receives only eligible options; rejected GE IDs and GE-specific diagnostics
+        // are internal scheduling details and are not needed to make a selection.
+        return new VisitSchedulingRecommendationView(view.sessionId(), view.sessionVersion(),
+                view.recommendationGeneratedAt(), view.policyVersion(), view.status(),
+                view.candidateSearchTruncated(), view.diagnostics().stream()
+                        .filter(value -> !value.startsWith("GE_")).toList(), List.of(), view.candidates());
+    }
+
+    private String normalizeDiscoveryQuery(String q) {
+        if (q == null) return "";
+        String value = q.strip().toLowerCase(Locale.ROOT);
+        if (value.isEmpty() || value.length() > 80 || value.codePoints().anyMatch(Character::isISOControl))
+            throw new IllegalArgumentException("Search query must contain 1 to 80 printable characters");
+        return value;
+    }
+
+    private String discoveryNamePattern(String query) {
+        StringBuilder pattern = new StringBuilder("%");
+        for (int offset = 0; offset < query.length(); offset++) {
+            char ch = query.charAt(offset);
+            if (ch == '!' || ch == '%' || ch == '_') pattern.append('!');
+            pattern.append(ch);
+        }
+        return pattern.append('%').toString();
+    }
+
+    private Long exactGeUserId(String query) {
+        if (query.isEmpty() || query.chars().anyMatch(ch -> ch < '0' || ch > '9')) return 0L;
+        try { return Long.parseLong(query); }
+        catch (NumberFormatException ex) { return 0L; }
+    }
+
+    boolean isPotentialOwnedGe(Long userId, String city) {
+        return userId != null && city != null && profiles.isPotentialActiveStaffInCity(userId, city);
     }
 
     /**
@@ -153,6 +249,18 @@ public class VisitSchedulingRecommendationService {
     @Transactional
     public ApprovalAssessment validateApproval(VisitSession lockedSession, Long expectedVersion,
             Long selectedGroundExecutiveUserId, Instant selectedAt, String zoneId) {
+        return validateApproval(lockedSession, expectedVersion, selectedGroundExecutiveUserId,
+                selectedAt, zoneId, false);
+    }
+
+    ApprovalAssessment validateOwnedSelection(VisitSession lockedSession, Long expectedVersion,
+            Long selectedGroundExecutiveUserId, Instant selectedAt, String zoneId) {
+        return validateApproval(lockedSession, expectedVersion, selectedGroundExecutiveUserId,
+                selectedAt, zoneId, true);
+    }
+
+    private ApprovalAssessment validateApproval(VisitSession lockedSession, Long expectedVersion,
+            Long selectedGroundExecutiveUserId, Instant selectedAt, String zoneId, boolean requireActiveStaff) {
         if (lockedSession == null) throw new IllegalArgumentException("Visit Session is required");
         requireVersion(lockedSession, expectedVersion);
         boolean repairApproval = lockedSession.getStatus() == VisitSessionStatus.REPAIR_REQUIRED;
@@ -163,29 +271,47 @@ public class VisitSchedulingRecommendationService {
         validateZone(zoneId);
 
         EmployeeProfile employee = employees.findLockedByUserId(selectedGroundExecutiveUserId)
-                .orElseThrow(() -> new VisitOperationsConflictException("Selected Ground Executive is no longer eligible"));
-        if (!"GROUND_BOY".equalsIgnoreCase(employee.getRoleType()))
-            throw new VisitOperationsConflictException("Selected Ground Executive is no longer eligible");
+                .orElseThrow(() -> new VisitOperationsConflictException(requireActiveStaff
+                        ? OWNED_SELECTION_STALE : "Selected Ground Executive is no longer eligible"));
+        if ((requireActiveStaff && !employee.isStaffActive())
+                || !"GROUND_BOY".equalsIgnoreCase(employee.getRoleType())
+                || (requireActiveStaff && employee.getUser().getRole() != Role.ROLE_GROUND_BOY))
+            throw new VisitOperationsConflictException(requireActiveStaff
+                    ? OWNED_SELECTION_STALE : "Selected Ground Executive is no longer eligible");
         GroundExecutiveSchedulingProfile profile = profiles.findLockedByUserId(selectedGroundExecutiveUserId)
-                .orElseThrow(() -> new VisitOperationsConflictException("Ground Executive scheduling profile is unavailable"));
+                .orElseThrow(() -> new VisitOperationsConflictException(requireActiveStaff
+                        ? OWNED_SELECTION_STALE
+                        : "Ground Executive scheduling profile is unavailable"));
         if (!profile.isSchedulingActive())
-            throw new VisitOperationsConflictException("Ground Executive scheduling is inactive");
-        authorization.requireGroundExecutiveTarget(selectedGroundExecutiveUserId);
+            throw new VisitOperationsConflictException(requireActiveStaff
+                    ? OWNED_SELECTION_STALE : "Ground Executive scheduling is inactive");
+        if (!requireActiveStaff) authorization.requireGroundExecutiveTarget(selectedGroundExecutiveUserId);
 
         Instant now = Instant.now();
-        Evaluation evaluation = evaluate(lockedSession, now, List.of(selectedAt), true, null, repairApproval);
+        Evaluation evaluation = evaluate(lockedSession, now, List.of(selectedAt), true, null,
+                repairApproval, policy.getCandidateLimit(), requireActiveStaff,
+                requireActiveStaff ? selectedGroundExecutiveUserId : null);
         CandidatePlan selected = evaluation.feasible().stream()
                 .filter(plan -> plan.geId().equals(selectedGroundExecutiveUserId)
                         && plan.start().equals(selectedAt)
                         && plan.zoneId().equals(zoneId))
-                .findFirst().orElseThrow(() -> new VisitOperationsConflictException(
-                        "The recommendation is stale or the selected GE/time is no longer feasible; refresh recommendations"));
-        CandidatePlan top = evaluation.ranked().stream().findFirst().orElseThrow(() ->
-                new VisitOperationsConflictException("No feasible recommendation remains; refresh recommendations"));
-        boolean override = !top.geId().equals(selected.geId()) || !top.start().equals(selected.start());
+                .findFirst().orElseThrow(() -> new VisitOperationsConflictException(requireActiveStaff
+                        ? OWNED_SELECTION_STALE
+                        : "The recommendation is stale or the selected GE/time is no longer feasible; refresh recommendations"));
+        // A selected off-grid time is inserted solely to validate it. It must not rewrite the
+        // baseline top recommendation used to decide whether an OE owes a reason.
+        Evaluation baseline = requireActiveStaff
+                ? evaluate(lockedSession, now, List.of(), false, null, false,
+                        policy.getCandidateLimit(), true)
+                : evaluation;
+        CandidatePlan top = baseline.ranked().stream().findFirst().orElse(requireActiveStaff ? null : selected);
+        // An empty bounded OE baseline is not an eligibility failure. The independently validated
+        // selection still requires a reason, and the audit keeps the absent top GE/time as null.
+        boolean override = top == null || !top.geId().equals(selected.geId()) || !top.start().equals(selected.start());
         return new ApprovalAssessment(selected.geId(), selected.start(), selected.durationMinutes(),
-                top.geId(), top.start(), now, policy.getVersion(), override, selected.locationAssessment(),
-                selected.travelConfidence(), evaluation.view().status());
+                top == null ? null : top.geId(), top == null ? null : top.start(), now,
+                policy.getVersion(), override, selected.locationAssessment(),
+                selected.travelConfidence(), baseline.view().status());
     }
 
     private Evaluation evaluate(VisitSession session, Instant now, Instant additionallyRequestedStart,
@@ -196,6 +322,28 @@ public class VisitSchedulingRecommendationService {
 
     private Evaluation evaluate(VisitSession session, Instant now, Collection<Instant> additionallyRequestedStarts,
                                 boolean lockInputs, Long excludedSessionId, boolean allowScheduledRepair) {
+        return evaluate(session, now, additionallyRequestedStarts, lockInputs, excludedSessionId,
+                allowScheduledRepair, policy.getCandidateLimit(), false);
+    }
+
+    private Evaluation evaluate(VisitSession session, Instant now, Collection<Instant> additionallyRequestedStarts,
+                                boolean lockInputs, Long excludedSessionId, boolean allowScheduledRepair,
+                                int responseLimit, boolean requireActiveStaff) {
+        return evaluate(session, now, additionallyRequestedStarts, lockInputs, excludedSessionId,
+                allowScheduledRepair, responseLimit, requireActiveStaff, null);
+    }
+
+    private Evaluation evaluate(VisitSession session, Instant now, Collection<Instant> additionallyRequestedStarts,
+                                boolean lockInputs, Long excludedSessionId, boolean allowScheduledRepair,
+                                int responseLimit, boolean requireActiveStaff, Long selectedGeId) {
+        return evaluate(session, now, additionallyRequestedStarts, lockInputs, excludedSessionId,
+                allowScheduledRepair, responseLimit, requireActiveStaff, selectedGeId, null);
+    }
+
+    private Evaluation evaluate(VisitSession session, Instant now, Collection<Instant> additionallyRequestedStarts,
+                                boolean lockInputs, Long excludedSessionId, boolean allowScheduledRepair,
+                                int responseLimit, boolean requireActiveStaff, Long selectedGeId,
+                                List<GroundExecutiveSchedulingProfile> discoveryProfiles) {
         if (session.getStatus() != VisitSessionStatus.DRAFT)
             if (!(allowScheduledRepair && (session.getStatus() == VisitSessionStatus.SCHEDULED
                     || session.getStatus() == VisitSessionStatus.REPAIR_REQUIRED)))
@@ -306,13 +454,26 @@ public class VisitSchedulingRecommendationService {
         if (!rangeStart.isBefore(boundedEnd))
             return empty(session, now, RecommendationStatus.NO_FEASIBLE_TIME, planningTruncated, "TENANT_WINDOW_EXPIRED");
 
-        List<GroundExecutiveSchedulingProfile> activeProfiles = profiles.findActiveCoveringCity(
-                session.getCity(), PageRequest.of(0, policy.getMaximumGroundExecutives() + 1));
+        List<GroundExecutiveSchedulingProfile> foundProfiles = discoveryProfiles != null ? discoveryProfiles : requireActiveStaff
+                ? profiles.findActiveStaffCoveringCity(session.getCity(),
+                        PageRequest.of(0, policy.getMaximumGroundExecutives() + 1))
+                : profiles.findActiveCoveringCity(session.getCity(),
+                        PageRequest.of(0, policy.getMaximumGroundExecutives() + 1));
+        List<GroundExecutiveSchedulingProfile> activeProfiles = new ArrayList<>(foundProfiles);
         if (activeProfiles.isEmpty())
             return empty(session, now, RecommendationStatus.NO_ELIGIBLE_GE, planningTruncated, "NO_ACTIVE_CITY_COVERAGE");
-        if (activeProfiles.size() > policy.getMaximumGroundExecutives()) {
-            activeProfiles = activeProfiles.subList(0, policy.getMaximumGroundExecutives());
+        if (discoveryProfiles == null && activeProfiles.size() > policy.getMaximumGroundExecutives()) {
+            activeProfiles = new ArrayList<>(activeProfiles.subList(0, policy.getMaximumGroundExecutives()));
             planningTruncated = true;
+        }
+        if (selectedGeId != null && activeProfiles.stream().noneMatch(profile ->
+                Objects.equals(profile.getEmployeeProfile().getUser().getId(), selectedGeId))) {
+            profiles.findLockedByUserId(selectedGeId)
+                    .filter(GroundExecutiveSchedulingProfile::isSchedulingActive)
+                    .filter(profile -> profile.getEmployeeProfile().isStaffActive())
+                    .filter(profile -> "GROUND_BOY".equalsIgnoreCase(profile.getEmployeeProfile().getRoleType()))
+                    .filter(profile -> profile.getEmployeeProfile().getUser().getRole() == Role.ROLE_GROUND_BOY)
+                    .ifPresent(activeProfiles::add);
         }
         // A repair proposal must always be checked against its currently assigned GE,
         // even when that GE falls outside the bounded recommendation page.
@@ -397,9 +558,13 @@ public class VisitSchedulingRecommendationService {
         Map<Long, CandidatePlan> bestByGe = feasible.stream().collect(Collectors.toMap(CandidatePlan::geId,
                 Function.identity(), (left, right) -> order.compare(left, right) <= 0 ? left : right));
         List<CandidatePlan> ranked = bestByGe.values().stream().sorted(order).toList();
+        Map<Long, String> namesByGe = new HashMap<>();
+        for (GroundExecutiveSchedulingProfile profile : activeProfiles)
+            namesByGe.put(profile.getEmployeeProfile().getUser().getId(),
+                    profile.getEmployeeProfile().getUser().getFullName());
         List<RecommendationCandidate> responseCandidates = new ArrayList<>();
-        for (int i = 0; i < Math.min(ranked.size(), policy.getCandidateLimit()); i++)
-            responseCandidates.add(toView(ranked.get(i), i + 1));
+        for (int i = 0; i < Math.min(ranked.size(), responseLimit); i++)
+            responseCandidates.add(toView(ranked.get(i), i + 1, namesByGe.get(ranked.get(i).geId())));
 
         RecommendationStatus status;
         if (ranked.isEmpty()) status = eligibleGeCount == 0
@@ -770,10 +935,14 @@ public class VisitSchedulingRecommendationService {
     }
 
     private RecommendationCandidate toView(CandidatePlan plan, int rank) {
+        return toView(plan, rank, null);
+    }
+
+    private RecommendationCandidate toView(CandidatePlan plan, int rank, String name) {
         return new RecommendationCandidate(plan.geId(), plan.start(), plan.end(), plan.durationMinutes(),
                 plan.zoneId(), rank,
                 "FEASIBLE", plan.locationAssessment(), plan.originSource(), plan.travelConfidence(),
-                plan.workloadCount(), plan.workloadMinutes(), plan.reasons());
+                plan.workloadCount(), plan.workloadMinutes(), plan.reasons(), name);
     }
 
     private Evaluation empty(VisitSession session, Instant now, RecommendationStatus status,

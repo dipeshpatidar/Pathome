@@ -126,7 +126,133 @@ class OwnedOperationsHttpPostgresTest {
     @Autowired private OperationalOwnershipService ownership;
     @Autowired private StaffAdministrationService staffAdministration;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private SchedulingRecommendationPolicy recommendationPolicy;
     @LocalServerPort private int httpPort;
+
+    @Test
+    void oeSchedulingRoutesRequireCurrentOwnedScopeAndHideForeignSessions() throws Exception {
+        Fixture own = fixture("oe-scheduling-http");
+        Fixture other = fixture("oe-scheduling-foreign");
+        VisitSession owned = session("oe-scheduling", own, VisitSessionStatus.DRAFT, own.owner().user(), 0);
+        VisitSession foreign = session("oe-scheduling", other, VisitSessionStatus.DRAFT, other.owner().user(), 0);
+        Actor admin = admin("oe-scheduling-admin");
+        String ownPath = "/api/v1/operations/visit-sessions/" + owned.getId() + "/oe-recommendations";
+        String foreignPath = "/api/v1/operations/visit-sessions/" + foreign.getId() + "/oe-recommendations";
+        String body = "{\"expectedSessionVersion\":" + sessionVersion(owned.getId()) + "}";
+
+        assertEquals(401, send("POST", ownPath, null, body).statusCode());
+        assertEquals(403, send("POST", ownPath, admin.token(), body).statusCode());
+        HttpResponse<String> recommendation = send("POST", ownPath, own.owner().token(), body);
+        assertEquals(200, recommendation.statusCode());
+        assertEquals(owned.getId(), mapper.readTree(recommendation.body()).path("sessionId").asLong());
+        HttpResponse<String> search = send("POST", ownPath + "?all=true&q=Ravi", own.owner().token(), body);
+        assertEquals(200, search.statusCode());
+        assertEquals("DISCOVERY", mapper.readTree(search.body()).path("mode").asText());
+        assertEquals(0, mapper.readTree(search.body()).path("candidates").size());
+        assertEquals(400, send("POST", ownPath + "?q=Ravi", own.owner().token(), body).statusCode());
+        assertEquals(400, send("POST", ownPath + "?all=true&size=51", own.owner().token(), body).statusCode());
+        assertEquals(400, send("POST", ownPath + "?all=true&cursor=malformed",
+                own.owner().token(), body).statusCode());
+        HttpResponse<String> hidden = send("POST", foreignPath, own.owner().token(), body);
+        HttpResponse<String> hiddenSearch = send("POST", foreignPath + "?all=true&q=Ravi",
+                own.owner().token(), body);
+        HttpResponse<String> absent = send("POST",
+                "/api/v1/operations/visit-sessions/" + Long.MAX_VALUE + "/oe-recommendations",
+                own.owner().token(), body);
+        assertEquals(404, hidden.statusCode());
+        assertEquals(404, hiddenSearch.statusCode());
+        assertEquals(absent.statusCode(), hidden.statusCode());
+        assertEquals(mapper.readTree(absent.body()).path("message").asText(),
+                mapper.readTree(hidden.body()).path("message").asText());
+    }
+
+    @Test
+    void oeCanBookSearchedGeWhenFirstHundredRecommendationCandidatesAreInfeasible() throws Exception {
+        Fixture fixture = fixture("oe-empty-http");
+        Actor admin = admin("oe-empty-http-admin");
+        VisitSession session = session("oe-empty-http", fixture, VisitSessionStatus.DRAFT, fixture.owner().user(), 0);
+        PropertyVisitRequest request = linkedRequest("oe-empty-http", fixture, session,
+                VisitRequestStatus.COORDINATING, fixture.owner().user());
+        Instant start = Instant.now().plus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        Instant end = start.plus(Duration.ofHours(2));
+        request.setAvailabilityStartAt(start);
+        request.setAvailabilityEndAt(end);
+        request.setAvailabilityZoneId("Asia/Kolkata");
+        request.setPreferredAt(start);
+        requests.saveAndFlush(request);
+        VisitSessionItem item = directItem(session, request, request.getListing(), 1);
+        item.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
+        item.setConfirmedBy(admin.user());
+        item.setAvailabilityConfirmedAt(Instant.now());
+        item.setAvailabilityStartAt(start);
+        item.setAvailabilityEndAt(end);
+        item.setAvailabilityZoneId("Asia/Kolkata");
+        item.setAvailabilitySource(PropertyAvailabilitySource.PHONE);
+        visitSessionItems.saveAndFlush(item);
+        Actor eligible = null;
+        assertEquals(100, recommendationPolicy.getMaximumGroundExecutives());
+        for (int index = 0; index <= 100; index++) {
+            Actor ge = actor("oe-empty-http-ge-" + index, Role.ROLE_GROUND_BOY, "GROUND_BOY", true);
+            long profileId = employees.findByUserId(ge.user().getId()).orElseThrow().getId();
+            jdbc.update("INSERT INTO ground_executive_scheduling_profiles "
+                    + "(employee_profile_id, scheduling_active, updated_by_user_id) VALUES (?, true, ?)",
+                    profileId, admin.user().getId());
+            jdbc.update("INSERT INTO ground_executive_coverage (employee_profile_id, city, created_by_user_id) "
+                    + "VALUES (?, ?, ?)", profileId, fixture.city().getDisplayName(), admin.user().getId());
+            if (index == 100) {
+                eligible = ge;
+                jdbc.update("INSERT INTO ground_executive_shifts "
+                        + "(employee_profile_id, starts_at, ends_at, zone_id, created_by_user_id, updated_by_user_id) "
+                        + "VALUES (?, ?, ?, 'Asia/Kolkata', ?, ?)", profileId,
+                        java.sql.Timestamp.from(start.minus(Duration.ofHours(4))),
+                        java.sql.Timestamp.from(end.plus(Duration.ofHours(4))), admin.user().getId(), admin.user().getId());
+            }
+        }
+        assertNotNull(eligible);
+        String path = "/api/v1/operations/visit-sessions/" + session.getId() + "/oe-recommendations";
+        long version = sessionVersion(session.getId());
+        String body = mapper.writeValueAsString(Map.of("expectedSessionVersion", version));
+        HttpResponse<String> baseline = send("POST", path, fixture.owner().token(), body);
+        assertEquals(200, baseline.statusCode(), baseline.body());
+        assertEquals(0, mapper.readTree(baseline.body()).path("candidates").size());
+        assertEquals("NO_FEASIBLE_TIME", mapper.readTree(baseline.body()).path("status").asText());
+        assertTrue(mapper.readTree(baseline.body()).path("candidateSearchTruncated").asBoolean());
+        HttpResponse<String> search = send("POST", path + "?all=true&q=" + eligible.user().getId(),
+                fixture.owner().token(), body);
+        assertEquals(200, search.statusCode(), search.body());
+        JsonNode candidates = mapper.readTree(search.body()).path("candidates");
+        assertEquals(1, candidates.size());
+        JsonNode selected = candidates.get(0);
+        Map<String, Object> selection = new java.util.HashMap<>();
+        selection.put("expectedSessionVersion", version);
+        selection.put("groundExecutiveUserId", eligible.user().getId());
+        selection.put("scheduledAt", selected.path("scheduledAt").asText());
+        selection.put("zoneId", selected.path("zoneId").asText());
+        assertEquals(400, send("POST", path + "/selection", fixture.owner().token(),
+                mapper.writeValueAsString(selection)).statusCode());
+        selection.put("overrideReason", "   ");
+        assertEquals(400, send("POST", path + "/selection", fixture.owner().token(),
+                mapper.writeValueAsString(selection)).statusCode());
+        selection.put("overrideReason", "Eligible GE found beyond the recommendation pool");
+        HttpResponse<String> booked = send("POST", path + "/selection", fixture.owner().token(),
+                mapper.writeValueAsString(selection));
+        assertEquals(200, booked.statusCode(), booked.body());
+        JsonNode result = mapper.readTree(booked.body());
+        assertEquals("SCHEDULED", result.path("session").path("status").asText());
+        assertEquals(eligible.user().getId().longValue(), result.path("session").path("representativeUserId").asLong());
+        assertTrue(result.path("override").asBoolean());
+        assertTrue(result.path("topRecommendedGroundExecutiveUserId").isNull());
+        assertTrue(result.path("topRecommendedAt").isNull());
+        Map<String, Object> audit = jdbc.queryForMap("SELECT * FROM visit_scheduling_decisions WHERE id = ?",
+                result.path("decisionId").asLong());
+        assertNull(audit.get("recommended_ground_executive_user_id"));
+        assertNull(audit.get("recommended_scheduled_at"));
+        assertEquals(eligible.user().getId(), audit.get("selected_ground_executive_user_id"));
+        assertEquals(fixture.owner().user().getId(), audit.get("approved_by_user_id"));
+        assertEquals(selection.get("overrideReason"), audit.get("override_reason"));
+        assertEquals(Boolean.TRUE, audit.get("was_override"));
+        assertNull(sessions.findById(session.getId()).orElseThrow().getStartedAt());
+    }
 
     // ------------------------------------------------------------------ admission (401 / 403)
 

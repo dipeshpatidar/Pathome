@@ -56,6 +56,23 @@ public class VisitOperationsController {
         return ResponseEntity.ok(operations.approveRecommendation(authenticatedUserId(authentication), sessionId, command));
     }
 
+    @PostMapping("/visit-sessions/{sessionId}/oe-recommendations")
+    public ResponseEntity<VisitSchedulingRecommendationView> recommendForOwner(Authentication authentication,
+            @PathVariable Long sessionId, @RequestParam(defaultValue = "false") boolean all,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestBody RecommendationRequest command) {
+        return ResponseEntity.ok(operations.recommendForOwner(authenticatedUserId(authentication),
+                sessionId, command, all, q, cursor, size));
+    }
+
+    @PostMapping("/visit-sessions/{sessionId}/oe-recommendations/selection")
+    public ResponseEntity<VisitSchedulingApprovalView> selectForOwner(Authentication authentication,
+            @PathVariable Long sessionId, @RequestBody ApproveVisitRecommendationCommand command) {
+        return ResponseEntity.ok(operations.selectForOwner(authenticatedUserId(authentication), sessionId, command));
+    }
+
     @PostMapping("/visit-sessions/{sessionId}/items")
     public ResponseEntity<OperationsVisitSessionView> addItem(Authentication authentication,
             @PathVariable Long sessionId, @RequestBody AddVisitSessionItemCommand command) {

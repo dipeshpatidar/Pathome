@@ -448,6 +448,47 @@ class VisitOperationsServiceTest {
     }
 
     @Test
+    void ownedRecommendationChecksScopeBeforeEvaluatingAndKeepsAdminRouteSeparate() {
+        User owner = user(17L, Role.ROLE_TENANT);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(owner, false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        RecommendationRequest command = new RecommendationRequest(0L);
+        service.recommendForOwner(17L, 500L, command, true);
+        InOrder order = inOrder(ownedAuthorization, recommendations);
+        order.verify(ownedAuthorization).admit(17L);
+        order.verify(ownedAuthorization).lockTargetSession(500L);
+        order.verify(ownedAuthorization).requireOwnedDraftSession(any(), same(session));
+        order.verify(recommendations).recommendOwned(17L, session, command, true, null, null, 20);
+        assertThrows(AccessDeniedException.class, () -> service.recommendForOwner(9L, 500L, command, false));
+        verify(recommendations, never()).recommendOwned(eq(9L), eq(session), eq(command), eq(false),
+                eq(null), eq(null), eq(20));
+    }
+
+    @Test
+    void ownedSelectionRequiresReasonForAlternativeAndNeverCallsAdminScheduleEntry() {
+        User owner = user(17L, Role.ROLE_TENANT);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(owner, false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        when(recommendations.isPotentialOwnedGe(41L, "Example City")).thenReturn(true);
+        when(recommendations.validateOwnedSelection(eq(session), eq(0L), eq(41L), any(), eq("Asia/Kolkata")))
+                .thenReturn(new VisitSchedulingRecommendationService.ApprovalAssessment(41L,
+                        Instant.parse("2099-10-02T11:00:00Z"), 30, 42L,
+                        Instant.parse("2099-10-02T11:00:00Z"), Instant.now(), "test", true,
+                        "UNAVAILABLE", "UNKNOWN", RecommendationStatus.RECOMMENDATION_AVAILABLE));
+        ApproveVisitRecommendationCommand withoutReason = new ApproveVisitRecommendationCommand(0L, 41L,
+                Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", null);
+        assertThrows(IllegalArgumentException.class, () -> service.selectForOwner(17L, 500L, withoutReason));
+        assertEquals(VisitSessionStatus.DRAFT, session.getStatus());
+        verify(decisions, never()).saveAndFlush(any());
+        verify(events, never()).publishEvent(any());
+        verify(authorization, never()).requireOperations(17L);
+    }
+
+    @Test
     void availabilityConfirmationRecordsAuthenticatedActorAndTimestamp() {
         User actor = user(9L, Role.ROLE_ADMIN);
         VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
