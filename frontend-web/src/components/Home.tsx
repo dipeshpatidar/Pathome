@@ -32,6 +32,7 @@ import {
 
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
+import { OperationsDestination } from './operations/OperationsDestination';
 import { LandingV0 } from './LandingV0';
 import { propertyService } from '../services/propertyService';
 import { lessorCapabilityService } from '../services/lessorCapabilityService';
@@ -40,6 +41,7 @@ import { isLessorWorkspaceRoute, normalizeRoutePathname, resolveLessorExitPath }
 import { readResumableDraftCount } from '../utils/draftAccessPolicy';
 import { useNotification } from '../context/NotificationContext';
 import { clearPersistedUser, readPersistedUser } from '../utils/authSession';
+import { useOperationsCapability } from '../hooks/useOperationsCapability';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
 
 const VALID_ADMIN_TABS = new Set([
@@ -79,8 +81,44 @@ export const Home: React.FC = () => {
   const { notifySuccess, notifyError } = useNotification();
   const reduceMotion = useReducedMotion();
 
+  /**
+   * The dedicated Operations destination. `/operations` hosts the OE workspace directly so an
+   * Executive whose authority is a staff capability - not a role - reaches it through ordinary
+   * navigation instead of the employee console.
+   */
+  const operationsRoute = normalizeRoutePathname(location.pathname) === '/operations';
+  /**
+   * True while an embedded console tab is showing the same workspace. It is reported up rather than
+   * owned locally so the one shared authority keeps its focus, visibility and cadence revalidation
+   * while either surface is on screen.
+   */
+  const [embeddedOperationsOpen, setEmbeddedOperationsOpen] = useState(false);
+
   const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
   const role: UserRole = user?.role ?? 'GUEST';
+
+  /**
+   * The exact Operations surface on screen, named as an entry identity rather than as a boolean.
+   *
+   * Two surfaces can both be "open" and still be different entries: an embedded console workspace
+   * that navigates to `/operations` must verify the authority for the *destination*, not inherit the
+   * verdict that admitted the console tab. Naming the surface (and the console it belongs to) lets the
+   * shared authority treat every such transition as a new entry, while a closed workspace stays null.
+   */
+  const operationsSurface = operationsRoute
+    ? 'destination'
+    : embeddedOperationsOpen
+      ? (role === 'EMPLOYEE' ? 'embedded:employee' : 'embedded:admin')
+      : null;
+  /**
+   * One capability state machine for the entire application. The navigation entry, the dedicated
+   * destination and the embedded console tabs all read this single authority, so no second polling
+   * loop or competing authority state can exist. The hook is session-scoped: a response held from a
+   * previous account can never establish authority for the next one, and a verdict earned by one entry
+   * can never admit another.
+   */
+  const operationsAuthority = useOperationsCapability({ workspaceEntry: operationsSurface });
+
   const [tenantFavoritesSnapshot, setTenantFavoritesSnapshot] = useState<TenantFavoritesSnapshot>(emptyTenantFavoritesSnapshot);
   const tenantFavoritesSnapshotRef = useRef(tenantFavoritesSnapshot);
   tenantFavoritesSnapshotRef.current = tenantFavoritesSnapshot;
@@ -524,7 +562,7 @@ export const Home: React.FC = () => {
     const handleSessionExpired = (event: Event) => {
       const requestToken = (event as CustomEvent<{ token?: string }>).detail?.token;
       if (requestToken && requestToken !== localStorage.getItem('pathome_auth_token')) return;
-      if (location.pathname.startsWith('/lessor')) {
+      if (location.pathname.startsWith('/lessor') || location.pathname === '/operations') {
         try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
       }
       clearUserSession();
@@ -610,7 +648,8 @@ export const Home: React.FC = () => {
   // 2. STRICT PROTECTED ROUTE GUARDS & PATH SYNCHRONIZATION
   useEffect(() => {
     const path = location.pathname.toLowerCase();
-    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm';
+    const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm'
+      || path === '/operations';
     if (!isProtectedRoute) logoutInProgressRef.current = false;
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
@@ -618,7 +657,8 @@ export const Home: React.FC = () => {
     if (!user || role === 'GUEST' || (isProtectedRoute && !hasToken)) {
       if (isProtectedRoute) {
         if (logoutInProgressRef.current) return;
-        if (path.startsWith('/lessor')) {
+        // A deliberate destination is restored after sign-in rather than being silently dropped.
+        if (path.startsWith('/lessor') || path === '/operations') {
           try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
         }
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
@@ -635,6 +675,11 @@ export const Home: React.FC = () => {
       localStorage.setItem('pathome_user', JSON.stringify(user));
 
       if (isPropertyRoute) return;
+      // The Operations destination is capability-gated, never role-routed: a staff capability is
+      // what admits an account, so no role label may bounce an eligible Executive away from it.
+      // Authority is decided by the workspace itself, which fails closed on every non-granted
+      // state - including while a direct link or a refresh is still being verified.
+      if (operationsRoute) return;
       if (role === 'TENANT' && path !== '/tenant' && !path.startsWith('/lessor')) {
         navigate('/tenant', { replace: true });
       } else if (role === 'EMPLOYEE' && path !== '/crm') {
@@ -643,7 +688,7 @@ export const Home: React.FC = () => {
         navigate('/admin', { replace: true });
       }
     }
-  }, [location.pathname, user, role, navigate, isPropertyRoute, clearUserSession]);
+  }, [location.pathname, user, role, navigate, isPropertyRoute, operationsRoute, clearUserSession]);
 
   const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>, nextLandingState?: LandingState) => {
     focusResultsAfterSearch.current = true;
@@ -760,6 +805,13 @@ export const Home: React.FC = () => {
       navigate(pendingLessor);
       return;
     }
+    // A deliberate /operations destination survives sign-in. The destination re-verifies the
+    // capability itself and fails closed, so restoring the route grants nothing on its own.
+    if (pendingLessor === '/operations') {
+      sessionStorage.removeItem('pathome_pending_after_auth');
+      navigate('/operations');
+      return;
+    }
     if (pendingVisitProperty && userProfile.role === 'TENANT') {
       navigate(`/property/${pendingVisitProperty.id}`);
       return;
@@ -794,10 +846,12 @@ export const Home: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Inter',sans-serif]">
       <PathomeRouteShell pathname={normalizedPathname} focused={lessorWorkspace} normal={<>
-        {!(role === 'GUEST' && !isPropertyRoute && !isLessorRoute) && <Navbar
+        {!(role === 'GUEST' && !isPropertyRoute && !isLessorRoute && !operationsRoute) && <Navbar
           user={user}
           role={role}
           hasLessorCapability={hasLessorCapability}
+          operationsAuthority={operationsAuthority}
+          onOpenOperations={() => navigate('/operations')}
           draftCount={currentDraftCount}
           draftState={currentDraftState}
           onOpenDrafts={openDrafts}
@@ -809,7 +863,7 @@ export const Home: React.FC = () => {
           onClosePostProperty={closePostProperty}
           activeAdminTab={activeAdminTab}
           setActiveAdminTab={setActiveAdminTab}
-          isLandingHero={!isPropertyRoute && !isLessorRoute && role === 'GUEST'}
+          isLandingHero={!isPropertyRoute && !isLessorRoute && !operationsRoute && role === 'GUEST'}
         />}
 
       {isPropertyRoute && (
@@ -825,7 +879,10 @@ export const Home: React.FC = () => {
 
       {lessorWorkspace}
 
-      {!isLessorRoute && <>
+      {/* DEDICATED OPERATIONS DESTINATION - CAPABILITY-GATED, NEVER ROLE-ROUTED */}
+      {operationsRoute && user && <OperationsDestination authority={operationsAuthority} />}
+
+      {!isLessorRoute && !operationsRoute && <>
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
         {!isPropertyRoute && !isLessorRoute && role === 'EMPLOYEE' && (
           <motion.div 
@@ -835,7 +892,8 @@ export const Home: React.FC = () => {
             exit={{ opacity: 0, y: -16 }}
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
-            <EmployeeCrmDashboard user={user} />
+            <EmployeeCrmDashboard user={user} operationsAuthority={operationsAuthority}
+              onOperationsWorkspaceOpenChange={setEmbeddedOperationsOpen} />
           </motion.div>
         )}
 
@@ -849,6 +907,8 @@ export const Home: React.FC = () => {
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
             <MasterAdminDashboard activeTab={activeAdminTab} setActiveAdminTab={setActiveAdminTab}
+              operationsAuthority={operationsAuthority}
+              onOperationsWorkspaceOpenChange={setEmbeddedOperationsOpen}
               canReviewVisitRepairs={user?.role === 'SUPER_ADMIN'}
               canReviewVisitOutcomes={user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN'} />
           </motion.div>
@@ -931,7 +991,7 @@ export const Home: React.FC = () => {
       </>}
 
       </>} />
-      {landingQuickViewId !== null && !isPropertyRoute && !isLessorRoute && <TenantPropertyQuickView key={landingQuickViewId} propertyId={landingQuickViewId} visitRequestStatus={() => null} onClose={() => setLandingQuickViewId(null)} onRequestVisit={handleRequestVisit} onViewProperty={property => { setLandingQuickViewId(null); handleOpenPropertyDetail(property); }} isFavorite={role === 'TENANT' && tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.propertyIds.has(landingQuickViewId)} favoriteStateReady={role === 'GUEST' || (tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.status === 'ready')} favoritePending={landingFavoritePending.has(landingQuickViewId)} onToggleFavorite={handleSaveFavorite} displayTitle={landingPropertyTitle}/>}
+      {landingQuickViewId !== null && !isPropertyRoute && !isLessorRoute && !operationsRoute && <TenantPropertyQuickView key={landingQuickViewId} propertyId={landingQuickViewId} visitRequestStatus={() => null} onClose={() => setLandingQuickViewId(null)} onRequestVisit={handleRequestVisit} onViewProperty={property => { setLandingQuickViewId(null); handleOpenPropertyDetail(property); }} isFavorite={role === 'TENANT' && tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.propertyIds.has(landingQuickViewId)} favoriteStateReady={role === 'GUEST' || (tenantFavoritesSnapshot.identityKey === tenantFavoriteSession?.key && tenantFavoritesSnapshot.status === 'ready')} favoritePending={landingFavoritePending.has(landingQuickViewId)} onToggleFavorite={handleSaveFavorite} displayTitle={landingPropertyTitle}/>}
 
       {/* AUTH MODAL */}
       <AuthModal

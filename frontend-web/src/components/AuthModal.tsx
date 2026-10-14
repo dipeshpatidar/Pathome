@@ -8,6 +8,10 @@ import {
   getDuplicateEmailRecoveryState,
   isDuplicateEmailResponse
 } from '../utils/authRecovery';
+import {
+  authenticationRejectionMessage,
+  establishAuthenticatedSession
+} from '../utils/authIdentity';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -83,22 +87,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
       if (res.ok) {
         const data = await res.json();
-        if (!data.token) {
-          setErrorMessage('Sign-in succeeded but did not return a secure session. Please try again.');
+        /*
+         * The User id is the authoritative identity every ownership, draft, favourite and visit
+         * scope is keyed by, so a malformed response must fail closed. A placeholder id would have
+         * signed the visitor in as whichever real account happens to own that number.
+         *
+         * `establishAuthenticatedSession` proves the response type *before* any conversion, persists
+         * the token only for a valid identity, and writes nothing at all when it rejects - which is
+         * what leaves a malformed response unauthenticated instead of trusted.
+         */
+        const established = establishAuthenticatedSession(data, { email, fullName });
+        if (!established.ok) {
+          setErrorMessage(authenticationRejectionMessage(established.reason));
           return;
         }
         setPassword('');
         setEmail('');
-        localStorage.setItem('pathome_auth_token', data.token);
         onSuccess({
-          id: data.userId || 1,
-          email: data.email || email,
-          fullName: data.fullName || fullName || 'User',
-          role: normalizeRole(data.role),
+          id: established.userId,
+          email: established.email,
+          fullName: established.fullName,
+          role: normalizeRole(established.role),
           freeVisitsUsed: 0,
           walletBalance: 0,
-          hasLessorProfile: Boolean(data.hasLessorProfile),
-          employeeRoleType: typeof data.employeeRoleType === 'string' ? data.employeeRoleType : undefined
+          hasLessorProfile: established.hasLessorProfile,
+          employeeRoleType: established.employeeRoleType
         });
       } else {
         const text = await res.text();

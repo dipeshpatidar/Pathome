@@ -17,11 +17,13 @@ import {
   Bell,
   Menu,
   X,
-  ArrowRight
+  ArrowRight,
+  Briefcase
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 import { shouldShowMyProperties, shouldShowListYourProperty } from '../utils/navigationPolicy';
 import { DraftAccessButton, DraftAccessState } from './DraftAccessButton';
+import type { OperationsAuthority } from '../hooks/useOperationsCapability';
 
 interface NavbarProps {
   user: UserProfile | null;
@@ -39,6 +41,12 @@ interface NavbarProps {
   draftState: DraftAccessState;
   onOpenDrafts: () => void;
   onRetryDrafts: () => void;
+  /**
+   * The single application-wide Operations authority. The entry is offered only once the backend has
+   * confirmed an effective OPS_COORDINATE Team grant, so it never appears on a role label alone.
+   */
+  operationsAuthority?: OperationsAuthority | null;
+  onOpenOperations?: () => void;
 }
 
 /**
@@ -154,7 +162,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   draftCount,
   draftState,
   onOpenDrafts,
-  onRetryDrafts
+  onRetryDrafts,
+  operationsAuthority = null,
+  onOpenOperations
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -180,6 +190,19 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, [user?.id, role]);
 
   const isAdminRole = role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'SUB_ADMIN';
+  /**
+   * The Operations destination is offered on verified capability alone: no role label participates,
+   * and the entry appears only after the backend has confirmed the grant. It is always a deliberate
+   * choice - nothing here navigates the user there on its own.
+   */
+  const showOperationsEntry = Boolean(onOpenOperations) && operationsAuthority?.canEnter === true;
+  const openOperations = () => {
+    if (!onOpenOperations) return;
+    setProfileDropdownOpen(false);
+    setMobileMenuOpen(false);
+    onOpenOperations();
+  };
+  const isOperationsSurface = location.pathname.replace(/\/+$/, '') === '/operations';
   const workspaceContext = resolveWorkspaceContext(location.pathname, role);
   const logoDestination = resolveLogoDestination(workspaceContext);
 
@@ -374,6 +397,28 @@ export const Navbar: React.FC<NavbarProps> = ({
                 : <DraftAccessButton count={draftCount} state={draftState} onOpen={onOpenDrafts} onRetry={onRetryDrafts} dark={isHeroTop} />
             )}
 
+            {/* OPERATIONS DESTINATION — OFFERED ONLY ON A BACKEND-VERIFIED STAFF CAPABILITY.
+                Hidden below 1024px so the compact header keeps its layout; the account menu carries
+                the same entry there, and both are always a deliberate choice. */}
+            {showOperationsEntry && (
+              <button
+                type="button"
+                onClick={openOperations}
+                title="Operations"
+                aria-current={isOperationsSurface ? 'page' : undefined}
+                className={`hidden min-h-11 items-center gap-2 rounded-2xl border px-3.5 text-xs font-bold transition-colors lg:inline-flex focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+                  isConsumerHeader
+                    ? 'border-[#e0ddd6] bg-white text-[#355c49] hover:border-[#c9d6c9] hover:bg-[#edf2ed] focus-visible:ring-emerald-500'
+                    : isAdminRole
+                    ? 'border-slate-800 bg-slate-900 text-emerald-300 hover:border-emerald-500/50 hover:bg-slate-800 focus-visible:ring-emerald-500'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 focus-visible:ring-emerald-500'
+                }`}
+              >
+                <Briefcase className="h-4 w-4" aria-hidden="true" />
+                Operations
+              </button>
+            )}
+
             {/* CENTRALIZED NOTIFICATION BELL — RENDERED ONLY FOR AUTHENTICATED USERS */}
             {user && role !== 'GUEST' && (
               <motion.button
@@ -463,6 +508,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
 
                       <div className="p-1">
+                        {showOperationsEntry && (
+                          <button
+                            type="button"
+                            onClick={openOperations}
+                            className={`flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                              isConsumerHeader
+                                ? 'text-[#355c49] hover:bg-[#edf2ed]'
+                                : 'text-emerald-300 hover:bg-emerald-500/10'
+                            }`}
+                          >
+                            <Briefcase className="h-4 w-4" aria-hidden="true" />
+                            Operations
+                          </button>
+                        )}
                         {isConsumerHeader && role === 'TENANT' && <button type="button" onClick={() => { setProfileDropdownOpen(false); navigate('/tenant#account'); }}
                           className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold text-emerald-300 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
                           <User className="h-4 w-4" />Your account

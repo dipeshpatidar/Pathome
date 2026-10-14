@@ -1,20 +1,37 @@
-import React, { useState } from 'react';
-import { CalendarDays, MapPin, ShieldAlert } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { CalendarDays, Inbox, MapPin, ShieldAlert } from 'lucide-react';
 import { UserProfile } from '../types';
+import type { OperationsAuthority } from '../hooks/useOperationsCapability';
 import { GroundVisitOperationsPanel } from './GroundVisitOperationsPanel';
 import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
 import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
+import { OperationsWorkspace } from './operations/OperationsWorkspace';
 
 interface EmployeeCrmDashboardProps {
   user: UserProfile | null;
+  /** The single application-wide capability state machine owned by the app shell. */
+  operationsAuthority: OperationsAuthority;
+  /** Reports whether this shell currently shows the Operations workspace, so its revalidation stays live. */
+  onOperationsWorkspaceOpenChange?: (open: boolean) => void;
 }
 
-type EmployeeWorkspaceTab = 'visits' | 'visit-repairs' | 'visit-outcomes';
+type EmployeeWorkspaceTab = 'visits' | 'visit-repairs' | 'visit-outcomes' | 'operations';
 
-export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user }) => {
+export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({
+  user, operationsAuthority: authority, onOperationsWorkspaceOpenChange
+}) => {
   const canReviewVisitRepairs = user?.employeeRoleType?.toUpperCase() === 'WFH_ADMIN';
   const canReviewVisitOutcomes = user?.role === 'ADMIN' || canReviewVisitRepairs;
   const [activeTab, setActiveTab] = useState<EmployeeWorkspaceTab>('visits');
+  // An explicit denial withdraws the destination; a transient failure keeps it with a retry state.
+  useEffect(() => {
+    if (activeTab === 'operations' && authority.state === 'restricted') setActiveTab('visits');
+  }, [activeTab, authority.state]);
+
+  useEffect(() => {
+    onOperationsWorkspaceOpenChange?.(activeTab === 'operations');
+    return () => onOperationsWorkspaceOpenChange?.(false);
+  }, [activeTab, onOperationsWorkspaceOpenChange]);
 
   return (
     <main className="min-h-screen min-w-0 bg-slate-950 px-4 pb-20 pt-24 text-slate-100 sm:px-6 lg:px-8">
@@ -66,11 +83,22 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({ user
               <CalendarDays className="h-4 w-4" aria-hidden="true" /> Visit outcome exceptions
             </button>
           )}
+          {authority.canEnter && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('operations')}
+              aria-current={activeTab === 'operations' ? 'page' : undefined}
+              className={`flex min-h-11 items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${activeTab === 'operations' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-900 hover:text-white'}`}
+            >
+              <Inbox className="h-4 w-4" aria-hidden="true" /> Operations workspace
+            </button>
+          )}
         </nav>
 
         {activeTab === 'visits' && <GroundVisitOperationsPanel user={user} />}
         {activeTab === 'visit-repairs' && canReviewVisitRepairs && <OperationsVisitRepairPanel />}
         {activeTab === 'visit-outcomes' && canReviewVisitOutcomes && <OperationsVisitOutcomePanel />}
+        {activeTab === 'operations' && <OperationsWorkspace authority={authority} />}
       </div>
     </main>
   );

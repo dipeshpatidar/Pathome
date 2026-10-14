@@ -30,6 +30,7 @@ import {
   RefreshCw,
   AlertTriangle,
   AlertCircle,
+  Inbox,
   Wrench
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
@@ -45,6 +46,8 @@ import { ParserLearningReviewPanel } from './ParserLearningReviewPanel';
 import { FailedUploadsPanel } from './FailedUploadsPanel';
 import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
 import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
+import { OperationsWorkspace } from './operations/OperationsWorkspace';
+import type { OperationsAuthority } from '../hooks/useOperationsCapability';
 import { DraftManagementBar } from './DraftManagementBar';
 import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
 import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
@@ -54,7 +57,18 @@ interface MasterAdminDashboardProps {
   setActiveAdminTab?: (tab: string) => void;
   canReviewVisitRepairs?: boolean;
   canReviewVisitOutcomes?: boolean;
+  /** The single application-wide capability state machine owned by the app shell. */
+  operationsAuthority: OperationsAuthority;
+  /** Reports whether this console currently shows the Operations workspace, so its revalidation stays live. */
+  onOperationsWorkspaceOpenChange?: (open: boolean) => void;
 }
+
+/**
+ * Tabs the console is allowed to remember. The Operations workspace is deliberately excluded:
+ * a persisted selection must never restore a destination whose authority has to be verified against
+ * the server first, and it must never survive an account switch.
+ */
+const PERSISTED_ADMIN_TABS = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes']);
 
 const PRESET_PROMPTS = [
   {
@@ -163,14 +177,13 @@ const cardVariants: Variants = {
   }
 };
 
-export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false, canReviewVisitOutcomes = false }) => {
+export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false, canReviewVisitOutcomes = false, operationsAuthority, onOperationsWorkspaceOpenChange }) => {
   const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
 
   const [internalTab, setInternalTab] = useState<string>(() => {
-    const availableTabs = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes']);
     try {
       const saved = localStorage.getItem('pathome_active_admin_tab');
-      if (saved && availableTabs.has(saved)) return saved;
+      if (saved && PERSISTED_ADMIN_TABS.has(saved)) return saved;
     } catch (_) {}
     return 'media';
   });
@@ -183,12 +196,24 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     setInternalTab(tabId);
     setIsMobileMenuOpen(false);
     try {
-      localStorage.setItem('pathome_active_admin_tab', tabId);
+      if (PERSISTED_ADMIN_TABS.has(tabId)) localStorage.setItem('pathome_active_admin_tab', tabId);
     } catch (_) {}
     if (externalSetActiveAdminTab) {
       externalSetActiveAdminTab(tabId);
     }
   };
+
+  // Explicit denial withdraws the destination; a transient failure keeps it with a retry state.
+  useEffect(() => {
+    if (activeTab === 'operations' && operationsAuthority.state === 'restricted') {
+      handleTabSelect('media');
+    }
+  }, [activeTab, operationsAuthority.state]);
+
+  useEffect(() => {
+    onOperationsWorkspaceOpenChange?.(activeTab === 'operations');
+    return () => onOperationsWorkspaceOpenChange?.(false);
+  }, [activeTab, onOperationsWorkspaceOpenChange]);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
@@ -1591,6 +1616,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
   const adminNavItems = [
     { id: 'learning', label: 'Learning review', badge: 'Review', icon: ShieldCheck, color: 'text-emerald-600' },
+    ...(operationsAuthority.canEnter ? [{ id: 'operations', label: 'Operations workspace', badge: 'Operations', icon: Inbox, color: 'text-emerald-600' }] : []),
     ...(canReviewVisitRepairs ? [{ id: 'visit-repairs', label: 'Visit repairs', badge: 'Operations', icon: Wrench, color: 'text-amber-600' }] : []),
     ...(canReviewVisitOutcomes ? [{ id: 'visit-outcomes', label: 'Visit outcome exceptions', badge: 'Operations', icon: FileText, color: 'text-amber-600' }] : []),
     { id: 'media', label: 'Update Property Listing', badge: 'Console', icon: UploadCloud, color: 'text-teal-600' },
@@ -1829,6 +1855,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
           {canReviewVisitRepairs && activeTab === 'visit-repairs' && <OperationsVisitRepairPanel />}
           {canReviewVisitOutcomes && activeTab === 'visit-outcomes' && <OperationsVisitOutcomePanel />}
+
+          {/* THE SAME OE WORKSPACE USED BY THE EMPLOYEE CONSOLE — AUTHORITY IS SERVER-VERIFIED */}
+          {activeTab === 'operations' && <OperationsWorkspace authority={operationsAuthority} />}
 
           {activeTab === 'failed-uploads' && (
             <FailedUploadsPanel onCountChange={refreshFailedUploadsCount} />
