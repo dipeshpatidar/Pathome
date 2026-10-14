@@ -6655,3 +6655,44 @@ NOT TESTED / unchanged limitations
 Both Sol-identified acceptance defects are resolved and verified; ready for a narrow independent
 confirmation. STOPPED; no next package or redesign started.
 ================================================================================
+
+================================================================================
+2026-10-14 16:02:00 IST - PRE-MAIN-MERGE LEGACY TEST-FIXTURE CORRECTIONS
+================================================================================
+
+Reason: Owner-approved pre-main-merge resolution of the two known legacy test-fixture defects
+that caused whole-suite test runs to fail prior to promotion into main. No production Java,
+API, database migration, architecture, permission, UI or business behavior changes.
+
+Branch: feature/phase2a-oe-ui-integration
+Parent baseline: 9550467b4ca17c1b5dfd99d80bb45d798b3a747d
+
+Corrections:
+1. Completed isolated AuthController Spring wiring test dependencies by registering
+   EmployeeProfileRepository and TenantVisitEntitlementService mocks in
+   LessorCapabilityBeanWiringTest.java. Real AuthController and LandlordCapabilityService
+   remain registered and verified.
+2. Replaced expired October 3 hardcoded timestamps in TenantVisitAvailabilityServiceTest.java
+   with dynamic, mutually consistent future Asia/Kolkata fixtures. Strengthened assertions
+   for availabilityStartAt, availabilityEndAt, preferredAt, and availabilityZoneId, and added
+   a discriminating negative test ensuring past-window attempts throw IllegalArgumentException
+   without mutating the request or flushing.
+
+Verification (10/10 PASS, 0 failures, 0 errors, 0 skipped):
+- LessorCapabilityBeanWiringTest: 1/1 passed.
+- TenantVisitAvailabilityServiceTest: 4/4 passed.
+- SchedulingWindowValidatorTest: 5/5 passed.
+- Verified developer-reported results, corroborated with local Surefire reports in
+  backend/target/surefire-reports/ matching recent source modification timestamps.
+- Full backend suite not rerun; existing independent Sol 193/193 security acceptance unchanged.
+
+Scope:
+- Test-only corrections in two files:
+  backend/src/test/java/com/indore/pathome/spaces/service/LessorCapabilityBeanWiringTest.java
+  backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityServiceTest.java
+- No production files modified. Flyway migrations remain at V49.
+
+Git status:
+- Local checkpoint planned on feature/phase2a-oe-ui-integration.
+- No remote push performed.
+================================================================================

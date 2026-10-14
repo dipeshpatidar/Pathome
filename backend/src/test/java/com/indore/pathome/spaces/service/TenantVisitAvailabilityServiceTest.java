@@ -7,15 +7,27 @@ import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class TenantVisitAvailabilityServiceTest {
+    private static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
+
     private final PropertyVisitRequestRepository requests = mock(PropertyVisitRequestRepository.class);
     private final TenantVisitAvailabilityService service = new TenantVisitAvailabilityService(requests);
+
+    /** Derived from the current date so the fixture always sits in the future. */
+    private final OffsetDateTime availabilityStart =
+            LocalDate.now(ZONE)
+                    .plusDays(2)
+                    .atTime(13, 0)
+                    .atZone(ZONE)
+                    .toOffsetDateTime();
 
     @Test
     void updatesOnlyTheAuthenticatedTenantsRequestAndKeepsPreferenceSeparateFromSession() {
@@ -27,11 +39,34 @@ class TenantVisitAvailabilityServiceTest {
         var result = service.update(7L, 51L, command(3L));
 
         assertEquals(51L, result.requestId());
-        assertEquals(InstantValue.START, result.availabilityStartAt());
-        assertEquals(InstantValue.PREFERRED, result.preferredAt());
+        assertEquals(availabilityStart.toInstant(), result.availabilityStartAt());
+        assertEquals(availabilityStart.plusHours(4).toInstant(), result.availabilityEndAt());
+        assertEquals(availabilityStart.plusHours(1).toInstant(), result.preferredAt());
+        assertEquals(ZONE.getId(), result.availabilityZoneId());
         assertNull(request.getSession());
         verify(requests).flush();
         verify(requests, never()).findLockedById(51L);
+    }
+
+    @Test
+    void rejectsAvailabilityWindowStartingInThePastWithoutMutatingRequestOrFlushing() {
+        PropertyVisitRequest request = new PropertyVisitRequest();
+        request.setId(51L);
+        request.setVersion(3L);
+        when(requests.findLockedByIdAndTenantId(51L, 7L)).thenReturn(Optional.of(request));
+
+        OffsetDateTime expiredStart = availabilityStart.minusDays(4);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> service.update(7L, 51L, command(3L, expiredStart)));
+
+        assertTrue(failure.getMessage().contains("cannot start in the past"), failure.getMessage());
+        assertNull(request.getAvailabilityStartAt());
+        assertNull(request.getAvailabilityEndAt());
+        assertNull(request.getAvailabilityZoneId());
+        assertNull(request.getPreferredAt());
+        assertNull(request.getSession());
+        assertEquals(3L, request.getVersion());
+        verify(requests, never()).flush();
     }
 
     @Test
@@ -64,14 +99,13 @@ class TenantVisitAvailabilityServiceTest {
     }
 
     private TenantVisitAvailabilityCommand command(Long version) {
-        return new TenantVisitAvailabilityCommand(version,
-                OffsetDateTime.parse("2026-10-03T13:00:00+05:30"),
-                OffsetDateTime.parse("2026-10-03T17:00:00+05:30"), "Asia/Kolkata",
-                OffsetDateTime.parse("2026-10-03T14:00:00+05:30"));
+        return command(version, availabilityStart);
     }
 
-    private static final class InstantValue {
-        private static final java.time.Instant START = java.time.Instant.parse("2026-10-03T07:30:00Z");
-        private static final java.time.Instant PREFERRED = java.time.Instant.parse("2026-10-03T08:30:00Z");
+    private TenantVisitAvailabilityCommand command(Long version, OffsetDateTime start) {
+        return new TenantVisitAvailabilityCommand(version,
+                start,
+                start.plusHours(4), ZONE.getId(),
+                start.plusHours(1));
     }
 }

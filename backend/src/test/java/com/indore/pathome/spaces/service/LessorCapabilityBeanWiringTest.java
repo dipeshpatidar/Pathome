@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.controller.AuthController;
+import com.indore.pathome.spaces.repository.EmployeeProfileRepository;
 import com.indore.pathome.spaces.repository.LessorProfileRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
@@ -17,6 +18,8 @@ class LessorCapabilityBeanWiringTest {
         try (var context = new AnnotationConfigApplicationContext()) {
             context.registerBean(UserRepository.class, () -> mock(UserRepository.class));
             context.registerBean(LessorProfileRepository.class, () -> mock(LessorProfileRepository.class));
+            context.registerBean(EmployeeProfileRepository.class, () -> mock(EmployeeProfileRepository.class));
+            context.registerBean(TenantVisitEntitlementService.class, () -> mock(TenantVisitEntitlementService.class));
             context.registerBean(PasswordEncoder.class, () -> mock(PasswordEncoder.class));
             context.registerBean(JwtUtils.class, () -> mock(JwtUtils.class));
             context.register(AuthController.class, LandlordCapabilityService.class);
