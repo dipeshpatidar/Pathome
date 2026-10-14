@@ -37,6 +37,7 @@ import com.indore.pathome.spaces.repository.StaffAccessGrantRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.repository.VisitSessionItemRepository;
+import com.indore.pathome.spaces.support.DisposableIntegrationTarget;
 import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
 import com.indore.pathome.spaces.controller.StaffCapabilitiesController;
 import com.indore.pathome.spaces.service.VisitOperationsAuthorizationService;
@@ -45,6 +46,7 @@ import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -106,13 +108,23 @@ import org.mockito.InOrder;
         OwnedOperationsAuthorizationService.class,
         OperationalOwnershipService.class, TrustedOperationalIntakeService.class, VisitOperationsService.class,
         VisitRepairOperationsService.class,
+        TransactionalCommandBounds.class,
         StaffAccessGovernancePostgresTest.TestBeans.class})
+@EnabledIfEnvironmentVariable(named = DisposableIntegrationTarget.TEST_ENABLEMENT_FLAG, matches = "true")
 class StaffAccessGovernancePostgresTest {
     private static final String SCHEMA = "pathome_staff_it_" + UUID.randomUUID().toString().replace("-", "");
-    private static final String DB_URL = System.getenv().getOrDefault(
-            "SPRING_DATASOURCE_URL", "jdbc:postgresql://localhost:5432/pathome_db");
-    private static final String DB_USER = System.getenv().getOrDefault("SPRING_DATASOURCE_USERNAME", "pathome");
-    private static final String DB_PASSWORD = System.getenv().getOrDefault("SPRING_DATASOURCE_PASSWORD", "");
+
+    /**
+     * The verified disposable target, or null when the guard refused. Nothing is defaulted here: this
+     * test used to fall back to the preserved {@code pathome_db} development database, so a plain
+     * {@code mvn} invocation could create and drop schemas in it. It now runs only against the target
+     * that {@link DisposableIntegrationTarget} has positively proven disposable - exact approved
+     * database, approved loopback host and port, {@code current_database()} identity and the live
+     * {@code DISPOSABLE} marker - and every connection it opens is derived from that proven target.
+     */
+    private static DisposableIntegrationTarget.Target disposableTarget;
+    /** Proves the schema was really created by this test before anything is ever dropped. */
+    private static boolean schemaCreated;
 
     @SpyBean private UserRepository users;
     @Autowired private EmployeeProfileRepository employeeProfiles;
@@ -141,21 +153,57 @@ class StaffAccessGovernancePostgresTest {
     @Autowired private PlatformTransactionManager transactionManager;
 
     @DynamicPropertySource
-    static void configureDatabase(DynamicPropertyRegistry registry) {
+    static void configureDatabase(DynamicPropertyRegistry registry) throws Exception {
+        // Fail-closed, and before any DDL: an unsafe direct Maven invocation (no enablement, no
+        // designation, pathome_db, a foreign host or port, a mismatched datasource or a database
+        // without the live disposable marker) refuses here with its stable REFUSED code, so no schema
+        // is ever created and no mutating connection is ever opened.
+        disposableTarget = DisposableIntegrationTarget.verifyFromEnvironment();
         createSchema();
-        registry.add("spring.datasource.url", () -> DB_URL + (DB_URL.contains("?") ? "&" : "?")
-                + "currentSchema=" + SCHEMA + ",public");
-        registry.add("spring.datasource.username", () -> DB_USER);
-        registry.add("spring.datasource.password", () -> DB_PASSWORD);
+        registry.add("spring.datasource.url", StaffAccessGovernancePostgresTest::schemaUrl);
+        registry.add("spring.datasource.username", disposableTarget::username);
+        registry.add("spring.datasource.password", disposableTarget::password);
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.flyway.default-schema", () -> SCHEMA);
     }
 
+    /**
+     * The schema connection is derived from the verified target, never from an environment default.
+     *
+     * <p>{@code public} stays in the search path on purpose: the trusted {@code pg_trgm} extension is
+     * installed in {@code public} of the disposable database, and migration V14 needs its
+     * {@code gin_trgm_ops} operator class, exactly as this test ran before it was brought under the
+     * guard.
+     */
+    private static String schemaUrl() {
+        return disposableTarget.jdbcUrl() + "?currentSchema=" + SCHEMA + ",public";
+    }
+
     @AfterAll
     static void dropSchema() throws Exception {
-        try (Connection connection = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+        // Cleanup deletes only the schema this test demonstrably created, and only when the guard had
+        // already proven the target: a refused run never reaches DDL and therefore never drops anything.
+        if (disposableTarget == null || !schemaCreated) {
+            return;
+        }
+        try (Connection connection = DriverManager.getConnection(disposableTarget.jdbcUrl(),
+                disposableTarget.username(), disposableTarget.password());
              Statement statement = connection.createStatement()) {
+            connection.setReadOnly(false);
+            if (!disposableTarget.database().equals(currentDatabase(connection))) {
+                throw new IllegalStateException("Refusing to drop " + SCHEMA
+                        + ": the cleanup connection is not the verified disposable database");
+            }
             statement.execute("DROP SCHEMA IF EXISTS " + SCHEMA + " CASCADE");
+            schemaCreated = false;
+        }
+    }
+
+    private static String currentDatabase(Connection connection) throws java.sql.SQLException {
+        try (Statement statement = connection.createStatement();
+             java.sql.ResultSet rows = statement.executeQuery("select current_database()")) {
+            rows.next();
+            return rows.getString(1);
         }
     }
 
@@ -447,8 +495,9 @@ class StaffAccessGovernancePostgresTest {
         Long expiringCoordinatorId = expiringCoordinator.getId();
         assertTrue(access.hasCapabilityAt(expiringCoordinatorId, StaffCapability.OPS_COORDINATE,
                 StaffScopeType.TEAM, team.getId()), "the short-lived grant is effective before the race starts");
-        String testSchemaUrl = DB_URL + (DB_URL.contains("?") ? "&" : "?") + "currentSchema=" + SCHEMA + ",public";
-        try (Connection guardBlocker = DriverManager.getConnection(testSchemaUrl, DB_USER, DB_PASSWORD)) {
+        String testSchemaUrl = schemaUrl();
+        try (Connection guardBlocker = DriverManager.getConnection(testSchemaUrl, disposableTarget.username(),
+                disposableTarget.password())) {
             guardBlocker.setAutoCommit(false);
             boolean blockerCommitted = false;
             try {
@@ -546,7 +595,8 @@ class StaffAccessGovernancePostgresTest {
             assertTrue(staffReachedGuard.await(10, java.util.concurrent.TimeUnit.SECONDS),
                     "staff deactivation must wait at the same scope guard before taking the target User row lock");
             boolean targetUserRowWasAvailable;
-            try (var connection = java.sql.DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+            try (var connection = java.sql.DriverManager.getConnection(disposableTarget.jdbcUrl(),
+                    disposableTarget.username(), disposableTarget.password());
                  var statement = connection.createStatement()) {
                 connection.setSchema(SCHEMA);
                 connection.setAutoCommit(false);
@@ -1833,14 +1883,31 @@ class StaffAccessGovernancePostgresTest {
     }
 
     private static void createSchema() {
-        try (Connection connection = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+        // The very connection that is about to run DDL must itself resolve to the verified target.
+        try (Connection connection = DriverManager.getConnection(disposableTarget.jdbcUrl(),
+                disposableTarget.username(), disposableTarget.password());
              Statement statement = connection.createStatement()) {
+            if (!disposableTarget.database().equals(currentDatabase(connection))) {
+                throw new IllegalStateException("The schema connection did not resolve to the verified "
+                        + "disposable database " + disposableTarget.database());
+            }
             statement.execute("CREATE SCHEMA " + SCHEMA);
+            schemaCreated = true;
             connection.setSchema(SCHEMA);
             ScriptUtils.executeSqlScript(connection,
                     new ClassPathResource("db/baseline/pathome-v1-legacy-core.sql"));
         } catch (Exception error) {
+            dropQuietly();
             throw new IllegalStateException("Unable to create isolated PostgreSQL test schema", error);
+        }
+    }
+
+    /** Best-effort cleanup of a schema this test had already created before a later step failed. */
+    private static void dropQuietly() {
+        try {
+            dropSchema();
+        } catch (Exception ignored) {
+            // The original creation failure is the one worth reporting.
         }
     }
 

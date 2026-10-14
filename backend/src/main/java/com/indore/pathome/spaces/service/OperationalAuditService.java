@@ -20,7 +20,16 @@ public class OperationalAuditService {
     private static final Set<String> ALLOWED_DETAILS = Set.of(
             "capability", "scopeType", "cityId", "teamId", "staffActive", "provisioningSource",
             "coordinatorUserId", "operationalScopeReady", "sourceCityId", "destinationCityId",
-            "sourceTeamId", "destinationTeamId", "linkedRequestCount");
+            "sourceTeamId", "destinationTeamId", "linkedRequestCount",
+            "expectedCityVersion", "teamVersion",
+            // Package 3B initial-routing evidence: bounded identifiers, version numbers and flags only.
+            "routingMode", "expectedRequestVersion", "expectedTeamVersion", "resultingRequestVersion",
+            "unresolvedSource",
+            // Listing-review evidence: the workflow states either side of the decision, the optimistic
+            // versions before and after it, and the canonical locality the action linked or rests on.
+            // Bounded codes, version numbers and ids only - never a review note or other free text.
+            "fromStatus", "toStatus", "previousVersion", "resultingVersion", "revisionBaseVersion",
+            "draftVersion", "previousCanonicalLocalityId", "canonicalLocalityId");
 
     private final OperationalAuditEventRepository events;
     private final DatabaseClock databaseClock;

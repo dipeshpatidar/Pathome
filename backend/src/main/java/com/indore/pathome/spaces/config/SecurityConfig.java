@@ -2,11 +2,14 @@ package com.indore.pathome.spaces.config;
 
 import com.indore.pathome.spaces.security.JwtAuthenticationFilter;
 import com.indore.pathome.spaces.security.OAuth2AuthenticationSuccessHandler;
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,6 +19,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
@@ -28,6 +32,22 @@ public class SecurityConfig {
     private final boolean googleLoginEnabled;
     private final org.springframework.core.env.Environment env;
     private final String configuredOrigins;
+
+    /**
+     * Authorises exactly one thing: the servlet container's own {@link DispatcherType#ERROR} dispatch
+     * to the Boot error page. A {@code DispatcherType} is assigned by the container and cannot be set
+     * by a client - no request header, query parameter or body can forge it - so this exception cannot
+     * be reached by an ordinary external request.
+     *
+     * <p>The dispatch type is the whole decision, and the decision is only ever evaluated for requests
+     * that already matched {@code /error} (see the filter chain below), so an ordinary
+     * {@code GET /error} is denied like every other unlisted path and answers 401 or 403 through the
+     * entry point. That matters because {@code /error} is a real Boot endpoint: permitting it outright
+     * would expose the error-attribute rendering path to anonymous callers.
+     */
+    private static final AuthorizationManager<RequestAuthorizationContext> SERVER_ERROR_DISPATCH =
+            (authentication, context) ->
+                    new AuthorizationDecision(context.getRequest().getDispatcherType() == DispatcherType.ERROR);
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler,
@@ -70,6 +90,23 @@ public class SecurityConfig {
                     "/v3/api-docs/**",
                     "/swagger-ui/**"
                 ).permitAll()
+                // The container's ERROR dispatch to "/error" must stay reachable, and nothing else may
+                // be. When a filter-level rule denies an authenticated caller (for example
+                // "/api/v1/ground/visit-sessions/**" requires ROLE_GROUND_BOY), Spring Security's
+                // AccessDeniedHandler responds with sendError(403), which the container turns into an
+                // ERROR dispatch to "/error". That dispatch runs through this same chain with an empty
+                // stateless context, so a protected "/error" would be denied as anonymous and the entry
+                // point would overwrite the correct 403 with a 401 - the caller is told their
+                // credentials are missing when in fact their permissions are insufficient, and the web
+                // client signs them out.
+                //
+                // SERVER_ERROR_DISPATCH permits that dispatch and only that dispatch: /error stays
+                // protected for ordinary requests, so the endpoint is not exposed to anonymous callers.
+                // This grants no authority beyond the container's own decision path - "/error" renders
+                // only the error attributes (status, path, timestamp) of a request that has already
+                // been decided - and missing, invalid or expired authentication still answers 401 from
+                // the entry point on every protected route.
+                .requestMatchers("/error").access(SERVER_ERROR_DISPATCH)
                 .requestMatchers(HttpMethod.GET, "/api/v1/properties/*/tagged-media").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers(HttpMethod.GET, "/api/v1/properties/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/v1/properties/*/visit-requests").hasRole("TENANT")
@@ -77,6 +114,24 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/properties/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/failed-uploads/**").hasAnyRole("ADMIN", "SUB_ADMIN")
                 .requestMatchers("/api/v1/admin/drafts/**").hasAnyRole("ADMIN", "SUB_ADMIN")
+                // Approved listing-review authority extension (narrow by construction): these seven
+                // listing-review operations additionally admit a caller holding a live effective
+                // STAFF_ADMIN@GLOBAL grant, which ListingReviewAuthority re-decides from database facts
+                // inside the service. They are listed as exact paths - and are matched before the
+                // "/api/v1/admin/**" rule below - so every other administrative path, including this
+                // controller's request-changes and revision operations, keeps the existing ROLE_ADMIN
+                // requirement. No general "/admin/**" access is granted to staff.
+                .requestMatchers(HttpMethod.GET,
+                    "/api/v1/admin/lessor-review/listings",
+                    "/api/v1/admin/lessor-review/listings/*",
+                    "/api/v1/admin/lessor-review/revisions",
+                    "/api/v1/admin/lessor-review/revisions/*"
+                ).authenticated()
+                .requestMatchers(HttpMethod.POST,
+                    "/api/v1/admin/lessor-review/listings/*/start-review",
+                    "/api/v1/admin/lessor-review/listings/*/link-locality",
+                    "/api/v1/admin/lessor-review/listings/*/approve"
+                ).authenticated()
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )

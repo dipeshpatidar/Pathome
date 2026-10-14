@@ -1,7 +1,9 @@
 package com.indore.pathome.spaces.repository;
 
 import com.indore.pathome.spaces.entity.Locality;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.repository.query.Param;
@@ -12,6 +14,15 @@ import java.util.Optional;
 
 @Repository
 public interface LocalityRepository extends JpaRepository<Locality, Long> {
+    /**
+     * Package 3B canonical-evidence lock: the narrow row lock the routing command takes on the source
+     * Listing's canonical locality before it validates Canonical consistency and mutates ownership, so
+     * a concurrent locality relink cannot be interleaved with a routing decision.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select l from Locality l where l.id = :id")
+    Optional<Locality> findLockedById(@Param("id") Long id);
+
     Optional<Locality> findByCityIgnoreCaseAndSectorNameIgnoreCase(String city, String sectorName);
     Optional<Locality> findBySectorNameIgnoreCase(String sectorName);
     List<Locality> findAllBySectorNameIgnoreCase(String sectorName);

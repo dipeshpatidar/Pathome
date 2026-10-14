@@ -17,6 +17,7 @@ import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import com.indore.pathome.spaces.service.TrustedOperationalIntakeService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -50,6 +51,10 @@ class PublicPropertySecurityTest {
     @MockBean private ParserLearningService parserLearningService;
     @MockBean private ParserLearningCaptureService parserLearningCaptureService;
     @MockBean private BatchPropertyPublishingService batchPropertyPublishingService;
+    // PropertyController gained this required collaborator after this test was written, so the slice
+    // context could no longer be created (the test failed to load, not to assert). Mocked here so the
+    // public-property authorization rules it actually guards keep running.
+    @MockBean private TrustedOperationalIntakeService trustedOperationalIntakeService;
     @MockBean @Qualifier("mediaStagingService") private MediaStagingService mediaStagingService;
     @MockBean private UserRepository userRepository;
     @MockBean private PropertyVisitRequestRepository propertyVisitRequestRepository;

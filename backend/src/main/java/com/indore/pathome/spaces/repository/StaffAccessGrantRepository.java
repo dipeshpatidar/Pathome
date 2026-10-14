@@ -72,6 +72,34 @@ public interface StaffAccessGrantRepository extends JpaRepository<StaffAccessGra
             """, nativeQuery = true)
     boolean hasEffectiveGlobalAdmin(@Param("userId") Long userId);
 
+    /**
+     * The effective global {@code STAFF_ADMIN} grant rows the authority is decided from, held
+     * {@code FOR SHARE} for the rest of the calling transaction.
+     *
+     * <p>This is the revocation-order guard. A revocation takes {@code FOR UPDATE} on this same row, so
+     * while a review holds the share lock the revocation cannot commit; and if the revocation already
+     * holds the row, this statement waits and then re-evaluates the row against the committed version,
+     * so a grant revoked before the decision is made is simply not returned. Either way the two commit
+     * orders are serialised instead of interleaved, and every currently effective grant row is held, so
+     * revoking one of several grants does not deny an actor whose other grant still confers authority.
+     *
+     * <p>{@code ORDER BY g.id} keeps the acquisition order deterministic across concurrent reviewers.
+     */
+    @Query(value = """
+            SELECT g.*
+            FROM staff_access_grants g
+            CROSS JOIN (SELECT clock_timestamp() AS db_now) clock
+            WHERE g.user_id = :userId
+              AND g.capability = 'STAFF_ADMIN'
+              AND g.scope_type = 'GLOBAL'
+              AND g.revoked_at IS NULL
+              AND g.effective_at <= clock.db_now
+              AND (g.expires_at IS NULL OR clock.db_now < g.expires_at)
+            ORDER BY g.id
+            FOR SHARE OF g
+            """, nativeQuery = true)
+    List<StaffAccessGrant> findEffectiveGlobalAdminSharedByUserId(@Param("userId") Long userId);
+
     @Query(value = """
             SELECT CASE WHEN COUNT(*) > 0 THEN TRUE ELSE FALSE END
             FROM staff_access_grants

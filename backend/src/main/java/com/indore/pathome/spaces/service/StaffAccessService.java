@@ -81,6 +81,51 @@ public class StaffAccessService {
         return user;
     }
 
+    /**
+     * Holds the live facts a global Staff Admin decision is made from - the actor's staff profile row and
+     * every effective global {@code STAFF_ADMIN} grant row - for the rest of the calling transaction.
+     *
+     * <p>The rows are taken {@code FOR SHARE} in the established governance order (actor profile before
+     * actor grants, exactly as {@code OperationalSecurityGuards} acquires its guards), and they must be
+     * taken <em>before</em> any lock that comes later in that hierarchy, so a caller that respects the
+     * order cannot invert it against the governance or operational-routing paths and deadlock.
+     *
+     * <p>{@code FOR SHARE} is what couples this decision's commit with a revocation's commit without
+     * freezing the actor: a revocation or deactivation takes {@code FOR UPDATE} on these same rows and
+     * therefore cannot commit while the decision holds them, whereas another review by the same actor -
+     * which also only takes share locks - is never blocked.
+     *
+     * <p>The locks are released by PostgreSQL when this transaction commits or rolls back, so they
+     * remain held across the guarded mutation they protect.
+     *
+     * <p>An actor with no staff profile row holds nothing on that row; the decision itself still refuses
+     * them, because {@link #requireGlobalAdmin(Long)} re-reads the same facts.
+     */
+    @Transactional
+    public void holdGlobalAdminEvidence(Long authenticatedUserId) {
+        if (authenticatedUserId == null || authenticatedUserId <= 0) {
+            throw new AccessDeniedException("Authenticated User identity required");
+        }
+        employeeProfiles.findSharedByUserId(authenticatedUserId);
+        grants.findEffectiveGlobalAdminSharedByUserId(authenticatedUserId);
+    }
+
+    /**
+     * The real persisted {@code User} that a verified stable identity attributes an audited action to.
+     *
+     * <p>This never invents an actor: the identity comes from the authenticated credential, and it is
+     * resolved against {@code users} in the calling transaction, so an action whose actor cannot be
+     * resolved is refused rather than recorded against a fabricated or borrowed identity.
+     */
+    @Transactional(readOnly = true)
+    public User requireAttributableUser(Long authenticatedUserId) {
+        if (authenticatedUserId == null || authenticatedUserId <= 0) {
+            throw new AccessDeniedException("An attributable staff or administrator identity is required");
+        }
+        return users.findById(authenticatedUserId)
+                .orElseThrow(() -> new AccessDeniedException("An attributable staff or administrator identity is required"));
+    }
+
     @Transactional(readOnly = true)
     public EmployeeProfile requireActiveStaff(Long userId) {
         return employeeProfiles.findByUserId(userId)

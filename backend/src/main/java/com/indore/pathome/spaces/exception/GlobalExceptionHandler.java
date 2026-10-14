@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.http.CacheControl;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -79,6 +80,42 @@ public class GlobalExceptionHandler {
         ErrorResponseDTO error = new ErrorResponseDTO(
                 HttpStatus.CONFLICT.value(), "Conflict", ex.getMessage(), request.getRequestURI());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
+    /**
+     * Governed Team creation waited past its bounded command locks and rolled back cleanly. The cause is
+     * logged for operability, but the response carries only the sanitized message from the exception, so
+     * no SQL statement, stack trace, database identity or credential can be disclosed.
+     */
+    @ExceptionHandler(OperatingTeamProvisioningUnavailableException.class)
+    public ResponseEntity<ErrorResponseDTO> handleOperatingTeamProvisioningUnavailable(
+            OperatingTeamProvisioningUnavailableException ex, HttpServletRequest request) {
+        log.warn("Governed Team creation failed transiently and was rolled back | Path: {} | Cause: {}",
+                request.getRequestURI(), ex.getCause() == null ? "unknown" : ex.getCause().getClass().getName());
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "Service Unavailable", ex.getMessage(),
+                request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .cacheControl(CacheControl.noStore())
+                .body(error);
+    }
+
+    /**
+     * Governed intake routing waited past its bounded command locks and rolled back cleanly. The cause is
+     * logged for operability, but the response carries only the sanitized message from the exception, so
+     * no SQL statement, stack trace, database identity or credential can be disclosed.
+     */
+    @ExceptionHandler(OperationalCommandUnavailableException.class)
+    public ResponseEntity<ErrorResponseDTO> handleOperationalCommandUnavailable(
+            OperationalCommandUnavailableException ex, HttpServletRequest request) {
+        log.warn("Governed Operations command failed transiently and was rolled back | Path: {} | Cause: {}",
+                request.getRequestURI(), ex.getCause() == null ? "unknown" : ex.getCause().getClass().getName());
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "Service Unavailable", ex.getMessage(),
+                request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .cacheControl(CacheControl.noStore())
+                .body(error);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -202,6 +239,17 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex, HttpServletRequest request) {
+        // Classify at the HTTP boundary, after the transaction interceptor has rolled back. This also
+        // catches deferred audit/flush failures at commit, which a catch inside @Transactional cannot see.
+        // Keep the policy confined to review mutations and reuse the approved SQLSTATE-led classifier.
+        if ("POST".equals(request.getMethod())
+                && request.getRequestURI().startsWith("/api/v1/admin/lessor-review/")
+                && ex instanceof RuntimeException failure) {
+            RuntimeException translated = OperationalCommandUnavailableException.translate(failure);
+            if (translated instanceof OperationalCommandUnavailableException unavailable) {
+                return handleOperationalCommandUnavailable(unavailable, request);
+            }
+        }
         log.error("Unhandled Global Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI(), ex);
         ErrorResponseDTO error = new ErrorResponseDTO(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
