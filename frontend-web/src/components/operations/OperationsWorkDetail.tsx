@@ -1,22 +1,29 @@
 import React from 'react';
-import { ArrowLeft, CircleAlert, LoaderCircle, Lock, MapPin, RefreshCw, SearchX } from 'lucide-react';
+import { CalendarPlus, CircleAlert, ListOrdered, LoaderCircle, Lock, MapPin, RefreshCw, SearchX } from 'lucide-react';
 import {
   attentionCategory,
-  formatOperationsDateTime,
+  formatOperationsDate,
   formatOperationsDetailDateTime,
   formatOperationsDuration,
-  formatOperationsTimeRange,
+  formatOperationsTime,
   formatStoredLocalDateTime,
   isOwnedRequestReleasable,
   isOwnedSessionReleasable,
   isTerminalOperationsStatus,
   linkedRequestsLabel,
   needsCoordinatorAttention,
+  operationsAvailabilityMeta,
   operationsNoun,
   operationsRecordReference,
   operationsRecordTitle,
   operationsStatusMeta,
+  requestHasCompleteWindow,
+  schedulingBlockersForSession,
+  sessionItemOriginLabel,
+  unavailableActiveStopCount,
   type ClaimableWorkItem,
+  type OperationsLessorContact,
+  type OperationsMyWorkItem,
   type OperationsRequestDetail,
   type OperationsSessionDetail,
   type OperationsTargetType
@@ -29,6 +36,16 @@ import {
   TenantConfirmationLabel,
   TypeTag
 } from './OperationsWorkspacePrimitives';
+import { OperationsLessorContactPanel } from './OperationsLessorContactPanel';
+import {
+  OperationsRequestCoordination,
+  type OperationsOwnedCandidatePage
+} from './OperationsRequestCoordination';
+import {
+  OperationsDraftItinerary,
+  type AddStopInput,
+  type DiscoveryListingOption
+} from './OperationsDraftItinerary';
 
 export type OperationsDetailKind = 'claimable' | 'request' | 'session';
 
@@ -45,16 +62,58 @@ export type OperationsDetailState =
   | { status: 'missing' }
   | { status: 'ready'; snapshot: OperationsDetailSnapshot };
 
+/** Window input collected by the availability editor, in the shape the command builder expects. */
+export interface OperationsAvailabilityWindowInput {
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  availabilityZoneId: string | null;
+  availabilitySource: 'PHONE' | 'WHATSAPP' | 'DIRECT' | 'OTHER' | null;
+}
+
+/**
+ * Everything an owned record can do, supplied by the workspace.
+ *
+ * Each entry runs through the workspace's single guarded command lifecycle, so the detail never
+ * transmits a command itself and never invents an outcome.
+ */
+export interface OperationsDetailActions {
+  onRelease: () => void;
+  onCoordinateNewSession: () => void;
+  onAttachToOwnedDraft: (sessionId: number, sessionVersion: number) => void;
+  onMarkConfirmedUnavailable: () => void;
+  onOpenScheduling: () => void;
+  onReorderItems: (itemIds: number[]) => void;
+  onRemoveItem: (itemId: number, reason: string | null) => void;
+  onAddStop: (input: AddStopInput) => void;
+  /** Reveals the canonical contact; the signal cancels the read when the contact context changes. */
+  revealRequestContact: (signal: AbortSignal) => Promise<OperationsLessorContact>;
+  revealItemContact: (itemId: number, signal: AbortSignal) => Promise<OperationsLessorContact>;
+  searchListings: (query: string, signal: AbortSignal) => Promise<DiscoveryListingOption[]>;
+  loadOwnedCandidates: (
+    page: number,
+    signal: AbortSignal
+  ) => Promise<OperationsOwnedCandidatePage<OperationsMyWorkItem> | null>;
+}
+
 interface Props {
   targetType: OperationsTargetType;
   targetId: number;
   source: 'owned' | 'claimable';
   state: OperationsDetailState;
   busyAction: 'claim' | 'release' | null;
+  /** The in-flight Phase 2A command key, or null when none is running. */
+  busyCommand: string | null;
+  /** Identity and version of the visible root; a change clears revealed lessor contact. */
+  contactContextKey: string;
+  actions: OperationsDetailActions;
+  onSaveAvailability: (
+    itemId: number,
+    choice: 'window' | 'confirm-only' | 'unavailable',
+    window: OperationsAvailabilityWindowInput
+  ) => void;
   onBack: () => void;
   onRetry: () => void;
   onClaim: () => void;
-  onRelease: () => void;
 }
 
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
@@ -76,8 +135,19 @@ const Layout: React.FC<{ primary: React.ReactNode; secondary?: React.ReactNode; 
   </div>
 );
 
+/**
+ * Exactly what this workspace still does not do. Repair, override, rescheduling, cancellation,
+ * coordinator reassignment and tenant confirmation are separate authorities this console does not
+ * hold, and no call attempt or note is persisted anywhere.
+ */
 const NOT_AVAILABLE_FOOTNOTE =
-  'Scheduling, Ground Executive assignment, lessor contact and coordinator reassignment are not part of this workspace yet.';
+  'Repair, override, rescheduling, cancellation, coordinator reassignment and tenant confirmation are outside this workspace. Calls and notes are not recorded here.';
+
+const ArrowLeftIcon: React.FC = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" aria-hidden="true">
+    <path d="M19 12H5M12 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
 
 export const OperationsWorkDetail: React.FC<Props> = ({
   targetType,
@@ -85,14 +155,17 @@ export const OperationsWorkDetail: React.FC<Props> = ({
   source,
   state,
   busyAction,
+  busyCommand,
+  contactContextKey,
+  actions,
+  onSaveAvailability,
   onBack,
   onRetry,
-  onClaim,
-  onRelease
+  onClaim
 }) => {
   const back = (
     <button type="button" className="oe-back" onClick={onBack}>
-      <ArrowLeft size={16} aria-hidden="true" />
+      <ArrowLeftIcon />
       Back
     </button>
   );
@@ -160,12 +233,7 @@ export const OperationsWorkDetail: React.FC<Props> = ({
 
   if (snapshot.kind === 'claimable' && snapshot.claimable) {
     return (
-      <ClaimablePreview
-        item={snapshot.claimable}
-        back={back}
-        busy={busyAction === 'claim'}
-        onClaim={onClaim}
-      />
+      <ClaimablePreview item={snapshot.claimable} back={back} busy={busyAction === 'claim'} onClaim={onClaim} />
     );
   }
   if (snapshot.kind === 'request' && snapshot.request) {
@@ -174,7 +242,9 @@ export const OperationsWorkDetail: React.FC<Props> = ({
         detail={snapshot.request}
         back={back}
         busy={busyAction === 'release'}
-        onRelease={onRelease}
+        busyCommand={busyCommand}
+        contactContextKey={contactContextKey}
+        actions={actions}
       />
     );
   }
@@ -184,7 +254,10 @@ export const OperationsWorkDetail: React.FC<Props> = ({
         detail={snapshot.session}
         back={back}
         busy={busyAction === 'release'}
-        onRelease={onRelease}
+        busyCommand={busyCommand}
+        contactContextKey={contactContextKey}
+        actions={actions}
+        onSaveAvailability={onSaveAvailability}
       />
     );
   }
@@ -299,8 +372,8 @@ const ClaimablePreview: React.FC<{
                 {busy ? 'Claiming…' : `Claim ${noun}`}
               </button>
               <p className="oe-action-note">
-                Claiming re-reads this item from the server first, so a version that changed since
-                this page loaded is never claimed.
+                Claiming re-reads this item from the server first, so a version that changed since this
+                page loaded is never claimed.
               </p>
             </div>
             <p className="oe-footnote">{NOT_AVAILABLE_FOOTNOTE}</p>
@@ -344,22 +417,20 @@ const OwnedRequest: React.FC<{
   detail: OperationsRequestDetail;
   back: React.ReactNode;
   busy: boolean;
-  onRelease: () => void;
-}> = ({ detail, back, busy, onRelease }) => {
+  busyCommand: string | null;
+  contactContextKey: string;
+  actions: OperationsDetailActions;
+}> = ({ detail, back, busy, busyCommand, contactContextKey, actions }) => {
   const city = detail.cityDisplayName ?? 'City not recorded';
   const team = detail.teamDisplayName ?? 'Team not recorded';
   const releasable = isOwnedRequestReleasable(detail);
   const closed = isTerminalOperationsStatus('REQUEST', detail.status);
+  const coordinationOpen = detail.status === 'RECEIVED' && detail.sessionId === null;
   const flagged = needsCoordinatorAttention({ targetType: 'REQUEST', status: detail.status });
   const start = formatOperationsDetailDateTime(detail.availabilityStartAt);
   const end = formatOperationsDetailDateTime(detail.availabilityEndAt);
-  const windowLabel = start && end
-    ? `${start} → ${end}`
-    : start
-      ? `From ${start}`
-      : end
-        ? `Until ${end}`
-        : null;
+  const windowLabel = start && end ? `${start} → ${end}` : start ? `From ${start}` : end ? `Until ${end}` : null;
+  const blocked = busyCommand !== null || busy;
 
   return (
     <div className="oe-stack">
@@ -381,12 +452,22 @@ const OwnedRequest: React.FC<{
               <p className="oe-quiet">
                 This request is closed and kept as read-only history. No ownership actions apply.
               </p>
+            ) : coordinationOpen ? (
+              <OperationsRequestCoordination
+                requestId={detail.requestId}
+                blocked={blocked}
+                busyCommand={busyCommand}
+                onCoordinateNewSession={actions.onCoordinateNewSession}
+                onAttachToOwnedDraft={actions.onAttachToOwnedDraft}
+                onMarkConfirmedUnavailable={actions.onMarkConfirmedUnavailable}
+                loadOwnedCandidates={actions.loadOwnedCandidates}
+              />
             ) : releasable ? (
               <div className="oe-actions-list">
                 <button
                   type="button"
                   className="oe-btn oe-btn--secondary oe-btn--md oe-btn--block"
-                  onClick={onRelease}
+                  onClick={actions.onRelease}
                   disabled={busy}
                 >
                   {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
@@ -400,10 +481,23 @@ const OwnedRequest: React.FC<{
             ) : (
               <p className="oe-quiet">
                 {detail.status === 'COORDINATING'
-                  ? 'Coordination is already under way, so this request has no ownership action here.'
+                  ? 'Coordination is already under way. Manage this request from its visit session.'
                   : 'This request is not in a state that can be released from here.'}
               </p>
             )}
+            {!closed && coordinationOpen && releasable ? (
+              <div className="oe-actions-list">
+                <button
+                  type="button"
+                  className="oe-btn oe-btn--secondary oe-btn--md oe-btn--block"
+                  onClick={actions.onRelease}
+                  disabled={busy}
+                >
+                  {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
+                  {busy ? 'Releasing…' : 'Release request'}
+                </button>
+              </div>
+            ) : null}
             <p className="oe-footnote">{NOT_AVAILABLE_FOOTNOTE}</p>
           </aside>
         }
@@ -446,6 +540,22 @@ const OwnedRequest: React.FC<{
                     ?? <MissingValue>No preference given</MissingValue>}
                 </Field>
               </dl>
+              <p className="oe-footnote">
+                {requestHasCompleteWindow(detail)
+                  ? 'The tenant’s window is complete, so this request can be evaluated for scheduling once it is on a session.'
+                  : 'The tenant’s window is incomplete or missing. The server needs a start, an end and a zone before it will evaluate scheduling.'}
+              </p>
+            </Section>
+            <Section title="Lessor contact">
+              <OperationsLessorContactPanel
+                contextKey={contactContextKey}
+                subject={detail.listingTitle ?? operationsRecordTitle('REQUEST', detail.requestId)}
+                reveal={actions.revealRequestContact}
+              />
+              <p className="oe-footnote">
+                Contact is shown only when the backend resolves a canonical, trusted record for this
+                property. It is never taken from another source, and it is not stored in this browser.
+              </p>
             </Section>
           </>
         }
@@ -480,12 +590,20 @@ const OwnedSession: React.FC<{
   detail: OperationsSessionDetail;
   back: React.ReactNode;
   busy: boolean;
-  onRelease: () => void;
-}> = ({ detail, back, busy, onRelease }) => {
+  busyCommand: string | null;
+  contactContextKey: string;
+  actions: OperationsDetailActions;
+  onSaveAvailability: (
+    itemId: number,
+    choice: 'window' | 'confirm-only' | 'unavailable',
+    window: OperationsAvailabilityWindowInput
+  ) => void;
+}> = ({ detail, back, busy, busyCommand, contactContextKey, actions, onSaveAvailability }) => {
   const city = detail.city ?? 'City not recorded';
   const team = detail.teamDisplayName ?? 'Team not recorded';
   const releasable = isOwnedSessionReleasable(detail);
   const closed = isTerminalOperationsStatus('SESSION', detail.status);
+  const draft = detail.status === 'DRAFT';
   const flagged = needsCoordinatorAttention({
     targetType: 'SESSION',
     status: detail.status,
@@ -493,12 +611,18 @@ const OwnedSession: React.FC<{
     tenantConfirmationState: detail.tenantConfirmationState
   });
   const exception = EXCEPTION_NOTICE[detail.status];
-  const itemCount = detail.items.length;
-  const lede = `${itemCount} ${itemCount === 1 ? 'visit item' : 'visit items'}${
+  const activeItems = detail.items.filter((item) => item.removedAt === null);
+  const blockers = schedulingBlockersForSession(detail);
+  const readyStopCount = activeItems.filter((item) => operationsAvailabilityMeta(item).schedulingReady).length;
+  const unavailableStopCount = unavailableActiveStopCount(detail);
+  const lede = `${detail.items.length} ${detail.items.length === 1 ? 'visit item' : 'visit items'}${
     detail.areaName ? ` · ${detail.areaName}` : ''
   }`;
-  const plannedWindow = formatOperationsTimeRange(detail.scheduledAt, detail.durationMinutes);
+  const visitTime = formatOperationsTime(detail.scheduledAt);
+  const duration = formatOperationsDuration(detail.durationMinutes);
+  const plannedWindow = visitTime ? `${formatOperationsDate(detail.scheduledAt) ?? ''} · ${visitTime}` : null;
   const hasExecution = Boolean(detail.startedAt || detail.expiresAt || detail.executionStateChangedAt);
+  const blocked = busyCommand !== null || busy;
 
   return (
     <div className="oe-stack">
@@ -535,35 +659,68 @@ const OwnedSession: React.FC<{
               <p className="oe-quiet">
                 This session is closed and kept as read-only history. No ownership actions apply.
               </p>
-            ) : releasable ? (
-              <div className="oe-actions-list">
-                <button
-                  type="button"
-                  className="oe-btn oe-btn--secondary oe-btn--md oe-btn--block"
-                  onClick={onRelease}
-                  disabled={busy}
-                >
-                  {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
-                  {busy ? 'Releasing…' : 'Release session'}
-                </button>
-                <p className="oe-action-note">
-                  Releasing returns this session and its linked requests to your teams’ claimable
-                  work. It stays available to claim again, and this page stops showing it once
-                  released.
-                </p>
-              </div>
-            ) : detail.status === 'SCHEDULED' ? (
-              <p className="oe-quiet">
-                A visit time is booked, so this session is read-only here. The booked time, the
-                assigned Ground Executive and release cannot be changed from this workspace.
-              </p>
-            ) : detail.status === 'STARTED' ? (
-              <p className="oe-quiet">The visit is in progress. This view is read-only.</p>
             ) : (
-              <p className="oe-quiet">
-                This session is not in a state that can be released from here.
-              </p>
+              <div className="oe-actions-list">
+                {draft ? (
+                  <>
+                    <button
+                      type="button"
+                      className="oe-btn oe-btn--primary oe-btn--md oe-btn--block"
+                      onClick={actions.onOpenScheduling}
+                      disabled={blocked}
+                    >
+                      <CalendarPlus size={16} aria-hidden="true" />
+                      Schedule visit
+                    </button>
+                    <p className="oe-action-note">
+                      {blockers.length === 0
+                        ? `${readyStopCount} of ${activeItems.length} active stops have a complete confirmed window${
+                            unavailableStopCount > 0
+                              ? `, and ${unavailableStopCount} ${unavailableStopCount === 1 ? 'stop is' : 'stops are'} recorded unavailable`
+                              : ''
+                          }. The server evaluates the visit from the confirmed stops only.`
+                        : `Scheduling will stop at validation: ${blockers.join(' ')}`}
+                    </p>
+                    <button
+                      type="button"
+                      className="oe-btn oe-btn--secondary oe-btn--md oe-btn--block"
+                      onClick={() => document.getElementById('oe-itin-title')?.focus()}
+                      disabled={blocked}
+                    >
+                      <ListOrdered size={16} aria-hidden="true" />
+                      Itinerary and availability
+                    </button>
+                  </>
+                ) : null}
+                {releasable ? (
+                  <>
+                    <button
+                      type="button"
+                      className="oe-btn oe-btn--secondary oe-btn--md oe-btn--block"
+                      onClick={actions.onRelease}
+                      disabled={busy}
+                    >
+                      {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
+                      {busy ? 'Releasing…' : 'Release session'}
+                    </button>
+                    <p className="oe-action-note">
+                      Releasing returns this session and its linked requests to your teams’ claimable
+                      work. It stays available to claim again, and this page stops showing it once
+                      released.
+                    </p>
+                  </>
+                ) : null}
+              </div>
             )}
+            {!closed && !draft && !releasable ? (
+              <p className="oe-quiet">
+                {detail.status === 'SCHEDULED'
+                  ? 'A visit time is booked, so this session is read-only here. The booked time, the assigned Ground Executive and release cannot be changed from this workspace.'
+                  : detail.status === 'STARTED'
+                    ? 'The visit is in progress. This view is read-only.'
+                    : 'This session is not in a state that can be released from here.'}
+              </p>
+            ) : null}
             <p className="oe-footnote">{NOT_AVAILABLE_FOOTNOTE}</p>
           </aside>
         }
@@ -591,8 +748,7 @@ const OwnedSession: React.FC<{
                   {plannedWindow ?? <MissingValue>Not recorded</MissingValue>}
                 </Field>
                 <Field label="Duration">
-                  {formatOperationsDuration(detail.durationMinutes)
-                    ?? <MissingValue>Not recorded</MissingValue>}
+                  {duration ?? <MissingValue>Not recorded</MissingValue>}
                 </Field>
                 <Field label="Reserved end">
                   {formatOperationsDetailDateTime(detail.reservedEndAt)
@@ -607,43 +763,23 @@ const OwnedSession: React.FC<{
                 Ground Executive’s user ID and no name.
               </p>
             </Section>
-            <Section title={`Visit items (${itemCount})`}>
-              {itemCount === 0 ? (
-                <p className="oe-quiet">No visit items are recorded on this session.</p>
-              ) : (
-                <ol className="oe-items">
-                  {detail.items.map((item) => (
-                    <li key={item.itemId} className="oe-item">
-                      <span
-                        className={`oe-item-order oe-num${item.removedAt ? ' oe-item-order--removed' : ''}`}
-                      >
-                        {item.position ?? item.itemId}
-                      </span>
-                      <div className="oe-item-body">
-                        <p className="oe-item-title">{item.title ?? 'Listing title not recorded'}</p>
-                        <p className="oe-item-meta">
-                          {item.sector ?? 'Locality not provided'}
-                          {' · '}
-                          <span className="oe-mono">
-                            {item.listingId === null
-                              ? 'Listing ID not recorded'
-                              : `Listing ${operationsRecordReference(item.listingId)}`}
-                          </span>
-                        </p>
-                        {item.address ? <p className="oe-item-meta">{item.address}</p> : null}
-                        {item.removedAt ? (
-                          <p className="oe-item-removed">
-                            Removed from this itinerary on{' '}
-                            {formatOperationsDateTime(item.removedAt) ?? 'a date not recorded'}
-                            {item.removalReason ? ` · ${item.removalReason}` : ''}
-                          </p>
-                        ) : null}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              )}
+
+            <Section title={`Visit items (${activeItems.length} active)`}>
+              <OperationsDraftItinerary
+                session={detail}
+                editable={draft}
+                blocked={blocked}
+                busyCommand={busyCommand}
+                onReorder={actions.onReorderItems}
+                onRemove={actions.onRemoveItem}
+                onSaveAvailability={onSaveAvailability}
+                onAddStop={actions.onAddStop}
+                revealItemContact={actions.revealItemContact}
+                contactContextKey={contactContextKey}
+                searchListings={actions.searchListings}
+              />
             </Section>
+
             {hasExecution ? (
               <Section title="Execution">
                 <dl className="oe-fields">
@@ -698,4 +834,3 @@ const OwnedSession: React.FC<{
     </div>
   );
 };
-

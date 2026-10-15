@@ -76,15 +76,21 @@ export interface OperationsSessionItem {
   city: string | null;
   sector: string | null;
   position: number | null;
+  /** The linked Request this item was created from, when the stop is a direct tenant request. */
   sourceRequestId: number | null;
+  /** The linked Request a derived property was added from (`OE_ADDED` / `LESSOR_SUGGESTED`). */
+  derivedFromRequestId: number | null;
   origin: string | null;
   confirmationStatus: string | null;
   availabilityConfirmedAt: string | null;
   removedAt: string | null;
   removalReason: string | null;
+  /** Recorded lessor-stated window, mapped from the backend's `propertyAvailability*` response fields. */
   availabilityStartAt: string | null;
   availabilityEndAt: string | null;
   availabilityZoneId: string | null;
+  /** Channel the window was recorded from. `WHATSAPP` is a manually recorded channel, not an integration. */
+  availabilitySource: string | null;
 }
 
 export interface OperationsRequestDetail {
@@ -362,14 +368,18 @@ const toSessionItem = (raw: unknown): OperationsSessionItem | null => {
     sector: readText(record.sector),
     position: readInteger(record.position),
     sourceRequestId: readInteger(record.sourceRequestId),
+    derivedFromRequestId: readInteger(record.derivedFromRequestId),
     origin: readText(record.origin),
     confirmationStatus: readText(record.confirmationStatus),
     availabilityConfirmedAt: readText(record.availabilityConfirmedAt),
     removedAt: readText(record.removedAt),
     removalReason: readText(record.removalReason),
-    availabilityStartAt: readText(record.availabilityStartAt),
-    availabilityEndAt: readText(record.availabilityEndAt),
-    availabilityZoneId: readText(record.availabilityZoneId)
+    // The response DTO names these `propertyAvailability*`; the client keeps its own field names.
+    // Reading the command-style names here silently discarded every real recorded window.
+    availabilityStartAt: readText(record.propertyAvailabilityStartAt),
+    availabilityEndAt: readText(record.propertyAvailabilityEndAt),
+    availabilityZoneId: readText(record.propertyAvailabilityZoneId),
+    availabilitySource: readText(record.propertyAvailabilitySource)
   };
 };
 
@@ -478,6 +488,1330 @@ export const releaseCommandForSession = (
         expectedSessionVersion: detail.version,
         expectedRequestVersions: linkedRequestVersionMap(detail.linkedRequestVersions)
       };
+
+/* ------------------------------------------------------------------ *
+ * Phase 2A command vocabulary — Request coordination, itinerary and availability
+ * ------------------------------------------------------------------ */
+
+/**
+ * The only two item origins Operations may add. `TENANT_REQUESTED` belongs to the tenant intake
+ * path, so a derived property can never claim to be a tenant request.
+ */
+export const OPERATIONS_ITEM_ORIGIN_OE_ADDED = 'OE_ADDED';
+export const OPERATIONS_ITEM_ORIGIN_LESSOR_SUGGESTED = 'LESSOR_SUGGESTED';
+export type OperationsDerivedItemOrigin =
+  | typeof OPERATIONS_ITEM_ORIGIN_OE_ADDED
+  | typeof OPERATIONS_ITEM_ORIGIN_LESSOR_SUGGESTED;
+
+export interface OperationsDerivedItemOriginOption {
+  value: OperationsDerivedItemOrigin;
+  label: string;
+  hint: string;
+}
+
+export const OPERATIONS_DERIVED_ITEM_ORIGINS: OperationsDerivedItemOriginOption[] = [
+  {
+    value: OPERATIONS_ITEM_ORIGIN_OE_ADDED,
+    label: 'Added by Operations',
+    hint: 'You found this property while coordinating the visit.'
+  },
+  {
+    value: OPERATIONS_ITEM_ORIGIN_LESSOR_SUGGESTED,
+    label: 'Suggested by the lessor',
+    hint: 'The lessor of a stop on this session suggested it.'
+  }
+];
+
+/** Channels Operations may record a stated window from. `WHATSAPP` is a manual entry, not an integration. */
+export const OPERATIONS_AVAILABILITY_SOURCES = ['PHONE', 'WHATSAPP', 'DIRECT', 'OTHER'] as const;
+export type OperationsAvailabilitySource = (typeof OPERATIONS_AVAILABILITY_SOURCES)[number];
+
+export interface OperationsAvailabilitySourceOption {
+  value: OperationsAvailabilitySource;
+  label: string;
+}
+
+export const OPERATIONS_AVAILABILITY_SOURCE_OPTIONS: OperationsAvailabilitySourceOption[] = [
+  { value: 'PHONE', label: 'Phone call' },
+  { value: 'WHATSAPP', label: 'WhatsApp message (recorded channel)' },
+  { value: 'DIRECT', label: 'In person' },
+  { value: 'OTHER', label: 'Other' }
+];
+
+export const availabilitySourceLabel = (source: string | null | undefined): string | null => {
+  if (!source) return null;
+  return OPERATIONS_AVAILABILITY_SOURCE_OPTIONS.find((option) => option.value === source)?.label ?? source;
+};
+
+/** The backend accepts an override/removal explanation up to 500 characters. */
+export const OPERATIONS_REASON_MAX = 500;
+export const OPERATIONS_REMOVAL_REASON_MAX = 500;
+
+/* ---------------- Canonical lessor contact ---------------- */
+
+/**
+ * Canonical lessor contact for one authorized operational root. Exactly four fields.
+ *
+ * `CONTACT_UNAVAILABLE` is the fail-closed outcome and never carries a partial value: a response that
+ * claims availability without a usable name and mobile is downgraded here, so a half-populated
+ * contact can never be rendered, used for a call link, or written anywhere.
+ */
+export interface OperationsLessorContact {
+  listingId: number | null;
+  name: string | null;
+  mobile: string | null;
+  status: 'CONTACT_AVAILABLE' | 'CONTACT_UNAVAILABLE';
+}
+
+export const toLessorContact = (raw: unknown): OperationsLessorContact | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const listingId = readInteger(record.listingId);
+  const status = record.status === 'CONTACT_AVAILABLE' ? 'CONTACT_AVAILABLE' : 'CONTACT_UNAVAILABLE';
+  if (status !== 'CONTACT_AVAILABLE') return { listingId, name: null, mobile: null, status: 'CONTACT_UNAVAILABLE' };
+  const name = readText(record.name);
+  const mobile = readText(record.mobile);
+  // A partial contact is not contact: report the honest unavailable outcome instead of a half record.
+  if (name === null || mobile === null) {
+    return { listingId, name: null, mobile: null, status: 'CONTACT_UNAVAILABLE' };
+  }
+  return { listingId, name, mobile, status: 'CONTACT_AVAILABLE' };
+};
+
+/* ---------------- Request coordination ---------------- */
+
+export interface CoordinateNewSessionCommand {
+  targetType: 'REQUEST';
+  expectedRequestVersion: number;
+  sessionId: null;
+  expectedSessionVersion: null;
+}
+
+export interface CoordinateAttachCommand {
+  targetType: 'REQUEST';
+  expectedRequestVersion: number;
+  sessionId: number;
+  expectedSessionVersion: number;
+}
+
+/**
+ * Coordinating an owned standalone Request into a brand-new DRAFT session. The server decides every
+ * eligibility question (listing state, Tenant/City/Team scope); the client supplies only the versions
+ * it has just re-read.
+ */
+export const coordinateNewSessionCommand = (
+  detail: OperationsRequestDetail
+): CoordinateNewSessionCommand | null =>
+  detail.version === null || detail.sessionId !== null
+    ? null
+    : {
+        targetType: 'REQUEST',
+        expectedRequestVersion: detail.version,
+        sessionId: null,
+        expectedSessionVersion: null
+      };
+
+/**
+ * Attaching an owned Request to an owned DRAFT session. Both roots are re-read immediately before the
+ * command is built, and the server still decides whether they may be combined.
+ */
+export const coordinateAttachCommand = (
+  detail: OperationsRequestDetail,
+  targetSessionId: number,
+  targetSessionVersion: number
+): CoordinateAttachCommand | null =>
+  detail.version === null || detail.sessionId !== null
+    || !Number.isSafeInteger(targetSessionId) || !Number.isSafeInteger(targetSessionVersion)
+    ? null
+    : {
+        targetType: 'REQUEST',
+        expectedRequestVersion: detail.version,
+        sessionId: targetSessionId,
+        expectedSessionVersion: targetSessionVersion
+      };
+
+export type RequestUnavailableCommand = { targetType: 'REQUEST'; expectedRequestVersion: number };
+
+export const requestUnavailableCommand = (
+  detail: OperationsRequestDetail
+): RequestUnavailableCommand | null =>
+  detail.version === null || detail.sessionId !== null
+    ? null
+    : { targetType: 'REQUEST', expectedRequestVersion: detail.version };
+
+/* ------------------------------------------------------------------ *
+ * DRAFT itinerary management
+ * ------------------------------------------------------------------ */
+
+export const sessionItemOriginLabel = (origin: string | null | undefined): string => {
+  if (origin === OPERATIONS_ITEM_ORIGIN_OE_ADDED) return 'Derived property · added by Operations';
+  if (origin === OPERATIONS_ITEM_ORIGIN_LESSOR_SUGGESTED) return 'Derived property · suggested by the lessor';
+  if (origin === 'TENANT_REQUESTED') return 'Requested by the tenant';
+  return origin ? humanizeOperationsCode(origin) : 'Origin not recorded';
+};
+
+/** Items still on the itinerary. Removed items are retained history and are never visited. */
+export const activeSessionItems = (items: OperationsSessionItem[]): OperationsSessionItem[] =>
+  items.filter((item) => item.removedAt === null);
+
+export const removedSessionItems = (items: OperationsSessionItem[]): OperationsSessionItem[] =>
+  items.filter((item) => item.removedAt !== null);
+
+/** A stop created from a linked Request rather than from Operations/lessor discovery. */
+export const isDirectRequestItem = (item: OperationsSessionItem): boolean => item.sourceRequestId !== null;
+
+/**
+ * The backend refuses to remove a directly requested stop until its availability is recorded as
+ * UNAVAILABLE. Stating that guard in the UI stops the OE from making a request the server must refuse.
+ */
+export const sessionItemRemovalBlockedReason = (item: OperationsSessionItem): string | null => {
+  if (item.removedAt !== null) return 'This stop is already removed and kept as history.';
+  if (isDirectRequestItem(item) && item.confirmationStatus !== 'UNAVAILABLE') {
+    return 'A property the tenant requested can only be removed after its availability is recorded as unavailable.';
+  }
+  return null;
+};
+
+export const isSessionItemRemovable = (item: OperationsSessionItem): boolean =>
+  sessionItemRemovalBlockedReason(item) === null;
+
+export interface ReorderSessionItemsCommand {
+  targetType: 'SESSION';
+  expectedSessionVersion: number;
+  itemIds: number[];
+}
+
+/**
+ * Exact reorder payload: every active item exactly once, in the requested order. Removed items stay
+ * in the session's history and are deliberately not part of this command.
+ */
+export const reorderSessionItemsCommand = (
+  detail: OperationsSessionDetail,
+  orderedItemIds: number[]
+): ReorderSessionItemsCommand | null => {
+  if (detail.version === null || detail.status !== 'DRAFT') return null;
+  const activeIds = activeSessionItems(detail.items).map((item) => item.itemId);
+  if (orderedItemIds.length !== activeIds.length) return null;
+  if (new Set(orderedItemIds).size !== orderedItemIds.length) return null;
+  if (!orderedItemIds.every((itemId) => activeIds.includes(itemId))) return null;
+  return { targetType: 'SESSION', expectedSessionVersion: detail.version, itemIds: orderedItemIds };
+};
+
+export interface AddSessionItemCommand {
+  targetType: 'SESSION';
+  expectedSessionVersion: number;
+  listingId: number;
+  originatingRequestId: number;
+  origin: OperationsDerivedItemOrigin;
+}
+
+export const addSessionItemCommand = (
+  detail: OperationsSessionDetail,
+  input: { listingId: number | null; originatingRequestId: number | null; origin: OperationsDerivedItemOrigin }
+): AddSessionItemCommand | null => {
+  if (detail.version === null || detail.status !== 'DRAFT') return null;
+  if (input.listingId === null || !Number.isSafeInteger(input.listingId) || input.listingId <= 0) return null;
+  if (input.originatingRequestId === null || !Number.isSafeInteger(input.originatingRequestId)
+      || input.originatingRequestId <= 0) {
+    return null;
+  }
+  return {
+    targetType: 'SESSION',
+    expectedSessionVersion: detail.version,
+    listingId: input.listingId,
+    originatingRequestId: input.originatingRequestId,
+    origin: input.origin
+  };
+};
+
+export interface RemoveSessionItemCommand {
+  targetType: 'SESSION';
+  expectedSessionVersion: number;
+  itemId: number;
+  reason: string | null;
+}
+
+export const removeSessionItemCommand = (
+  detail: OperationsSessionDetail,
+  itemId: number,
+  reason: string | null
+): RemoveSessionItemCommand | null => {
+  if (detail.version === null || detail.status !== 'DRAFT') return null;
+  const trimmed = reason === null ? null : reason.trim();
+  if (trimmed !== null && trimmed.length > OPERATIONS_REMOVAL_REASON_MAX) return null;
+  return {
+    targetType: 'SESSION',
+    expectedSessionVersion: detail.version,
+    itemId,
+    reason: trimmed === null || trimmed.length === 0 ? null : trimmed
+  };
+};
+
+/** Requests already on this session. The backend rejects a listing that appears anywhere in its history. */
+export const sessionListingIds = (items: OperationsSessionItem[]): number[] =>
+  items
+    .map((item) => item.listingId)
+    .filter((listingId): listingId is number => listingId !== null);
+
+/**
+ * The linked Requests eligible to be named as a derived stop's origin.
+ *
+ * The authoritative source is the session's own linked-Request membership, not the set of *active*
+ * items: removing a stop soft-deletes the item and deliberately keeps its Request linked, and the
+ * backend still accepts that Request as a derived stop's origin. Deriving the choices from active
+ * items alone made a normal unavailable → remove → find-a-replacement sequence impossible to finish.
+ * Which Requests the server truly accepts stays its decision, so this is a candidate list.
+ */
+export const derivedStopOriginCandidates = (
+  session: Pick<OperationsSessionDetail, 'items' | 'linkedRequestVersions'>
+): LinkedRequestVersion[] => {
+  const seen = new Set<number>();
+  const origins: LinkedRequestVersion[] = [];
+  const add = (requestId: number | null, version: number | null): void => {
+    if (requestId === null || !Number.isSafeInteger(requestId) || requestId <= 0) return;
+    if (seen.has(requestId)) return;
+    seen.add(requestId);
+    origins.push({ requestId, version: version ?? 0 });
+  };
+  for (const linked of session.linkedRequestVersions) add(linked.requestId, linked.version);
+  for (const item of session.items) {
+    add(item.sourceRequestId, null);
+    add(item.derivedFromRequestId, null);
+  }
+  return origins;
+};
+
+/**
+ * Session statuses whose active items may disclose the canonical lessor contact. It mirrors the
+ * backend's revealable set exactly: contact is never offered on terminal work or for removed items.
+ */
+const OPERATIONS_CONTACT_SESSION_STATUSES = ['DRAFT', 'SCHEDULED', 'STARTED', 'INTERRUPTED'] as const;
+
+export const sessionPermitsItemContact = (status: string | null | undefined): boolean =>
+  typeof status === 'string' && (OPERATIONS_CONTACT_SESSION_STATUSES as readonly string[]).includes(status);
+
+/* ------------------------------------------------------------------ *
+ * Property availability
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the recorded availability actually supports.
+ *
+ *  - `pending`              — nothing has been confirmed yet, so this stop is not schedule-ready.
+ *  - `confirmed-incomplete` — confirmed without a usable window. The backend allows that state on
+ *                             purpose, but a visit cannot be scheduled around it.
+ *  - `confirmed-window`     — a complete window: start, end, zone and source together.
+ *  - `unavailable`          — the lessor confirmed the property cannot be visited. Final.
+ */
+export type OperationsAvailabilityView =
+  | 'pending'
+  | 'confirmed-incomplete'
+  | 'confirmed-window'
+  | 'unavailable';
+
+export interface OperationsAvailabilityMeta {
+  view: OperationsAvailabilityView;
+  label: string;
+  hint: string;
+  /** Whether this stop's recorded facts currently satisfy the backend's scheduling window rule. */
+  schedulingReady: boolean;
+}
+
+export const operationsAvailabilityMeta = (
+  item: Pick<
+    OperationsSessionItem,
+    'confirmationStatus' | 'availabilityStartAt' | 'availabilityEndAt' | 'availabilityZoneId' | 'availabilitySource'
+  >
+): OperationsAvailabilityMeta => {
+  if (item.confirmationStatus === 'UNAVAILABLE') {
+    return {
+      view: 'unavailable',
+      label: 'Confirmed unavailable',
+      hint: 'The lessor confirmed this property cannot be visited. This is final.',
+      schedulingReady: false
+    };
+  }
+  if (item.confirmationStatus === 'CONFIRMED') {
+    const complete = Boolean(
+      item.availabilityStartAt && item.availabilityEndAt && item.availabilityZoneId && item.availabilitySource
+    );
+    return complete
+      ? {
+          view: 'confirmed-window',
+          label: 'Confirmed with window',
+          hint: 'A complete availability window is recorded for this stop.',
+          schedulingReady: true
+        }
+      : {
+          view: 'confirmed-incomplete',
+          label: 'Confirmed, window incomplete',
+          hint: 'The lessor confirmed availability, but no complete window is recorded, so scheduling stays blocked.',
+          schedulingReady: false
+        };
+  }
+  return {
+    view: 'pending',
+    label: 'Pending confirmation',
+    hint: 'No availability has been recorded for this stop yet.',
+    schedulingReady: false
+  };
+};
+
+export const formatAvailabilityWindow = (
+  item: Pick<OperationsSessionItem, 'availabilityStartAt' | 'availabilityEndAt' | 'availabilityZoneId' | 'availabilitySource'>
+): string | null => {
+  const start = formatOperationsDetailDateTime(item.availabilityStartAt);
+  const end = formatOperationsDetailDateTime(item.availabilityEndAt);
+  if (!start || !end) return null;
+  const zone = operationsZoneLabel(item.availabilityZoneId);
+  const source = availabilitySourceLabel(item.availabilitySource);
+  return `${start} → ${end}${zone ? ` · ${zone}` : ''}${source ? ` · ${source}` : ''}`;
+};
+
+/**
+ * Why a DRAFT session cannot be scheduled yet, from the facts this client actually holds. It mirrors
+ * the server's prerequisite evaluation rather than inventing an extra rule; the server still decides.
+ */
+export const schedulingBlockersForSession = (detail: OperationsSessionDetail | null): string[] => {
+  if (!detail) return [];
+  const active = activeSessionItems(detail.items);
+  const blockers: string[] = [];
+  if (active.length === 0) {
+    blockers.push('The session has no active stops.');
+    return blockers;
+  }
+  const pending = active.filter((item) => operationsAvailabilityMeta(item).view === 'pending');
+  if (pending.length > 0) {
+    blockers.push(
+      `${pending.length} ${pending.length === 1 ? 'stop has' : 'stops have'} no recorded availability.`
+    );
+  }
+  const incomplete = active.filter((item) => operationsAvailabilityMeta(item).view === 'confirmed-incomplete');
+  if (incomplete.length > 0) {
+    blockers.push(
+      `${incomplete.length} ${incomplete.length === 1 ? 'stop is' : 'stops are'} confirmed without a complete window.`
+    );
+  }
+  // Nothing confirmed at all: the server has no stop it can evaluate a visit time around.
+  if (pending.length === 0 && incomplete.length === 0
+      && active.every((item) => operationsAvailabilityMeta(item).view === 'unavailable')) {
+    blockers.push('Every active stop is recorded as unavailable, so there is nothing to schedule.');
+  }
+  return blockers;
+};
+
+/** Active stops the lessor has confirmed unavailable. The server excludes them from a visit time. */
+export const unavailableActiveStopCount = (detail: OperationsSessionDetail): number =>
+  activeSessionItems(detail.items)
+    .filter((item) => operationsAvailabilityMeta(item).view === 'unavailable')
+    .length;
+
+export type OperationsAvailabilityChoice = 'window' | 'confirm-only' | 'unavailable';
+
+/**
+ * The availability transitions the backend supports for the item's current status:
+ *   PENDING → CONFIRMED (with a window or confirmation only) and PENDING → UNAVAILABLE;
+ *   CONFIRMED → CONFIRMED for a permitted window update. UNAVAILABLE is never reversible.
+ */
+export const availabilityChoicesFor = (item: OperationsSessionItem): OperationsAvailabilityChoice[] => {
+  if (item.confirmationStatus === 'UNAVAILABLE') return [];
+  if (item.confirmationStatus === 'CONFIRMED') return ['window'];
+  return ['window', 'confirm-only', 'unavailable'];
+};
+
+export const availabilityChoiceLabel = (choice: OperationsAvailabilityChoice): string => {
+  if (choice === 'window') return 'Available, record the window now';
+  if (choice === 'confirm-only') return 'Available, window not known yet';
+  return 'Unavailable';
+};
+
+/** IANA zone identifiers offered by the editor. The server validates the zone it receives. */
+export const OPERATIONS_AVAILABILITY_ZONES = ['Asia/Kolkata'] as const;
+
+/** True for an identifier `Intl` accepts as a real IANA time zone. */
+export const isOperationsZone = (zoneId: string | null | undefined): boolean => {
+  if (!zoneId) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zoneId });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Zone select options: the supported list, plus the item's own recorded zone when it is a real IANA
+ * zone outside that list. The recorded value is never silently replaced by another zone.
+ */
+export const operationsZoneOptions = (recordedZone: string | null | undefined): string[] => {
+  const options: string[] = [...OPERATIONS_AVAILABILITY_ZONES];
+  if (isOperationsZone(recordedZone) && !options.includes(recordedZone as string)) {
+    options.push(recordedZone as string);
+  }
+  return options;
+};
+
+const WALL_CLOCK_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+interface WallClockParts {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+}
+
+const wallClockOf = (utcMs: number, zoneId: string, withSeconds: boolean): WallClockParts | null => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: zoneId,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      ...(withSeconds ? { second: '2-digit' } : {})
+    }).formatToParts(new Date(utcMs));
+    const read = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+    const year = read('year');
+    const month = read('month');
+    const day = read('day');
+    const hour = read('hour');
+    const minute = read('minute');
+    if (!year || !month || !day || !hour || !minute) return null;
+    return { year, month, day, hour, minute };
+  } catch {
+    return null;
+  }
+};
+
+/** Minutes the zone is offset from UTC at that instant (positive east of UTC). */
+const zoneOffsetMinutesAt = (utcMs: number, zoneId: string): number | null => {
+  const parts = wallClockOf(utcMs, zoneId, true);
+  if (!parts) return null;
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour) % 24,
+    Number(parts.minute)
+  );
+  return Math.round((asUtc - utcMs) / 60_000);
+};
+
+const offsetText = (offsetMinutes: number): string => {
+  const sign = offsetMinutes < 0 ? '-' : '+';
+  const absolute = Math.abs(offsetMinutes);
+  return `${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
+};
+
+/** The entered wall clock expressed as if it were UTC, so it can be compared with a zone's wall clock. */
+const wallClockMsOf = (utcMs: number, zoneId: string): number | null => {
+  const parts = wallClockOf(utcMs, zoneId, false);
+  if (!parts) return null;
+  return Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour) % 24,
+    Number(parts.minute)
+  );
+};
+
+/**
+ * Every offset the zone can be using near one local time.
+ *
+ * A zone's offset only changes at a transition, so sampling the same wall clock at a spread of
+ * nearby instants yields the offset before and after any transition without a timezone dependency.
+ */
+const offsetsNearWallClock = (wallMs: number, zoneId: string): number[] => {
+  const found = new Set<number>();
+  for (const hours of [-24, -12, -3, -2, -1, 0, 1, 2, 3, 12, 24]) {
+    const offset = zoneOffsetMinutesAt(wallMs + hours * 3_600_000, zoneId);
+    if (offset !== null) found.add(offset);
+  }
+  return [...found];
+};
+
+/**
+ * The real instants whose wall clock in the zone is exactly this local time.
+ *
+ *  - one result  → an ordinary local time with a single meaning;
+ *  - no results  → the local time does not exist (the daylight-saving gap);
+ *  - two results → the local time happens twice (the repeated hour when clocks go back).
+ *
+ * The ambiguity is returned rather than silently resolved: choosing one occurrence would change the
+ * instant the OE is looking at without being asked to.
+ */
+const resolveWallClockInstants = (
+  localMs: number,
+  zoneId: string
+): number[] => {
+  const found = new Set<number>();
+  for (const offset of offsetsNearWallClock(localMs, zoneId)) {
+    const instantMs = localMs - offset * 60_000;
+    if (wallClockMsOf(instantMs, zoneId) === localMs) found.add(instantMs);
+  }
+  return [...found].sort((left, right) => left - right);
+};
+
+/** The wall clock of the entered local time, or null when the shape is not a `datetime-local` value. */
+const wallClockMsOfInput = (value: string): number | null => {
+  const match = WALL_CLOCK_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const [, year, month, day, hour, minute] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+};
+
+/**
+ * Converts a server instant into the wall clock of the requested zone, for a `datetime-local` field.
+ *
+ * The device time zone is never consulted: the field always shows the property's recorded zone, so an
+ * instant such as `2027-02-14T04:00:00Z` displays as `2027-02-14T09:30` in `Asia/Kolkata` instead of
+ * the UTC wall clock. Returns an empty string when the input is not a real instant in that zone.
+ */
+export const serverInstantToZoneInput = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): string => {
+  if (!value || !isOperationsZone(zoneId)) return '';
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return '';
+  const parts = wallClockOf(parsed, zoneId as string, false);
+  if (!parts) return '';
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+
+/**
+ * Converts an edited wall clock back into an unambiguous timestamp for the intended instant, expressed
+ * as that zone's local time with its own offset (for example `2027-02-14T09:30:00+05:30`).
+ *
+ * The wall clock is resolved through the zone's own offsets, so:
+ *  - a time that does not exist there (a daylight-saving gap) is refused;
+ *  - a time that occurs twice (the repeated hour when the clocks go back) is refused rather than
+ *    silently given one of its two offsets.
+ *
+ * An unchanged field does not go through this conversion at all — see
+ * {@link resolveAvailabilityFieldInstant}, which returns the recorded server instant verbatim.
+ */
+export const zoneInputToServerInstant = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  const match = typeof value === 'string' ? WALL_CLOCK_PATTERN.exec(value.trim()) : null;
+  if (!match || !isOperationsZone(zoneId)) return null;
+  const [, year, month, day, hour, minute] = match;
+  const zone = zoneId as string;
+  const localMs = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+  const instants = resolveWallClockInstants(localMs, zone);
+  // Zero instants is a gap and two is a repeated hour; neither may be guessed at.
+  if (instants.length !== 1) return null;
+  const offset = zoneOffsetMinutesAt(instants[0], zone);
+  if (offset === null) return null;
+  return `${year}-${month}-${day}T${hour}:${minute}:00${offsetText(offset)}`;
+};
+
+/** Why an entered availability wall clock could not be turned into exactly one instant. */
+export type AvailabilityFieldInstantError = 'invalid' | 'gap' | 'ambiguous';
+
+export interface AvailabilityFieldResolution {
+  /** The exact instant to transmit, or null while the field is blank or cannot be resolved. */
+  value: string | null;
+  /** `null` while the value is usable (or still blank); the reason it is refused otherwise. */
+  error: AvailabilityFieldInstantError | null;
+}
+
+/**
+ * Resolves one availability field for the command body, preserving the recorded instant exactly.
+ *
+ * The editor shows the property zone's wall clock, which loses seconds, fractional seconds and the
+ * identity of a repeated hour. Re-converting an untouched field would therefore change the persisted
+ * instant — silently moving a window by an hour across a DST transition, or truncating seconds off
+ * every save. So an untouched field (same text, same zone) returns the recorded server instant
+ * verbatim; only a genuine edit is converted, and an edit that cannot be resolved to exactly one
+ * instant is refused with its own reason instead of being shifted onto an offset the OE never chose.
+ */
+export const resolveAvailabilityFieldInstant = (input: {
+  /** What the editor currently holds for this field. */
+  value: string | null | undefined;
+  /** What the recorded instant displayed when the editor opened. */
+  initialValue: string | null | undefined;
+  /** The zone currently selected in the editor. */
+  zoneId: string | null | undefined;
+  /** The zone the recorded instant was displayed in. */
+  initialZoneId: string | null | undefined;
+  /** The exact server instant behind `initialValue`, returned unchanged while nothing was edited. */
+  initialInstant: string | null | undefined;
+}): AvailabilityFieldResolution => {
+  const raw = typeof input.value === 'string' ? input.value.trim() : '';
+  if (raw.length === 0) return { value: null, error: null };
+  if (!isOperationsZone(input.zoneId)) return { value: null, error: 'invalid' };
+  const zone = input.zoneId as string;
+  const untouched = zone === input.initialZoneId
+    && raw === (input.initialValue ?? '')
+    && isOperationsInstant(input.initialInstant);
+  if (untouched) return { value: input.initialInstant as string, error: null };
+
+  const match = WALL_CLOCK_PATTERN.exec(raw);
+  const localMs = wallClockMsOfInput(raw);
+  if (!match || localMs === null) return { value: null, error: 'invalid' };
+  const instants = resolveWallClockInstants(localMs, zone);
+  if (instants.length === 0) return { value: null, error: 'gap' };
+  if (instants.length > 1) return { value: null, error: 'ambiguous' };
+  const offset = zoneOffsetMinutesAt(instants[0], zone);
+  if (offset === null) return { value: null, error: 'invalid' };
+  const [, year, month, day, hour, minute] = match;
+  return {
+    value: `${year}-${month}-${day}T${hour}:${minute}:00${offsetText(offset)}`,
+    error: null
+  };
+};
+
+export interface AvailabilityWindowInput {
+  /** ISO-8601 instant including its offset, exactly as the OE entered it. */
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  availabilityZoneId: string | null;
+  availabilitySource: OperationsAvailabilitySource | null;
+}
+
+export interface SetAvailabilityCommand {
+  targetType: 'SESSION';
+  expectedSessionVersion: number;
+  itemId: number;
+  status: 'CONFIRMED' | 'UNAVAILABLE';
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  availabilityZoneId: string | null;
+  availabilitySource: OperationsAvailabilitySource | null;
+}
+
+export interface SetAvailabilityValidation {
+  /** Field-keyed messages for the editor. */
+  errors: Partial<Record<'start' | 'end' | 'zone' | 'source', string>>;
+  /** The exact command body, or null while the input is incomplete or unsupported. */
+  command: SetAvailabilityCommand | null;
+}
+
+/**
+ * A strict ISO-8601 instant: calendar date, wall clock, optional whole seconds with up to nine
+ * fractional digits, and a mandatory UTC/offset designator.
+ */
+const INSTANT_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})$/;
+
+const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+/** Fractional seconds are compared as exactly this many digits, so a nanosecond difference survives. */
+const FRACTION_DIGITS = 9;
+/** Real offsets never exceed ±18:00, and only 18:00 itself may carry a zero minute. */
+const MAX_OFFSET_HOURS = 18;
+
+/** Gregorian leap-year rule, rather than `Date`'s silent roll-over of an impossible day. */
+const isLeapYear = (year: number): boolean =>
+  year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+const daysInMonth = (year: number, month: number): number =>
+  month === 2 && isLeapYear(year) ? 29 : DAYS_PER_MONTH[month - 1];
+
+/**
+ * Whole seconds from the Unix epoch for a validated wall clock.
+ *
+ * `setUTCFullYear` is used deliberately: the two-digit years `Date.UTC` remaps (0–99) would otherwise
+ * silently shift an instant by 1900 years, and every part is set explicitly so no roll-over can occur.
+ */
+const wallClockEpochSeconds = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number
+): number => {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return Math.floor(date.getTime() / 1000);
+};
+
+/** Seconds east of UTC for an instant's designator, or null when it is not a real offset. */
+const offsetSecondsOf = (designator: string): number | null => {
+  if (designator === 'Z') return 0;
+  const hours = Number(designator.slice(1, 3));
+  const minutes = Number(designator.slice(4, 6));
+  if (hours > MAX_OFFSET_HOURS || minutes > 59) return null;
+  if (hours === MAX_OFFSET_HOURS && minutes !== 0) return null;
+  const magnitude = hours * 3600 + minutes * 60;
+  return designator.startsWith('-') ? -magnitude : magnitude;
+};
+
+/**
+ * One validated instant, split so equality never depends on JavaScript's own date handling.
+ *
+ * `Date.parse` normalises an impossible calendar date into a real one and keeps only milliseconds, so
+ * it cannot be the authority for the backend's `scheduledAt` contract: `2027-02-30T05:00:00Z` would
+ * be accepted, and two instants one nanosecond apart would compare equal.
+ */
+export interface OperationsInstant {
+  /** Whole seconds from the Unix epoch, exact for the parsed calendar date and offset. */
+  epochSeconds: number;
+  /** Fractional second as exactly nine digits, so nanosecond differences are preserved. */
+  fraction: string;
+}
+
+/**
+ * Parses a strict ISO-8601 instant, or returns null.
+ *
+ * The grammar alone is not enough. An impossible calendar date (February 30, February 29 outside a
+ * leap year), an out-of-range clock reading (hour 24, minute 60, second 60) and an impossible offset
+ * (beyond ±18:00) are all refused here instead of being normalised into a different instant.
+ */
+export const parseOperationsInstant = (value: string | null | undefined): OperationsInstant | null => {
+  if (typeof value !== 'string') return null;
+  const match = INSTANT_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText, designator] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  // A missing seconds field means exactly zero seconds, never an unknown value.
+  const second = secondText === undefined ? 0 : Number(secondText);
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const offsetSeconds = offsetSecondsOf(designator);
+  if (offsetSeconds === null) return null;
+  return {
+    epochSeconds: wallClockEpochSeconds(year, month, day, hour, minute, second) - offsetSeconds,
+    fraction: (fractionText ?? '').padEnd(FRACTION_DIGITS, '0')
+  };
+};
+
+/** An instant for an exact epoch-millisecond value, used to compare an instant against the clock. */
+const instantFromEpochMs = (epochMs: number): OperationsInstant => {
+  const epochSeconds = Math.floor(epochMs / 1000);
+  return {
+    epochSeconds,
+    fraction: String(epochMs - epochSeconds * 1000).padStart(3, '0').padEnd(FRACTION_DIGITS, '0')
+  };
+};
+
+/** Three-way comparison of two validated instants, exact to the second and to the nanosecond. */
+const compareInstants = (left: OperationsInstant, right: OperationsInstant): number => {
+  if (left.epochSeconds !== right.epochSeconds) return left.epochSeconds < right.epochSeconds ? -1 : 1;
+  if (left.fraction === right.fraction) return 0;
+  return left.fraction < right.fraction ? -1 : 1;
+};
+
+/** True only for a real instant: a valid calendar date, a valid clock reading and a real offset. */
+export const isOperationsInstant = (value: string | null | undefined): boolean =>
+  parseOperationsInstant(value) !== null;
+
+/**
+ * Three-way comparison of two instant values, or null when either side is not a usable instant.
+ *
+ * Equivalent instants written with different valid offsets compare equal, because the offset is
+ * applied before comparison; an instant that is not usable is never silently ordered against one
+ * that is.
+ */
+export const compareOperationsInstants = (
+  left: string | null | undefined,
+  right: string | null | undefined
+): number | null => {
+  const parsedLeft = parseOperationsInstant(left);
+  const parsedRight = parseOperationsInstant(right);
+  if (!parsedLeft || !parsedRight) return null;
+  return compareInstants(parsedLeft, parsedRight);
+};
+
+/**
+ * True only when both values are usable instants denoting the same point in time — the same whole
+ * second and the same nine fractional digits. This is the equality the booking contract needs: a
+ * one-nanosecond difference is a different instant and is refused.
+ */
+export const operationsInstantsEqual = (
+  left: string | null | undefined,
+  right: string | null | undefined
+): boolean => compareOperationsInstants(left, right) === 0;
+
+/**
+ * Builds the exact availability command and the field errors to show.
+ *
+ * A window is sent whole or not at all: the backend rejects a partial window, and a CONFIRMED stop
+ * cannot carry timestamps without a source. `UNAVAILABLE` deliberately sends no window fields.
+ * A newly recorded window must be in the future and must not be reversed.
+ */
+export const setAvailabilityCommand = (
+  detail: OperationsSessionDetail,
+  itemId: number,
+  choice: OperationsAvailabilityChoice,
+  window: AvailabilityWindowInput,
+  now: Date = new Date()
+): SetAvailabilityValidation => {
+  const errors: SetAvailabilityValidation['errors'] = {};
+  if (detail.version === null || detail.status !== 'DRAFT') return { errors, command: null };
+  const base = detail.version;
+  const none = {
+    availabilityStartAt: null,
+    availabilityEndAt: null,
+    availabilityZoneId: null,
+    availabilitySource: null
+  } as const;
+
+  if (choice === 'unavailable') {
+    return {
+      errors,
+      command: { targetType: 'SESSION', expectedSessionVersion: base, itemId, status: 'UNAVAILABLE', ...none }
+    };
+  }
+  if (choice === 'confirm-only') {
+    return {
+      errors,
+      command: { targetType: 'SESSION', expectedSessionVersion: base, itemId, status: 'CONFIRMED', ...none }
+    };
+  }
+
+  const start = window.availabilityStartAt;
+  const end = window.availabilityEndAt;
+  if (!isOperationsInstant(start)) errors.start = 'Add the start of the window.';
+  if (!isOperationsInstant(end)) errors.end = 'Add the end of the window.';
+  if (!window.availabilityZoneId) errors.zone = 'Choose the time zone the lessor stated.';
+  if (!window.availabilitySource) errors.source = 'Choose how the lessor told you.';
+  if (!errors.start && !errors.end) {
+    // Both instants were validated above, so the ordering is decided on the exact parsed values: a
+    // window that ends in the same second but a fraction earlier is still a reversed window.
+    const startInstant = parseOperationsInstant(start) as OperationsInstant;
+    const endInstant = parseOperationsInstant(end) as OperationsInstant;
+    if (compareInstants(endInstant, startInstant) <= 0) errors.end = 'The end must be after the start.';
+    else if (compareInstants(startInstant, instantFromEpochMs(now.getTime())) <= 0) {
+      errors.start = 'A new window must start in the future.';
+    }
+  }
+  if (Object.keys(errors).length > 0) return { errors, command: null };
+  return {
+    errors,
+    command: {
+      targetType: 'SESSION',
+      expectedSessionVersion: base,
+      itemId,
+      status: 'CONFIRMED',
+      availabilityStartAt: (start as string).trim(),
+      availabilityEndAt: (end as string).trim(),
+      availabilityZoneId: window.availabilityZoneId,
+      availabilitySource: window.availabilitySource
+    }
+  };
+};
+
+/* ------------------------------------------------------------------ *
+ * Request-side availability and contact facts
+ * ------------------------------------------------------------------ */
+
+export const requestAvailabilityWindowLabel = (detail: OperationsRequestDetail): string | null => {
+  const start = formatOperationsDetailDateTime(detail.availabilityStartAt);
+  const end = formatOperationsDetailDateTime(detail.availabilityEndAt);
+  if (start && end) return `${start} → ${end}`;
+  if (start) return `From ${start}`;
+  if (end) return `Until ${end}`;
+  return null;
+};
+
+/** The tenant's stated window facts the backend needs before a session can be evaluated for scheduling. */
+export const requestHasCompleteWindow = (detail: OperationsRequestDetail): boolean =>
+  Boolean(detail.availabilityStartAt && detail.availabilityEndAt && detail.availabilityZoneId);
+
+/* ------------------------------------------------------------------ *
+ * GE recommendations and cursor-based discovery
+ * ------------------------------------------------------------------ */
+
+/** One evaluated scheduling option for one eligible Ground Executive. Exactly one time per candidate. */
+export interface OperationsRecommendationCandidate {
+  groundExecutiveUserId: number;
+  groundExecutiveName: string | null;
+  scheduledAt: string | null;
+  reservedEndAt: string | null;
+  durationMinutes: number | null;
+  zoneId: string | null;
+  /** 0 means the candidate is unranked (progressive discovery), never "lowest quality". */
+  rank: number;
+  feasibilityStatus: string | null;
+  originSource: string | null;
+  locationAssessment: string | null;
+  travelConfidence: string | null;
+}
+
+export interface OperationsRecommendationView {
+  sessionId: number | null;
+  sessionVersion: number | null;
+  status: string | null;
+  generatedAt: string | null;
+  policyVersion: string | null;
+  candidateSearchTruncated: boolean;
+  diagnostics: string[];
+  candidates: OperationsRecommendationCandidate[];
+  /** `RECOMMENDATIONS` for the bounded ranked read, `DISCOVERY` for cursor paging. */
+  mode: string | null;
+  nextCursor: string | null;
+  pageSize: number | null;
+  scannedCandidateCount: number | null;
+}
+
+const toRecommendationCandidate = (raw: unknown): OperationsRecommendationCandidate | null => {
+  const record = asRecord(raw);
+  const groundExecutiveUserId = readInteger(record?.groundExecutiveUserId);
+  if (!record || groundExecutiveUserId === null) return null;
+  return {
+    groundExecutiveUserId,
+    groundExecutiveName: readText(record.groundExecutiveName),
+    scheduledAt: readText(record.scheduledAt),
+    reservedEndAt: readText(record.reservedEndAt),
+    durationMinutes: readInteger(record.durationMinutes),
+    zoneId: readText(record.zoneId),
+    rank: readInteger(record.rank) ?? 0,
+    feasibilityStatus: readText(record.feasibilityStatus),
+    originSource: readText(record.originSource),
+    locationAssessment: readText(record.locationAssessment),
+    travelConfidence: readText(record.travelConfidence)
+  };
+};
+
+export const toRecommendationView = (raw: unknown): OperationsRecommendationView | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const candidates = Array.isArray(record.candidates) ? record.candidates : [];
+  return {
+    sessionId: readInteger(record.sessionId),
+    sessionVersion: readInteger(record.sessionVersion),
+    status: readText(record.status),
+    generatedAt: readText(record.recommendationGeneratedAt),
+    policyVersion: readText(record.policyVersion),
+    candidateSearchTruncated: record.candidateSearchTruncated === true,
+    diagnostics: Array.isArray(record.diagnostics)
+      ? record.diagnostics.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    candidates: candidates
+      .map(toRecommendationCandidate)
+      .filter((entry): entry is OperationsRecommendationCandidate => entry !== null),
+    mode: readText(record.mode),
+    nextCursor: readText(record.nextCursor),
+    pageSize: readInteger(record.pageSize),
+    scannedCandidateCount: readInteger(record.scannedCandidateCount)
+  };
+};
+
+/** The bounded ranked read returns at most a small number of candidates. */
+export const RANKED_RECOMMENDATION_BOUND = 3;
+
+/**
+ * True when a recommendation/discovery answer really belongs to the Session and version it was asked
+ * for. The server evaluates one exact version, so an answer for another version describes a different
+ * itinerary: its candidates may not be selected, and it must not replace a truthful local state.
+ */
+export const recommendationViewMatchesContext = (
+  view: OperationsRecommendationView | null,
+  sessionId: number,
+  sessionVersion: number
+): boolean => view !== null
+  && view.sessionId === sessionId
+  && view.sessionVersion === sessionVersion;
+
+/**
+ * Authoritative booking result. The returned Session is the truth about whether the visit is now
+ * SCHEDULED, its version, the assigned Ground Executive and the tenant-confirmation state; the
+ * decision fields are the server's record of what it compared the choice against.
+ */
+export interface OperationsSchedulingApproval {
+  session: OperationsSessionDetail;
+  decisionId: number | null;
+  override: boolean;
+  topRecommendedGroundExecutiveUserId: number | null;
+  topRecommendedAt: string | null;
+}
+
+/**
+ * The exact booking that was submitted. The returned body is only usable as proof of *this* booking.
+ */
+export interface SchedulingApprovalExpectation {
+  sessionId: number;
+  /** The Session version this command was built against. */
+  expectedSessionVersion: number;
+  groundExecutiveUserId: number;
+  scheduledAt: string;
+}
+
+const isPositiveSafeInteger = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+
+/**
+ * Maps a booking response, or refuses it.
+ *
+ * A `200` only proves a booking when it carries the complete authoritative Session for the session
+ * that was booked, and — when the submitted selection is supplied — when that Session really is the
+ * result of *this* selection: the same Session root, a version that advanced past the one the command
+ * was built against, the selected Ground Executive actually assigned and the submitted instant
+ * actually recorded. A non-null-but-unusable body (invalid timestamp text, a zero/negative GE id, a
+ * stale or mismatched answer) is refused here, so the caller classifies the transmitted command as
+ * unconfirmed instead of announcing a booking that cannot be displayed. Nothing here invents a
+ * version increment: any strictly newer version satisfies the version rule.
+ */
+export const toSchedulingApproval = (
+  raw: unknown,
+  expected?: number | SchedulingApprovalExpectation | null
+): OperationsSchedulingApproval | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const session = toSessionDetail(record.session);
+  if (!session) return null;
+  if (!isPositiveSafeInteger(session.sessionId)) return null;
+  if (session.status !== 'SCHEDULED') return null;
+  const version = session.version;
+  if (!isPositiveSafeInteger(version)) return null;
+  // A booked Session must carry a real, unambiguous instant, not merely a non-empty string.
+  if (!isOperationsInstant(session.scheduledAt)) return null;
+  const representativeUserId = session.representativeUserId;
+  if (!isPositiveSafeInteger(representativeUserId)) return null;
+  if (typeof expected === 'number') {
+    if (session.sessionId !== expected) return null;
+  } else if (expected) {
+    if (!isPositiveSafeInteger(expected.sessionId) || session.sessionId !== expected.sessionId) return null;
+    if (version <= expected.expectedSessionVersion) return null;
+    if (!isPositiveSafeInteger(expected.groundExecutiveUserId)
+        || representativeUserId !== expected.groundExecutiveUserId) {
+      return null;
+    }
+    /**
+     * The recorded instant must be exactly the one that was submitted — the same second and the same
+     * nanosecond. Both sides are parsed strictly and compared through their offsets, so an impossible
+     * calendar date is refused rather than normalised, two equivalent offsets are accepted as the same
+     * instant, and a single-digit fractional difference is a different booking.
+     */
+    if (!operationsInstantsEqual(expected.scheduledAt, session.scheduledAt)) return null;
+  }
+  return {
+    session,
+    decisionId: readInteger(record.decisionId),
+    override: record.override === true,
+    topRecommendedGroundExecutiveUserId: readInteger(record.topRecommendedGroundExecutiveUserId),
+    topRecommendedAt: readText(record.topRecommendedAt)
+  };
+};
+
+/** Human-readable explainer for a recommendation status the server returned. */
+export const recommendationStatusHint = (status: string | null | undefined): string | null => {
+  switch (status) {
+    case 'SESSION_NOT_SCHEDULABLE':
+      return 'This session cannot be evaluated for scheduling yet. Every active stop needs a complete confirmed window, and the session must be a draft.';
+    case 'INSUFFICIENT_TENANT_AVAILABILITY':
+      return 'The tenant’s stated window is missing or does not overlap the recorded property windows.';
+    case 'NO_FEASIBLE_CANDIDATE':
+      return 'No eligible Ground Executive was feasible for this itinerary just now.';
+    case 'EVALUATED':
+      return null;
+    default:
+      return status ? `The server reported: ${humanizeOperationsCode(status)}.` : null;
+  }
+};
+
+/**
+ * The evaluation a chosen candidate belongs to. Booking is refused unless the Session is still at
+ * exactly this version, so a candidate reviewed at v6 can never be silently booked against a v8
+ * itinerary that the OE never saw.
+ */
+export interface SchedulingSelectionEvaluation {
+  sessionId: number;
+  sessionVersion: number;
+}
+
+export interface OperationsSchedulingSelection {
+  candidate: OperationsRecommendationCandidate;
+  source: 'recommended' | 'browse' | 'search';
+  /** Identity and version of the authoritative evaluation this candidate came from. */
+  evaluated: SchedulingSelectionEvaluation;
+}
+
+/** True when a candidate's evaluation is still the session version on screen. */
+export const selectionMatchesSession = (
+  detail: Pick<OperationsSessionDetail, 'sessionId' | 'version'> | null,
+  selection: OperationsSchedulingSelection | null
+): boolean => Boolean(
+  detail
+  && selection
+  && detail.version !== null
+  && selection.evaluated.sessionId === detail.sessionId
+  && selection.evaluated.sessionVersion === detail.version
+);
+
+export const selectionIsTopRecommendation = (
+  view: OperationsRecommendationView | null,
+  selection: OperationsSchedulingSelection | null
+): boolean => {
+  if (!view || !selection) return false;
+  // A suggestion only exempts a reason when it was evaluated for the same Session and version the
+  // candidate was chosen from; anything else is treated as a non-top choice and needs one.
+  if (view.sessionId !== selection.evaluated.sessionId
+      || view.sessionVersion !== selection.evaluated.sessionVersion) {
+    return false;
+  }
+  const ranked = view.candidates
+    .filter((candidate) => candidate.rank > 0)
+    .sort((left, right) => left.rank - right.rank);
+  const top = ranked[0];
+  if (!top) return false;
+  return top.groundExecutiveUserId === selection.candidate.groundExecutiveUserId
+    && top.scheduledAt === selection.candidate.scheduledAt;
+};
+
+/**
+ * Whether this selection owes the server a reason. The server decides the authoritative answer from
+ * its own fresh baseline, so this mirrors that contract conservatively: only the exact current top
+ * suggestion is sent without one, and every other selection supplies a non-blank explanation.
+ */
+export const selectionNeedsReason = (
+  view: OperationsRecommendationView | null,
+  selection: OperationsSchedulingSelection | null
+): boolean => !selectionIsTopRecommendation(view, selection);
+
+export interface SchedulingValidation {
+  errors: Partial<Record<'selection' | 'reason', string>>;
+  reason: string | null;
+}
+
+export const validateSchedulingReview = (
+  view: OperationsRecommendationView | null,
+  selection: OperationsSchedulingSelection | null,
+  reason: string
+): SchedulingValidation => {
+  const errors: SchedulingValidation['errors'] = {};
+  if (!selection) {
+    errors.selection = 'Choose a Ground Executive and its evaluated time.';
+    return { errors, reason: null };
+  }
+  if (!isOperationsInstant(selection.candidate.scheduledAt)) {
+    errors.selection = 'This candidate has no usable evaluated time. Refresh the candidates and choose again.';
+    return { errors, reason: null };
+  }
+  if (!selection.candidate.zoneId) {
+    errors.selection = 'This candidate has no time zone. Refresh the candidates and choose again.';
+    return { errors, reason: null };
+  }
+  if (selectionNeedsReason(view, selection)) {
+    const trimmed = reason.trim();
+    if (trimmed.length === 0) {
+      errors.reason = 'Add a short reason for choosing a candidate other than the top suggestion.';
+      return { errors, reason: null };
+    }
+    if (trimmed.length > OPERATIONS_REASON_MAX) {
+      errors.reason = `Keep the reason to ${OPERATIONS_REASON_MAX} characters or fewer.`;
+      return { errors, reason: null };
+    }
+    return { errors, reason: trimmed };
+  }
+  return { errors, reason: null };
+};
+
+export interface ScheduleSelectionCommand {
+  targetType: 'SESSION';
+  expectedSessionVersion: number;
+  groundExecutiveUserId: number;
+  scheduledAt: string;
+  zoneId: string;
+  overrideReason: string | null;
+}
+
+export const scheduleSelectionCommand = (
+  detail: OperationsSessionDetail,
+  selection: OperationsSchedulingSelection | null,
+  view: OperationsRecommendationView | null,
+  reason: string
+): { command: ScheduleSelectionCommand | null; validation: SchedulingValidation } => {
+  const validation = validateSchedulingReview(view, selection, reason);
+  if (detail.version === null || detail.status !== 'DRAFT' || !selection) {
+    return { command: null, validation };
+  }
+  if (!selectionMatchesSession(detail, selection)) {
+    // The authoritative Session moved after this candidate was evaluated. The reviewed itinerary and
+    // the evaluated slot no longer describe the same state, so no command may be built at all — the
+    // OE has to reload the candidates and review the current version.
+    return {
+      command: null,
+      validation: {
+        errors: {
+          ...validation.errors,
+          selection: 'This session changed since these candidates were evaluated. Reload the candidates and review the current itinerary before booking.'
+        },
+        reason: null
+      }
+    };
+  }
+  if (Object.keys(validation.errors).length > 0) return { command: null, validation };
+  return {
+    validation,
+    command: {
+      targetType: 'SESSION',
+      expectedSessionVersion: detail.version,
+      groundExecutiveUserId: selection.candidate.groundExecutiveUserId,
+      scheduledAt: selection.candidate.scheduledAt as string,
+      zoneId: selection.candidate.zoneId as string,
+      overrideReason: validation.reason
+    }
+  };
+};
+
+export const groundExecutiveLabel = (candidate: OperationsRecommendationCandidate): string =>
+  candidate.groundExecutiveName ?? `GE user ID ${candidate.groundExecutiveUserId}`;
+
+/**
+ * The drawer state one *failed* scheduling command publishes. Kept pure so the decision is testable
+ * on its own, and deliberately separate from the version-binding outcome (`review-required`), which is
+ * decided before anything is transmitted.
+ */
+export type SchedulingFailureOutcome =
+  | { kind: 'not-sent'; message: string }
+  | { kind: 'denied'; message: string }
+  | { kind: 'conflict'; status: number; message: string; detail: string | null }
+  | { kind: 'uncertain'; message: string };
+
+export const schedulingFailureOutcome = (failure: {
+  kind: OwnershipFailureKind;
+  status: number | null;
+  message: string;
+  detail: string | null;
+}): SchedulingFailureOutcome => {
+  // Nothing was transmitted, so nothing was booked.
+  if (failure.kind === 'pre-dispatch') return { kind: 'not-sent', message: failure.message };
+  // Target denial: the root is withdrawn by the shared failure path; the drawer only states it.
+  if (failure.status === 403 || failure.status === 404) return { kind: 'denied', message: failure.message };
+  if (failure.kind === 'rejected') {
+    return {
+      kind: 'conflict',
+      status: failure.status ?? 0,
+      message: failure.message,
+      detail: failure.detail
+    };
+  }
+  // Transmitted with no trustworthy answer: unknown, never replayed.
+  return { kind: 'uncertain', message: failure.message };
+};
+
+/** IANA zone display, e.g. `IST (Asia/Kolkata)`. Unknown zones are shown exactly as returned. */
+export const operationsZoneLabel = (zoneId: string | null | undefined): string | null => {
+  if (!zoneId) return null;
+  return zoneId === 'Asia/Kolkata' ? 'IST (Asia/Kolkata)' : zoneId;
+};
+
+export const slotKeyFor = (candidate: OperationsRecommendationCandidate): string =>
+  `${candidate.groundExecutiveUserId}:${candidate.scheduledAt ?? ''}`;
+
+export const formatOperationsSlotRange = (
+  candidate: Pick<OperationsRecommendationCandidate, 'scheduledAt' | 'reservedEndAt'>
+): string | null => {
+  const start = formatOperationsTime(candidate.scheduledAt);
+  const end = formatOperationsTime(candidate.reservedEndAt);
+  if (!start) return null;
+  return end ? `${start} to ${end}` : start;
+};
 
 /* ------------------------------------------------------------------ *
  * Status presentation
@@ -705,6 +2039,43 @@ export const ownershipFailureKind = (input: OwnershipOutcomeInput): OwnershipFai
   if (typeof status === 'number' && status >= 400 && status < 500) return 'rejected';
   // No response, a lost response, an abort, or a 5xx that may have failed after applying the command.
   return 'uncertain';
+};
+
+/** What one failed command must do to the workspace, decided from the real status alone. */
+export interface CommandFailureDisposition {
+  kind: OwnershipFailureKind;
+  /** The server definitively denied access to *this* root (403/404). */
+  targetDenied: boolean;
+  /**
+   * Withdraw the open protected root: a denial leaves the previously revealed detail and its lessor
+   * contact mounted, so it has to be dropped the moment the server refuses the resource — whether the
+   * refusal came from the fresh pre-command read or from the mutation itself. A target denial is never
+   * a global account revocation: the separate session/authority invalidation path owns that.
+   */
+  withdrawRoot: boolean;
+  /** Reload the authoritative queues before reporting, so the message can state the real state. */
+  reconcile: boolean;
+}
+
+/**
+ * The single decision every failed Phase 2A command makes, kept pure so it can be tested directly:
+ * a definitive root denial withdraws protected detail even before dispatch, a transmitted command is
+ * reconciled from the server, and an unconfirmed outcome is never treated as a denial.
+ */
+export const commandFailureDisposition = (
+  input: OwnershipOutcomeInput,
+  options: { dropDetailWhenRejected?: boolean } = {}
+): CommandFailureDisposition => {
+  const status = input.status ?? null;
+  const targetDenied = status === 403 || status === 404;
+  const kind = ownershipFailureKind(input);
+  return {
+    kind,
+    targetDenied,
+    withdrawRoot: targetDenied
+      || (options.dropDetailWhenRejected === true && (status === 403 || status === 404 || status === 409)),
+    reconcile: kind !== 'pre-dispatch' || targetDenied
+  };
 };
 
 /** True only when the authoritative reads actually completed and were accepted. */

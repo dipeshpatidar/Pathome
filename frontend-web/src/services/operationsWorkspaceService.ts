@@ -11,14 +11,21 @@ import {
   OPERATIONS_RELEASE_REASON_CODE,
   parseWorkPage,
   toClaimableWorkItem,
+  toLessorContact,
   toMyWorkItem,
+  toRecommendationView,
   toRequestDetail,
+  toSchedulingApproval,
   toSessionDetail,
   toStaffCapabilities,
   type ClaimableWorkItem,
   type LinkedRequestVersionMap,
+  type OperationsDerivedItemOrigin,
+  type OperationsLessorContact,
   type OperationsMyWorkItem,
+  type OperationsRecommendationView,
   type OperationsRequestDetail,
+  type OperationsSchedulingApproval,
   type OperationsSessionDetail,
   type OperationsTargetType,
   type OperationsWorkPage,
@@ -27,6 +34,15 @@ import {
 
 /** Server page size stays inside the backend's 1..100 bound. */
 export const OPERATIONS_WORK_PAGE_SIZE = 20;
+
+/**
+ * Discovery page size. The backend accepts 1..50 and returns `nextCursor` when more candidates
+ * remain, so one page is a bounded batch rather than a complete answer.
+ */
+export const OPERATIONS_DISCOVERY_PAGE_SIZE = 20;
+
+/** The backend accepts a trimmed search query of 1..80 printable characters. */
+export const OPERATIONS_DISCOVERY_QUERY_MAX = 80;
 
 /**
  * Every request of one logical operation carries the same captured session. Nothing here re-reads a
@@ -49,7 +65,7 @@ export interface OperationsRequestContext {
 }
 
 interface OperationsRequestOptions extends OperationsRequestContext {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
 }
 
@@ -156,6 +172,32 @@ const sendOwnershipCommand = async (
   });
   assertOperationsSessionActive(session);
   return response.status;
+};
+
+/**
+ * One Phase 2A operational command whose contract answers `200` with authoritative JSON.
+ *
+ * This is deliberately separate from {@link sendOwnershipCommand}: an ownership command is a `204`
+ * with no body and reporting its status is the whole result, while these commands return the updated
+ * resource and a body that cannot be decoded means the outcome is *unknown*, not "nothing happened".
+ * A mapping that fails, or a body that cannot be read, rejects here after transmission so the caller
+ * treats it as unconfirmed instead of as a refusal.
+ */
+const sendJsonCommand = async <T,>(
+  path: string,
+  method: 'POST' | 'PUT' | 'DELETE',
+  body: unknown,
+  fallbackMessage: string,
+  map: (payload: unknown) => T | null,
+  context: OperationsRequestContext
+): Promise<T> => {
+  const session = requireSession(context);
+  const response = await sendOperationsRequest(path, fallbackMessage, { ...context, method, body, session });
+  const payload = await readOperationsPayload(response, fallbackMessage);
+  const mapped = map(payload);
+  if (mapped === null) throw new ApiRequestError(fallbackMessage, response.status);
+  assertOperationsSessionActive(session);
+  return mapped;
 };
 
 /**
@@ -292,6 +334,237 @@ export const operationsWorkspaceService = {
       `/operations/visit-sessions/${sessionId}/release`,
       { expectedSessionVersion, expectedRequestVersions, reasonCode: OPERATIONS_RELEASE_REASON_CODE },
       'This session could not be released.',
+      context
+    );
+  },
+
+  /**
+   * Canonical lessor contact for one owned standalone Request.
+   *
+   * The response is the only permitted source of lessor contact. It is read on demand, never cached
+   * and never persisted, and the backend marks these routes `no-store` because they can carry PII.
+   */
+  lessorContactForRequest(
+    requestId: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsLessorContact> {
+    return fetchDetail(
+      `/operations/visit-requests/${requestId}/lessor-contact`,
+      'The lessor contact could not be loaded.',
+      toLessorContact,
+      context
+    );
+  },
+
+  /** Canonical lessor contact for one revealable item of an owned Session. */
+  lessorContactForSessionItem(
+    sessionId: number,
+    itemId: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsLessorContact> {
+    return fetchDetail(
+      `/operations/visit-sessions/${sessionId}/items/${itemId}/lessor-contact`,
+      'The lessor contact could not be loaded.',
+      toLessorContact,
+      context
+    );
+  },
+
+  /**
+   * Coordinates an owned standalone Request into a brand-new DRAFT Session
+   * (`sessionId: null`) or attaches it to an owned DRAFT Session. The server decides whether the
+   * roots may be combined and returns the authoritative Session.
+   */
+  coordinateRequest(
+    requestId: number,
+    body: { expectedRequestVersion: number; sessionId: number | null; expectedSessionVersion: number | null },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSessionDetail> {
+    return sendJsonCommand(
+      `/operations/visit-requests/${requestId}/coordinate`,
+      'POST',
+      body,
+      'This request could not be coordinated.',
+      toSessionDetail,
+      context
+    );
+  },
+
+  /** Records confirmed, factual unavailability for an owned standalone Request. */
+  markRequestUnavailable(
+    requestId: number,
+    expectedRequestVersion: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsRequestDetail> {
+    return sendJsonCommand(
+      `/operations/visit-requests/${requestId}/unavailable`,
+      'POST',
+      { expectedRequestVersion },
+      'This request could not be marked unavailable.',
+      toRequestDetail,
+      context
+    );
+  },
+
+  /** Adds one derived property to an owned DRAFT itinerary. */
+  addSessionItem(
+    sessionId: number,
+    body: {
+      expectedSessionVersion: number;
+      listingId: number;
+      originatingRequestId: number;
+      origin: OperationsDerivedItemOrigin;
+    },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSessionDetail> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/items`,
+      'POST',
+      body,
+      'This property could not be added to the itinerary.',
+      toSessionDetail,
+      context
+    );
+  },
+
+  /**
+   * Removes one itinerary item. The command requires a JSON body even though the method is DELETE,
+   * and the removal is a soft delete that stays in the session's history.
+   */
+  removeSessionItem(
+    sessionId: number,
+    itemId: number,
+    body: { expectedSessionVersion: number; reason: string | null },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSessionDetail> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/items/${itemId}`,
+      'DELETE',
+      body,
+      'This stop could not be removed.',
+      toSessionDetail,
+      context
+    );
+  },
+
+  /** Sets the exact order of every active item (`itemIds` must contain each active item once). */
+  reorderSessionItems(
+    sessionId: number,
+    body: { expectedSessionVersion: number; itemIds: number[] },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSessionDetail> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/items/order`,
+      'PUT',
+      body,
+      'The itinerary order could not be saved.',
+      toSessionDetail,
+      context
+    );
+  },
+
+  /** Records lessor-stated property availability for one DRAFT item. */
+  setSessionItemAvailability(
+    sessionId: number,
+    itemId: number,
+    body: {
+      expectedSessionVersion: number;
+      status: 'CONFIRMED' | 'UNAVAILABLE';
+      availabilityStartAt: string | null;
+      availabilityEndAt: string | null;
+      availabilityZoneId: string | null;
+      availabilitySource: string | null;
+    },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSessionDetail> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/items/${itemId}/availability`,
+      'PUT',
+      body,
+      'The property availability could not be recorded.',
+      toSessionDetail,
+      context
+    );
+  },
+
+  /**
+   * Bounded ranked recommendations for one owned DRAFT Session. `all=false` is the default and
+   * accepts no query, cursor or custom page size.
+   */
+  rankedRecommendations(
+    sessionId: number,
+    expectedSessionVersion: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsRecommendationView> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/oe-recommendations`,
+      'POST',
+      { expectedSessionVersion },
+      'Recommendations could not be loaded.',
+      toRecommendationView,
+      context
+    );
+  },
+
+  /**
+   * Cursor-paged eligible-Ground-Executive discovery. `q` searches by partial name or exact
+   * operational user ID; an opaque `cursor` continues the previous page under the same
+   * actor/session/version/City/Team/query/page-size context.
+   */
+  discoverGroundExecutives(
+    sessionId: number,
+    expectedSessionVersion: number,
+    options: { q?: string | null; cursor?: string | null; size?: number } = {},
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsRecommendationView> {
+    const params = new URLSearchParams();
+    params.set('all', 'true');
+    params.set('size', String(options.size ?? OPERATIONS_DISCOVERY_PAGE_SIZE));
+    const query = options.q?.trim();
+    if (query) params.set('q', query);
+    if (options.cursor) params.set('cursor', options.cursor);
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/oe-recommendations?${params.toString()}`,
+      'POST',
+      { expectedSessionVersion },
+      'Eligible Ground Executives could not be loaded.',
+      toRecommendationView,
+      context
+    );
+  },
+
+  /**
+   * The authoritative booking command. The returned Session is the truth about the visit's state,
+   * version, assignment and tenant confirmation; nothing here imitates a booking.
+   *
+   * The mapper is bound to the exact selection that was submitted: the same Session root, a version
+   * that advanced past the one this command was built against, the selected Ground Executive and the
+   * submitted instant. A `200` that carries a different, incomplete, non-scheduled or internally
+   * inconsistent Session is refused here, which is what makes the caller report an unconfirmed
+   * outcome rather than announce a booking the client cannot display.
+   */
+  selectGroundExecutive(
+    sessionId: number,
+    body: {
+      expectedSessionVersion: number;
+      groundExecutiveUserId: number;
+      scheduledAt: string;
+      zoneId: string;
+      overrideReason: string | null;
+    },
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsSchedulingApproval> {
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/oe-recommendations/selection`,
+      'POST',
+      body,
+      'This visit could not be scheduled.',
+      (payload) => toSchedulingApproval(payload, {
+        sessionId,
+        expectedSessionVersion: body.expectedSessionVersion,
+        groundExecutiveUserId: body.groundExecutiveUserId,
+        scheduledAt: body.scheduledAt
+      }),
       context
     );
   }

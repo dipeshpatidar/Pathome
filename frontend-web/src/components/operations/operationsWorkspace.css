@@ -13,8 +13,12 @@
   --oe-pine: #355c49;
   --oe-pine-deep: #2e4436;
   --oe-ink: #252b25;
-  --oe-muted: #6b7068;
-  --oe-faint: #84887f;
+  /*
+   * Subdued text tokens corrected for real rendered contrast: muted #62675f is 5.04:1 on --oe-soft
+   * and 5.11:1 on --oe-tint; faint #686d64 is 5.30:1 on white and 4.95:1 on --oe-bg.
+   */
+  --oe-muted: #62675f;
+  --oe-faint: #686d64;
   --oe-line: #e9e7e1;
   --oe-line-strong: #dcd9d1;
   --oe-bg: #f8f7f4;
@@ -337,4 +341,112 @@ button.oe-mini-row:hover { background: var(--oe-hover); }
 
 @media (prefers-reduced-motion: reduce) {
   .oe *, .oe *::before, .oe *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/*
+ * Phase 2A workflows: canonical lessor contact, Request coordination, DRAFT itinerary and the
+ * availability editor. Composition follows the approved v0 detail/workflow layout, reduced to the
+ * controls this workspace really performs and enlarged to the 44px target / 16px mobile input rules.
+ */
+
+/* Buttons: a borderless action that is still a 44px target. */
+.oe-btn--ghost { background: transparent; border-color: transparent; color: var(--oe-muted); }
+.oe-btn--ghost:hover:not(:disabled) { background: var(--oe-soft); color: var(--oe-ink); }
+.oe-btn--danger { background: var(--oe-clay-ink); color: #fff; }
+.oe-btn--danger:hover:not(:disabled) { background: var(--oe-clay); }
+.oe-btn--danger:disabled { cursor: wait; opacity: .6; }
+
+/* Canonical lessor contact */
+.oe-contact { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.oe-contact--compact { align-items: flex-start; }
+.oe-contact-live:empty { display: none; }
+.oe-contact-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--oe-line-strong); border-radius: 10px; background: var(--oe-hover); }
+.oe-contact-card--warn { border-color: var(--oe-clay); background: var(--oe-clay-tint); color: var(--oe-clay-ink); }
+.oe-contact-fields { display: grid; gap: 8px; }
+@media (min-width: 480px) { .oe-contact-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.oe-contact-fields dt { font-size: 12px; color: var(--oe-muted); }
+.oe-contact-fields dd { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.oe-contact-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.oe-contact-msg { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; }
+.oe-contact-msg svg { flex: none; margin-top: 2px; }
+
+/* Request coordination */
+.oe-coord { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.oe-coord-title { font-size: 14px; font-weight: 700; }
+.oe-coord-points { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--oe-muted); }
+.oe-coord-points li { padding-left: 14px; position: relative; }
+.oe-coord-points li::before { content: '·'; position: absolute; left: 4px; }
+.oe-back--inline { min-height: 44px; margin: 0; }
+.oe-choice-list { display: flex; flex-direction: column; gap: 4px; padding: 4px; border: 1px solid var(--oe-line); border-radius: 10px; max-height: 320px; overflow-y: auto; }
+.oe-choice { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.oe-choice:hover { background: var(--oe-hover); }
+.oe-choice input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--oe-pine); }
+.oe-choice > span { display: flex; flex-direction: column; min-width: 0; }
+.oe-choice-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.oe-choice-sub { font-size: 12px; color: var(--oe-muted); overflow-wrap: anywhere; }
+.oe-check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 8px 10px; border-radius: 8px; background: var(--oe-soft); font-size: 13px; }
+.oe-check input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--oe-pine); flex: none; }
+.oe-seg-field { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.oe-seg-radios { display: flex; flex-wrap: wrap; gap: 6px; }
+.oe-seg-radios--stack { flex-direction: column; }
+.oe-seg-radio { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 10px; border: 1px solid var(--oe-line-strong); border-radius: 8px; background: var(--oe-surface); font-size: 13px; cursor: pointer; }
+.oe-seg-radio input { width: 18px; height: 18px; accent-color: var(--oe-pine); flex: none; }
+.oe-inline-note { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--oe-tint); font-size: 13px; }
+.oe-inline-note svg { flex: none; margin-top: 2px; }
+.oe-inline-note--warn { background: var(--oe-clay-tint); color: var(--oe-clay-ink); }
+.oe-reason-error { font-size: 13px; font-weight: 600; color: var(--oe-clay-ink); }
+
+/* Shared form controls */
+.oe-field-stack { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.oe-field-label { font-size: 12px; font-weight: 600; color: var(--oe-muted); }
+.oe-input { min-height: 44px; width: 100%; padding: 8px 10px; border: 1px solid var(--oe-line-strong); border-radius: 8px; background: var(--oe-surface); color: var(--oe-ink); font: inherit; font-size: 16px; }
+.oe-textarea { width: 100%; padding: 10px; border: 1px solid var(--oe-line-strong); border-radius: 8px; background: var(--oe-surface); color: var(--oe-ink); font: inherit; font-size: 16px; resize: vertical; }
+.oe-input:focus-visible, .oe-textarea:focus-visible { outline: 2px solid var(--oe-pine); outline-offset: 1px; }
+@media (min-width: 768px) { .oe-input, .oe-textarea { font-size: 14px; } }
+
+/* DRAFT itinerary */
+.oe-item--rich { align-items: flex-start; }
+.oe-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.oe-item-prov { font-size: 12px; }
+.oe-item-warn { display: block; margin-top: 2px; font-weight: 600; color: var(--oe-clay-ink); }
+.oe-item-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.oe-item-order-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.oe-icon-btn--line { width: 44px; height: 44px; }
+.oe-remove-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border: 1px dashed var(--oe-line-strong); border-radius: 10px; }
+.oe-remove-confirm .oe-field-label { flex: 1 0 100%; }
+.oe-remove-confirm .oe-input { flex: 1 1 180px; }
+.oe-order-actions { display: flex; flex-direction: column; gap: 8px; }
+.oe-avail { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.oe-avail--pending { background: var(--oe-soft); color: var(--oe-muted); }
+.oe-avail--confirmed-incomplete { background: var(--oe-clay-tint); color: var(--oe-clay-ink); }
+.oe-avail--confirmed-window { background: var(--oe-tint); color: var(--oe-pine); }
+.oe-avail--unavailable { background: var(--oe-soft); color: var(--oe-muted); }
+.oe-removed { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--oe-line); }
+.oe-removed-list { display: flex; flex-direction: column; gap: 6px; }
+.oe-removed-list li { display: flex; flex-direction: column; gap: 2px; }
+.oe-removed-title { font-size: 13px; font-weight: 600; }
+
+/* Availability editor */
+.oe-avail-editor { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding: 12px; border: 1px solid var(--oe-line-strong); border-radius: 10px; background: var(--oe-hover); }
+.oe-avail-grid { display: grid; gap: 10px 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 560px) { .oe-avail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.oe-avail-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+/* Notices used by the discovery and conflict surfaces */
+.oe-notice { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--oe-line-strong); border-radius: 10px; background: var(--oe-surface); }
+.oe-notice--warn { border-color: var(--oe-clay); background: var(--oe-clay-tint); color: var(--oe-clay-ink); }
+.oe-notice-icon { flex: none; margin-top: 1px; }
+.oe-notice-title { font-size: 14px; font-weight: 700; }
+.oe-notice-body { font-size: 13px; color: var(--oe-muted); overflow-wrap: anywhere; }
+.oe-notice--warn .oe-notice-body { color: var(--oe-clay-ink); }
+.oe-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/*
+ * Mobile: every editable control keeps an effective 16px font so iOS does not zoom the field, and
+ * the drawer/editor rows stay inside the viewport rather than forcing horizontal scrolling.
+ */
+@media (max-width: 767px) {
+  .oe-contact-fields dd, .oe-choice-title, .oe-input, .oe-textarea, .oe-sch-picked { font-size: 16px; }
+  .oe-avail-actions { justify-content: stretch; }
+  .oe-avail-actions .oe-btn { flex: 1 1 auto; }
 }

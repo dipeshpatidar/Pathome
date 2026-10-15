@@ -18,10 +18,14 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { resolve as resolveOperationsModule } from './support/operationsServiceLoader.mjs';
 
 registerHooks({ resolve: resolveOperationsModule });
+
+/** Reads one production source file, for the structural half of a wiring assertion. */
+const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 /* ------------------------------------------------------------------ *
  * Browser environment stubs (storage and window events)
@@ -106,7 +110,9 @@ const resetTransport = () => {
  * ------------------------------------------------------------------ */
 
 const sessionModule = await import('../utils/operationsSession.ts');
-const { OwnershipOperationRegistry } = await import('../utils/operationsOwnershipRegistry.ts');
+const { OwnershipOperationRegistry, operationTargetIsMounted } = await import(
+  '../utils/operationsOwnershipRegistry.ts'
+);
 const presentation = await import('../utils/operationsWorkspacePresentation.ts');
 
 const {
@@ -521,4 +527,627 @@ test('a stale operation cannot commit into a workspace whose epoch has advanced'
   workspace.registry.cancelActive('session-changed');
   assert.equal(workspace.registry.canCommit(operation, gate), false);
   assert.equal(workspace.registry.canCommit(operation, authorizationGate()), false);
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. R1/R3/R5 — what a failed command decides, and who may still write it
+ * ------------------------------------------------------------------ */
+
+test('a definitive target denial withdraws the root, before or after dispatch', () => {
+  const { commandFailureDisposition } = presentation;
+
+  // A `404` from the fresh pre-command read: nothing was transmitted, but the server has denied this
+  // root, so the protected detail must not stay mounted.
+  assert.deepEqual(
+    commandFailureDisposition({ dispatched: false, status: 404 }),
+    { kind: 'pre-dispatch', targetDenied: true, withdrawRoot: true, reconcile: true }
+  );
+  // The same denial from the mutation itself.
+  assert.deepEqual(
+    commandFailureDisposition({ dispatched: true, status: 403 }),
+    { kind: 'rejected', targetDenied: true, withdrawRoot: true, reconcile: true }
+  );
+  // A `403` on the fresh read is a denial of this root, not "the app stopped before sending anything".
+  assert.equal(commandFailureDisposition({ dispatched: false, status: 403 }).targetDenied, true);
+  // A conflict keeps the detail unless the caller asked for a release-style drop.
+  assert.equal(commandFailureDisposition({ dispatched: true, status: 409 }).withdrawRoot, false);
+  assert.equal(
+    commandFailureDisposition({ dispatched: true, status: 409 }, { dropDetailWhenRejected: true }).withdrawRoot,
+    true
+  );
+  // A `401` is a session end, and an uncertain transmission is never treated as a denial: neither may
+  // withdraw a root on its own (the session/authority owner clears protected state for those).
+  assert.equal(commandFailureDisposition({ dispatched: true, status: 401 }).withdrawRoot, false);
+  assert.equal(commandFailureDisposition({ dispatched: true, status: 401 }).targetDenied, false);
+  for (const status of [500, 502, null, undefined]) {
+    const uncertain = commandFailureDisposition({ dispatched: true, status });
+    assert.equal(uncertain.kind, 'uncertain', `status ${String(status)}`);
+    assert.equal(uncertain.withdrawRoot, false, `status ${String(status)}`);
+    assert.equal(uncertain.reconcile, true, `status ${String(status)}`);
+    assert.equal(uncertain.targetDenied, false, `status ${String(status)}`);
+  }
+  // A pre-dispatch transport failure that never touched the root checks nothing and withdraws nothing.
+  const stopped = commandFailureDisposition({ dispatched: false, status: null });
+  assert.equal(stopped.kind, 'pre-dispatch');
+  assert.equal(stopped.withdrawRoot, false);
+  assert.equal(stopped.reconcile, false);
+});
+
+test('a denial withdraws the refused root before the reconciliation it triggers is awaited', () => {
+  const { commandFailureDisposition } = presentation;
+
+  /**
+   * The withdrawal decision is a function of the real status alone — never of the reconciliation
+   * result. Holding the queues unresolved therefore cannot postpone it, which is precisely what Sol
+   * reproduced when the denied detail and its revealed lessor contact stayed mounted behind a held
+   * refresh. The reconciliation still happens; it just cannot gate the withdrawal.
+   */
+  for (const reconciliation of [null, 'not-attempted', 'loaded', 'failed', 'skipped']) {
+    assert.equal(
+      commandFailureDisposition({ dispatched: true, status: 403, reconciliation }).withdrawRoot,
+      true,
+      `mutation 403 (${String(reconciliation)})`
+    );
+    assert.equal(
+      commandFailureDisposition({ dispatched: true, status: 404, reconciliation }).withdrawRoot,
+      true,
+      `mutation 404 (${String(reconciliation)})`
+    );
+    assert.equal(
+      commandFailureDisposition({ dispatched: false, status: 404, reconciliation }).withdrawRoot,
+      true,
+      `fresh-read 404 (${String(reconciliation)})`
+    );
+  }
+  // A fresh-read denial transmits nothing but still needs the authoritative read that follows it.
+  assert.deepEqual(commandFailureDisposition({ dispatched: false, status: 404 }), {
+    kind: 'pre-dispatch',
+    targetDenied: true,
+    withdrawRoot: true,
+    reconcile: true
+  });
+
+  /**
+   * The gate that makes the immediate withdrawal safe is the real registry: a denial learned by an
+   * operation that may no longer commit writes nothing at all, so an Account A refusal can never clear
+   * protected state that now belongs to Account B.
+   */
+  signIn(ACCOUNT_A);
+  const workspace = liveWorkspace({ session: captureOperationsSession() });
+  const operation = workspace.begin('availability');
+  const gate = authorizationGate();
+  const withdrawIfStillAllowed = () =>
+    workspace.registry.canCommit(operation, gate) ? 'withdrawn' : 'skipped';
+  assert.equal(withdrawIfStillAllowed(), 'withdrawn');
+  signIn(ACCOUNT_B);
+  assert.equal(withdrawIfStillAllowed(), 'skipped');
+  // And the same guard refuses the withdrawal for a revoked grant on an unchanged identity.
+  const second = liveWorkspace({ session: captureOperationsSession() });
+  const secondOperation = second.begin('availability');
+  assert.equal(
+    second.registry.canCommit(secondOperation, authorizationGate({ authorized: false })) ? 'withdrawn' : 'skipped',
+    'skipped'
+  );
+
+  /**
+   * The component really applies that ordering at both failure entry points, and only for the root the
+   * denial names: the withdrawal sits before the awaited reconciliation, inside the same synchronous
+   * commit gate, and the notice still follows the real reconciliation result. The behavioural half —
+   * a refused detail and its revealed contact unmounted while the queue reads are still held, with a
+   * fresh-read denial transmitting nothing — is proven in `browser-verification/operations-completion/`
+   * (`correctionDenialWithdrawsRevealedRoot`).
+   */
+  const workspaceSource = read('../components/operations/OperationsWorkspace.tsx');
+  const region = (start, end) => {
+    const from = workspaceSource.indexOf(start);
+    const to = workspaceSource.indexOf(end);
+    assert.ok(from > -1 && to > from, `${start} region`);
+    return workspaceSource.slice(from, to);
+  };
+
+  for (const [label, slice] of [
+    [
+      'a failed ownership command',
+      region('const reportOwnershipFailure = useCallback(async', 'const claimRoot = useCallback(async')
+    ],
+    [
+      'a failed Phase 2A command',
+      region(
+        'const reportCommandFailure = useCallback(async',
+        'const applyAuthoritativeSession = useCallback('
+      )
+    ]
+  ]) {
+    const withdrawAt = slice.indexOf('withdrawDeniedRoot(');
+    const reconcileAt = slice.indexOf('await refreshAll(operation.session)');
+    const guardAt = slice.indexOf('if (!ownership.canCommit(operation, authorityRef.current))');
+    const noticeAt = slice.indexOf('showNotice(copy.message, operation.session);');
+    assert.ok(withdrawAt > -1, `${label}: withdraws the denied root`);
+    assert.ok(withdrawAt < reconcileAt, `${label}: the withdrawal precedes the reconciliation`);
+    assert.ok(reconcileAt < guardAt, `${label}: the post-await commit guard is preserved`);
+    assert.ok(guardAt < noticeAt, `${label}: the notice follows the guard`);
+    // One withdrawal per failure, and none of them after the awaited reconciliation.
+    assert.equal((slice.match(/withdrawDeniedRoot\(/g) ?? []).length, 1, `${label}: one withdrawal call site`);
+    assert.equal(
+      (slice.match(/withdrawDeniedRoot\(/g) ?? []).length,
+      slice.slice(0, reconcileAt).match(/withdrawDeniedRoot\(/g)?.length ?? 0,
+      `${label}: no withdrawal after the reconciliation`
+    );
+  }
+
+  // The withdrawal is refused outright once the operation may no longer commit.
+  assert.match(
+    workspaceSource,
+    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(/
+  );
+  // Both failure paths withdraw the operation's *own captured target* — never the root that happens
+  // to be on screen when the failure lands.
+  assert.match(
+    workspaceSource,
+    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(operation\);/
+  );
+  // A denial only drops the exact instance the operation was started against, never whatever is on
+  // screen when it lands — a later record, or a newer mount of the same one.
+  assert.match(
+    workspaceSource,
+    /const withdrawDeniedRoot = useCallback\(\(operation: OwnershipOperation\) => \{\s*\n\s*if \(!operationTargetIsMounted\(operation, openRootRef\.current\)\) return;/
+  );
+  /**
+   * The outcome verdict is not taken before the reconciliation any more: the display context that a
+   * refusal describes is revalidated *after* the awaited read and immediately before the notice, so a
+   * record the OE opened while the read was held can never inherit the old refusal. What keeps a
+   * same-root denial truthful is the operation's own recorded withdrawal, not a stale verdict.
+   */
+  for (const [label, anchor] of [
+    ['a failed ownership command', 'const reportOwnershipFailure = useCallback(async'],
+    ['a failed Phase 2A command', 'const reportCommandFailure = useCallback(async']
+  ]) {
+    const from = workspaceSource.indexOf(anchor);
+    assert.ok(from > -1, `${label} region`);
+    const noticeAt = workspaceSource.indexOf('showNotice(copy.message, operation.session);', from);
+    const region = workspaceSource.slice(from, noticeAt);
+    const verdictAt = region.indexOf('if (disposition.targetDenied && !noticeContextHolds(operation))');
+    const reconcileAt = region.indexOf('await refreshAll(operation.session)');
+    assert.ok(verdictAt > -1 && reconcileAt > -1, `${label}: both decisions exist`);
+    assert.ok(reconcileAt < verdictAt, `${label}: the verdict is re-taken after the awaited reconciliation`);
+    assert.equal(region.includes('const publishable = '), false, `${label}: no pre-await publish verdict`);
+    assert.equal(
+      region.slice(0, reconcileAt).includes('noticeContextHolds('),
+      false,
+      `${label}: no display-context verdict is taken before the reconciliation`
+    );
+  }
+  /**
+   * The scheduling drawer's outcome is withheld under the same verdict: a withheld refusal must never
+   * be published into a drawer that now belongs to another record — or to a newer mount of this one.
+   */
+  const scheduleFrom = workspaceSource.indexOf('onFailure: async (cause, operation) => {');
+  assert.ok(scheduleFrom > -1, 'the scheduling failure continuation');
+  const scheduleFailure = workspaceSource.slice(scheduleFrom, scheduleFrom + 2600);
+  const reportAt = scheduleFailure.indexOf('await reportCommandFailure(cause, operation, name);');
+  const withheldAt = scheduleFailure.indexOf('if (!failure.published) return;');
+  const contextAt = scheduleFailure.indexOf('if (!noticeContextHolds(operation)) return;');
+  const outcomeAt = scheduleFailure.indexOf('setScheduleOutcome(schedulingFailureOutcome(failure));');
+  assert.ok(reportAt > -1 && withheldAt > -1 && contextAt > -1 && outcomeAt > -1);
+  assert.ok(reportAt < withheldAt && withheldAt < contextAt && contextAt < outcomeAt,
+    'a withheld refusal, and any outcome that no longer describes the open session, never becomes drawer state');
+  /**
+   * The stopped-command outcome is bound the same way: a booking whose pre-command read returned no
+   * version must not write `review-required`/`not-sent` into a drawer that now belongs to another
+   * record, because the OE left the session while that read was in flight.
+   */
+  const missingFrom = workspaceSource.indexOf('onMissingVersion: (fresh, _reconciliation, operation) => {');
+  assert.ok(missingFrom > -1, 'the scheduling stopped-command outcome');
+  const missing = workspaceSource.slice(missingFrom, missingFrom + 1200);
+  assert.ok(
+    missing.indexOf('if (!noticeContextHolds(operation)) return;') < missing.indexOf('setScheduleOutcome('),
+    'a stopped command publishes no drawer outcome outside its own display context'
+  );
+});
+
+test('an operation freezes the exact root instance it acts on; only that instance is its own', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = liveWorkspace({ session });
+
+  // The OE has Session #3108 open (mount generation 3) and starts a command against it.
+  const mounted3108 = { targetType: 'SESSION', targetId: 3108, mountGeneration: 3 };
+  const operation = workspace.registry.begin('availability', session, 0, mounted3108);
+  assert.deepEqual(operation.target, mounted3108, 'the operation retains the immutable target it was given');
+
+  assert.equal(operationTargetIsMounted(operation, { ...mounted3108 }), true,
+    'the same mounted instance is still the operation’s own');
+  assert.equal(operationTargetIsMounted(operation, { targetType: 'SESSION', targetId: 3108, mountGeneration: 4 }), false,
+    'the same record re-opened is a different instance, not this operation’s');
+  assert.equal(operationTargetIsMounted(operation, { targetType: 'SESSION', targetId: 4109, mountGeneration: 4 }), false,
+    'another record the OE opened later is never this operation’s');
+  assert.equal(operationTargetIsMounted(operation, { targetType: 'REQUEST', targetId: 3108, mountGeneration: 3 }), false,
+    'a Request root is not the Session root that happens to share its numeric id');
+  assert.equal(operationTargetIsMounted(operation, null), false,
+    'a record the OE navigated away from is not mounted at all');
+
+  // A command started with no mounted detail of its own (a claim from the list) can never withdraw one.
+  const fromList = workspace.registry.begin('claim', session, 0, null);
+  assert.equal(fromList.target, null);
+  assert.equal(operationTargetIsMounted(fromList, { targetType: 'SESSION', targetId: 3108, mountGeneration: 5 }), false,
+    'a claim from the list owns no mounted instance');
+
+  // The target can never be re-pointed afterwards: it belongs to the operation, not to the registry.
+  const before = { ...operation.target };
+  workspace.registry.advanceSessionEpoch();
+  assert.deepEqual(operation.target, before, 'the captured target survives later workspace transitions');
+});
+
+/**
+ * R1 target identity, driven through the real lifecycle decisions.
+ *
+ * The workspace's own mount bookkeeping is modelled here with the same rule the component applies: a
+ * mount is a new generation, leaving retires it. Every verdict below comes from the production code —
+ * `ownership.begin(..., target)` freezes the target and `operationTargetIsMounted` decides whether the
+ * operation's own instance is still the one on screen — so the interleavings Sol reproduced are
+ * proven against real state behaviour rather than source text.
+ */
+const mountContextWorkspace = () => {
+  const registry = new OwnershipOperationRegistry();
+  registry.setMounted(true);
+  registry.setWorkspaceActive(true);
+  let mounted = null;
+  let generation = 0;
+  return {
+    registry,
+    /** Opens (or re-opens) a root: a new mounted instance with a new generation. */
+    mount(root) {
+      generation += 1;
+      mounted = { ...root, mountGeneration: generation };
+      return mounted;
+    },
+    /** Leaves the detail entirely, exactly like the component refusing to carry a stale root. */
+    leave() {
+      mounted = null;
+    },
+    /** The workspace's withdrawal decision for one failed command. */
+    withdraw(operation) {
+      if (!operationTargetIsMounted(operation, mounted)) return 'kept';
+      mounted = null;
+      return 'withdrawn';
+    },
+    open: () => mounted
+  };
+};
+
+test('same-root denial: the refused instance is the one withdrawn', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = mountContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+
+  assert.equal(workspace.withdraw(operation), 'withdrawn', 'the denied root’s own instance is withdrawn');
+  assert.equal(workspace.open(), null);
+});
+
+test('different-root race: a denial targeting #3108 never withdraws the later-opened #4109', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = mountContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('schedule', session, 0, workspace.open());
+
+  // Sol's reproduction: while the command is in flight the OE opens the unrelated Session #4109.
+  const unrelated = workspace.mount({ targetType: 'SESSION', targetId: 4109 });
+  assert.equal(workspace.withdraw(operation), 'kept', '#4109 is not #3108’s to withdraw');
+  assert.deepEqual(workspace.open(), unrelated, '#4109 remains exactly the instance that was mounted');
+});
+
+test('navigation away and back: an older operation cannot withdraw the newer mount of the same root', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = mountContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('schedule', session, 0, workspace.open());
+
+  // The OE leaves the record and re-opens it: same root identity, a brand-new mounted instance.
+  workspace.leave();
+  const reopened = workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  assert.notDeepEqual(reopened, operation.target, 'the re-opened detail is a new instance');
+
+  assert.equal(workspace.withdraw(operation), 'kept', 'the older operation cannot clear the newer context');
+  assert.deepEqual(workspace.open(), reopened, 'the newer mount survives untouched');
+});
+
+test('negative control: the former wrong-target rule clears the unrelated root, the corrected rule does not', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = mountContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+  const unrelated = workspace.mount({ targetType: 'SESSION', targetId: 4109 });
+
+  /**
+   * The former defect in one line — "withdraw whatever root is on screen when the failure arrives" —
+   * reproduced here as an in-memory variant. It would clear #4109; the corrected production rule
+   * refuses to. The interleavings above fail under that former rule and pass with the correction,
+   * which is exactly what makes them a regression test.
+   */
+  const formerRule = (_operation, mountedRoot) => mountedRoot !== null;
+  assert.equal(formerRule(operation, workspace.open()), true,
+    'the former rule considers #4109 withdrawable by #3108’s operation');
+  assert.equal(operationTargetIsMounted(operation, workspace.open()), false,
+    'the corrected rule does not');
+  assert.equal(workspace.withdraw(operation), 'kept');
+  assert.deepEqual(workspace.open(), unrelated);
+});
+
+/**
+ * R1 display context — the second half of Sol's denial reproduction, driven through the real registry.
+ *
+ * The mounted-root identity above answers "is the refused instance still on screen?". It cannot answer
+ * the question a refusal has to ask once its reconciliation has been *awaited*: when the record is no
+ * longer mounted, did the operation itself take it away as the security response to its own denial
+ * (whose notice must still be announced), or did the OE open another record — or re-open this one —
+ * while the read was held (whose refusal must never be applied there)? The generation exercised below
+ * is the production counter (`advanceDisplayContext`, `markWithdrewOwnDisplayContext`,
+ * `withdrewOwnDisplayContext`), and the verdict is the workspace's own expression: a command with no
+ * mounted detail of its own, the exact instance still mounted, or the operation's own withdrawal still
+ * in force.
+ */
+const displayContextWorkspace = () => {
+  const registry = new OwnershipOperationRegistry();
+  registry.setMounted(true);
+  registry.setWorkspaceActive(true);
+  let mounted = null;
+  /** Exactly the component's `setDisplayContext`: a display change moves the generation with it. */
+  const setDisplayContext = (root) => {
+    const generation = registry.advanceDisplayContext();
+    mounted = root === null ? null : { ...root, mountGeneration: generation };
+    return mounted;
+  };
+  return {
+    registry,
+    mount: (root) => setDisplayContext(root),
+    leave: () => setDisplayContext(null),
+    /** The workspace's post-reconciliation refusal verdict, verbatim. */
+    noticeContextHolds: (operation) =>
+      operation.target === null
+      || operationTargetIsMounted(operation, mounted)
+      || registry.withdrewOwnDisplayContext(operation),
+    /** The workspace's synchronous withdrawal, including the display change it performs itself. */
+    withdrawDeniedRoot(operation) {
+      if (!operationTargetIsMounted(operation, mounted)) return 'kept';
+      setDisplayContext(null);
+      registry.markWithdrewOwnDisplayContext(operation);
+      return 'withdrawn';
+    },
+    open: () => mounted
+  };
+};
+
+test('same-root denial: the operation’s own withdrawal keeps its refusal in context', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+
+  assert.equal(operation.withdrawnDisplayContext, null, 'nothing has been withdrawn yet');
+  assert.equal(workspace.registry.withdrewOwnDisplayContext(operation), false);
+  assert.equal(workspace.noticeContextHolds(operation), true, 'the refusal describes the mounted root');
+
+  assert.equal(workspace.withdrawDeniedRoot(operation), 'withdrawn');
+  assert.equal(workspace.open(), null, 'the refused detail is unmounted before anything is awaited');
+  /**
+   * The withdrawal is the one display change this operation performed itself, so the reconciled
+   * refusal still describes the context on screen: a same-root denial must not lose its truthful
+   * notice merely because it correctly unmounted the refused record.
+   */
+  assert.equal(operation.withdrawnDisplayContext, workspace.registry.displayContextGeneration);
+  assert.equal(workspace.registry.withdrewOwnDisplayContext(operation), true);
+  assert.equal(workspace.noticeContextHolds(operation), true, 'the same-root refusal is announced');
+});
+
+test('different-root notice race: a refusal awaited across the reconciliation never lands in #4109', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+
+  // The denial lands while #3108 is still mounted, so the operation withdraws its own refused root.
+  assert.equal(workspace.withdrawDeniedRoot(operation), 'withdrawn');
+  /**
+   * Sol's reproduction: the reconciliation is *held*, and the OE opens the unrelated Session #4109
+   * with its independently authorized contact while the refused #3108 reconciliation is unresolved.
+   */
+  const unrelated = workspace.mount({ targetType: 'SESSION', targetId: 4109 });
+  assert.deepEqual(workspace.open(), unrelated, '#4109 is mounted with its own instance');
+  assert.equal(
+    workspace.noticeContextHolds(operation),
+    false,
+    'the held #3108 refusal is obsolete and must be suppressed'
+  );
+  assert.equal(
+    operationTargetIsMounted(operation, workspace.open()),
+    false,
+    'the mounted identity alone already refuses it — the generation decides the harder case below'
+  );
+});
+
+test('same-root remount: the older refusal is suppressed once the root is re-opened', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+  workspace.withdrawDeniedRoot(operation);
+
+  // The OE re-opens #3108 in a brand-new mount generation before the reconciliation resolves.
+  const reopened = workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  assert.equal(workspace.open().mountGeneration, reopened.mountGeneration);
+  assert.equal(
+    workspace.registry.withdrewOwnDisplayContext(operation),
+    false,
+    'the newer mount is not the display context the old withdrawal produced'
+  );
+  assert.equal(workspace.noticeContextHolds(operation), false, 'the newer mount inherits nothing');
+});
+
+test('a Request and a Session that share a numeric id are never the same display context', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+
+  // The OE opens the *Request* root that happens to carry the same id.
+  workspace.mount({ targetType: 'REQUEST', targetId: 3108 });
+  assert.equal(workspace.withdrawDeniedRoot(operation), 'kept', 'the Request root is not this command’s');
+  assert.equal(workspace.open().targetType, 'REQUEST', 'the Request root survives untouched');
+  assert.equal(workspace.noticeContextHolds(operation), false, 'the Session refusal is not the Request’s');
+});
+
+test('a claim started from the list keeps its unconditional announcement', () => {
+  signIn(ACCOUNT_A);
+  const workspace = displayContextWorkspace();
+  // The queue is on screen: the claim has no mounted detail of its own to be bound to.
+  const operation = workspace.registry.begin('claim', captureOperationsSession(), 0, null);
+  assert.equal(operation.target, null);
+  // The OE opens a record while the claim is in flight; the claim still speaks about the queues.
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  assert.equal(workspace.noticeContextHolds(operation), true);
+  workspace.leave();
+  assert.equal(workspace.noticeContextHolds(operation), true);
+});
+
+test('only the live operation, and only once, may record a withdrawal as its own', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+  workspace.withdrawDeniedRoot(operation);
+  assert.equal(workspace.registry.markWithdrewOwnDisplayContext(operation), false, 'recorded exactly once');
+
+  // A newer command owns the workspace; the abandoned one may not claim the display context it produced.
+  const stale = workspace.registry.begin('release', session, 0, null);
+  workspace.registry.finish(stale);
+  assert.equal(
+    workspace.registry.markWithdrewOwnDisplayContext(stale),
+    false,
+    'an operation that does not own the registry records nothing'
+  );
+  assert.equal(workspace.registry.withdrewOwnDisplayContext(stale), false);
+});
+
+test('negative control: a verdict captured before the await publishes the obsolete refusal', () => {
+  signIn(ACCOUNT_A);
+  const session = captureOperationsSession();
+  const workspace = displayContextWorkspace();
+  workspace.mount({ targetType: 'SESSION', targetId: 3108 });
+  const operation = workspace.registry.begin('availability', session, 0, workspace.open());
+
+  /**
+   * The former defect in one line: the publish verdict was captured *before* the withdrawal and
+   * reused after the awaited reconciliation. Reproduced here as an in-memory variant of exactly that
+   * rule — it says `true` at classification time, and it still says `true` once #4109 is on screen,
+   * which is why the old #3108 refusal used to be written into #4109. The corrected rule re-takes the
+   * verdict after the reconciliation and refuses.
+   */
+  const formerPublishVerdict =
+    operation.target === null || operationTargetIsMounted(operation, workspace.open());
+  assert.equal(formerPublishVerdict, true, 'the former rule regarded the refusal as publishable');
+
+  workspace.withdrawDeniedRoot(operation);
+  workspace.mount({ targetType: 'SESSION', targetId: 4109 });
+  assert.equal(formerPublishVerdict, true, 'and it is still true after a held reconciliation resolves');
+  assert.equal(workspace.noticeContextHolds(operation), false, 'the corrected verdict is not');
+});
+
+test('a scheduling failure continuation may not write after its operation is abandoned', async () => {
+  signIn(ACCOUNT_A);
+  const workspace = liveWorkspace({ session: captureOperationsSession() });
+  const gate = authorizationGate();
+  const operation = workspace.begin('schedule');
+  workspace.registry.markDispatched(operation);
+
+  /**
+   * The scheduling flow awaits its failure reporting (which reconciles against the server) and only
+   * then writes its outcome. Holding that await while the workspace is invalidated reproduces R5: the
+   * continuation must find itself unable to commit, so no outcome, notice or drawer write lands in
+   * the context that replaced it.
+   */
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const continuation = (async () => {
+    await held;
+    // This is the guard the flow now applies after the awaited report, for both failure kinds.
+    if (!workspace.registry.canCommit(operation, gate)) return 'abandoned';
+    return 'written';
+  })();
+
+  // Identity changes and authority is invalidated while the reporting is still in flight.
+  signIn(ACCOUNT_B);
+  workspace.registry.advanceSessionEpoch();
+  workspace.registry.cancelActive('session-changed');
+  release();
+  assert.equal(await continuation, 'abandoned');
+
+  // The same guard refuses the write for a revoked grant on an unchanged identity.
+  const second = liveWorkspace({ session: captureOperationsSession() });
+  const secondOperation = second.begin('schedule');
+  second.registry.markDispatched(secondOperation);
+  assert.equal(second.registry.canCommit(secondOperation, authorizationGate({ authorized: false })), false);
+
+  /**
+   * And the component really applies that guard at this exact point: after `await
+   * reportCommandFailure(...)` and before any scheduling outcome is written.
+   */
+  const workspaceSource = read('../components/operations/OperationsWorkspace.tsx');
+  assert.match(
+    workspaceSource,
+    /const failure = await reportCommandFailure\(cause, operation, name\);[\s\S]{0,600}?if \(!ownership\.canCommit\(operation, authorityRef\.current\)\) return;/
+  );
+});
+
+test('an abandoned failure report would otherwise be published, so the guard is load-bearing', () => {
+  const { schedulingFailureOutcome } = presentation;
+
+  /**
+   * `reportCommandFailure` returns this exact shape once its operation has been invalidated (the
+   * message is empty because the notice is suppressed). Without the commit guard the scheduling
+   * continuation would publish it as drawer state — a stale outcome in the context that replaced the
+   * operation — so the guard, not the mapper, is what prevents the write.
+   */
+  const invalidated = { kind: 'rejected', status: 409, message: '', detail: null };
+  assert.deepEqual(schedulingFailureOutcome(invalidated), {
+    kind: 'conflict',
+    status: 409,
+    message: '',
+    detail: null
+  });
+  assert.deepEqual(schedulingFailureOutcome({ kind: 'uncertain', status: null, message: '', detail: null }), {
+    kind: 'uncertain',
+    message: ''
+  });
+
+  // Every real classification still maps truthfully.
+  assert.deepEqual(schedulingFailureOutcome({ kind: 'pre-dispatch', status: null, message: 'not sent', detail: null }), {
+    kind: 'not-sent',
+    message: 'not sent'
+  });
+  assert.deepEqual(schedulingFailureOutcome({ kind: 'rejected', status: 403, message: 'denied', detail: null }), {
+    kind: 'denied',
+    message: 'denied'
+  });
+  assert.deepEqual(schedulingFailureOutcome({ kind: 'rejected', status: 404, message: 'gone', detail: null }), {
+    kind: 'denied',
+    message: 'gone'
+  });
+  assert.deepEqual(schedulingFailureOutcome({ kind: 'rejected', status: 400, message: 'refused', detail: 'why' }), {
+    kind: 'conflict',
+    status: 400,
+    message: 'refused',
+    detail: 'why'
+  });
 });

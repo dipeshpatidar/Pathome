@@ -7,6 +7,7 @@ import {
   type OperationsRequestContext
 } from '../../services/operationsWorkspaceService';
 import {
+  OperationsSessionChangedError,
   captureOperationsSession,
   isOperationsSessionActive,
   isOperationsSessionChangedError,
@@ -16,28 +17,49 @@ import {
 } from '../../utils/operationsSession';
 import {
   OwnershipOperationRegistry,
+  operationTargetIsMounted,
   type OwnershipBlockReason,
-  type OwnershipOperation
+  type OwnershipOperation,
+  type OwnershipOperationKind
 } from '../../utils/operationsOwnershipRegistry';
 import type { OperationsAuthority } from '../../hooks/useOperationsCapability';
 import { useNotification } from '../../context/NotificationContext';
+import { propertyService } from '../../services/propertyService';
 import {
+  addSessionItemCommand,
   claimCommandFor,
+  commandFailureDisposition,
+  coordinateAttachCommand,
+  coordinateNewSessionCommand,
   formatOperationsDateTime,
   linkedRequestsLabel,
   operationsCapabilityScopes,
   operationsDetailFailureState,
   operationsLoadFailureState,
   operationsRecordTitle,
-  ownershipFailureKind,
   ownershipOutcomeCopy,
   ownershipRefreshFailureNotice,
   releaseCommandForRequest,
   releaseCommandForSession,
+  removeSessionItemCommand,
+  reorderSessionItemsCommand,
+  requestUnavailableCommand,
+  scheduleSelectionCommand,
+  schedulingFailureOutcome,
+  sessionListingIds,
+  setAvailabilityCommand,
   type ClaimableWorkItem,
   type OperationsLoadFailure,
+  type OperationsLessorContact,
+  type OperationsAvailabilityChoice,
   type OperationsMyWorkItem,
+  type OperationsRecommendationView,
+  type OperationsRequestDetail,
+  type OperationsSchedulingApproval,
+  type OperationsSchedulingSelection,
+  type OperationsSessionDetail,
   type OperationsTargetType,
+  type OwnershipFailureKind,
   type OwnershipOutcomeInput,
   type OwnershipReconciliation,
   type OperationsWorkPage,
@@ -58,14 +80,25 @@ import {
 import { ClaimableList, OwnedList, workItemKey } from './OperationsWorkLists';
 import {
   OperationsWorkDetail,
+  type OperationsAvailabilityWindowInput,
+  type OperationsDetailActions,
   type OperationsDetailSnapshot,
   type OperationsDetailState
 } from './OperationsWorkDetail';
+import type { AddStopInput, DiscoveryListingOption } from './OperationsDraftItinerary';
+import type { OperationsOwnedCandidatePage } from './OperationsRequestCoordination';
+import { OperationsScheduleFlow, type ScheduleOutcome } from './OperationsScheduleFlow';
 import './operationsWorkspace.css';
 
 type QueueKey = 'attention' | 'my-work' | 'claimable';
 type QueueView = 'home' | QueueKey;
 type QueueStatus = 'loading' | 'ready' | OperationsLoadFailure;
+
+/**
+ * Independent guarded read families. Each is superseded only by a newer request of the same family,
+ * so an unrelated read can never cancel the one the user is waiting on.
+ */
+type GuardedReadFamily = 'owned-candidates' | 'listing-search' | 'ge-ranked' | 'ge-discovery';
 
 interface PageState<T> {
   status: QueueStatus;
@@ -89,6 +122,21 @@ interface DetailTarget {
   targetType: OperationsTargetType;
   targetId: number;
   source: 'owned' | 'claimable';
+}
+
+/**
+ * The identity of one protected root, independent of the queue it was opened from. Two `DetailTarget`s
+ * describe the same root exactly when their type and id match.
+ */
+type RootIdentity = Pick<DetailTarget, 'targetType' | 'targetId'>;
+
+/**
+ * One mounted instance of a protected root: the root identity plus the generation of the detail that
+ * is on screen. Closing a root and opening it again is a *new* instance — new reads, a new revealed
+ * contact — so a denial captured against the previous generation never addresses the new one.
+ */
+interface MountedRootIdentity extends RootIdentity {
+  mountGeneration: number;
 }
 
 const QUEUE_COPY: Record<QueueKey, { title: string; description: string; emptyTitle: string; emptyBody: string }> = {
@@ -197,6 +245,91 @@ interface NoticeState {
   sessionIdentity: string | null;
 }
 
+/** The three real endings of one guarded Phase 2A command, plus the two "nothing happened" cases. */
+interface GuardedCommandFailure {
+  kind: OwnershipFailureKind;
+  status: number | null;
+  message: string;
+  /** The server's own explanation, when it sent one. */
+  detail: string | null;
+  /**
+   * True only when the outcome was actually announced. A refusal whose record was replaced is
+   * withheld, so a caller must never publish its drawer outcome either.
+   */
+  published: boolean;
+}
+
+interface GuardedCommandOutcome<Applied> {
+  /** `abandoned` covers "the flow stopped before dispatch" and "the operation lost the right to commit". */
+  status: 'applied' | 'abandoned' | 'missing-version' | 'failed';
+  applied: Applied | null;
+  reconciliation: QueueLoadOutcome;
+  failure: GuardedCommandFailure | null;
+  /**
+   * The operation that ran this command, so a caller reporting its outcome can re-evaluate the display
+   * verdict in the same tick as its own post-reconciliation write. `null` only when no operation ever
+   * began (the lock was already held, or no session could be captured).
+   *
+   * Only the read-only display verdict may be consulted on it: by the time a caller sees this, the
+   * command's `finally` has already released the mutation lock, so the operation is deliberately no
+   * longer "current" and no commit guard applies.
+   */
+  operation: OwnershipOperation | null;
+  /**
+   * True only when the confirmed result was actually published to the display context this command
+   * began in. False means the business success is real but its local publication was withheld because
+   * the OE had already moved to another context.
+   */
+  published: boolean;
+}
+
+/**
+ * One Phase 2A command, described as the pieces the shared lifecycle needs.
+ *
+ * `loadFresh` re-reads the authoritative root immediately before the command is built, so the version
+ * sent is the one the server just returned; `buildTransmit` returns null when that read carried no
+ * version, which means no command may be transmitted at all.
+ */
+interface GuardedCommandOptions<Fresh, Applied> {
+  kind: OwnershipOperationKind;
+  /** Key of the control that started this command, so only it shows progress. */
+  busyKey: string;
+  /** Human name used in the truthful outcome notice. */
+  name: string;
+  loadFresh: (context: OperationsRequestContext) => Promise<Fresh | null>;
+  buildTransmit: (
+    fresh: Fresh
+  ) => ((context: OperationsRequestContext) => Promise<Applied>) | null;
+  /**
+   * Publishes the authoritative result the server returned.
+   *
+   * It must verify the display context in the same tick as each of its own writes and report whether
+   * it could publish: a confirmed success whose display context was replaced while the command was in
+   * flight stays a success (the caller still reports it), but nothing of it may replace what the OE is
+   * looking at now.
+   */
+  applyResult: (fresh: Fresh, applied: Applied, operation: OwnershipOperation) => boolean;
+  /**
+   * The fresh read carried no version, so no command could be sent. It receives the initiating
+   * operation as well, so a caller that publishes a drawer outcome can bind it to the display context
+   * the command was started in — checked after the await that always precedes this call.
+   */
+  onMissingVersion: (fresh: Fresh, reconciliation: QueueLoadOutcome, operation: OwnershipOperation) => void;
+  /** Custom failure handling; without it the standard truthful notice is announced. */
+  onFailure?: (cause: unknown, operation: OwnershipOperation) => Promise<void>;
+  dropDetailWhenRejected?: boolean;
+}
+
+/**
+ * The identity of one scheduling drawer instance: the Session it belongs to, plus the generation that
+ * moves on every open, close or invalidation. Captured before a booking starts, it lets the confirmed
+ * outcome be published only into the exact drawer the command was started from.
+ */
+interface ScheduleDrawerIdentity {
+  sessionId: number | null;
+  generation: number;
+}
+
 interface Props {
   authority: OperationsAuthority;
 }
@@ -230,6 +363,55 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   const [busyAction, setBusyAction] = useState<'claim' | 'release' | null>(null);
   const [busyClaimKey, setBusyClaimKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
+  /** The one in-flight Phase 2A command, so only the control that started it shows progress. */
+  const [busyCommand, setBusyCommand] = useState<string | null>(null);
+  /** The session whose scheduling drawer is open, or null. */
+  const [scheduleSessionId, setScheduleSessionId] = useState<number | null>(null);
+  /**
+   * The authoritative outcome of the last scheduling attempt. It lives here because the server's
+   * returned Session — not the drawer — decides what is true about the visit.
+   */
+  const [scheduleOutcome, setScheduleOutcome] = useState<ScheduleOutcome | null>(null);
+  /**
+   * The protected root currently on screen, read synchronously, together with the generation of the
+   * mounted instance it belongs to.
+   *
+   * A denial has to decide *in the same tick* whether the root the server refused is still the one
+   * that is mounted — and whether it is still the same *instance* of it the command was started
+   * against. That decision cannot be taken from a render-time closure or from this ref at the time
+   * the failure arrives: by then the value may belong to a newer record, or to a newer mount of the
+   * same record after the OE navigated away and back. The generation disambiguates the two, and the
+   * ref always carries the latest committed root.
+   */
+  const openRootRef = useRef<MountedRootIdentity | null>(null);
+  /**
+   * The scheduling drawer the workspace currently holds, read synchronously: which Session it belongs
+   * to and how many times it has been opened or closed.
+   *
+   * A confirmed booking publishes its drawer outcome, and that outcome describes one Session in one
+   * drawer instance. The Session id alone is not enough to prove it still belongs there: the OE can
+   * close the drawer and open it again for the same Session while the booking is in flight, and the
+   * outcome of the earlier instance must not appear in the newer one. The generation moves on every
+   * open, close or invalidation, so a captured pair identifies the exact instance a command was
+   * started from — the same reason the mounted-root ref carries one.
+   */
+  const scheduleDrawerRef = useRef<ScheduleDrawerIdentity>({ sessionId: null, generation: 0 });
+  const mountedDetailRef = useRef<DetailTarget | null>(null);
+  const detailMountGenerationRef = useRef(0);
+  if (mountedDetailRef.current !== detailTarget) {
+    // A different detail is being mounted, or the workspace left the detail entirely. The generation
+    // moves forward once per new instance, so an operation bound to a previous instance can never
+    // address this one; leaving the detail retires the ref until a new instance is mounted.
+    mountedDetailRef.current = detailTarget;
+    if (detailTarget !== null) detailMountGenerationRef.current += 1;
+    openRootRef.current = detailTarget === null
+      ? null
+      : {
+          targetType: detailTarget.targetType,
+          targetId: detailTarget.targetId,
+          mountGeneration: detailMountGenerationRef.current
+        };
+  }
 
   const mountedRef = useRef(true);
   const queueControllers = useRef<Record<QueueKey, AbortController | null>>({
@@ -238,6 +420,15 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     claimable: null
   });
   const detailController = useRef<AbortController | null>(null);
+  /**
+   * One controller per independent read family, keyed by family.
+   *
+   * These reads are genuinely independent — the owned-candidate list, the public listing search and
+   * the two Ground Executive reads — so they must not share a slot: starting one read would otherwise
+   * abort another that the user is still waiting for. Repeating a read within the *same* family still
+   * supersedes that family's own previous request, and invalidation aborts every family at once.
+   */
+  const guardedReadControllers = useRef<Record<string, AbortController | null>>({});
   /**
    * The single live ownership operation and the lock it owns. Nothing about a claim or a release is
    * tracked outside it, so a stale operation can never clear a newer one's lock or busy state.
@@ -249,6 +440,95 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   const savedScroll = useRef<Record<string, number>>({});
   const noticeCounter = useRef(0);
   const noticeRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * The scheduling drawer is opened and closed through these helpers — leaving the detail, withdrawing
+   * a denied root and an account change all close it the same way — so its state and the identity a
+   * command is bound to can never drift apart. Both of them move the generation on: a closed drawer and
+   * a re-opened one are different instances, and an outcome captured for the first must never be
+   * published into the second.
+   */
+  const openScheduleDrawer = useCallback((sessionId: number) => {
+    scheduleDrawerRef.current = {
+      sessionId,
+      generation: scheduleDrawerRef.current.generation + 1
+    };
+    setScheduleOutcome(null);
+    setScheduleSessionId(sessionId);
+  }, []);
+
+  const closeScheduleDrawer = useCallback(() => {
+    scheduleDrawerRef.current = {
+      sessionId: null,
+      generation: scheduleDrawerRef.current.generation + 1
+    };
+    setScheduleOutcome(null);
+    setScheduleSessionId(null);
+  }, []);
+
+  /**
+   * True only while the drawer the OE is looking at is still the exact instance a booking was started
+   * from — same Session, same open/close generation — and the display context is still the command's
+   * own. Evaluated in the same tick as the drawer write it guards, after every awaited reconciliation.
+   */
+  const scheduleOutcomeContextHolds = useCallback((
+    operation: OwnershipOperation | null,
+    drawer: ScheduleDrawerIdentity
+  ): boolean =>
+    operation !== null
+    && ownership.displayContextIsOwned(operation)
+    && scheduleDrawerRef.current.sessionId === drawer.sessionId
+    && scheduleDrawerRef.current.generation === drawer.generation,
+    [ownership]);
+
+  /**
+   * Forwards a caller's cancellation onto a controller the workspace can also abort, so a read dies
+   * immediately when the workspace loses its identity or authority — not whenever its consumer happens
+   * to unmount.
+   *
+   * `family` scopes the supersede rule: a new request aborts only its own family's previous request,
+   * never an unrelated read that is still being awaited.
+   */
+  const beginGuardedRead = useCallback((
+    family: GuardedReadFamily,
+    signal: AbortSignal
+  ): AbortSignal => {
+    const controllers = guardedReadControllers.current;
+    controllers[family]?.abort();
+    const controller = new AbortController();
+    controllers[family] = controller;
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', () => controller.abort(), { once: true });
+    return controller.signal;
+  }, []);
+
+  /** Aborts every in-flight guarded read: identity, authority or the whole surface was lost. */
+  const abortGuardedReads = useCallback(() => {
+    Object.values(guardedReadControllers.current).forEach((controller) => controller?.abort());
+  }, []);
+
+  /**
+   * Moves the workspace's display onto `next` — another protected root, or out of the detail
+   * altogether — and returns the generation of the display context that is now being shown.
+   *
+   * Every display change goes through here, because the generation is the only thing that can tell the
+   * one change a security withdrawal performs *itself* (which must still be announced by the operation
+   * that learned the denial) apart from the OE opening another record, or this one again, while a
+   * command's failure was still being reconciled (which must never inherit that refusal). The
+   * mounted-root identity alone cannot separate the two: both leave the refused instance unmounted.
+   *
+   * When the change is the *operation's own* authorised transition — a coordination installing the
+   * Session the server returned, a claim opening the root it just claimed, a release dropping the root
+   * it released — the operation is passed in and records the generation its own publication produced.
+   * That keeps the rest of its flow publishable without letting a later user-initiated navigation or
+   * remount inherit it.
+   */
+  const setDisplayContext = useCallback((next: DetailTarget | null, operation?: OwnershipOperation): number => {
+    const generation = ownership.advanceDisplayContext();
+    setDetailTarget(next);
+    if (operation) ownership.markAcceptedDisplayContext(operation);
+    return generation;
+  }, [ownership]);
 
   /**
    * Drops every piece of protected operational state and cancels pending work. Used whenever
@@ -271,6 +551,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     ownership.advanceSessionEpoch();
     Object.values(queueControllers.current).forEach((controller) => controller?.abort());
     detailController.current?.abort();
+    abortGuardedReads();
     // Invalidate the live ownership operation: it is cancelled, its pre-mutation reads are aborted
     // and its lock is released so the next valid operation can start cleanly.
     ownership.cancelActive(reason);
@@ -279,16 +560,20 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     setAttention(initialPageState<OperationsMyWorkItem>());
     setMyWork(initialPageState<OperationsMyWorkItem>());
     setClaimable(initialPageState<ClaimableWorkItem>());
-    setDetailTarget(null);
+    setDisplayContext(null);
     setDetail({ status: 'loading' });
     setBusyAction(null);
     setBusyClaimKey(null);
+    setBusyCommand(null);
+    // The drawer is being dropped with everything else, so any outcome an in-flight booking captured
+    // for it can no longer be published anywhere: closing it also retires its instance.
+    closeScheduleDrawer();
     setNotice(null);
     if (options.neutralView === true) {
       setView('home');
       if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
     }
-  }, [ownership]);
+  }, [abortGuardedReads, closeScheduleDrawer, ownership, setDisplayContext]);
 
   // React layout cleanup closes the commit window synchronously as the workspace is removed: the
   // component-local epoch advances and the operation is invalidated before any pending continuation
@@ -305,8 +590,9 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       ownership.cancelActive('workspace-closed');
       Object.values(queueControllers.current).forEach((controller) => controller?.abort());
       detailController.current?.abort();
+      abortGuardedReads();
     };
-  }, [ownership]);
+  }, [abortGuardedReads, ownership]);
 
   // Logout, account switch or cross-tab session replacement cancels pending work immediately and
   // returns the workspace to its neutral entry view for whichever identity comes next.
@@ -466,8 +752,16 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     const captured = session ?? captureOperationsSession();
     if (!captured) return;
     const epoch = ownership.sessionEpoch;
+    /**
+     * An operation-triggered open is a *publication* like any other: it may only move the workspace
+     * while the display context is still the one that operation began in. A claim whose response
+     * arrives after the OE opened another record must not navigate over that record, and must not
+     * replace the detail it is showing — so the display verdict is part of the context this call
+     * validates, both before the protected write below and again in the `contextHolds` re-check after
+     * the awaited read.
+     */
     const contextHolds = () => (operation
-      ? ownership.canCommit(operation, authorityRef.current)
+      ? ownership.canCommit(operation, authorityRef.current) && ownership.displayContextIsOwned(operation)
       : isOperationsSessionActive(captured) && ownership.sessionEpoch === epoch);
     if (!contextHolds()) return;
     savedScroll.current[view] = window.scrollY;
@@ -476,7 +770,12 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     const controller = new AbortController();
     detailController.current = controller;
     setNotice(null);
-    setDetailTarget(target);
+    // A fresh object identity marks a new mounted instance of the root: even re-opening a record is a
+    // new context, distinct from any operation started against the previous mount of it.
+    setDisplayContext(
+      { targetType: target.targetType, targetId: target.targetId, source: target.source },
+      operation
+    );
     setDetail({ status: 'loading' });
     focusWorkspaceTitle();
     try {
@@ -502,22 +801,99 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       // A resource-specific 403/404 clears that resource only; it is never global revocation.
       setDetail({ status: operationsDetailFailureState(cause instanceof ApiRequestError ? cause.status : undefined) });
     }
-  }, [view, ownership]);
+  }, [view, ownership, setDisplayContext]);
 
   const closeDetail = useCallback(() => {
     detailController.current?.abort();
-    setDetailTarget(null);
+    abortGuardedReads();
+    closeScheduleDrawer();
+    setDisplayContext(null);
+  }, [abortGuardedReads, closeScheduleDrawer, setDisplayContext]);
+
+  /**
+   * The exact mounted instance a command acts on, captured the moment its operation begins.
+   *
+   * The command's own root identity decides the target — the item being claimed, the detail being
+   * released, the root a guarded command re-reads — and it is bound to the displayed instance only
+   * when that instance *is* the command's root. A command whose root is not on screen (a claim
+   * started from the list) has no mounted detail of its own, so `null` is recorded and nothing may
+   * ever be withdrawn for it.
+   */
+  const mountedTargetFor = useCallback((root: RootIdentity): MountedRootIdentity | null => {
+    const open = openRootRef.current;
+    return open !== null && open.targetType === root.targetType && open.targetId === root.targetId
+      ? open
+      : null;
   }, []);
 
   /**
+   * Withdraws the exact protected root instance a failed command acted on, after the server has
+   * definitively denied access to it.
+   *
+   * A learned denial must not leave the previously revealed detail — including a revealed lessor
+   * name and number — mounted behind a now-refused root. Aborting the detail transport and the read
+   * families invalidates their responses, and clearing the target unmounts the detail (and with it
+   * the contact panel, whose own cleanup invalidates its reveal generation).
+   *
+   * Every action here is synchronous, so callers decide and apply the withdrawal in one tick,
+   * *before* awaiting any reconciliation. Only the instance the operation itself was started against
+   * may be withdrawn: a record the OE opened later — or the same record re-opened in a new mount
+   * context — is never cleared by an older command's denial.
+   *
+   * Clearing the target is also the one display change that belongs to this operation, so it is
+   * recorded on the operation: a refusal whose own record it correctly unmounted still describes the
+   * context on screen, while any later navigation past that withdrawal does not.
+   *
+   * This is deliberately *not* global account revocation: it touches only the open root's protected
+   * state, leaving the queues and a still-valid authenticated session in place for the next action.
+   */
+  const withdrawDeniedRoot = useCallback((operation: OwnershipOperation) => {
+    if (!operationTargetIsMounted(operation, openRootRef.current)) return;
+    detailController.current?.abort();
+    abortGuardedReads();
+    setDisplayContext(null);
+    ownership.markWithdrewOwnDisplayContext(operation);
+    // The drawer leaves the screen with the refused root, and its instance is retired: no outcome an
+    // in-flight command captured for it may be published into whatever the OE opens next.
+    closeScheduleDrawer();
+  }, [abortGuardedReads, closeScheduleDrawer, ownership, setDisplayContext]);
+
+  /**
+   * True while a refused operation's own record is still the display context the refusal describes.
+   *
+   * The workspace is shared: while one command is in flight the OE can open another record — or leave
+   * and re-open the same one — so a denial learned afterwards describes a context that was replaced.
+   * Two states keep a refusal truthful, and nothing else does:
+   *   - the exact record instance the operation was started against is still mounted (nothing about
+   *     the display has changed since it began); or
+   *   - the only display change since it began is the withdrawal the operation performed *itself*, so
+   *     the refused root is gone because this denial took it away and the OE has not navigated since.
+   * A command with no mounted detail of its own (a claim started from the list) addresses the queues,
+   * so it keeps its unconditional announcement.
+   *
+   * This must be evaluated *after* every awaited reconciliation and immediately before the notice is
+   * written: a verdict taken before the await describes the context that existed then, which is how an
+   * older refusal used to land in a newer record after a held refresh resolved.
+   */
+  const noticeContextHolds = useCallback((operation: OwnershipOperation): boolean =>
+    operation.target === null
+    || operationTargetIsMounted(operation, openRootRef.current)
+    || ownership.withdrewOwnDisplayContext(operation), [ownership]);
+
+  /**
    * Reports what actually happened to one failed ownership command and, when it is safe, reconciles
-   * the authoritative queues first so the message can state the real outcome.
+   * the authoritative queues so the message can state the real outcome.
    *
    * Three outcomes are kept apart, because they carry different truths:
    *  - nothing was transmitted → this action provably changed no ownership;
    *  - the backend refused it (HTTP 4xx) → report the real rejection and the recovery;
    *  - it was transmitted and the outcome is unconfirmed → say so, never resend it, and only reload
    *    the authoritative state while the initiating session and authorization are still valid.
+   *
+   * Anything that must stop showing this root — a definitive target denial (`403`/`404`), or the
+   * release conflict whose owner asked for it — withdraws it *before* the reconciliation is awaited,
+   * so a refused record and any lessor contact revealed inside it cannot stay mounted for as long as
+   * the queue reads take. The reconciliation is a read: it follows the withdrawal and never gates it.
    *
    * The copy is told the *real* reconciliation result (`loaded`/`failed`/`skipped`/`not-attempted`),
    * never merely whether a refresh was permitted, so a failed or skipped read is never described as a
@@ -539,30 +915,39 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       message: apiError?.message ?? null,
       blockedByAuthorization: options.blockedByAuthorization === true
     };
-    const kind = ownershipFailureKind(input);
+    const disposition = commandFailureDisposition(input, options);
+    // The denial is acted on synchronously, while the operation may still commit and the refused root
+    // is still the one mounted. Nothing of a newer record or a newer account is ever touched: the
+    // withdrawal addresses only the instance this operation was started against.
+    if (disposition.withdrawRoot && ownership.canCommit(operation, authorityRef.current)) {
+      withdrawDeniedRoot(operation);
+    }
     // Reconciliation is a protected read: it only happens while this exact operation may still commit
     // (current session, current epoch, authorization still granted). Its result is the real outcome,
     // not a permission to attempt it.
     let reconciliation: OwnershipReconciliation = 'not-attempted';
-    if (kind !== 'pre-dispatch' && ownership.canCommit(operation, authorityRef.current)) {
+    if (disposition.reconcile && ownership.canCommit(operation, authorityRef.current)) {
       reconciliation = await refreshAll(operation.session);
     }
     // The operation may have been invalidated while it reconciled: suppress its notice and every other
     // protected write so nothing lands under a newer account or a newer operation.
     if (!ownership.canCommit(operation, authorityRef.current)) return;
+    /**
+     * A definitive refusal is announced only while it still describes the display context on screen.
+     * The verdict is deliberately taken *here* — after the awaited reconciliation, immediately before
+     * the notice is written — and never from the state that existed when the failure was classified:
+     * the OE can open another record, or re-open this one, while that read is still in flight, and a
+     * verdict captured earlier would then publish the refusal into a context it does not describe.
+     * `noticeContextHolds` still honours the withdrawal this operation performed itself, so a denial
+     * that correctly unmounted its own refused root keeps its truthful notice. Every other outcome (a
+     * conflict, an unconfirmed transmission, a stopped action) keeps its existing announcement: the OE
+     * still needs to know what happened, and those copies name the record they are about.
+     */
+    if (disposition.targetDenied && !noticeContextHolds(operation)) return;
 
     const copy = ownershipOutcomeCopy(name, { ...input, reconciliation });
     showNotice(copy.message, operation.session);
-
-    if (kind === 'rejected') {
-      const status = input.status ?? 0;
-      if (options.dropDetailWhenRejected === true && (status === 403 || status === 404 || status === 409)) {
-        // Ownership may already be gone on the server: stop showing protected detail.
-        detailController.current?.abort();
-        setDetailTarget(null);
-      }
-    }
-  }, [refreshAll, showNotice]);
+  }, [noticeContextHolds, ownership, refreshAll, showNotice, withdrawDeniedRoot]);
 
   const claimRoot = useCallback(async (item: ClaimableWorkItem) => {
     // One live ownership operation at a time: a repeated tap while one is running is ignored.
@@ -570,8 +955,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     const session = captureOperationsSession();
     if (!session) return;
     // The operation is bound to this component, this workspace surface, this exact session and the
-    // authorization generation in force now — before anything is awaited.
-    const operation = ownership.begin('claim', session, authorityRef.current.authorizationGeneration());
+    // authorization generation in force now — and to the exact mounted instance of the item's root,
+    // when that instance is on screen — before anything is awaited.
+    const operation = ownership.begin(
+      'claim',
+      session,
+      authorityRef.current.authorizationGeneration(),
+      mountedTargetFor({ targetType: item.targetType, targetId: item.targetId })
+    );
     setBusyClaimKey(workItemKey(item));
     setBusyAction('claim');
     setNotice(null);
@@ -630,7 +1021,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       // A confirmed 204 is reported as a success; a failure of the follow-up refresh is reported
       // separately, never merged into the command result and never claimed as a current list.
       notifySuccess(`${title} claimed`, 'It now appears in My work.', undefined, 'VISIT_SESSION');
-      setView('my-work');
+      /**
+       * The navigation a confirmed claim carries — moving to My work, and then opening the root it just
+       * claimed — is a local publication like any other, so it belongs to the display context the claim
+       * began in. A claim whose `204` arrives after the OE opened another record must neither move the
+       * queue underneath that record nor replace the detail it is showing; the success itself is still
+       * reported above, truthfully, and the command is never resent.
+       */
+      if (ownership.displayContextIsOwned(operation)) setView('my-work');
       const reconciliation = await refreshAll(session);
       if (!ownership.canCommit(operation, authorityRef.current)) return;
       await openDetail({ targetType: fresh.targetType, targetId: fresh.targetId, source: 'owned' }, session, operation);
@@ -640,7 +1038,9 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       // continuation, so a stale claim can never write a notice (or any other UI state) into a newer
       // account's workspace. The guard, not a render-time identity filter, is what prevents the write.
       if (!ownership.canCommit(operation, authorityRef.current)) return;
-      if (reconciliation !== 'loaded') showNotice(ownershipRefreshFailureNotice(title), session);
+      if (reconciliation !== 'loaded' && ownership.displayContextIsOwned(operation)) {
+        showNotice(ownershipRefreshFailureNotice(title), session);
+      }
     } catch (cause) {
       if (isOperationsSessionChangedError(cause)) return;
       if (!ownership.canCommit(operation, authorityRef.current)) return;
@@ -653,7 +1053,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
         setBusyAction(null);
       }
     }
-  }, [notifySuccess, openDetail, ownership, refreshAll, reportOwnershipFailure, showNotice]);
+  }, [mountedTargetFor, notifySuccess, openDetail, ownership, refreshAll, reportOwnershipFailure, showNotice]);
 
   const releaseRoot = useCallback(async () => {
     if (ownership.isLocked() || detail.status !== 'ready') return;
@@ -662,7 +1062,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     if (!target) return;
     const session = captureOperationsSession();
     if (!session) return;
-    const operation = ownership.begin('release', session, authorityRef.current.authorizationGeneration());
+    // The release acts on the detail on screen: the target is the exact mounted instance of it,
+    // captured before anything is awaited.
+    const operation = ownership.begin(
+      'release',
+      session,
+      authorityRef.current.authorizationGeneration(),
+      mountedTargetFor(target)
+    );
     setBusyAction('release');
     setNotice(null);
     try {
@@ -726,13 +1133,22 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
         undefined,
         'VISIT_SESSION'
       );
-      // Released detail is dropped from the visible workspace immediately.
-      detailController.current?.abort();
-      setDetailTarget(null);
-      setNotice(null);
+      /**
+       * Dropping the released root is this operation's own display transition, so it is published only
+       * while the released root is still the display context the release began in: a `204` that arrives
+       * after the OE opened another record must not clear that newer record or its revealed contact.
+       * The transition is recorded on the operation as its own, so the notice that follows the
+       * reconciliation is still published when it does happen.
+       */
+      if (ownership.displayContextIsOwned(operation)) {
+        // Released detail is dropped from the visible workspace immediately.
+        detailController.current?.abort();
+        setDisplayContext(null, operation);
+        setNotice(null);
+      }
       const reconciliation = await refreshAll(session);
       if (!ownership.canCommit(operation, authorityRef.current)) return;
-      if (reconciliation !== 'loaded') {
+      if (reconciliation !== 'loaded' && ownership.displayContextIsOwned(operation)) {
         showNotice(ownershipRefreshFailureNotice(operationsRecordTitle(target.targetType, target.targetId)), session);
       }
     } catch (cause) {
@@ -744,7 +1160,889 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     } finally {
       if (ownership.finish(operation)) setBusyAction(null);
     }
-  }, [detail, detailTarget, notifySuccess, ownership, refreshAll, reportOwnershipFailure, showNotice]);
+  }, [detail, detailTarget, mountedTargetFor, notifySuccess, ownership, refreshAll, reportOwnershipFailure, setDisplayContext, showNotice]);
+
+  /* ---------------------------------------------------------------- *
+   * Phase 2A guarded command lifecycle
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Reports the real outcome of a failed Phase 2A command: nothing was transmitted, the backend
+   * refused it, or it was transmitted and the outcome is unknown. The copy comes from the same
+   * classifier the ownership commands use, so no command can ever claim an unproven result, and an
+   * unconfirmed command is never resubmitted.
+   *
+   * The root this command acted on is captured synchronously and withdrawn *before* the
+   * reconciliation is awaited, so a definitive `403`/`404` — from the fresh pre-command read or from
+   * the mutation itself — takes the protected detail and any revealed lessor contact off the screen in
+   * the same tick the refusal is classified, whether or not the queue reads that follow ever answer.
+   */
+  const reportCommandFailure = useCallback(async (
+    cause: unknown,
+    operation: OwnershipOperation,
+    name: string,
+    options: { dropDetailWhenRejected?: boolean } = {}
+  ): Promise<GuardedCommandFailure> => {
+    const apiError = cause instanceof ApiRequestError ? cause : null;
+    const input: OwnershipOutcomeInput = {
+      dispatched: operation.dispatched,
+      status: apiError?.status ?? null,
+      message: apiError?.message ?? null
+    };
+    const disposition = commandFailureDisposition(input, options);
+    /**
+     * The root this command acted on is the one its operation captured when it began — never whatever
+     * happens to be on screen when the failure arrives. `withdrawDeniedRoot` re-checks that exact
+     * mounted instance in the same tick, so a record the OE opened later, or the same record re-opened
+     * after navigating away, is never dropped by an older command's denial. The withdrawal is gated on
+     * the operation still being allowed to commit, exactly like every other write it makes.
+     */
+    if (disposition.withdrawRoot && ownership.canCommit(operation, authorityRef.current)) {
+      withdrawDeniedRoot(operation);
+    }
+    let reconciliation: OwnershipReconciliation = 'not-attempted';
+    if (disposition.reconcile && ownership.canCommit(operation, authorityRef.current)) {
+      reconciliation = await refreshAll(operation.session);
+    }
+    if (!ownership.canCommit(operation, authorityRef.current)) {
+      return { kind: disposition.kind, status: apiError?.status ?? null, message: '', detail: null, published: false };
+    }
+    /**
+     * A definitive refusal is announced, and an outcome reported, only while it still describes the
+     * display context on screen. The verdict is taken *here* — after the awaited reconciliation and
+     * immediately before the notice — never from the state that existed when the failure was
+     * classified, because the OE can open another record, or re-open this one, while that read is
+     * still in flight. A refusal whose record was replaced belongs to the context that is gone, and
+     * both its announcement and its caller's outcome are withheld (`published: false`) rather than
+     * applied to whatever is displayed; every other outcome keeps its existing truthful announcement.
+     */
+    if (disposition.targetDenied && !noticeContextHolds(operation)) {
+      return { kind: disposition.kind, status: apiError?.status ?? null, message: '', detail: null, published: false };
+    }
+    const copy = ownershipOutcomeCopy(name, {
+      ...input,
+      /**
+       * A `403`/`404` answered before dispatch is still the server refusing *this* root during the
+       * fresh pre-command read, so it is reported as a refusal rather than as "stopped before
+       * anything left the app".
+       */
+      dispatched: input.dispatched || disposition.targetDenied,
+      reconciliation
+    });
+    showNotice(copy.message, operation.session);
+    return {
+      kind: disposition.kind,
+      status: apiError?.status ?? null,
+      message: copy.message,
+      detail: apiError?.details ?? apiError?.message ?? null,
+      published: true
+    };
+  }, [noticeContextHolds, ownership, refreshAll, showNotice, withdrawDeniedRoot]);
+
+  /**
+   * Points the workspace at the authoritative Session the server returned.
+   *
+   * This is a local publication, so it is gated on the display context in the same tick as the write:
+   * a `200` that arrives after the OE opened another record — or re-opened this one in a newer mount —
+   * must not replace that record's detail with the root it carries. The transition it performs is
+   * recorded as the operation's own, so the rest of that same flow stays publishable.
+   * Returns false when nothing was published.
+   */
+  const applyAuthoritativeSession = useCallback((
+    session: OperationsSessionDetail,
+    operation: OwnershipOperation
+  ): boolean => {
+    if (!ownership.displayContextIsOwned(operation)) return false;
+    setDisplayContext({ targetType: 'SESSION', targetId: session.sessionId, source: 'owned' }, operation);
+    setDetail({ status: 'ready', snapshot: { kind: 'session', session } });
+    return true;
+  }, [ownership, setDisplayContext]);
+
+  /** Points the workspace at the authoritative Request the server returned. Gated exactly like a Session. */
+  const applyAuthoritativeRequest = useCallback((
+    request: OperationsRequestDetail,
+    operation: OwnershipOperation
+  ): boolean => {
+    if (!ownership.displayContextIsOwned(operation)) return false;
+    setDisplayContext({ targetType: 'REQUEST', targetId: request.requestId, source: 'owned' }, operation);
+    setDetail({ status: 'ready', snapshot: { kind: 'request', request } });
+    return true;
+  }, [ownership, setDisplayContext]);
+
+  /**
+   * One guarded Phase 2A command.
+   *
+   * The order is the same as a claim or a release, and it is the whole point of this helper: bind the
+   * operation to this component, this surface, this credential and this authorization generation;
+   * re-verify authority for that exact session; re-read the authoritative root; refuse to transmit
+   * without a version; make the final synchronous dispatch decision in the same tick as the POST; and
+   * apply the returned result only while the operation may still commit.
+   */
+  const runGuardedCommand = useCallback(async <Fresh, Applied,>(
+    options: GuardedCommandOptions<Fresh, Applied>
+  ): Promise<GuardedCommandOutcome<Applied>> => {
+    const nothing: GuardedCommandOutcome<Applied> = {
+      status: 'abandoned',
+      applied: null,
+      reconciliation: 'skipped',
+      failure: null,
+      operation: null,
+      published: false
+    };
+    // A repeated tap while one command owns the lock is ignored, never queued.
+    if (ownership.isLocked()) return nothing;
+    const session = captureOperationsSession();
+    if (!session) return nothing;
+    // Every Phase 2A command re-reads and mutates the root that is on screen, so the operation is
+    // bound to that exact mounted instance before anything is awaited.
+    const operation = ownership.begin(
+      options.kind,
+      session,
+      authorityRef.current.authorizationGeneration(),
+      openRootRef.current
+    );
+    setBusyCommand(options.busyKey);
+    setNotice(null);
+    try {
+      if (!await authorityRef.current.verifySession(session, { signal: operation.controller.signal })) {
+        return nothing;
+      }
+      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      const fresh = await options.loadFresh({ session, signal: operation.controller.signal });
+      if (fresh === null || !ownership.canCommit(operation, authorityRef.current)) return nothing;
+      const transmit = options.buildTransmit(fresh);
+      if (transmit === null) {
+        // No version means no command: reconcile the reads first so the message can be truthful.
+        const reconciliation = await refreshAll(session);
+        if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+        options.onMissingVersion(fresh, reconciliation, operation);
+        return { ...nothing, status: 'missing-version', reconciliation };
+      }
+      const blocked = ownership.blockReasonForDispatch(operation, authorityRef.current);
+      if (blocked !== null || operation.dispatched) return nothing;
+      const onDispatch = () => { ownership.markDispatched(operation); };
+      const applied = await transmit({ session, signal: operation.controller.signal, onDispatch });
+      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      /**
+       * A validated server success is a success whether or not this display still belongs to the
+       * command (`A. authoritative business completion`). What may only happen while the display
+       * context the command began in — or one it published itself — is still the one in force is the
+       * *local publication* that carries it (`B. local UI publication`): installing the returned root,
+       * navigating to it, or publishing a drawer outcome. Each apply helper takes that verdict in the
+       * same tick as its own write; a caller's own post-reconciliation write re-takes it in its tick.
+       * The command is never retransmitted and a suppressed publication is never reported as an
+       * uncertain outcome.
+       */
+      const published = options.applyResult(fresh, applied, operation);
+      const reconciliation = await refreshAll(session);
+      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      return { status: 'applied', applied, reconciliation, failure: null, operation, published };
+    } catch (cause) {
+      if (isOperationsSessionChangedError(cause)) return nothing;
+      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      if (options.onFailure) {
+        await options.onFailure(cause, operation);
+        return { ...nothing, status: 'failed' };
+      }
+      const failure = await reportCommandFailure(cause, operation, options.name, {
+        dropDetailWhenRejected: options.dropDetailWhenRejected
+      });
+      return { ...nothing, status: 'failed', failure };
+    } finally {
+      // Only the operation that owns the lock clears it and re-enables the controls.
+      if (ownership.finish(operation)) setBusyCommand(null);
+    }
+  }, [ownership, refreshAll, reportCommandFailure]);
+
+  /**
+   * True while the display context a confirmed command ran in — or one it published itself — is still
+   * the one on screen, for a caller's own post-reconciliation write.
+   *
+   * A command's `finally` has already released the mutation lock when a caller resumes, so the commit
+   * guard deliberately no longer applies; this verdict asks only about the *display*, which is what a
+   * record-specific notice and a drawer outcome depend on. It is read in the same tick as the write it
+   * guards, after the awaited reconciliation inside the command, so a completion that belongs to a
+   * context the OE has left is never published into the context that replaced it.
+   */
+  const commandContextHolds = useCallback(
+    (outcome: GuardedCommandOutcome<unknown>): boolean =>
+      outcome.operation !== null && ownership.displayContextIsOwned(outcome.operation),
+    [ownership]
+  );
+
+  /**
+   * One server page of the caller's owned roots, used to offer draft sessions and requests as
+   * candidates. The page is discarded unless the identity and component epoch are still the ones that
+   * asked for it, and the server's own page count is reported so "load more" is truthful.
+   */
+  const loadOwnedCandidates = useCallback(async (
+    page: number,
+    signal: AbortSignal
+  ): Promise<OperationsOwnedCandidatePage<OperationsMyWorkItem> | null> => {
+    const session = captureOperationsSession();
+    if (!session) return null;
+    const epoch = ownership.sessionEpoch;
+    const guarded = beginGuardedRead('owned-candidates', signal);
+    const result = await operationsWorkspaceService.myWork(page, false, { session, signal: guarded });
+    if (guarded.aborted || !mountedRef.current || !isOperationsSessionActive(session)) return null;
+    if (ownership.sessionEpoch !== epoch) return null;
+    return {
+      items: result.items,
+      page: result.page,
+      totalPages: result.totalPages,
+      totalCount: result.totalCount
+    };
+  }, [beginGuardedRead, ownership]);
+
+  /**
+   * Public property discovery for choosing a derived stop's listing. This is the existing published
+   * catalogue, not an operational-eligibility lookup: the server still decides whether the chosen
+   * listing may join the session.
+   */
+  const searchListings = useCallback(async (
+    query: string,
+    signal: AbortSignal
+  ): Promise<DiscoveryListingOption[]> => {
+    const session = captureOperationsSession();
+    if (!session) return [];
+    const epoch = ownership.sessionEpoch;
+    const city = detail.status === 'ready' ? detail.snapshot.session?.city ?? undefined : undefined;
+    const guarded = beginGuardedRead('listing-search', signal);
+    // The published rental catalogue is searched by city and query; the server still decides whether
+    // a chosen listing may actually join the session.
+    const page = await propertyService.fetchDiscoveryPage(0, undefined, city, guarded, {
+      q: query,
+      rentalOnly: true
+    });
+    if (guarded.aborted || !isOperationsSessionActive(session)) return [];
+    if (ownership.sessionEpoch !== epoch) return [];
+    return page.properties.slice(0, 8).map((property) => ({
+      listingId: property.id,
+      title: property.title,
+      sector: property.sector ?? null,
+      address: null,
+      city: property.city ?? null
+    }));
+  }, [beginGuardedRead, detail, ownership]);
+
+  /**
+   * Canonical lessor contact for the open Request. It is read on demand through the session-captured
+   * transport, and the answer is refused if the identity or component epoch moved while it was in
+   * flight, so a previous account's contact can never be rendered. The caller's signal lets the panel
+   * cancel the read the moment the contact context changes.
+   */
+  const revealRequestContact = useCallback(async (signal: AbortSignal): Promise<OperationsLessorContact> => {
+    const request = detail.status === 'ready' ? detail.snapshot.request : undefined;
+    if (!request) throw new ApiRequestError('This request is not open.', 404);
+    const session = captureOperationsSession();
+    if (!session) throw new ApiRequestError('Please sign in to use the Operations workspace.', 401);
+    const epoch = ownership.sessionEpoch;
+    const contact = await operationsWorkspaceService.lessorContactForRequest(request.requestId, {
+      session,
+      signal
+    });
+    if (!isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) {
+      throw new OperationsSessionChangedError();
+    }
+    return contact;
+  }, [detail, ownership]);
+
+  /** Canonical lessor contact for one item of the open Session. */
+  const revealItemContact = useCallback(async (
+    itemId: number,
+    signal: AbortSignal
+  ): Promise<OperationsLessorContact> => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession) throw new ApiRequestError('This session is not open.', 404);
+    const session = captureOperationsSession();
+    if (!session) throw new ApiRequestError('Please sign in to use the Operations workspace.', 401);
+    const epoch = ownership.sessionEpoch;
+    const contact = await operationsWorkspaceService.lessorContactForSessionItem(
+      openSession.sessionId,
+      itemId,
+      { session, signal }
+    );
+    if (!isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) {
+      throw new OperationsSessionChangedError();
+    }
+    return contact;
+  }, [detail, ownership]);
+
+  /**
+   * Truthful notice for a fresh read that carried no version, so no command could be sent.
+   *
+   * It names the record the stopped command was about, so it is published only while that command's
+   * display context is still the one on screen: the OE can leave the record while the pre-command read
+   * is in flight, and a message about a record that is no longer open belongs to the context that is
+   * gone. The verdict is taken here, in the same tick as the write, after the awaited reconciliation.
+   */
+  const missingVersionNotice = useCallback((
+    name: string,
+    action: string,
+    reconciliation: QueueLoadOutcome,
+    operation: OwnershipOperation
+  ) => {
+    if (!ownership.displayContextIsOwned(operation)) return;
+    showNotice(
+      reconciliation === 'loaded'
+        ? `${name} didn’t return the version needed to ${action}, so nothing was sent. The work lists were refreshed from the server.`
+        : `${name} didn’t return the version needed to ${action}, so nothing was sent, and the work lists could not be refreshed just now — refresh them before deciding again.`
+    );
+  }, [ownership, showNotice]);
+
+  /**
+   * Coordinates the open standalone Request into a brand-new DRAFT session. The request is re-read
+   * first, and the session the server returns replaces what is on screen — the linked request is then
+   * managed from the session instead of appearing as a second root.
+   */
+  const coordinateNewSession = useCallback(async () => {
+    const requestId = detail.status === 'ready' ? detail.snapshot.request?.requestId ?? null : null;
+    if (requestId === null) return;
+    const name = operationsRecordTitle('REQUEST', requestId);
+    const outcome = await runGuardedCommand<OperationsRequestDetail, OperationsSessionDetail>({
+      kind: 'coordinate',
+      busyKey: 'coordinate',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.requestDetail(requestId, context),
+      buildTransmit: (fresh) => {
+        const command = coordinateNewSessionCommand(fresh);
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.coordinateRequest(
+              fresh.requestId,
+              {
+                expectedRequestVersion: command.expectedRequestVersion,
+                sessionId: null,
+                expectedSessionVersion: null
+              },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'coordinate it', reconciliation, operation)
+    });
+    if (outcome.status === 'applied' && outcome.applied) {
+      notifySuccess(
+        `${operationsRecordTitle('SESSION', outcome.applied.sessionId)} created`,
+        'The request is now its first stop and is managed from the session.',
+        undefined,
+        'VISIT_SESSION'
+      );
+      /**
+       * The refresh notice names this record, so it belongs to the display context the command ran
+       * in — re-taken here, after the awaited reconciliation, and only for a notice the OE can still
+       * connect to what is on screen. The confirmed coordination above keeps its own report: it is a
+       * fact about the record, not a claim about the display.
+       */
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /**
+   * Attaches the open Request to an owned DRAFT session. Both roots are re-read immediately before the
+   * command is built, and the server decides whether they may be combined.
+   */
+  const attachToOwnedDraft = useCallback(async (targetSessionId: number, targetSessionVersion: number) => {
+    const requestId = detail.status === 'ready' ? detail.snapshot.request?.requestId ?? null : null;
+    if (requestId === null) return;
+    const name = operationsRecordTitle('REQUEST', requestId);
+    const targetName = operationsRecordTitle('SESSION', targetSessionId);
+    const outcome = await runGuardedCommand<OperationsRequestDetail, OperationsSessionDetail>({
+      kind: 'coordinate',
+      busyKey: 'coordinate',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.requestDetail(requestId, context),
+      buildTransmit: (fresh) => {
+        const command = coordinateAttachCommand(fresh, targetSessionId, targetSessionVersion);
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.coordinateRequest(
+              fresh.requestId,
+              {
+                expectedRequestVersion: command.expectedRequestVersion,
+                sessionId: command.sessionId,
+                expectedSessionVersion: command.expectedSessionVersion
+              },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'attach it', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess(
+        `${name} added to ${targetName}`,
+        'It is now a stop on that session and no longer appears as its own request.',
+        undefined,
+        'VISIT_SESSION'
+      );
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /** Records confirmed, factual unavailability for the open standalone Request. */
+  const markConfirmedUnavailable = useCallback(async () => {
+    const requestId = detail.status === 'ready' ? detail.snapshot.request?.requestId ?? null : null;
+    if (requestId === null) return;
+    const name = operationsRecordTitle('REQUEST', requestId);
+    const outcome = await runGuardedCommand<OperationsRequestDetail, OperationsRequestDetail>({
+      kind: 'unavailable',
+      busyKey: 'unavailable',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.requestDetail(requestId, context),
+      buildTransmit: (fresh) => {
+        const command = requestUnavailableCommand(fresh);
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.markRequestUnavailable(
+              fresh.requestId,
+              command.expectedRequestVersion,
+              context
+            );
+      },
+      applyResult: (_fresh, request, operation) => applyAuthoritativeRequest(request, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'mark it unavailable', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess(
+        `${name} marked unavailable`,
+        'The property was confirmed unavailable. The request is kept as read-only history.',
+        undefined,
+        'VISIT_SESSION'
+      );
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeRequest,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /** Saves the exact active itinerary order for the open Session. */
+  const reorderItems = useCallback(async (itemIds: number[]) => {
+    const sessionId = detail.status === 'ready' ? detail.snapshot.session?.sessionId ?? null : null;
+    if (sessionId === null) return;
+    const name = operationsRecordTitle('SESSION', sessionId);
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSessionDetail>({
+      kind: 'reorder',
+      busyKey: 'reorder',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      buildTransmit: (fresh) => {
+        const command = reorderSessionItemsCommand(fresh, itemIds);
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.reorderSessionItems(
+              sessionId,
+              { expectedSessionVersion: command.expectedSessionVersion, itemIds: command.itemIds },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'save its order', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess('Itinerary order saved', 'The session now stores the order you set.', undefined, 'VISIT_SESSION');
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /** Soft-removes one itinerary item, keeping it in the session's history. */
+  const removeItem = useCallback(async (itemId: number, reason: string | null) => {
+    const sessionId = detail.status === 'ready' ? detail.snapshot.session?.sessionId ?? null : null;
+    if (sessionId === null) return;
+    const name = operationsRecordTitle('SESSION', sessionId);
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSessionDetail>({
+      kind: 'remove-item',
+      busyKey: 'remove-item',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      buildTransmit: (fresh) => {
+        const command = removeSessionItemCommand(fresh, itemId, reason);
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.removeSessionItem(
+              sessionId,
+              command.itemId,
+              { expectedSessionVersion: command.expectedSessionVersion, reason: command.reason },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'remove that stop', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess('Stop removed', 'It stays in the session history and is not visited.', undefined, 'VISIT_SESSION');
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /** Adds one derived property to the open DRAFT itinerary. */
+  const addStop = useCallback(async (input: AddStopInput) => {
+    const sessionId = detail.status === 'ready' ? detail.snapshot.session?.sessionId ?? null : null;
+    if (sessionId === null) return;
+    const name = operationsRecordTitle('SESSION', sessionId);
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSessionDetail>({
+      kind: 'add-item',
+      busyKey: 'add-item',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      buildTransmit: (fresh) => {
+        const command = addSessionItemCommand(fresh, {
+          listingId: input.listingId,
+          originatingRequestId: input.originatingRequestId,
+          origin: input.origin
+        });
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.addSessionItem(
+              sessionId,
+              {
+                expectedSessionVersion: command.expectedSessionVersion,
+                listingId: command.listingId,
+                originatingRequestId: command.originatingRequestId,
+                origin: command.origin
+              },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'add that stop', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess(
+        'Stop added',
+        'The new stop starts with availability pending, so scheduling stays blocked until it is confirmed.',
+        undefined,
+        'VISIT_SESSION'
+      );
+      /**
+       * Both notices describe one session's own itinerary, so they are published only while that
+       * session's display context is still the command's: the OE can leave the record while the stop
+       * command and its reconciliation are in flight, and neither message belongs to what replaced it.
+       */
+      if (commandContextHolds(outcome)) {
+        if (outcome.reconciliation !== 'loaded') showNotice(ownershipRefreshFailureNotice(name));
+        const added = sessionListingIds(outcome.applied?.items ?? []).includes(input.listingId);
+        if (!added && outcome.applied) {
+          showNotice('The server accepted the stop, but it is not in the returned itinerary, so refresh this session before continuing.');
+        }
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /** Records the lessor-stated availability for one DRAFT item. */
+  const saveAvailability = useCallback(async (
+    itemId: number,
+    choice: OperationsAvailabilityChoice,
+    window: OperationsAvailabilityWindowInput
+  ) => {
+    const sessionId = detail.status === 'ready' ? detail.snapshot.session?.sessionId ?? null : null;
+    if (sessionId === null) return;
+    const name = operationsRecordTitle('SESSION', sessionId);
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSessionDetail>({
+      kind: 'availability',
+      busyKey: 'availability',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      buildTransmit: (fresh) => {
+        const validation = setAvailabilityCommand(fresh, itemId, choice, window);
+        const command = validation.command;
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.setSessionItemAvailability(
+              sessionId,
+              command.itemId,
+              {
+                expectedSessionVersion: command.expectedSessionVersion,
+                status: command.status,
+                availabilityStartAt: command.availabilityStartAt,
+                availabilityEndAt: command.availabilityEndAt,
+                availabilityZoneId: command.availabilityZoneId,
+                availabilitySource: command.availabilitySource
+              },
+              context
+            );
+      },
+      applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
+      onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'record that availability', reconciliation, operation)
+    });
+    if (outcome.status === 'applied') {
+      notifySuccess(
+        'Property availability recorded',
+        choice === 'unavailable'
+          ? 'The stop is recorded as unavailable for this visit.'
+          : choice === 'confirm-only'
+            ? 'The confirmation was saved. Scheduling stays blocked until a complete window is recorded.'
+            : 'The complete window was saved for this stop.',
+        undefined,
+        'VISIT_SESSION'
+      );
+      if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
+        showNotice(ownershipRefreshFailureNotice(name));
+      }
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    missingVersionNotice,
+    notifySuccess,
+    commandContextHolds,
+    runGuardedCommand,
+    showNotice
+  ]);
+
+  /**
+   * The bounded ranked recommendations for the scheduling drawer. This is an evaluation read, but it
+   * still refuses to answer once the capturing session or component epoch has moved.
+   */
+  const loadRankedRecommendations = useCallback(async (
+    signal: AbortSignal
+  ): Promise<OperationsRecommendationView | null> => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession || openSession.version === null) return null;
+    const session = captureOperationsSession();
+    if (!session) return null;
+    const epoch = ownership.sessionEpoch;
+    const guarded = beginGuardedRead('ge-ranked', signal);
+    const view = await operationsWorkspaceService.rankedRecommendations(
+      openSession.sessionId,
+      openSession.version,
+      { session, signal: guarded }
+    );
+    if (guarded.aborted || !isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) return null;
+    return view;
+  }, [beginGuardedRead, detail, ownership]);
+
+  /** Cursor-paged eligible-Ground-Executive discovery, by browse (`q` omitted) or by search. */
+  const loadGeDiscovery = useCallback(async (
+    input: { q: string | null; cursor: string | null },
+    signal: AbortSignal
+  ): Promise<OperationsRecommendationView | null> => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession || openSession.version === null) return null;
+    const session = captureOperationsSession();
+    if (!session) return null;
+    const epoch = ownership.sessionEpoch;
+    const guarded = beginGuardedRead('ge-discovery', signal);
+    const view = await operationsWorkspaceService.discoverGroundExecutives(
+      openSession.sessionId,
+      openSession.version,
+      { q: input.q, cursor: input.cursor },
+      { session, signal: guarded }
+    );
+    if (guarded.aborted || !isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) return null;
+    return view;
+  }, [beginGuardedRead, detail, ownership]);
+
+  /**
+   * Books the exact selected Ground Executive and evaluated slot.
+   *
+   * The outcome is published as drawer state rather than inferred: a `200` applies the returned
+   * Session, a refusal keeps the selection and asks for a refresh, and an unconfirmed transmission is
+   * reported as unknown and never resent.
+   */
+  const confirmSelection = useCallback(async (
+    selection: OperationsSchedulingSelection,
+    view: OperationsRecommendationView | null,
+    reason: string
+  ) => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession) return;
+    const sessionId = openSession.sessionId;
+    const name = operationsRecordTitle('SESSION', sessionId);
+    /**
+     * The drawer instance this booking is started from, captured with the operation and before the
+     * first `await`: the outcome of a confirmed booking belongs to this Session *in this drawer*, so a
+     * drawer the OE closes — and opens again for the same Session — while the command is in flight
+     * never inherits it.
+     */
+    const drawer: ScheduleDrawerIdentity = { ...scheduleDrawerRef.current };
+    setScheduleOutcome(null);
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSchedulingApproval>({
+      kind: 'schedule',
+      busyKey: 'schedule',
+      name,
+      loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      buildTransmit: (fresh) => {
+        const built = scheduleSelectionCommand(fresh, selection, view, reason);
+        const command = built.command;
+        return command === null
+          ? null
+          : (context) => operationsWorkspaceService.selectGroundExecutive(
+              sessionId,
+              {
+                expectedSessionVersion: command.expectedSessionVersion,
+                groundExecutiveUserId: command.groundExecutiveUserId,
+                scheduledAt: command.scheduledAt,
+                zoneId: command.zoneId,
+                overrideReason: command.overrideReason
+              },
+              context
+            );
+      },
+      applyResult: (_fresh, approval, operation) => {
+        // A confirmed booking always carries the authoritative Session it committed.
+        const applied = applyAuthoritativeSession(approval.session, operation);
+        // The drawer outcome is bound to the initiating drawer instance as well, so it is published
+        // only while that exact drawer is the one on screen.
+        if (applied && scheduleOutcomeContextHolds(operation, drawer)) {
+          setScheduleOutcome({ kind: 'scheduled', approval, refreshFailed: false });
+        }
+        return applied;
+      },
+      onMissingVersion: (fresh, _reconciliation, operation) => {
+        /**
+         * The outcome describes the operation's own session, so it may only be published while that
+         * session is still the display context the command was started in: the OE can leave the record
+         * — and open another drawer — while the pre-command read is in flight, and a stopped command
+         * must not write its outcome into the drawer that replaced its own.
+         */
+        if (!noticeContextHolds(operation)) return;
+        // …and it must still be the drawer instance the command was started from.
+        if (!scheduleOutcomeContextHolds(operation, drawer)) return;
+        /**
+         * The command is only withheld here. Distinguish the two reasons truthfully: a Session that
+         * moved past the reviewed evaluation (the OE must inspect the current itinerary, reload the
+         * candidates and review again) is not the same as a read that carried no version at all.
+         */
+        const reviewed = selection.evaluated;
+        if (fresh.sessionId !== reviewed.sessionId || fresh.version !== reviewed.sessionVersion) {
+          setScheduleOutcome({
+            kind: 'review-required',
+            message: `These candidates were evaluated at version ${reviewed.sessionVersion ?? 'unknown'} of this session, but the server now reports version ${fresh.version ?? 'unknown'}, so nothing was booked. Reload the session to see the current itinerary, then evaluate and review again.`
+          });
+          return;
+        }
+        setScheduleOutcome({
+          kind: 'not-sent',
+          message: 'This session did not return the version needed to book it, so nothing was sent.'
+        });
+      },
+      onFailure: async (cause, operation) => {
+        const failure = await reportCommandFailure(cause, operation, name);
+        /**
+         * Re-check the whole synchronous commit guard after the awaited failure reporting: the
+         * operation may have been abandoned (account switch, lost authority, a newer command) while
+         * it reconciled, and an abandoned operation must never write an outcome, close a drawer or
+         * raise a notice in the context that replaced it.
+         */
+        if (!ownership.canCommit(operation, authorityRef.current)) return;
+        /**
+         * The drawer outcome describes the session this operation targeted. A withheld refusal — one
+         * whose record was replaced by another record or by a newer mount of this one — must not be
+         * published into a drawer that no longer belongs to it either.
+         */
+        if (!failure.published) return;
+        /**
+         * The outcome is bound to the display context the command was started in, re-checked here
+         * after the awaited failure reporting: a conflict or an unconfirmed transmission is still
+         * announced in the workspace, but it must not become this drawer's outcome once the OE has
+         * left the record and that drawer now belongs to another session.
+         */
+        if (!noticeContextHolds(operation)) return;
+        /**
+         * …and the drawer it would be written into must still be the exact instance this booking was
+         * started from. A drawer the OE closed and re-opened for the same Session is a different
+         * instance: the outcome of the earlier one describes a drawer that is gone.
+         */
+        if (!scheduleOutcomeContextHolds(operation, drawer)) return;
+        /**
+         * Only now is the outcome published, and from the classified failure alone. A `403`/`404` has
+         * already withdrawn the protected root inside `reportCommandFailure`, so no stale drawer or
+         * detail write happens here either.
+         */
+        setScheduleOutcome(schedulingFailureOutcome(failure));
+      }
+    });
+    if (outcome.status === 'applied' && outcome.applied) {
+      /**
+       * The booking is confirmed; only the follow-up queue refresh is still in question. The verdict is
+       * re-taken here — after the awaited reconciliation and in the same tick as this write — so the
+       * drawer outcome is published only while the drawer the booking was started from is still the
+       * one on screen. The confirmation below is a fact about the booking and is always reported.
+       */
+      if (scheduleOutcomeContextHolds(outcome.operation, drawer)) {
+        setScheduleOutcome({
+          kind: 'scheduled',
+          approval: outcome.applied,
+          refreshFailed: outcome.reconciliation !== 'loaded'
+        });
+      }
+      const scheduled = outcome.applied.session;
+      notifySuccess(
+        `${name} scheduled`,
+        scheduled?.representativeUserId === null || !scheduled
+          ? 'The server accepted the booking.'
+          : `Ground Executive user ${scheduled.representativeUserId} is assigned and the tenant confirmation step is recorded separately.`,
+        undefined,
+        'VISIT_SESSION'
+      );
+    }
+  }, [
+    applyAuthoritativeSession,
+    detail,
+    noticeContextHolds,
+    notifySuccess,
+    ownership,
+    reportCommandFailure,
+    runGuardedCommand,
+    scheduleOutcomeContextHolds
+  ]);
 
   const navigate = useCallback((next: QueueView) => {
     setView(next);
@@ -752,6 +2050,44 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     window.scrollTo({ top: 0 });
     focusWorkspaceTitle();
   }, []);
+
+  /**
+   * Identity of the visible root, its version and the signed-in account. Revealed lessor contact
+   * lives only as long as this value: a new version, another record or another account clears it
+   * before any previously revealed value could be read.
+   */
+  const contactContextKey = ((): string => {
+    if (detailTarget === null || detail.status !== 'ready') return 'no-open-record';
+    const identity = readOperationsSession()?.identity ?? 'no-session';
+    const snapshot = detail.snapshot;
+    const version = snapshot.request?.version
+      ?? snapshot.session?.version
+      ?? snapshot.claimable?.expectedVersion
+      ?? 'unrecorded';
+    return `${identity}|${detailTarget.source}|${detailTarget.targetType}-${detailTarget.targetId}|v${version}`;
+  })();
+
+  /**
+   * Every action the detail and drawer may invoke. Each entry is one guarded workspace command, so no
+   * component can transmit anything on its own or decide what an outcome means.
+   */
+  const detailActions: OperationsDetailActions = {
+    onRelease: () => void releaseRoot(),
+    onCoordinateNewSession: () => void coordinateNewSession(),
+    onAttachToOwnedDraft: (sessionId, sessionVersion) => void attachToOwnedDraft(sessionId, sessionVersion),
+    onMarkConfirmedUnavailable: () => void markConfirmedUnavailable(),
+    onOpenScheduling: () => {
+      if (detail.status !== 'ready' || !detail.snapshot.session) return;
+      openScheduleDrawer(detail.snapshot.session.sessionId);
+    },
+    onReorderItems: (itemIds) => void reorderItems(itemIds),
+    onRemoveItem: (itemId, reason) => void removeItem(itemId, reason),
+    onAddStop: (input) => void addStop(input),
+    revealRequestContact,
+    revealItemContact,
+    searchListings,
+    loadOwnedCandidates
+  };
 
   /**
    * Authority has not been confirmed *for the entry on screen*: either the account's verdict is still
@@ -890,19 +2226,41 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
           ) : null}
 
           {detailTarget ? (
-            <OperationsWorkDetail
-              targetType={detailTarget.targetType}
-              targetId={detailTarget.targetId}
-              source={detailTarget.source}
-              state={detail}
-              busyAction={busyAction}
-              onBack={closeDetail}
-              onRetry={() => void openDetail(detailTarget)}
-              onClaim={() => {
-                if (detail.status === 'ready' && detail.snapshot.claimable) void claimRoot(detail.snapshot.claimable);
-              }}
-              onRelease={() => void releaseRoot()}
-            />
+            <>
+              <OperationsWorkDetail
+                targetType={detailTarget.targetType}
+                targetId={detailTarget.targetId}
+                source={detailTarget.source}
+                state={detail}
+                busyAction={busyAction}
+                busyCommand={busyCommand}
+                contactContextKey={contactContextKey}
+                actions={detailActions}
+                onSaveAvailability={(itemId, choice, window) => void saveAvailability(itemId, choice, window)}
+                onBack={closeDetail}
+                onRetry={() => void openDetail(detailTarget)}
+                onClaim={() => {
+                  if (detail.status === 'ready' && detail.snapshot.claimable) void claimRoot(detail.snapshot.claimable);
+                }}
+              />
+              {scheduleSessionId !== null
+                && detail.status === 'ready'
+                && detail.snapshot.session?.sessionId === scheduleSessionId ? (
+                  <OperationsScheduleFlow
+                    session={detail.snapshot.session}
+                    blocked={busyCommand === 'schedule'}
+                    outcome={scheduleOutcome}
+                    onClose={closeScheduleDrawer}
+                    onAcknowledgeOutcome={() => setScheduleOutcome(null)}
+                    onConfirm={(selection, view, reason) => void confirmSelection(selection, view, reason)}
+                    loadRanked={loadRankedRecommendations}
+                    loadDiscovery={loadGeDiscovery}
+                    onRefreshSession={() => {
+                      if (detailTarget) void openDetail(detailTarget);
+                    }}
+                  />
+                ) : null}
+            </>
           ) : view === 'home' ? (
             <OverviewView
               scopes={scopes}

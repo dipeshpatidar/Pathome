@@ -14,6 +14,7 @@ import {
   isOwnedSessionReleasable,
   linkedRequestVersionMap,
   needsCoordinatorAttention,
+  operationsAvailabilityMeta,
   operationsCapabilityScopes,
   operationsDetailFailureState,
   operationsLoadFailureState,
@@ -29,6 +30,8 @@ import {
   toSessionDetail,
   toStaffCapabilities
 } from '../utils/operationsWorkspacePresentation.ts';
+/** The same module as a namespace, for behaviour assertions that need helpers by name. */
+import * as presentationModule from '../utils/operationsWorkspacePresentation.ts';
 
 /**
  * Scope of this file: pure contract/mapping tests plus a small number of structural regression
@@ -50,6 +53,7 @@ const workspace = read('../components/operations/OperationsWorkspace.tsx');
 const detail = read('../components/operations/OperationsWorkDetail.tsx');
 const lists = read('../components/operations/OperationsWorkLists.tsx');
 const primitives = read('../components/operations/OperationsWorkspacePrimitives.tsx');
+const itinerary = read('../components/operations/OperationsDraftItinerary.tsx');
 const dashboard = read('../components/EmployeeCrmDashboard.tsx');
 const admin = read('../components/MasterAdminDashboard.tsx');
 const app = read('../App.tsx');
@@ -362,14 +366,18 @@ test('Session detail maps items, linked requests and never invents a name or an 
         sector: 'Vijay Nagar',
         position: 1,
         sourceRequestId: 501,
+        derivedFromRequestId: null,
         origin: 'TENANT_REQUESTED',
         confirmationStatus: 'PENDING',
         availabilityConfirmedAt: null,
         removedAt: null,
         removalReason: null,
-        availabilityStartAt: null,
-        availabilityEndAt: null,
-        availabilityZoneId: null,
+        // The response DTO names these `propertyAvailability*`. The command-style names this fixture
+        // used before are not what the backend returns, which is what hid every real window.
+        propertyAvailabilityStartAt: null,
+        propertyAvailabilityEndAt: null,
+        propertyAvailabilityZoneId: null,
+        propertyAvailabilitySource: null,
         representativeName: 'Should never surface'
       }
     ],
@@ -385,6 +393,9 @@ test('Session detail maps items, linked requests and never invents a name or an 
   });
   assert.equal(session.items.length, 1);
   assert.equal(session.items[0].sourceRequestId, 501);
+  assert.equal(session.items[0].derivedFromRequestId, null);
+  assert.equal(session.items[0].availabilityStartAt, null);
+  assert.equal(session.items[0].availabilitySource, null);
   assert.equal(session.representativeUserId, null);
   assert.equal(session.coordinatorUserId, 42);
   assert.deepEqual(session.linkedRequestVersions, [{ requestId: 501, version: 4 }]);
@@ -392,6 +403,51 @@ test('Session detail maps items, linked requests and never invents a name or an 
   assert.equal(serialized.includes('representativeName'), false);
   assert.equal(serialized.toLowerCase().includes('endedat'), false);
   assert.equal(toSessionDetail({}), null);
+});
+
+test('recorded property availability maps from the response DTO names, never the command names', () => {
+  const session = toSessionDetail({
+    sessionId: 3109,
+    status: 'DRAFT',
+    version: 3,
+    city: 'Indore',
+    items: [
+      {
+        itemId: 95,
+        listingId: 8100,
+        title: '3 BHK apartment',
+        sector: 'Vijay Nagar',
+        position: 1,
+        sourceRequestId: null,
+        derivedFromRequestId: 501,
+        origin: 'LESSOR_SUGGESTED',
+        confirmationStatus: 'CONFIRMED',
+        availabilityConfirmedAt: '2026-10-12T15:00:00Z',
+        removedAt: null,
+        removalReason: null,
+        propertyAvailabilityStartAt: '2026-10-13T04:00:00Z',
+        propertyAvailabilityEndAt: '2026-10-16T12:00:00Z',
+        propertyAvailabilityZoneId: 'Asia/Kolkata',
+        propertyAvailabilitySource: 'PHONE',
+        availabilityStartAt: 'command-name-must-be-ignored',
+        availabilityZoneId: 'command-name-must-be-ignored'
+      }
+    ]
+  });
+  const item = session.items[0];
+  assert.equal(item.availabilityStartAt, '2026-10-13T04:00:00Z');
+  assert.equal(item.availabilityEndAt, '2026-10-16T12:00:00Z');
+  assert.equal(item.availabilityZoneId, 'Asia/Kolkata');
+  assert.equal(item.availabilitySource, 'PHONE');
+  assert.equal(item.derivedFromRequestId, 501);
+  assert.deepEqual(operationsAvailabilityMeta(item), {
+    view: 'confirmed-window',
+    label: 'Confirmed with window',
+    hint: 'A complete availability window is recorded for this stop.',
+    schedulingReady: true
+  });
+  // A confirmation without a usable window is a real state, and it is not scheduling-ready.
+  assert.equal(operationsAvailabilityMeta({ ...item, availabilitySource: null }).view, 'confirmed-incomplete');
 });
 
 test('detail rendering shows identifiers, never fabricated human references or names', () => {
@@ -424,9 +480,13 @@ test('claim re-reads the root before mutating and forwards one captured session 
   const claimRoot = workspace.match(/const claimRoot = useCallback\(async[\s\S]*?\n  \}, \[/);
   assert.ok(claimRoot);
   // The logical operation captures the session once and is bound to the component, the workspace
-  // surface, that exact session and the current authorization generation before anything is awaited.
+  // surface, that exact session, the current authorization generation and the exact mounted instance
+  // of the claimed root (when it is on screen) before anything is awaited.
   assert.match(claimRoot[0], /const session = captureOperationsSession\(\);/);
-  assert.match(claimRoot[0], /ownership\.begin\('claim', session, authorityRef\.current\.authorizationGeneration\(\)\)/);
+  assert.match(
+    claimRoot[0],
+    /const operation = ownership\.begin\(\s*\n\s*'claim',\s*\n\s*session,\s*\n\s*authorityRef\.current\.authorizationGeneration\(\),\s*\n\s*mountedTargetFor\(\{ targetType: item\.targetType, targetId: item\.targetId \}\)\s*\n\s*\);/
+  );
   assert.match(claimRoot[0], /await authorityRef\.current\.verifySession\(session, \{ signal: operation\.controller\.signal \}\)/);
   // The fresh root read happens before the command is built and dispatched, and is cancellable.
   assert.match(
@@ -516,7 +576,9 @@ test('a conflict is explained through the persistent workspace alert, not a disa
   // The outcome copy (including the preserved 409 message) is owned by the presentation module and
   // proven by behaviour in `operationsOwnershipRaceCorrections.test.mjs`; the workspace routes every
   // failed ownership command through it.
-  const failure = workspace.match(/const reportOwnershipFailure = useCallback\(async[\s\S]*?\n  \}, \[refreshAll, showNotice\]\);/);
+  const failure = workspace.match(
+    /const reportOwnershipFailure = useCallback\(async[\s\S]*?\n  \}, \[noticeContextHolds, ownership, refreshAll, showNotice, withdrawDeniedRoot\]\);/
+  );
   assert.ok(failure);
   assert.match(failure[0], /ownershipOutcomeCopy\(/);
   assert.match(failure[0], /operation\.dispatched/);
@@ -543,10 +605,18 @@ test('a conflict is explained through the persistent workspace alert, not a disa
     /reportOwnershipFailure\([\s\S]*?dropDetailWhenRejected: true/,
     'the release reports its outcome through the shared truthful copy'
   );
-  assert.ok(
-    failure[0].indexOf('showNotice(copy.message, operation.session);') < failure[0].indexOf('setDetailTarget(null);'),
-    'the conflict is recorded before the protected detail is dropped'
-  );
+  /**
+   * R1: the withdrawal is not deferred behind the reconciliation. The refused root is dropped in the
+   * same tick the denial is classified — before the authoritative reads are awaited — and the notice
+   * still follows the real reconciliation result, so the copy is never written before the reads that
+   * decide what it may truthfully say.
+   */
+  const withdrawAt = failure[0].indexOf('withdrawDeniedRoot(');
+  const reconcileAt = failure[0].indexOf('await refreshAll(operation.session)');
+  const noticeAt = failure[0].indexOf('showNotice(copy.message, operation.session);');
+  assert.ok(withdrawAt > -1 && reconcileAt > -1 && noticeAt > -1);
+  assert.ok(withdrawAt < reconcileAt, 'the protected detail is dropped before the reconciliation is awaited');
+  assert.ok(noticeAt > reconcileAt, 'the real reconciliation result still decides the copy');
   // The notice lives in the workspace, is announced, and is scoped to the session that raised it.
   assert.match(workspace, /<WorkspaceNotice/);
   assert.match(workspace, /notice\.sessionIdentity === \(readOperationsSession\(\)\?\.identity \?\? null\)/);
@@ -568,12 +638,91 @@ test('access loss is classified and released detail stops being shown', () => {
 
   const release = workspace.match(/const releaseRoot = useCallback\(async[\s\S]*?\n  \}, \[/);
   assert.ok(release);
-  assert.match(release[0], /setDetailTarget\(null\);/);
-  // A rejected release drops protected detail only for the statuses where ownership may already be
-  // gone on the server.
-  const failure = workspace.match(/const reportOwnershipFailure = useCallback\(async[\s\S]*?\n  \}, \[refreshAll, showNotice\]\);/);
-  assert.ok(failure);
-  assert.match(failure[0], /status === 403 \|\| status === 404 \|\| status === 409/);
+  // Every display change moves the display context with it, so a later refusal verdict can tell a
+  // security withdrawal this operation performed from any navigation that replaced its record. The
+  // release records the drop as its own transition, so the confirmed release keeps its own follow-up
+  // notice while a newer record opened during the command is never cleared by it.
+  assert.match(release[0], /setDisplayContext\(null, operation\);/);
+  /**
+   * A rejected release drops protected detail only for the statuses where ownership may already be
+   * gone on the server. The decision itself is the real shared classifier, so it is asserted
+   * behaviourally instead of by matching the workspace's source text.
+   */
+  assert.equal(
+    presentationModule.commandFailureDisposition({ dispatched: true, status: 403 }).withdrawRoot,
+    true
+  );
+  assert.equal(
+    presentationModule.commandFailureDisposition({ dispatched: true, status: 404 }).withdrawRoot,
+    true
+  );
+  assert.equal(
+    presentationModule.commandFailureDisposition({ dispatched: true, status: 409 }).withdrawRoot,
+    false
+  );
+  assert.equal(
+    presentationModule.commandFailureDisposition({ dispatched: true, status: 409 }, { dropDetailWhenRejected: true }).withdrawRoot,
+    true
+  );
+  assert.equal(
+    presentationModule.commandFailureDisposition({ dispatched: true, status: 500 }).withdrawRoot,
+    false
+  );
+  /**
+   * The workspace owner of that cleanup exists and is the one the shared failure path calls — in the
+   * same tick as the classification, before any reconciliation is awaited, and only for the exact
+   * mounted instance the failing operation was started against — never whatever happens to be on
+   * screen when the failure arrives. The behavioural half of this (pre-reconciliation withdrawal of
+   * the refused detail and its revealed contact, and the different-root/re-mount races) is proven in
+   * `browser-verification/operations-completion/` and by the real lifecycle decisions in
+   * `operationsOwnershipRaceCorrections.test.mjs`.
+   */
+  assert.match(workspace, /const withdrawDeniedRoot = useCallback\(\(operation: OwnershipOperation\) => \{/);
+  assert.match(workspace, /if \(!operationTargetIsMounted\(operation, openRootRef\.current\)\) return;/);
+  assert.match(
+    workspace,
+    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(operation\);\s*\n\s*\}/
+  );
+  /**
+   * Both failure paths withdraw the operation's own captured target, and both withhold a definitive
+   * refusal once the display context that refusal describes has been replaced (every other outcome is
+   * announced). The verdict is taken *after* the awaited reconciliation and immediately before the
+   * notice — never from a `publishable` value captured earlier, which is exactly how an old #3108
+   * refusal used to be written into #4109 once a held refresh resolved.
+   */
+  assert.equal(
+    (workspace.match(/if \(disposition\.targetDenied && !noticeContextHolds\(operation\)\)/g) ?? []).length,
+    2
+  );
+  assert.equal(
+    (workspace.match(/const publishable = /g) ?? []).length,
+    0,
+    'no verdict may be captured before the awaited reconciliation'
+  );
+  assert.match(
+    workspace,
+    /const noticeContextHolds = useCallback\(\(operation: OwnershipOperation\): boolean =>\s*\n\s*operation\.target === null\s*\n\s*\|\| operationTargetIsMounted\(operation, openRootRef\.current\)\s*\n\s*\|\| ownership\.withdrewOwnDisplayContext\(operation\), \[ownership\]\);/
+  );
+  for (const [label, anchor] of [
+    ['a failed ownership command', 'const reportOwnershipFailure = useCallback(async'],
+    ['a failed Phase 2A command', 'const reportCommandFailure = useCallback(async']
+  ]) {
+    const from = workspace.indexOf(anchor);
+    assert.ok(from > -1, `${label} region`);
+    const slice = workspace.slice(from, workspace.indexOf('showNotice(copy.message, operation.session);', from));
+    const verdictAt = slice.indexOf('if (disposition.targetDenied && !noticeContextHolds(operation))');
+    const reconcileAt = slice.indexOf('await refreshAll(operation.session)');
+    assert.ok(
+      verdictAt > reconcileAt && reconcileAt > -1,
+      `${label}: the display-context verdict is re-taken after the reconciliation`
+    );
+    assert.ok(
+      slice.lastIndexOf('ownership.canCommit(operation, authorityRef.current)') < verdictAt,
+      `${label}: the fresh verdict is the last decision before the notice`
+    );
+  }
+  // Exactly the two failure paths call it, and neither calls it after its reconciliation any more.
+  assert.equal((workspace.match(/withdrawDeniedRoot\(/g) ?? []).length, 2);
   assert.match(workspace, /signedOut \|\| accessLost/);
   assert.match(detail, /This item isn’t available to you/);
 });
@@ -615,16 +764,141 @@ test('no fixture, preview or synthetic content survives in the operations module
   }
 });
 
-test('unimplemented operational features are absent rather than faked', () => {
-  for (const source of [workspace, detail, lists]) {
-    for (const forbidden of ['Schedule visit', 'CalendarPlus', 'schedule-flow', 'Manage draft itinerary', 'Record property availability', 'Mark property unavailable', 'Coordinate into visit session', 'Switch workspace']) {
-      assert.equal(source.includes(forbidden), false, `unimplemented control leaked: ${forbidden}`);
-    }
+test('approved Phase 2A controls reach the real command contracts', () => {
+  // Every approved action has an exact service method with the audited path and HTTP method.
+  assert.match(service, /`\/operations\/visit-requests\/\$\{requestId\}\/lessor-contact`/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/items\/\$\{itemId\}\/lessor-contact`/);
+  assert.match(service, /`\/operations\/visit-requests\/\$\{requestId\}\/coordinate`/);
+  assert.match(service, /`\/operations\/visit-requests\/\$\{requestId\}\/unavailable`/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/items`,/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/items\/\$\{itemId\}`,/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/items\/order`/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/items\/\$\{itemId\}\/availability`/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/oe-recommendations`/);
+  assert.match(service, /`\/operations\/visit-sessions\/\$\{sessionId\}\/oe-recommendations\/selection`/);
+  // The removal command keeps its required JSON body on DELETE.
+  assert.match(service, /'DELETE',\s*\n\s*body,/);
+  // Discovery is cursor-paged and only sends a query when one was entered.
+  assert.match(service, /params\.set\('all', 'true'\)/);
+  assert.match(service, /if \(options\.cursor\) params\.set\('cursor', options\.cursor\)/);
+  // A 200-returning command is never deserialised as a 204 ownership response, and vice versa.
+  assert.match(service, /const sendJsonCommand = async <T,>\(/);
+  assert.match(service, /const sendOwnershipCommand = async \(/);
+  // Admin-only and excluded routes stay unreachable from the OE client.
+  for (const forbidden of ['/recommendations/approval', '/assignment', '/cancel', '/reschedule']) {
+    assert.equal(service.includes(forbidden), false, `excluded route reachable: ${forbidden}`);
   }
+  // The workspace drives every approved action through the shared guarded lifecycle.
+  assert.match(workspace, /operationsWorkspaceService\.coordinateRequest\(/);
+  assert.match(workspace, /operationsWorkspaceService\.markRequestUnavailable\(/);
+  assert.match(workspace, /operationsWorkspaceService\.addSessionItem\(/);
+  assert.match(workspace, /operationsWorkspaceService\.removeSessionItem\(/);
+  assert.match(workspace, /operationsWorkspaceService\.reorderSessionItems\(/);
+  assert.match(workspace, /operationsWorkspaceService\.setSessionItemAvailability\(/);
+  assert.match(workspace, /operationsWorkspaceService\.rankedRecommendations\(/);
+  assert.match(workspace, /operationsWorkspaceService\.discoverGroundExecutives\(/);
+  assert.match(workspace, /operationsWorkspaceService\.selectGroundExecutive\(/);
+  assert.match(workspace, /operationsWorkspaceService\.lessorContactForRequest\(/);
+  assert.match(workspace, /operationsWorkspaceService\.lessorContactForSessionItem\(/);
   // Active/History cannot be truthful without a server-wide filter, so it must not exist.
-  assert.equal(workspace.includes("'History'"), false);
   assert.equal(workspace.includes('History'), false);
   assert.match(workspace, /Totals and pages come from the server/);
+});
+
+test('independent operational reads are cancelled independently (P1-3)', () => {
+  // Each read family owns its own cancellation slot, so starting one read cannot abort another that
+  // the user is still waiting for. The single shared slots this replaced must not come back.
+  assert.match(
+    workspace,
+    /type GuardedReadFamily = 'owned-candidates' \| 'listing-search' \| 'ge-ranked' \| 'ge-discovery';/
+  );
+  for (const family of ['owned-candidates', 'listing-search', 'ge-ranked', 'ge-discovery']) {
+    assert.equal(workspace.includes(`beginGuardedRead('${family}', signal)`), true, `missing family ${family}`);
+  }
+  assert.equal(workspace.includes('beginGuardedRead(signal,'), false, 'a shared read slot is still used');
+  assert.equal(workspace.includes('candidateController'), false);
+  assert.equal(workspace.includes('listingController'), false);
+  // Invalidation still aborts every family at once, and unmounting still closes the surface.
+  assert.match(workspace, /const abortGuardedReads = useCallback\(\(\) => \{/);
+  assert.equal((workspace.match(/abortGuardedReads\(\);/g) ?? []).length >= 3, true);
+});
+
+test('the availability editor converts instants through the recorded zone (P0-1)', () => {
+  // The editor must not slice a UTC wall clock out of the server instant, and must not assume the
+  // device zone; the pure helpers in the presentation module own that conversion, and the editor
+  // routes both fields through them.
+  assert.equal(itinerary.includes('serverInstantToZoneInput'), true);
+  assert.equal(itinerary.includes('resolveAvailabilityFieldInstant'), true);
+  assert.equal(itinerary.includes('slice(0, 16)'), false);
+  assert.equal(itinerary.includes('ZONE_OFFSET'), false);
+  assert.equal(typeof presentationModule.serverInstantToZoneInput, 'function');
+  assert.equal(typeof presentationModule.resolveAvailabilityFieldInstant, 'function');
+  assert.equal(typeof presentationModule.zoneInputToServerInstant, 'function');
+  assert.equal(typeof presentationModule.operationsZoneOptions, 'function');
+  // The conversion the editor actually relies on: a recorded instant is displayed in the property
+  // zone, and an untouched field is sent back byte-for-byte rather than re-derived.
+  assert.equal(
+    presentationModule.serverInstantToZoneInput('2027-02-14T04:00:00Z', 'Asia/Kolkata'),
+    '2027-02-14T09:30'
+  );
+  assert.deepEqual(
+    presentationModule.resolveAvailabilityFieldInstant({
+      value: '2027-02-14T09:30',
+      initialValue: '2027-02-14T09:30',
+      zoneId: 'Asia/Kolkata',
+      initialZoneId: 'Asia/Kolkata',
+      initialInstant: '2027-02-14T04:00:37.123Z'
+    }),
+    { value: '2027-02-14T04:00:37.123Z', error: null }
+  );
+});
+
+test('the booking result requires a complete authoritative Session (P0-2)', () => {
+  // A non-null-but-unusable body is refused by the real mapper, so the caller classifies the
+  // transmitted command as uncertain instead of announcing a booking.
+  const scheduled = {
+    sessionId: 3108,
+    status: 'SCHEDULED',
+    version: 7,
+    scheduledAt: '2027-02-14T05:00:00Z',
+    representativeUserId: 4207
+  };
+  const expectation = {
+    sessionId: 3108,
+    expectedSessionVersion: 6,
+    groundExecutiveUserId: 4207,
+    scheduledAt: '2027-02-14T05:00:00Z'
+  };
+  assert.ok(presentationModule.toSchedulingApproval({ session: scheduled }, expectation));
+  for (const [label, session] of [
+    ['invalid nonblank time text', { ...scheduled, scheduledAt: 'not-a-time' }],
+    ['a negative assigned GE id', { ...scheduled, representativeUserId: -1 }],
+    ['a zero assigned GE id', { ...scheduled, representativeUserId: 0 }],
+    ['a stale version that did not advance', { ...scheduled, version: 6 }],
+    ['a malformed version', { ...scheduled, version: 'v7' }]
+  ]) {
+    assert.equal(presentationModule.toSchedulingApproval({ session }, expectation), null, label);
+  }
+  // The service binds the mapper to the exact submitted selection, not only to a session id.
+  assert.match(service, /toSchedulingApproval\(payload, \{/);
+  assert.match(service, /expectedSessionVersion: body\.expectedSessionVersion/);
+  assert.match(service, /groundExecutiveUserId: body\.groundExecutiveUserId/);
+  assert.match(service, /scheduledAt: body\.scheduledAt/);
+});
+
+test('the contact reveal is generation-guarded (P1-5)', () => {
+  const contactPanel = read('../components/operations/OperationsLessorContactPanel.tsx');
+  const revealGate = read('../utils/operationsContactReveal.ts');
+  assert.match(contactPanel, /beginContactReveal\(gateRef\.current, contextKey\)/);
+  assert.match(contactPanel, /contactRevealIsCurrent\(gateRef\.current, ticket\)/);
+  assert.match(contactPanel, /revealController\.current\?\.abort\(\)/);
+  assert.match(revealGate, /export const contactRevealIsCurrent = \(/);
+  // No storage or logging of contact values anywhere in the panel or its guard.
+  for (const source of [contactPanel, revealGate]) {
+    for (const forbidden of ['localStorage', 'sessionStorage', 'console.log', 'console.error']) {
+      assert.equal(source.includes(forbidden), false, forbidden);
+    }
+  }
 });
 
 test('status, confirmation and formatting degrade to real values', () => {

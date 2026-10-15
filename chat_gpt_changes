@@ -6696,3 +6696,829 @@ Git status:
 - Local checkpoint planned on feature/phase2a-oe-ui-integration.
 - No remote push performed.
 ================================================================================
+
+================================================================================
+2026-10-14 18:40:00 IST - PHASE 2A OE PORTAL FRONTEND INTEGRATION (F1-F6)
+================================================================================
+
+Reason: Owner approved integrating the six correction contracts (F1 canonical lessor contact,
+F2 Request coordination, F3 DRAFT itinerary management, F4 property availability, F5 Ground
+Executive scheduling, F6 accessible presentation) into the EXISTING React Operations Executive
+portal, against EXISTING backend APIs, using the frozen v0 design at
+dipeshpatidar/pathome-UI#v0/oe-panel-ux-finalization@42f47cad2f375721c4dfb7dead982b37ede6b17e.
+
+Branch: feature/phase2a-oe-ui-integration
+Baseline HEAD at start: 3356264ecd34545377fb28f98152702adb5c5495 (clean worktree)
+
+Architecture
+- One guarded command lifecycle reuses the existing ownership registry, session-episode and
+  authorization-generation guards: bind operation -> re-verify authority for the captured
+  credential -> re-read the authoritative root -> refuse to transmit without a version -> final
+  synchronous dispatch gate in the same tick as the POST -> apply the 200 JSON result only while
+  the operation may still commit. 204 ownership commands stay strictly separate from the six
+  200-returning OE commands, so no command body is ever decoded from a 204 or assumed from a
+  missing one.
+- Protected data stays ephemeral: revealed lessor contact lives in component memory only, keyed by
+  account identity + root + version, auto-hides, and is cleared on any of those changes or a
+  refused read. Nothing is written to localStorage/sessionStorage.
+- The bounded ranked read is never presented as a global best; discovery is cursor-paged with
+  truthful "loaded N" counts and no fabricated totals; each candidate supplies exactly one
+  evaluated slot (no synthetic time chips or durations).
+
+Files changed
+- frontend-web/src/utils/operationsWorkspacePresentation.ts: corrected the response mapping to read
+  propertyAvailability* (source only the real DTO names), added derivedFromRequestId/source, the
+  contact mapper (fails closed on a partial contact), coordination/itinerary/availability command
+  builders, availability view model, scheduling discovery/recommendation mappers and the
+  reason/validation contract.
+- frontend-web/src/services/operationsWorkspaceService.ts: exact Phase 2A service methods -
+  lessorContactForRequest, lessorContactForSessionItem, coordinateRequest, markRequestUnavailable,
+  addSessionItem, removeSessionItem (DELETE with required JSON body), reorderSessionItems,
+  setSessionItemAvailability (PUT), rankedRecommendations, discoverGroundExecutives
+  (all/q/cursor/size), selectGroundExecutive; added a 200-JSON command path distinct from 204.
+- frontend-web/src/utils/operationsOwnershipRegistry.ts: extended the operation-kind union only.
+- frontend-web/src/components/operations/OperationsWorkDetail.tsx: wired the new action surface
+  (contact, request coordination, DRAFT itinerary + availability, scheduling entry) and removed
+  the "not part of this workspace yet" footnote for the now-implemented capabilities.
+- frontend-web/src/components/operations/OperationsWorkspace.tsx: state, guards, handlers and the
+  scheduling drawer host for every approved action.
+- frontend-web/src/components/operations/OperationsWorkspace.css: approved contrast tokens
+  (--oe-muted #62675f, --oe-faint #686d64) plus the new workflow styles (44px targets, 16px mobile
+  editable text).
+- New: OperationsLessorContactPanel.tsx, OperationsRequestCoordination.tsx,
+  OperationsDraftItinerary.tsx, OperationsGePicker.tsx, OperationsScheduleFlow.tsx,
+  operationsSchedule.css.
+- New focused tests: operationsLessorContact, operationsCoordination, operationsDraftItinerary,
+  operationsPropertyAvailability, operationsScheduling (+ support/operationsActionHarness.mjs);
+  operationsWorkspaceIntegration.test.mjs updated (DTO-shaped propertyAvailability* fixture, the
+  former "features absent" guard replaced by a real-contract guard).
+- New consolidated browser pass: browser-verification/operations-completion/run.mjs.
+- No backend Java, migration, entity, DTO, dependency, role or navigation change. No commit, push,
+  merge, reset, stash or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 107/107 pass, 0 fail.
+- npm --prefix frontend-web run build -> succeeded (tsc + vite build).
+- git diff --check -> clean.
+- node frontend-web/browser-verification/operations-completion/run.mjs -> 55 checks, 0 failures
+  (21.9s, within the 9-minute cap). Controlled stub backend; journeys: claim -> canonical contact
+  (incl. no-storage proof) -> coordinate -> itinerary add/reorder -> availability (complete window,
+  incomplete confirmation, update-only transition) -> ranked/browse-cursor/search -> select ->
+  review -> authoritative SCHEDULED result; negatives: 409 conflict recovery without replay, lost
+  booking response reported unknown with exactly one POST, revoked contact, account switch during
+  a booking, and 320/375/390/430/768/1024/1280/1440 overflow + 44px targets + 16px mobile editors +
+  Escape focus restoration.
+- node frontend-web/browser-verification/operations-workspace/run.mjs -> 244 checks, 0 failures
+  (existing Package 1A harness rerun as regression evidence for claim/release, gating, revocation
+  and race behaviour).
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration: not authorised. Protected pathome_db untouched; no
+  database was bootstrapped, seeded or modified. All browser evidence is CONTROLLED (in-process
+  stub transport), so it verifies UI behaviour and network traffic, not a live backend.
+- Physical mobile devices, real soft keyboard/safe-area gestures and screen-reader passes.
+- Historical Sol 193/193 backend security acceptance: unchanged, not rerun.
+
+Scope and invariants
+- No scope expansion: no new API, DTO, migration, dependency, role, queue filter or Active/History
+  tab; Admin-only scheduling/repair/cancel/assignment routes remain unreachable from the OE client.
+- Preserved: stable User identity, capability admission, Team/City scope, ownership semantics,
+  server-authoritative versions, cross-account isolation, and the existing Tenant/Lessor routes.
+- Worktree left uncommitted for independent ChatGPT/Sol review.
+================================================================================
+
+================================================================================
+2026-10-14 23:20:00 IST - PHASE 2A OE FINAL ENGINEERING CORRECTIONS (P0-1..P2-6)
+================================================================================
+
+Reason: Independent source review of the approved Phase 2A OE frontend batches identified six
+defects to correct before checkpoint approval. This pass fixes only those six, preserving all
+approved F1-F6 functionality, the frozen v0 design and every already-working test.
+
+Branch: feature/phase2a-oe-ui-integration
+HEAD at start and end: 3356264ecd34545377fb28f98152702adb5c5495 (unchanged, uncommitted)
+
+P0-1 Availability timestamp roundtrip (OperationsDraftItinerary.tsx + operationsWorkspacePresentation.ts)
+- Root cause: the editor sliced the first 16 characters of the server instant, so a UTC instant such
+  as 2027-02-14T04:00:00Z displayed as 04:00 although it is 09:30 in Asia/Kolkata, and saving the
+  unchanged field re-interpreted that wall clock as IST and could shift the persisted instant by
+  5h30m. The reverse conversion also assumed a fixed offset table instead of the zone.
+- Fix: added pure zone helpers to the presentation module - serverInstantToZoneInput (instant ->
+  wall clock in the property's zone, via Intl, never the device zone), zoneInputToServerInstant
+  (wall clock -> local time with that zone's own offset, verified by round-trip so a non-existent
+  daylight-saving time is refused), isOperationsZone and operationsZoneOptions (the recorded zone is
+  offered, never silently replaced). The editor now converts in both directions and reports an
+  unrepresentable local time as itself. Whole-window-or-nothing validation and the supported zone
+  list are unchanged; no timezone-expansion feature was added.
+
+P0-2 Malformed authoritative scheduling success (operationsWorkspacePresentation.ts, service)
+- Root cause: toSchedulingApproval accepted a 200 with a missing or incomplete Session, so the
+  workspace could report a booking that the server never confirmed.
+- Fix: the mapper now requires the complete authoritative Session for the session that was booked -
+  matching session id, positive version, SCHEDULED state with a booked time and an assigned Ground
+  Executive - and the service binds it to the requested id. An incomplete 200 after transmission is
+  refused, which the shared classifier reports as an uncertain outcome with safe read-only
+  reconciliation; the booking is never resent and no local scheduled state is fabricated. 409/401/
+  403/404 recovery is unchanged.
+
+P1-3 Concurrent read cancellation (OperationsWorkspace.tsx)
+- Root cause: the owned-candidate list, the public listing search and both Ground Executive reads
+  shared one controller slot, so starting one read aborted another that was still awaited.
+- Fix: beginGuardedRead is now keyed by four read families ('owned-candidates', 'listing-search',
+  'ge-ranked', 'ge-discovery'); a family supersedes only its own previous request, while
+  invalidate/logout/unmount/close still abort every family through abortGuardedReads. Session,
+  authority, epoch and query-generation guards are unchanged.
+
+P1-4 First-click scheduling reason validation (OperationsScheduleFlow.tsx)
+- Root cause: the submit handler read a validity flag computed during the previous render, so a blank
+  required reason could reach the booking handler on the first click; the resulting empty command was
+  then reported as a misleading missing-version state.
+- Fix: submit now evaluates the requirement and reason.trim() at click time, shows accurate inline
+  validation, focuses the reason field and never invokes the booking callback. Exact-top/no-reason
+  semantics are unchanged.
+
+P1-5 Delayed lessor-contact reveals (OperationsLessorContactPanel.tsx, new utils/operationsContactReveal.ts,
+OperationsWorkspace.tsx, OperationsDetailActions)
+- Root cause: clearing on a context change did not cancel an in-flight reveal, and the same record at
+  a new version keeps the panel mounted, so a late answer could repopulate protected contact.
+- Fix: a small pure generation gate (begin/reset/current) plus an abortable per-reveal transport. The
+  panel invalidates the generation and aborts on any context change, on hide, on unmount and on a
+  newer reveal, and commits an answer only while its ticket is live, so an outdated success or refusal
+  is dropped. On-demand access, fail-closed mapping and the no-storage/no-logging rule are preserved.
+  Also corrected the loading state's accessible name so it starts with the visible label (Label in
+  Name) - a defect in this same uncommitted batch, not a redesign.
+
+P2-6 Duplicate Search Load More requests (OperationsGePicker.tsx)
+- Root cause: the guard was the rendered loading state, which only exists after a re-render, leaving a
+  sub-frame window for a duplicate request.
+- Fix: a synchronous in-flight ref keyed by query and cursor, released on completion/failure and reset
+  on query/context change; only the owning request may release it. Cursor paging, empty-page
+  continuation, deduplication and the UI are unchanged.
+
+Files changed in this pass
+- frontend-web/src/utils/operationsWorkspacePresentation.ts (P0-1 helpers, P0-2 mapper validation)
+- frontend-web/src/services/operationsWorkspaceService.ts (P0-2 expected-session binding)
+- frontend-web/src/components/operations/OperationsDraftItinerary.tsx (P0-1 conversion, reveal signal)
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (P1-3 families, P1-5 signals)
+- frontend-web/src/components/operations/OperationsWorkDetail.tsx (P1-5 action signatures)
+- frontend-web/src/components/operations/OperationsLessorContactPanel.tsx (P1-5 gate, label)
+- frontend-web/src/components/operations/OperationsScheduleFlow.tsx (P1-4, P0-2 non-null result)
+- frontend-web/src/components/operations/OperationsGePicker.tsx (P2-6)
+- New: frontend-web/src/utils/operationsContactReveal.ts; frontend-web/src/tests/operationsContactReveal.test.mjs
+- Tests updated: operationsPropertyAvailability (7 new), operationsScheduling (5 new + 2 corrected
+  fixtures), operationsWorkspaceIntegration (4 new guards)
+- Browser harness: browser-verification/operations-completion/run.mjs (+5 targeted scenarios, stub
+  modes for held/failing responses) and its README
+- No backend, migration, entity, DTO, dependency, role or navigation change. No commit, push, merge,
+  reset, stash, checkout or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 127/127 pass, 0 fail (was 107).
+- node --test frontend-web/src/tests/ -> 727 tests, 723 pass, 0 fail, 4 pre-existing todo.
+- npm --prefix frontend-web run build -> succeeded (tsc + vite build).
+- git diff --check -> clean.
+- Targeted CONTROLLED browser pass, node frontend-web/browser-verification/operations-completion/run.mjs
+  with ONLY=correction -> 29 checks, 0 failures, 20.4s (within the 10-minute cap). Covers a blank and a
+  whitespace-only reason never reaching the booking plus the accurate inline error and focus, the valid
+  override booking, the authoritative result, a confirmed booking whose queue refresh fails, a pending
+  ranked read surviving Browse and Search, a delayed contact reveal across a version change, and a
+  same-tick double click issuing one continuation request with failure/retry, query change and a
+  still-working current reveal preserved.
+
+NOT TESTED
+- The full 55-check browser journey, the 244-check legacy browser suite and the eight-width matrix were
+  not repeated, per the approved instruction; no concrete failure required them.
+- Genuine Spring Boot/PostgreSQL integration remains NOT TESTED: protected pathome_db was never
+  accessed and no safe staging target was authorised; all browser evidence is CONTROLLED.
+- Physical-device and screen-reader passes; historical Sol 193/193 backend acceptance unchanged.
+
+Scope confirmation
+- Only the six findings were changed, plus the label-in-name correction on the button this same batch
+  introduced. No deviation from the approved scope; worktree left uncommitted for independent Sol review.
+================================================================================
+## 2026-10-14 23:52 IST — Phase 2A OE final Sol audit corrections (R1–R11; frontend-web only)
+
+Reason for request
+- The final independent Sol audit returned FAIL with 5 P1 (R1–R5) and 6 P2 (R6–R11) findings against
+  HEAD 3356264 (branch feature/phase2a-oe-ui-integration). The owner authorised a bounded correction
+  pass over exactly those defects, preserving F1–F6 and the verified C3–C6 corrections, with no
+  backend, database, dependency, role or navigation change.
+
+Corrections, with root cause and fix
+- R1 (P1, target-denial withdrawal). The shared Phase 2A failure path only dropped the open detail
+  when a caller passed a release-only flag, and a denial during the fresh pre-command read was
+  classified as "stopped before transmission" — so a refused root kept its detail and revealed lessor
+  contact mounted. Added the pure `commandFailureDisposition` decision (target 403/404 withdraws the
+  root whether or not the command was transmitted, a transmitted command is reconciled, 401/5xx/uncertain
+  never count as a denial) and the workspace's single `withdrawDeniedRoot` owner, which aborts the
+  detail transport and every read family, clears the detail/scheduling state and thereby unmounts the
+  contact panel (invalidating its reveal generation). Claim/release now use the same decision. Target
+  denial is still never treated as global account revocation.
+- R2 (P1, exact instants). `serverInstantToZoneInput`/`zoneInputToServerInstant` could not express
+  seconds, fractional seconds or which of two repeated local hours an instant was, so an untouched save
+  shifted the persisted instant (Sol: 2027-11-07T06:30:00Z in America/New_York returned 05:30Z;
+  2027-02-14T04:00:37.123Z in Asia/Kolkata returned 04:00:00Z). Wall clocks are now resolved through
+  the zone's own set of candidate offsets (`resolveWallClockInstants`): one result converts, none is a
+  DST gap, two is a repeated hour. Both are refused instead of being given an unintended offset, and the
+  new pure `resolveAvailabilityFieldInstant` returns the recorded server instant verbatim while the
+  field text and zone are untouched. No new dependency.
+- R3 (P1, booking truth). `toSchedulingApproval` accepted any non-null time and any GE id, so a
+  malformed 200 (invalid time text, GE -1) was announced as a booking. It now requires a syntactically
+  valid instant, positive safe Session/GE identifiers, a positive version and SCHEDULED status, and the
+  service binds it to the exact submitted selection: same root, strictly newer version (no assumed
+  increment), the submitted GE and the submitted instant. An unusable transmitted 200 therefore rejects
+  and is classified unknown — reported as unknown, reconciled by safe reads, never resent.
+- R4 (P1, version binding). A selection carried no evaluation identity, so a candidate reviewed at v6
+  was submitted with the freshly read v8. Selections now carry `evaluated:{sessionId,sessionVersion}`,
+  every ranked/discovery envelope is validated against the intended Session and version (a mismatched
+  answer is never listed, never exempts a reason, and offers a session reload), and
+  `scheduleSelectionCommand` refuses to build a command when the fresh authoritative Session is not the
+  reviewed version. The drawer publishes a distinct `review-required` outcome, clears the voided
+  selection and requires a new evaluation and Review; zero booking POSTs until then.
+- R5 (P1, stale continuation). The scheduling failure continuation wrote its outcome after awaiting
+  failure reporting, with no re-check of ownership. It now re-applies `ownership.canCommit` after the
+  await and publishes the outcome through the new pure `schedulingFailureOutcome` mapper, so an
+  abandoned operation writes no outcome, notice or drawer state. Invalidation cleanup remains in its
+  existing unconditional owner.
+- R6 (P2, inactive tabs). `.oe-ppanel { display:flex }` overrode the user-agent `[hidden]` rule, so all
+  three picker panels rendered at once. Restored the frozen scoped rule `.oe-ppanel[hidden] { display:none }`.
+- R7 (P2, origin after removal). Origin candidates were derived from active items, so removing the only
+  direct stop removed its still-linked Request and dead-ended the documented replacement workflow. They
+  now come from the authoritative Session-linked Request membership (plus item provenance), versions
+  included; backend eligibility stays authoritative.
+- R8 (P2, permitted reads). Contact and recorded availability were rendered only inside the DRAFT-only
+  editing branch. The itinerary now states recorded availability in every view, offers the canonical
+  contact for active items of backend-revealable statuses only (`sessionPermitsItemContact`, mirroring
+  OperationsLessorContactService), never for removed or terminal work, and keeps every itinerary and
+  availability mutation DRAFT-only.
+- R9 (P2, cursor recovery). A continuation cursor refused with 400 was retried unchanged. Browse and
+  Search now classify that rejection, drop the dead cursor, keep the loaded candidates and offer an
+  explicit restart of the same normalized query/context from the first page (cursor null); same-cursor
+  retry is kept only for genuinely transient failures, and no booking is ever resent.
+- R10 (P2, frozen geometry). The scheduling surface had become a centred modal with a capped mobile
+  sheet. Restored the frozen geometry: a right-aligned panel about 560px wide and full height (100dvh)
+  from the 768px breakpoint, and full-screen steps on mobile, keeping the 44px targets, 16px mobile
+  editors, safe-area footer, focus containment, Escape recovery and reduced-motion rules.
+- R11 (P2, hidden document). Revealed contact survived backgrounding the tab. The contact panel now
+  listens for `visibilitychange`, and on hidden clears timers, invalidates the reveal generation
+  *before* aborting the transport, clears the displayed contact and does not move focus into a hidden
+  document; returning to the document requires a new deliberate reveal.
+
+Files changed in this pass
+- frontend-web/src/utils/operationsWorkspacePresentation.ts (R2 helpers, R3 mapper + expectation, R4
+  selection/evaluation binding + envelope validator, R7 origin candidates, R8 status predicate, R1
+  disposition decision, R5 failure-outcome mapper)
+- frontend-web/src/services/operationsWorkspaceService.ts (R3: the booking mapper is bound to the
+  submitted selection)
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (R1 withdrawal owner + shared failure
+  path, R4 review-required handling, R5 post-await commit guard)
+- frontend-web/src/components/operations/OperationsDraftItinerary.tsx (R2 editor resolution, R7 origin
+  source, R8 read-only availability/contact)
+- frontend-web/src/components/operations/OperationsGePicker.tsx (R4 envelope validation + evaluated
+  version on each selection, R9 cursor restart for Browse and Search)
+- frontend-web/src/components/operations/OperationsScheduleFlow.tsx (R4 review-required outcome and copy)
+- frontend-web/src/components/operations/OperationsLessorContactPanel.tsx (R11 visibility invalidation)
+- frontend-web/src/components/operations/operationsSchedule.css (R6 hidden-panel rule, R10 geometry)
+- Tests: operationsPropertyAvailability (+5 R2), operationsScheduling (+4 R3/R4, R9 status),
+  operationsDraftItinerary (R7 + corrected removal/origin fixtures), operationsContactReveal (+2 R11),
+  operationsLessorContact (+1 R8), operationsOwnershipRaceCorrections (+3 R1/R5),
+  operationsWorkspaceIntegration (4 weak source assertions replaced with behavioural ones)
+- Browser harness: browser-verification/operations-completion/run.mjs (+10 scenarios, targeted stub
+  modes/flags and realistic per-item lessor fixtures) and its README
+- No backend, migration, entity, DTO, dependency, role, navigation or copy-of-record change. No commit,
+  push, merge, rebase, reset, stash, checkout, clean, fetch or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 141/141 pass, 0 fail (was 127).
+- node --test frontend-web/src/tests/ -> 744 tests, 740 pass, 0 fail, 4 pre-existing todo.
+- node frontend-web/node_modules/typescript/bin/tsc --project frontend-web/tsconfig.json --noEmit
+  --incremental false -> exit 0, no diagnostics.
+- npm --prefix frontend-web run build -> succeeded (tsc + Vite; dist rebuilt for the harness).
+- git diff --check and git diff --cached --check -> clean.
+- One consolidated CONTROLLED browser pass, node browser-verification/operations-completion/run.mjs ->
+  168 checks, 0 failures, 0 NOT TESTED, 63.6s (inside the 10-minute cap). It covers the pre-existing
+  journey/correction scenarios plus R1 (fresh-read 404, mutation 403 and 404 after a contact reveal:
+  name, number, call link and stale root withdrawn, queues and access retained), R3 (malformed 200: no
+  success, one POST, safe reads, unknown classification), R4 (v6 review → v8 session: zero POSTs, then a
+  v8-bound re-evaluation), R5 (identity switch during a held failure reconciliation), R6 (one panel
+  rendered and reachable per tab), R7 (unavailable → remove → replacement added with the still-linked
+  Request; history retained), R8 (SCHEDULED read-only contact/availability with distinct lessors, no
+  mutation controls; terminal session with none), R9 (Browse and Search restart at cursor null),
+  R10 (1280px: 560px right-aligned full-height panel; 390px: full-screen, no clipping/overflow) and
+  R11 (hidden document clears displayed contact and refuses a pending answer).
+- Negative control executed for the R5 guard only: with the post-await commit guard removed the R5 unit
+  test fails (1 failure) and passes again once restored. The R5 browser scenario is explicitly labelled
+  supporting-only because the workspace's own invalidation closes the drawer, so it can pass on that
+  alone.
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration, real OE endpoints and any production data: NOT TESTED.
+  Protected pathome_db was never accessed or modified and no staging target was authorised; all browser
+  evidence is CONTROLLED (network fulfilled in-process) and no genuine backend acceptance is claimed.
+- Physical devices, soft keyboards, screen readers and a full WCAG 2.2 AA audit: NOT TESTED. Only the
+  Chromium viewports listed above were measured.
+- STARTED/INTERRUPTED read-only contact is covered by the pure status predicate test, not re-rendered in
+  the browser; the 244-check legacy run and the full eight-width matrix were not repeated.
+- R10 used the project's 768px tablet breakpoint for the right-aligned panel because the pinned v0
+  repository object (42f47cad) is not available in this environment and the remote is unreachable; the
+  panel width, alignment, height and mobile full-screen behaviour were restored from the audit's
+  recorded requirements.
+
+Scope confirmation
+- Only R1–R11 were corrected, plus the falsified/weak test replacements the audit's test-quality section
+  required and one small refactor (extracting the failure-outcome mapper) to make R5 testable. No
+  unapproved scope expansion, no new dependency, no backend or database change, no auth regression and no
+  commit/push. Both canonical trackers are preserved; the worktree is left uncommitted for the focused
+  read-only Sol re-verification.
+================================================================================
+2026-10-15 00:23 IST — ChatGPT / OpenAI Codex (bounded R1 + R3 closure correction)
+================================================================================
+Reason for request
+- Sol's focused re-verification of the Phase 2A final corrections confirmed R2 and R4–R11 PASS and
+  independently reproduced two remaining P1 defects on branch feature/phase2a-oe-ui-integration
+  (HEAD 3356264ecd34545377fb28f98152702adb5c5495; worktree already dirty and fully preserved):
+  R1 — the denied protected root was withdrawn only *after* the authoritative reconciliation had been
+  awaited, so a slow refresh left the refused detail and a previously revealed lessor contact mounted;
+  R3 — booking timestamps were validated by a loose shape plus `Date.parse` and compared for
+  millisecond equality, so an impossible calendar date and a one-nanosecond mismatch were accepted.
+  This pass was scoped to exactly these two defects; no other R was modified.
+
+Corrections
+- R1 (components/operations/OperationsWorkspace.tsx). Both failure entry points now classify with the
+  existing pure `commandFailureDisposition` and act on it *before* any await: for a definitive target
+  denial (403/404) — or the release conflict whose owner asked for the detail drop — the refused root
+  is withdrawn in the same synchronous tick, gated on `ownership.canCommit(operation, authority)`.
+  A new synchronous `openRootRef` carries the mounted root, and `withdrawDeniedRoot(denied)` refuses
+  to drop any root other than the one the server actually named, so a record opened later is never
+  cleared by an older failure. The reconciliation still runs afterwards, the post-await operation
+  guard is preserved, the notice is still written from the real reconciliation result, queues and
+  account access are untouched, pending protected reads are aborted, the unmounted contact panel
+  invalidates its own reveal generation, and uncertain transmitted outcomes are still unknown. The
+  now-unused `ownershipFailureKind` import was removed.
+- R3 (utils/operationsWorkspacePresentation.ts). The permissive `INSTANT_PATTERN`/`Date.parse` rule was
+  replaced by a strict, dependency-free instant parser/comparator: `parseOperationsInstant` validates
+  the Gregorian calendar (leap years, real days per month), the clock limits and a real offset (`Z` or
+  ±HH:MM, max ±18:00), requires an explicit designator, keeps all nine fractional digits as digits and
+  computes the epoch second with `setUTCFullYear` (so no 1900 remap and no silent roll-over).
+  `compareOperationsInstants`/`operationsInstantsEqual` compare the whole second and the padded
+  nanosecond fraction, so equivalent instants written with different valid offsets are equal and a
+  one-nanosecond difference is not. `toSchedulingApproval` binds the returned authoritative Session to
+  the submitted Session id, expected version, Ground Executive and booked instant through that strict
+  equality (any strictly newer version still satisfies the version rule), and the availability window
+  ordering check now uses the same exact comparison. services/operationsWorkspaceService.ts needed no
+  change: it already passes the submitted instant into that mapper, and the command builder refuses a
+  candidate whose evaluated instant is not a usable instant.
+
+Files changed in this pass
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (R1: immediate, root-scoped, guarded
+  withdrawal before the reconciliation in both failure paths; unused import removed)
+- frontend-web/src/utils/operationsWorkspacePresentation.ts (R3: strict instant parser/comparator,
+  booking binding, availability window ordering)
+- frontend-web/src/tests/operationsScheduling.test.mjs (+5 R3: validator table incl. February 30,
+  non-leap February 29, 1900 vs 2000, bad clock/offsets, fractional digits; equality contract incl. a
+  Date.parse negative control; Case A and Case B refused by the mapper; both cases uncertain and sent
+  once through the real service; a normal booking still succeeds)
+- frontend-web/src/tests/operationsOwnershipRaceCorrections.test.mjs (+1 R1: the withdrawal decision
+  does not depend on the reconciliation result, the commit gate refuses it for another account or a
+  revoked grant, and both failure paths withdraw exactly once, before their awaited reconciliation
+  and before their notice)
+- frontend-web/src/tests/operationsWorkspaceIntegration.test.mjs (the source-order assertion that
+  encoded the old "notice before withdrawal" ordering was inverted; the R1 signature/guard assertions
+  updated)
+- frontend-web/browser-verification/operations-completion/run.mjs (R1 holds the authoritative
+  reconciliation and asserts the withdrawal while it is unresolved, with a held abort-ignoring contact
+  reveal; R3 drives three unusable-200 variants; R8 now waits for the read-only itinerary rather than
+  the loading shell's screen-reader heading) and that directory's README
+- No backend, API, DTO, schema, migration, dependency, role, navigation, copy-of-record or UI-design
+  change. No commit, push, fetch, merge, rebase, reset, stash, checkout, clean or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 150/150 pass, 0 fail (was 144).
+- node --test frontend-web/src/tests/ -> 750 tests, 746 pass, 0 fail, 4 pre-existing todo (was 744/740).
+- node frontend-web/node_modules/typescript/bin/tsc --project frontend-web/tsconfig.json --noEmit
+  --incremental false -> exit 0, no diagnostics.
+- npm --prefix frontend-web run build -> succeeded (tsc + Vite; dist rebuilt for the harness).
+- git diff --check and git diff --cached --check -> clean.
+- Negative control 1 (R1): with the withdrawal moved back after the awaited reconciliation, the R1
+  browser scenario fails 13 checks — the refused detail, lessor name, number and call link all stay
+  mounted while the held reconciliation is unresolved — and passes again once restored.
+- Negative control 2 (R3): with the permissive validator and `Date.parse` equality restored, exactly
+  the three new R3 tests fail (validator table, Case A/Case B mapper, service-level uncertainty) and
+  pass again once restored.
+- One targeted CONTROLLED browser pass against the rebuilt app, node
+  browser-verification/operations-completion/run.mjs -> 209 checks, 0 failures, 0 NOT TESTED, 73.8s
+  (inside the ten-minute cap). R1 (34 checks): fresh-read 404, mutation 403 and mutation 404 each hold
+  the authoritative queue reconciliation open and assert, before releasing it, that the refused detail
+  is unmounted, the revealed name/number and the `tel:` call link are gone, the refusal notice has not
+  been written yet, and the queues plus account access remain; the fresh-read case transmits zero
+  mutations, the 403 case exactly one, a withheld contact reveal that lands after the withdrawal
+  repopulates nothing, and each refusal is still announced truthfully once released. R3 (27 checks):
+  Sol's original unusable body plus Case A (submitted 2027-03-02T05:00:00Z vs recorded
+  2027-02-30T05:00:00Z) and Case B (recorded …123456788Z vs submitted …123456789Z) each show the unknown
+  outcome, no success and no fabricated scheduled state, the unusable instant never displayed, no
+  automatic replay, the exact evaluated instant submitted, exactly one selection POST and a safe
+  read-only recovery. The remaining 148 checks are the pre-existing journey, regression and correction
+  scenarios, all passing.
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration, live OE endpoints and production data: NOT TESTED. No
+  database access, no server start and no staging target; every browser result above is CONTROLLED
+  (HTTP fulfilled in-process) and no genuine backend acceptance is claimed.
+- Physical devices, soft keyboards, screen readers and a fresh WCAG 2.2 AA audit: NOT TESTED. The pass
+  ran Chromium at the harness viewports only.
+- The legacy 244-check suite and the eight-width responsive matrix: NOT TESTED (not required by this
+  bounded correction and deliberately not re-run).
+- The backend's real maximum fractional-second precision was not observed against a live server; the
+  validator accepts up to nine digits because that is the contract this task specifies, while the
+  fixtures in evidence use none to nine.
+
+Scope confirmation
+- Only R1 and R3 were corrected, plus the two harness adjustments their evidence required (the
+  held-reconciliation R1 scenario and R8 waiting for the read-only itinerary, which change no product
+  behaviour). No unapproved scope expansion, no new dependency, no auth regression, no commit and no
+  push; HEAD is unchanged at 3356264ecd34545377fb28f98152702adb5c5495 and every pre-existing local
+  change is preserved for Sol's focused read-only re-verification of R1 and R3 only.
+================================================================================
+2026-10-15 00:58 IST — ChatGPT / OpenAI Codex (bounded R1 target-identity race correction)
+================================================================================
+Reason for request
+- Sol's focused read-only re-verification confirmed R3 PASS, R2/R4–R11 PASS, and the R1 immediate
+  withdrawal correction intact, but independently reproduced one remaining P1 defect on branch
+  feature/phase2a-oe-ui-integration (HEAD 3356264ecd34545377fb28f98152702adb5c5495; worktree already
+  dirty and fully preserved): the withdrawal in `reportCommandFailure` read the *currently mounted*
+  root (`openRootRef.current`) when the failure arrived instead of the root the failed command
+  actually targeted, so a held #3108 command answered 403 after the OE opened the unrelated #4109
+  withdrew #4109. This pass was scoped to exactly this one race; no other R was modified.
+
+Root cause and correction
+- Root cause: the denial path derived its target from the display at failure time
+  (OperationsWorkspace.tsx `reportCommandFailure`), and the withdrawal helper compared only the root
+  *identity* (targetType+targetId) with no mount instance, so any root on screen — or a newer mount
+  of the same root after navigating away and back — could be cleared by an older operation.
+- Correction (frontend-web/src/utils/operationsOwnershipRegistry.ts): `OwnershipOperation` now
+  carries an immutable `target` (`{ targetType, targetId, mountGeneration }`, `null` for a command
+  whose root was not mounted, e.g. a claim from the list), captured in `begin(...)` before anything
+  is awaited; a pure `operationTargetIsMounted(operation, mounted)` compares Request vs Session type,
+  numeric id and mount generation. Request and Session roots are distinguished even when their ids
+  coincide.
+- Correction (frontend-web/src/components/operations/OperationsWorkspace.tsx): `openRootRef` now
+  carries the mounted instance's generation (a new mount bumps it; leaving the detail retires the
+  ref; `openDetail` always installs a fresh object identity so a re-open is a new instance). The
+  three operation initiators capture the command's own target: `claimRoot` binds the item's root
+  instance when it is the displayed one, `releaseRoot` binds the released detail's instance, and
+  `runGuardedCommand` binds the root it re-reads. `withdrawDeniedRoot(operation)` now refuses to
+  clear anything but that exact instance, in the same tick, before the reconciliation is awaited
+  (immediate-withdrawal ordering unchanged). A definitive target denial whose record was replaced is
+  no longer announced into the context that replaced it (`failureStaysInContext`, captured before the
+  withdrawal, and the returned failure's new `published` flag); the scheduling drawer's outcome is
+  withheld under the same flag, so a #3108 refusal is never applied to #4109 or to a newer mount.
+  Conflicts, unconfirmed transmissions and stopped actions keep their existing truthful
+  announcements, and same-root denials still withdraw and announce exactly as previously verified.
+
+Files changed in this pass (all within the already-dirty worktree; no cleanup of prior work)
+- frontend-web/src/utils/operationsOwnershipRegistry.ts (target capture on the operation token, pure
+  mounted-instance comparison, lifecycle doc)
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (mount generation, target capture at
+  all three operation initiators, instance-scoped synchronous withdrawal, denial publication gate,
+  scheduling-outcome withholding, `published` on `GuardedCommandFailure`)
+- frontend-web/src/tests/operationsOwnershipRaceCorrections.test.mjs (+4 tests: target immutability
+  and Request/Session collision matrix; same-root withdrawal; Sol's different-root race; navigation
+  away/back re-mount; in-memory negative control of the former rule; updated source-wiring assertions)
+- frontend-web/src/tests/operationsWorkspaceIntegration.test.mjs (updated the R1 wiring assertions to
+  the new target-bound shapes)
+- frontend-web/browser-verification/operations-completion/run.mjs (new CONTROLLED scenario
+  `correctionDenialTargetIdentity`, stub holds for a single read/mutation/selection response, the
+  unrelated Session #4109 fixture and routes, scheduling-selection denial) and that directory's
+  README
+- No backend, API, DTO, schema, migration, dependency, role, navigation, copy-of-record or UI-design
+  change. No commit, push, fetch, merge, rebase, reset, stash, checkout, clean or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 155/155 pass, 0 fail (was 150).
+- node frontend-web/node_modules/typescript/bin/tsc --project frontend-web/tsconfig.json --noEmit
+  --incremental false -> exit 0, no diagnostics.
+- npm --prefix frontend-web run build -> succeeded (tsc + Vite; dist rebuilt for the harness).
+- git diff --check and git diff --cached --check -> clean.
+- Negative control: with the former wrong-target withdrawal and publication restored temporarily,
+  ONLY="R1:" runs both R1 scenarios -> the new target-identity scenario fails 35 of its 64 checks
+  (#4109 cleared in the different-root 403/404 and fresh-read 404 cases, the re-opened #3108 mount
+  cleared, the scheduling refusal applied to #4109) while the pre-existing R1 scenario still passes
+  its 34 checks; after restoring the correction the same pass is 98 checks, 0 failures, 0 NOT
+  TESTED. No negative-control modification remains (source restored before the final run; verified by
+  a residue scan and by the final passing run).
+- One targeted CONTROLLED browser pass for R1 (real built app, in-process HTTP stub):
+  ONLY="R1:" node browser-verification/operations-completion/run.mjs -> 98 checks, 0 failures,
+  0 NOT TESTED, 16.8s (inside the ten-minute cap). The new scenario drives Sol's reproduction end to
+  end — open #3108, reveal its contact, dispatch an availability mutation (and separately a held
+  fresh read and a held scheduling selection), hold it, open the unrelated #4109, answer 403/404,
+  and assert while the queue reconciliation is still unresolved that #4109 stays mounted with its
+  detail and controls, that nothing of the #3108 refusal touches it, and that the refused mutation
+  was transmitted exactly once (and zero times for the fresh-read 404); plus the navigation-away-and-
+  back case where the re-opened #3108 mount and its freshly revealed contact survive the older
+  denial. The pre-existing R1 scenario (same-root immediate withdrawal) re-passes unchanged.
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration, live OE endpoints and production data: NOT TESTED. No
+  database access, no server start, no staging target; every browser result above is CONTROLLED.
+- Physical devices, soft keyboards, screen readers and a fresh WCAG 2.2 AA audit: NOT TESTED.
+- R2 and R4–R11, the 209-check full harness, the legacy 244 checks and the responsive matrix:
+  NOT TESTED (deliberately out of scope for this bounded correction).
+
+Scope confirmation
+- Only the R1 target-identity race was corrected, plus the tests and the controlled harness evidence
+  it required. No unapproved scope expansion, no new dependency, no auth regression, no commit and
+  no push; HEAD is unchanged at 3356264ecd34545377fb28f98152702adb5c5495 and every pre-existing local
+  change is preserved for Sol's read-only verification of this exact different-root race.
+================================================================================
+================================================================================
+PATHOME — OE Phase 2A final corrections: R1 stale refusal notice race + F6 scheduling close target
+Model: DeepSeek Flash High (OpenAI Codex)
+Date: 2026-10-15 01:35 IST
+Branch: feature/phase2a-oe-ui-integration
+HEAD: 3356264ecd34545377fb28f98152702adb5c5495 (unchanged; no commit, no push, no fetch/pull/SyncGit)
+Type: strictly bounded correction of exactly the two defects Sol reported
+================================================================================
+
+Reason for request
+- Sol's independent verification confirmed the original R1 wrong-root withdrawal and the R3 strict
+  booking validation fixed, and reported exactly two remaining defects before engineering checkpoint
+  approval: (A) an obsolete R1 refusal notice can be published into a newer detail context after an
+  awaited reconciliation, and (B) the scheduling drawer's header close button is covered by the global
+  navigation header at 1280×900 (pointer click fails). This pass corrected those two only and preserved
+  every previously verified F1–F6, R2–R11 and R1 privacy behaviour.
+
+Root cause and correction
+- Root cause A: both failure reporters took their publish verdict *before* the awaited reconciliation
+  (`const publishable = disposition.targetDenied === false || failureStaysInContext(operation);`) and
+  reused it after the await. That verdict was correct when the denial was classified (the refused root
+  was still mounted, which is exactly what makes the immediate withdrawal legitimate), but by
+  publication time the OE could have opened another record — or re-opened the same one — while the held
+  queue read was unresolved, so the older refusal was written into a context it does not describe. The
+  mounted-root identity alone cannot decide this: it cannot tell the one display change a security
+  withdrawal performs itself (whose notice must still be announced) from any later navigation (whose
+  refusal must never be).
+- Correction A (frontend-web/src/utils/operationsOwnershipRegistry.ts): added the display-context
+  dimension the brief allowed — a monotonic `advanceDisplayContext()`/`displayContextGeneration` pair,
+  a mutable `withdrawnDisplayContext` on `OwnershipOperation`, `markWithdrewOwnDisplayContext()` (only
+  the live operation, only once) and `withdrewOwnDisplayContext()`. Session/Request type, numeric id and
+  mount generation all stay distinct; the session epoch is deliberately untouched by navigation.
+- Correction A (frontend-web/src/components/operations/OperationsWorkspace.tsx): every display change
+  now goes through one `setDisplayContext(next)` helper that moves the generation with the display
+  (open, close, release drop, authoritative apply, invalidation). The withdrawal records itself as the
+  operation's own display change. The pre-await `publishable` verdict is gone from both reporters and
+  replaced by `noticeContextHolds(operation)` — target-less commands (a claim from the list) keep their
+  unconditional announcement, an exactly-still-mounted instance is announced, and a record the
+  operation itself withdrew is announced only while nothing else has changed the display since. That
+  verdict is re-taken *after* every awaited reconciliation and immediately before the notice, in the
+  same tick as the write. Non-denial outcomes (409 conflicts, unconfirmed transmissions, stopped
+  actions) keep their existing truthful announcements, which name the record they are about.
+- Correction A (scheduling continuation): the drawer outcomes are bound the same way — the failure
+  continuation requires `failure.published` *and* `noticeContextHolds(operation)`, and the
+  stopped-command outcome (`onMissingVersion`, which now receives the initiating operation) writes
+  nothing outside the display context the command was started in.
+- Root cause B: the scheduling scrim sat at `z-index: 60` while the global header is `sticky top-0
+  z-[100]`, so the header (and its floating controls) painted over the drawer's own 44px close control
+  at 1280×900 and hit-testing reached the header instead of the button.
+- Correction B (frontend-web/src/components/operations/operationsSchedule.css): `.oe-sch-scrim` is now
+  `z-index: 130` — above all app chrome (header 100, tenant rail 110, quick refine 120) and below the
+  transient global overlays that must still show above an open drawer (toasts 9999, auth/error 10000+).
+  `Navbar.tsx` was inspected only and not modified: the header's normal behaviour is unchanged whenever
+  the drawer is closed, and no frozen v0 geometry, focus trap, Escape handling or focus restoration was
+  touched.
+
+Files changed in this pass (all inside the already-dirty worktree; no prior work cleaned up)
+- frontend-web/src/utils/operationsOwnershipRegistry.ts (display-context generation, own-withdrawal
+  record and verdict, lifecycle doc)
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (display-context helper at every
+  display change, own-withdrawal recording, post-await `noticeContextHolds` verdict in both failure
+  reporters, scheduling drawer-outcome binding, `GuardedCommandOptions.onMissingVersion` passes the
+  operation)
+- frontend-web/src/components/operations/operationsSchedule.css (scoped scrim stacking correction)
+- frontend-web/src/tests/operationsOwnershipRaceCorrections.test.mjs (7 new behavioural tests over the
+  real registry: same-root withdrawal keeps its notice, different-root notice race, same-root remount,
+  Request/Session id collision, claim-from-list announcement, own-withdrawal bookkeeping, in-memory
+  negative control of the former pre-await verdict; updated the R1 source-wiring assertions)
+- frontend-web/src/tests/operationsWorkspaceIntegration.test.mjs (updated the R1 wiring assertions to
+  the re-taken post-reconciliation verdict)
+- frontend-web/browser-verification/operations-completion/run.mjs (new CONTROLLED scenarios
+  `correctionStaleRefusalNoticeRace` and `correctionSchedulingCloseHitTarget`, the same-id Request
+  fixture/routes and the unrelated Session's own contact route, updated Escape comment) and that
+  directory's README
+- chat_gpt_changes (this entry)
+- No backend, API, DTO, schema, migration, dependency, role, navigation-contract, product-copy or
+  UI-design change. No commit, push, PR, merge, fetch, pull, rebase, reset, stash, checkout, clean,
+  SyncGit or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 162 tests, 162 pass, 0 fail (was 155).
+- node frontend-web/node_modules/typescript/bin/tsc --project frontend-web/tsconfig.json --noEmit
+  --incremental false -> exit 0, no diagnostics.
+- npm --prefix frontend-web run build -> succeeded (tsc + Vite); dist rebuilt for the harness.
+- git diff --check -> clean.
+- One consolidated CONTROLLED browser pass over the real built app with every HTTP request answered
+  in-process: node frontend-web/browser-verification/operations-completion/run.mjs -> 338 checks,
+  0 failures, 0 NOT TESTED, 91.1s (inside the ten-minute cap; two consecutive runs identical). It
+  includes the full F1–F6 journey, R1–R11 and the responsive matrix, i.e. the A5 paths the brief asked
+  not to regress: fresh-read 404, mutation 403/404, claim/release, 409 conflict, uncertain
+  transmission, and the existing `correctionStaleFailureContinuation` (R5).
+  - New `correctionStaleRefusalNoticeRace` (45 checks, 0 failures) drives Sol's reproduction exactly:
+    the held availability mutation answers 403, the denied #3108 detail is withdrawn before anything is
+    reconciled, the authoritative reconciliation is held open, and the OE then opens Session #4109 and
+    reveals its own independently authorized contact. *After* the older reconciliation is released,
+    #4109 receives no #3108 notice at all, keeps its heading, its detail text, its own contact and its
+    controls, the queues are still reconciled from the server, the refused mutation was transmitted
+    exactly once. The same scenario re-opens #3108 in a new mount generation after the withdrawal and
+    opens the standalone Request that shares the refused Session's numeric id: both keep their own
+    detail and freshly revealed contact and inherit no refusal.
+  - A1 (same-root denial) is re-verified by the pre-existing scenario: with the reconciliation held,
+    the refusal is not announced yet; after it is released the real refusal *is* announced in the
+    original context — "fresh-read 404 / 403 mutation / 404 mutation: the real refusal is still
+    announced after the reconciliation" all PASS.
+  - Scheduling drawer outcomes: the scenario records the held selection POST refused with 409 while the
+    OE is on #4109 — no scheduling outcome is fabricated for #4109, no drawer is rendered for it, the
+    conflict is still announced truthfully for its own record ("Session #3108 changed on the server
+    while you were working"), exactly one POST, and #4109 can schedule afterwards with no inherited
+    outcome. While the #3108 command owns the workspace the harness asserts #4109's scheduling control
+    is *disabled* (the UI half of the same invariant) and that no drawer renders for it.
+  - New `correctionSchedulingCloseHitTarget` (20 checks, 0 failures): at 1280×900 it measures the real
+    close control (44×44), hit-tests nine points inside it with `document.elementFromPoint` (centre plus
+    a quarter-target ring, because the control is a 10px-rounded square whose bounding-box corners lie
+    outside its painted area), requires every point to resolve to the control and none into
+    `header[data-pathome-header]`, and confirms the header's own controls really do overlap that point
+    (so the hit test is decisive). An ordinary `page.mouse.click` on the measured centre closes the
+    drawer, the overlay is fully removed and focus returns to the opener; an ordinary click aimed at the
+    header never reaches it (a capture-phase counter stays 0) and leaves the overlay open; Escape still
+    closes it with focus restored; at 390px the sheet fills the viewport, keeps its 44px target, adds no
+    horizontal overflow and closes by pointer with focus restored.
+- Negative control A6 (the pre-await-only `publishable` verdict restored temporarily, then removed):
+  ONLY="awaited refusal" -> 4 of the scenario's 45 checks fail exactly as the defect predicts (the
+  obsolete #3108 refusal announced in #4109, the #3108 record text appearing in #4109's workspace, the
+  older refusal announced in the newer #3108 mount, and the Session refusal applied to the same-id
+  Request root), while the corrected source passes all 45. No negative-control modification remains.
+- Negative control B (the scrim restored to `z-index: 60`, then removed): ONLY="closes by pointer" -> 7
+  of its 20 checks fail (all nine sampled points hit the header, the pointer click does not close the
+  drawer, the overlay stays open and focus is not restored). No negative-control modification remains.
+- Residue check after both controls: `rg "const publishable = "` -> 0 matches in OperationsWorkspace.tsx
+  (sha256 654d0d8b4ec7bd2c1d38b8d359076a5879a279480693ba94f5679ca1af6f5f45), operationsSchedule.css
+  sha256 bcf6d3d129f79ffe15b3a8b1152b2feef083c8dc14116e10beac8a4a2c6609d6 with `z-index: 130`.
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration, live OE endpoints and production data: NOT TESTED. No
+  database access, no server start, no staging target; every browser result above is CONTROLLED.
+- Physical devices, soft keyboards, screen readers and a fresh WCAG 2.2 AA audit: NOT TESTED.
+- The 209-check figures quoted for older harness revisions and the legacy 244 checks were not re-run as
+  separate batches; the single consolidated pass above supersedes them for this correction.
+
+Residual observation, explicitly outside the authorized scope (no change made)
+- Current behaviour: the *confirmed-success* scheduling path (`applyResult` →
+  `applyAuthoritativeSession`) still installs the authoritative Session returned by the booking without
+  re-checking the display context, so a `200` that arrives after the OE escaped the drawer and opened
+  another record would replace that record's detail with the booked one. This is not one of the two
+  reported defects (which cover refusals and failure continuations), and the F5/F6 "a 200 applies the
+  returned Session" contract is verified behaviour, so it was deliberately left untouched.
+- Recommended if it is to be addressed: gate the applied-result write on the same `noticeContextHolds`
+  discipline after approval, and verify it with the same held-response harness. Flagged here for the
+  next gate rather than changed under this bounded correction.
+
+Scope confirmation
+- Only the two reported defects were corrected, plus the tests and CONTROLLED harness evidence they
+  required. No unapproved scope expansion, no new dependency, no auth or session-isolation regression,
+  no commit and no push; HEAD is unchanged at 3356264ecd34545377fb28f98152702adb5c5495 and every
+  pre-existing tracked and untracked change is preserved for Sol's read-only verification.
+================================================================================
+
+================================================================================
+2026-10-15 02:05 IST — Phase 2A shared async completion lifecycle correction
+================================================================================
+Reason for request
+- Sol independently confirmed the R1 refusal lifecycle and F6 drawer stacking closed, and reported the
+  remaining gap named in that pass's own residual observation: a *successful* command response could
+  still overwrite a newer displayed record, because the shared command runner applied the returned
+  result with no display-context verdict at all. Independently reproduced for scheduling and
+  availability, plus the Claim navigation and Release clearing races. This pass implements ONE bounded
+  correction across the whole affected completion lifecycle, under the owner's brief.
+
+Architecture and design
+- The registry keeps its operation/session/credential/authority ownership and adds the display
+  dimension a completion needs, in the same shape the refusal side already used:
+  `displayContextGeneration` (the display context captured before the first await),
+  `acceptedDisplayContext` (a display change the operation published *itself* as an authorised step of
+  its own flow), `markAcceptedDisplayContext(operation)` (live operation only, re-recorded per
+  publication) and the pure, lock-independent `displayContextIsOwned(operation)` verdict. The verdict
+  is deliberately readable after `finish` has released the mutation lock, because a caller reporting a
+  confirmed command must ask it in the same tick as its own write; the commit guard is never used
+  there.
+- A. Authoritative business completion and B. Local UI publication are separated everywhere. A
+  validated success keeps its status, its `applied` result and its truthful confirmation; only its
+  *local publication* (installing the returned root, navigating, dropping detail, writing a drawer
+  outcome, or a record-named notice) is refused once the display context is no longer the command's.
+  No suppressed publication becomes an uncertain outcome, and no confirmed command is retransmitted.
+- One shared verdict, not per-command patches: `applyAuthoritativeSession`/`applyAuthoritativeRequest`
+  take the operation and refuse in the same tick as their write; `openDetail` includes the display
+  verdict in the context it validates and records the operation's own open; every caller re-takes the
+  verdict (`commandContextHolds`) after the awaited reconciliation for its record-named notice; the
+  stopped-command notice (`missingVersionNotice`) is bound the same way.
+- The scheduling drawer is bound to its *instance*, not its Session id: a `scheduleDrawerRef`
+  `{ sessionId, generation }` is captured before the booking starts and moved on every open and close
+  (leaving the detail, withdrawing a denied root and an account change all close it through the same
+  helper), and `scheduleOutcomeContextHolds(operation, drawer)` requires both the display context and
+  the exact drawer instance before any drawer outcome is written.
+- Legitimate operation-owned transitions are preserved: a coordination that replaces its initiating
+  Request with the returned Session (or a claim that opens the root it claimed, or a release that drops
+  the root it released) records its own display change, so the rest of that flow — including the
+  "work lists could not be refreshed" notice after a failed follow-up refresh — still publishes. Any
+  later user navigation or remount moves the generation past it and invalidates everything further.
+
+Files changed in this pass (all inside the already-dirty worktree; nothing pre-existing cleaned up)
+- frontend-web/src/utils/operationsOwnershipRegistry.ts (display-context capture, accepted-publication
+  record and the pure `displayContextIsOwned` verdict, lifecycle documentation)
+- frontend-web/src/components/operations/OperationsWorkspace.tsx (operation-aware `setDisplayContext`;
+  gated `applyAuthoritativeSession`/`applyAuthoritativeRequest`; the runner reports `operation` and
+  `published`; `openDetail` display verdict for operation-triggered opens; claim navigation, release
+  drop and every caller's post-reconciliation notice gated; drawer identity ref with open/close
+  helpers and `scheduleOutcomeContextHolds` for all four drawer writes)
+- frontend-web/src/tests/operationsCompletionContextOwnership.test.mjs (new: 13 behavioural tests over
+  the real registry — the five stale-success interleavings, navigation during the post-success
+  reconciliation, seven legitimate current-context families, the target-less claim distinction, the
+  drawer-instance and display verdicts, the live-operation-only publication record, two in-memory
+  negative controls, and the source wiring of every publication site)
+- frontend-web/src/tests/operationsWorkspaceIntegration.test.mjs and
+  frontend-web/src/tests/operationsOwnershipRaceCorrections.test.mjs (two approved wiring assertions
+  updated to the corrected source: the release's operation-bound display change, and the end anchor of
+  the "failed Phase 2A command" region; the scheduling-failure assertion window widened for the added
+  drawer-instance check)
+- frontend-web/browser-verification/operations-completion/run.mjs (new CONTROLLED scenarios
+  `correctionStaleSuccessContext`, `correctionClaimReleaseContext`,
+  `correctionCurrentContextSuccessPreserved`; stub controls `holdResponse` kinds `claim`/`release`,
+  `mutationResponseOverride`, `failQueueReads`, `releasedTargets`; shared
+  `assertUnrelatedSessionIntact`/`openSessionRow`/`workspaceRegion` helpers) and that directory's
+  README
+- chat_gpt_changes (this entry)
+- No backend, API, DTO, schema, migration, dependency, role, navigation-contract, product-copy or
+  UI-design change. No commit, push, PR, merge, fetch, pull, rebase, reset, stash, checkout, clean,
+  SyncGit or deployment.
+
+Verification executed
+- node --test frontend-web/src/tests/operations*.test.mjs -> 175 tests, 175 pass, 0 fail (was 162).
+- node frontend-web/node_modules/typescript/bin/tsc --project frontend-web/tsconfig.json --noEmit
+  --incremental false -> exit 0, no diagnostics.
+- npm --prefix frontend-web run build -> succeeded (tsc + Vite).
+- git diff --check -> clean.
+- ONE consolidated CONTROLLED browser pass over the real built app with every HTTP request answered
+  in-process: ONLY=correction node frontend-web/browser-verification/operations-completion/run.mjs ->
+  83 checks, 0 failures, 0 NOT TESTED, 31.7s (inside the ten-minute cap; two consecutive runs
+  identical). It covers the five pre-existing targeted-correction scenarios plus the three new ones.
+  - `correctionStaleSuccessContext` (26 checks, 0 failures): the scheduled #3108 drawer is closed and
+    the unrelated Session #4109 opened while the selection POST is held; the availability PUT is held
+    across opening #4109; and a same-root remount re-reads a newer snapshot (v8, "Renewed stop") that
+    the held older answer (frozen v6 body) must not replace. Each case: exactly one POST, the business
+    success announced for the record ("Session #3108 scheduled", "Property availability recorded"), and
+    #4109 keeping its own heading, itinerary, controls and contact with nothing of #3108 in the
+    workspace region — including its own scheduling drawer, which inherits no booking outcome.
+  - `correctionClaimReleaseContext` (18 checks, 0 failures): the claim's `204` and the release's `204`
+    are held while #4109 is opened; the confirmed claim is announced but never replaces #4109's detail,
+    and the confirmed release never clears it (its detail and its own contact control survive); one POST
+    each.
+  - `correctionCurrentContextSuccessPreserved` (10 checks, 0 failures): a coordination that installs the
+    Session it created *and* still reports its own failed follow-up queue refresh, a normal booking with
+    its authoritative drawer outcome and read-only session, and a normal availability update applying
+    the returned itinerary.
+- Bounded preservation runs of the previous pass's overlapping scenarios (each its own command, none of
+  them the full journey): ONLY=R1 (R1×3 + R10 + R11) 161 checks; ONLY=R3 27; ONLY=R4 7; ONLY=R5 4;
+  ONLY=F6 20; ONLY="stale session version" 3; ONLY="lost booking response" 3; ONLY="account switch" 1 ->
+  all 0 failures, 0 NOT TESTED.
+- Negative control A (the display verdict removed from both authoritative apply helpers, i.e. the
+  former unconditional application restored, then removed): ONLY="correction C1" -> 5 of the scenario's
+  26 checks fail (#4109 is replaced by the booked #3108 Session: heading, itinerary, controls and the
+  #3108 text all change) and the run then throws because #4109's own control is gone. The corrected
+  source passes all 26.
+- Negative control B (the display verdict removed from `openDetail` and from the release's drop, then
+  removed): ONLY="correction C2" -> 8 of the scenario's 18 checks fail (the claimed Request replaces
+  #4109 and the release clears it). The corrected source passes all 18.
+- Residue check after both controls: the workspace source was restored byte-for-byte from a copy taken
+  before the controls (sha256 532c225e64c736fd4b5b73d7041ff7317b214cb2a46cd0f91990e51a343daa25), `rg -c
+  "NEGATIVE CONTROL"` -> 0 matches, no `const publishable = ` residue, the app was rebuilt from the
+  corrected source and the consolidated pass reruns green. The temporary copy lives outside the
+  repository and was retired (`/tmp/oe-negative-control.removed-2026-10-15`); nothing of either control
+  remains in the worktree.
+
+NOT TESTED
+- Genuine Spring Boot/PostgreSQL integration, live OE endpoints and production data: NOT TESTED. No
+  database access, no server start, no staging target; every browser result above is CONTROLLED.
+- Physical devices, soft keyboards, screen readers and a fresh WCAG 2.2 AA audit: NOT TESTED.
+- The legacy 244 checks, the previous full 338-check journey and the eight-width responsive matrix were
+  not rerun as separate batches, as the brief directs; the consolidated pass above is this correction's
+  evidence, and the bounded preservation runs cover the overlapping scenarios.
+
+Residual observation, explicitly outside this correction (no change made)
+- A claim or release *refusal* announced from the claimable list stays unconditional by the approved R1
+  rule (a command with no mounted detail of its own addresses the queues), and the claim's
+  stopped-command notice on a version-less fresh read is unchanged. Both are the previously approved
+  behaviour for target-less commands, not part of the reported success-publication defect.
+
+Scope confirmation
+- Only the shared completion-lifecycle defect class was corrected, plus the tests and CONTROLLED harness
+  evidence it required. No unapproved scope expansion, no new dependency, no auth or session-isolation
+  regression, no commit and no push; HEAD is unchanged at 3356264ecd34545377fb28f98152702adb5c5495 and
+  every pre-existing tracked and untracked change is preserved for Sol's independent closure check.
+================================================================================
