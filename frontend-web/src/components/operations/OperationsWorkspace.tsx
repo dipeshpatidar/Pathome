@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowRight, CircleAlert, Flag, Home, Inbox, ListChecks, Lock, MapPin, RefreshCw } from 'lucide-react';
 import { ApiRequestError } from '../../services/apiError';
+import { readSchedulingIntent, preserveSchedulingIntent, forgetSchedulingIntent } from '../../utils/operationsSchedulingIntent';
 import {
   OPERATIONS_WORK_PAGE_SIZE,
   operationsWorkspaceService,
@@ -453,7 +454,10 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       sessionId,
       generation: scheduleDrawerRef.current.generation + 1
     };
-    setScheduleOutcome(null);
+    const session = captureOperationsSession();
+    let pending = false;
+    try { pending = Boolean(session && readSchedulingIntent(session, sessionId)); } catch { pending = true; }
+    setScheduleOutcome(pending ? { kind: 'uncertain', message: 'A previous booking is still unconfirmed. Check its authoritative outcome before scheduling again.' } : null);
     setScheduleSessionId(sessionId);
   }, []);
 
@@ -794,6 +798,11 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       if (detailController.current !== controller) return;
       if (controller.signal.aborted || !mountedRef.current || !contextHolds()) return;
       setDetail({ status: 'ready', snapshot });
+      if (snapshot.session) {
+        let pending = false;
+        try { pending = Boolean(readSchedulingIntent(captured, snapshot.session.sessionId)); } catch { pending = true; }
+        if (pending) openScheduleDrawer(snapshot.session.sessionId);
+      }
     } catch (cause) {
       if (detailController.current !== controller) return;
       if (controller.signal.aborted || !mountedRef.current || !contextHolds()) return;
@@ -801,7 +810,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       // A resource-specific 403/404 clears that resource only; it is never global revocation.
       setDetail({ status: operationsDetailFailureState(cause instanceof ApiRequestError ? cause.status : undefined) });
     }
-  }, [view, ownership, setDisplayContext]);
+  }, [view, ownership, setDisplayContext, openScheduleDrawer]);
 
   const closeDetail = useCallback(() => {
     detailController.current?.abort();
@@ -1894,7 +1903,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
    *
    * The outcome is published as drawer state rather than inferred: a `200` applies the returned
    * Session, a refusal keeps the selection and asks for a refresh, and an unconfirmed transmission is
-   * reported as unknown and never resent.
+   * reported as unknown until explicitly reconciled or retried with its saved command identity.
    */
   const confirmSelection = useCallback(async (
     selection: OperationsSchedulingSelection,
@@ -1912,8 +1921,20 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
      * never inherits it.
      */
     const drawer: ScheduleDrawerIdentity = { ...scheduleDrawerRef.current };
+    if (ownership.isLocked()) return;
+    const captured = captureOperationsSession();
+    if (!captured) return;
+    try {
+      if (readSchedulingIntent(captured, sessionId)) {
+        setScheduleOutcome({ kind: 'uncertain', message: 'A previous booking is still unconfirmed. Check the session before scheduling again.' });
+        return;
+      }
+    } catch {
+      setScheduleOutcome({ kind: 'uncertain', message: 'The pending booking record could not be read. Check the session before scheduling again.' });
+      return;
+    }
     setScheduleOutcome(null);
-    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSchedulingApproval>({
+    const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSchedulingApproval & { currentSession: OperationsSessionDetail }>({
       kind: 'schedule',
       busyKey: 'schedule',
       name,
@@ -1923,25 +1944,40 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
         const command = built.command;
         return command === null
           ? null
-          : (context) => operationsWorkspaceService.selectGroundExecutive(
-              sessionId,
-              {
-                expectedSessionVersion: command.expectedSessionVersion,
-                groundExecutiveUserId: command.groundExecutiveUserId,
-                scheduledAt: command.scheduledAt,
-                zoneId: command.zoneId,
-                overrideReason: command.overrideReason
-              },
-              context
-            );
+          : async (context) => {
+            const body = {
+              expectedSessionVersion: command.expectedSessionVersion,
+              groundExecutiveUserId: command.groundExecutiveUserId,
+              scheduledAt: command.scheduledAt,
+              zoneId: command.zoneId,
+              overrideReason: command.overrideReason
+            };
+            const intent = preserveSchedulingIntent(captured, sessionId, body);
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            if (context.signal?.aborted) abort();
+            context.signal?.addEventListener('abort', abort, { once: true });
+            const timer = setTimeout(abort, 15000);
+            try {
+              const approval = await operationsWorkspaceService.selectGroundExecutive(
+                sessionId, { ...intent.body, commandId: intent.commandId }, { ...context, signal: controller.signal });
+              // A replay deliberately returns the original approval. Read current truth as well:
+              // another authorized command may have changed the Session since that approval.
+              const current = await operationsWorkspaceService.sessionDetail(sessionId,
+                { session: context.session, signal: controller.signal });
+              return { ...approval, currentSession: current };
+            } finally { clearTimeout(timer); context.signal?.removeEventListener('abort', abort); }
+          };
       },
       applyResult: (_fresh, approval, operation) => {
+        const intent = readSchedulingIntent(operation.session, sessionId);
+        if (intent) forgetSchedulingIntent(operation.session, sessionId, intent.commandId);
         // A confirmed booking always carries the authoritative Session it committed.
-        const applied = applyAuthoritativeSession(approval.session, operation);
+        const applied = applyAuthoritativeSession(approval.currentSession, operation);
         // The drawer outcome is bound to the initiating drawer instance as well, so it is published
         // only while that exact drawer is the one on screen.
         if (applied && scheduleOutcomeContextHolds(operation, drawer)) {
-          setScheduleOutcome({ kind: 'scheduled', approval, refreshFailed: false });
+          setScheduleOutcome({ kind: 'scheduled', approval, currentSession: approval.currentSession, refreshFailed: false });
         }
         return applied;
       },
@@ -1974,6 +2010,26 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
         });
       },
       onFailure: async (cause, operation) => {
+        if (operation.dispatched && !(cause instanceof ApiRequestError && [401, 403, 404].includes(cause.status ?? 0))) {
+          let message = 'The request was sent, but its result is unconfirmed. Check the session to verify the booking.';
+          if (cause instanceof ApiRequestError && [400, 409, 422].includes(cause.status ?? 0)) {
+            try {
+              const intent = readSchedulingIntent(operation.session, sessionId);
+              const receipt = intent && await operationsWorkspaceService.schedulingCommand(sessionId, intent,
+                { session: operation.session, signal: operation.controller.signal });
+              if (!ownership.canCommit(operation, authorityRef.current)) return;
+              if (intent && receipt === null) {
+                forgetSchedulingIntent(operation.session, sessionId, intent.commandId);
+                if (scheduleOutcomeContextHolds(operation, drawer)) setScheduleOutcome({ kind: 'conflict', status: cause.status ?? 0,
+                  message: 'The server rejected this command and no completed receipt was recorded.', detail: cause.message });
+                return;
+              }
+            } catch { message = 'The request result could not be verified. Check again when the connection is available.'; }
+          }
+          if (ownership.canCommit(operation, authorityRef.current) && scheduleOutcomeContextHolds(operation, drawer))
+            setScheduleOutcome({ kind: 'uncertain', message });
+          return;
+        }
         const failure = await reportCommandFailure(cause, operation, name);
         /**
          * Re-check the whole synchronous commit guard after the awaited failure reporting: the
@@ -2020,13 +2076,16 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
         setScheduleOutcome({
           kind: 'scheduled',
           approval: outcome.applied,
+          currentSession: outcome.applied.currentSession,
           refreshFailed: outcome.reconciliation !== 'loaded'
         });
       }
-      const scheduled = outcome.applied.session;
+      const scheduled = outcome.applied.currentSession;
       notifySuccess(
-        `${name} scheduled`,
-        scheduled?.representativeUserId === null || !scheduled
+        scheduled?.status === 'SCHEDULED' ? `${name} scheduled` : `${name} booking accepted`,
+        scheduled?.status !== 'SCHEDULED'
+          ? `The booking command was accepted. Current Session status: ${scheduled.status}. Review its current details.`
+          : scheduled?.representativeUserId === null || !scheduled
           ? 'The server accepted the booking.'
           : `Ground Executive user ${scheduled.representativeUserId} is assigned and the tenant confirmation step is recorded separately.`,
         undefined,
@@ -2043,6 +2102,86 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     runGuardedCommand,
     scheduleOutcomeContextHolds
   ]);
+
+  const reconcileScheduling = useCallback(async (retry = false) => {
+    if (ownership.isLocked() || detail.status !== 'ready' || !detail.snapshot.session) return;
+    const sessionId = detail.snapshot.session.sessionId;
+    const session = captureOperationsSession();
+    if (!session) return;
+    const drawer = { ...scheduleDrawerRef.current };
+    const operation = ownership.begin('schedule', session, authorityRef.current.authorizationGeneration(), openRootRef.current);
+    setBusyCommand('schedule');
+    const verification = new AbortController();
+    const abortVerification = () => verification.abort();
+    operation.controller.signal.addEventListener('abort', abortVerification, { once: true });
+    const timer = setTimeout(abortVerification, 15000);
+    const context = { session, signal: verification.signal };
+    // Acceptance, the last verified Session and read freshness are independent facts.
+    // Keep this bounded to the existing authenticated drawer lifecycle; never persist its data.
+    let accepted = scheduleOutcome?.kind === 'scheduled' && scheduleOutcome.approval.session.sessionId === sessionId
+      ? scheduleOutcome : null;
+    try {
+      const intent = accepted ? null : readSchedulingIntent(session, sessionId);
+      const knownApproval = accepted?.approval ?? null;
+      if (!intent && !knownApproval) throw Error('No pending command receipt is available. Review the authoritative session details.');
+      if (retry && (!intent || scheduleOutcome?.kind !== 'uncertain' || scheduleOutcome.retryCommandId !== intent.commandId)) return;
+      let receipt = intent ? await operationsWorkspaceService.schedulingCommand(sessionId, intent, context) : knownApproval;
+      if (!ownership.canCommit(operation, authorityRef.current) || !scheduleOutcomeContextHolds(operation, drawer)) return;
+      if (receipt) {
+        accepted = { kind: 'scheduled', approval: receipt, currentSession: accepted?.currentSession ?? null,
+          refreshFailed: accepted?.refreshFailed ?? false, verificationFailed: true };
+        if (intent) forgetSchedulingIntent(session, sessionId, intent.commandId);
+      }
+      let fresh = await operationsWorkspaceService.sessionDetail(sessionId, context);
+      if (!ownership.canCommit(operation, authorityRef.current) || !scheduleOutcomeContextHolds(operation, drawer)) return;
+      if (!receipt && intent) {
+        // The receipt read enforces current OE scope/ownership server-side. NOT_RECORDED is only
+        // an observation: the original transaction can still be running. Only the exact saved
+        // command may be retried, and the backend remains the final concurrency authority.
+        const saved = readSchedulingIntent(session, sessionId);
+        if (JSON.stringify(saved) !== JSON.stringify(intent)) throw Error('Pending command changed.');
+        const eligible = fresh.sessionId === sessionId && fresh.status === 'DRAFT'
+          && fresh.version === intent.body.expectedSessionVersion && fresh.coordinatorUserId === session.userId;
+        if (!eligible) {
+          applyAuthoritativeSession(fresh, operation);
+          setScheduleOutcome({ kind: 'uncertain', message: `Current Session status: ${fresh.status}, version ${fresh.version ?? 'unknown'}. Its state or ownership changed. The original command remains unconfirmed; retry is unavailable. Check the session again to reconcile.` });
+          return;
+        }
+        if (!retry) {
+          applyAuthoritativeSession(fresh, operation);
+          setScheduleOutcome({ kind: 'uncertain', retryCommandId: intent.commandId,
+            message: 'No completed command is recorded. This does not prove failure. You still own the unchanged DRAFT Session. Retry scheduling will recheck access and resend only the original booking command.' });
+          return;
+        }
+        receipt = await operationsWorkspaceService.selectGroundExecutive(sessionId,
+          { ...intent.body, commandId: intent.commandId }, { ...context, onDispatch: () => ownership.markDispatched(operation) });
+        if (!ownership.canCommit(operation, authorityRef.current) || !scheduleOutcomeContextHolds(operation, drawer)) return;
+        accepted = { kind: 'scheduled', approval: receipt, currentSession: null, refreshFailed: false, verificationFailed: true };
+        forgetSchedulingIntent(session, sessionId, intent.commandId);
+        fresh = await operationsWorkspaceService.sessionDetail(sessionId, context);
+        if (!ownership.canCommit(operation, authorityRef.current) || !scheduleOutcomeContextHolds(operation, drawer)) return;
+      }
+      if (!receipt) return;
+      applyAuthoritativeSession(fresh, operation);
+      accepted = { kind: 'scheduled', approval: receipt, currentSession: fresh, refreshFailed: false, verificationFailed: false };
+      setScheduleOutcome(accepted);
+      const refreshed = await refreshAll(session);
+      if (ownership.canCommit(operation, authorityRef.current) && scheduleOutcomeContextHolds(operation, drawer))
+        setScheduleOutcome({ ...accepted, refreshFailed: refreshed !== 'loaded' });
+    } catch (cause) {
+      if (isOperationsSessionChangedError(cause) || !ownership.canCommit(operation, authorityRef.current)) return;
+      if (cause instanceof ApiRequestError && [401, 403, 404].includes(cause.status ?? 0)) {
+        await reportCommandFailure(cause, operation, operationsRecordTitle('SESSION', sessionId));
+      } else if (scheduleOutcomeContextHolds(operation, drawer)) {
+        setScheduleOutcome(accepted ? { ...accepted, verificationFailed: true }
+          : { kind: 'uncertain', message: 'The booking could not be verified. Check again when the connection is available.' });
+      }
+    } finally {
+      clearTimeout(timer);
+      operation.controller.signal.removeEventListener('abort', abortVerification);
+      if (ownership.finish(operation)) setBusyCommand(null);
+    }
+  }, [ownership, detail, scheduleOutcome, scheduleOutcomeContextHolds, applyAuthoritativeSession, refreshAll, reportCommandFailure]);
 
   const navigate = useCallback((next: QueueView) => {
     setView(next);
@@ -2253,10 +2392,12 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
                     onClose={closeScheduleDrawer}
                     onAcknowledgeOutcome={() => setScheduleOutcome(null)}
                     onConfirm={(selection, view, reason) => void confirmSelection(selection, view, reason)}
+                    onRetryScheduling={() => void reconcileScheduling(true)}
                     loadRanked={loadRankedRecommendations}
                     loadDiscovery={loadGeDiscovery}
                     onRefreshSession={() => {
-                      if (detailTarget) void openDetail(detailTarget);
+                      if (scheduleOutcome?.kind === 'uncertain' || scheduleOutcome?.kind === 'scheduled') void reconcileScheduling();
+                      else if (detailTarget) void openDetail(detailTarget);
                     }}
                   />
                 ) : null}

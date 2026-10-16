@@ -9,13 +9,18 @@
  * real lessor submission and a real staff publication - not browser-side fixtures.
  *
  * Usage (see package4.sh journey-browser):
- *   P4_STATE_FILE=<path to journey-state.json> node run.mjs
+ *   P4_STATE_FILE=<path to journey-state.json> P4_STAFF_PASSWORD=<disposable> node run.mjs
+ *
+ * The password is never read from the state file (which holds e-mail addresses and ids only) and is
+ * never defaulted: it comes from the ephemeral disposable run's environment, so no credential is
+ * stored on disk or committed.
  */
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import playwright from '/opt/homebrew/lib/node_modules/playwright/index.js';
+import { verifyBinding } from '../../../tools/oe-integration-env/lib/runtime.mjs';
 
 const { chromium } = playwright;
 
@@ -25,8 +30,13 @@ const STATE_FILE = process.env.P4_STATE_FILE;
 if (!STATE_FILE) throw new Error('P4_STATE_FILE must point at the journey state file');
 
 const state = JSON.parse(await readFile(STATE_FILE, 'utf8'));
-const BACKEND = process.env.P4_BACKEND_URL ?? state.backend ?? 'http://localhost:8080';
+const BACKEND = verifyBinding().origin;
 const REQUEST_KEY = `REQUEST-${state.requestId}`;
+const STAFF_PASSWORD = process.env.P4_STAFF_PASSWORD;
+if (!STAFF_PASSWORD) {
+  throw new Error('P4_STAFF_PASSWORD is required: it comes from the disposable run\'s secrets.env '
+    + '(see package4.sh journey-browser). No password is read from the state file.');
+}
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -90,7 +100,8 @@ const freshContext = async (browser, { path = '/' } = {}) => {
       const body = request.postData();
       const init = { method: request.method(), headers, redirect: 'manual' };
       if (body !== null && body !== undefined && request.method() !== 'GET') init.body = body;
-      const response = await fetch(`${BACKEND}${url.pathname}${url.search}`, init);
+      verifyBinding();
+      const response = await fetch(`${BACKEND}${url.pathname}${url.search}`, { ...init, signal: AbortSignal.timeout(15000) });
       const text = await response.text();
       network.push({
         method: request.method(),
@@ -102,6 +113,7 @@ const freshContext = async (browser, { path = '/' } = {}) => {
       return route.fulfill({
         status: response.status,
         contentType: response.headers.get('content-type') ?? 'application/json',
+        headers: { 'Cache-Control': response.headers.get('cache-control') ?? '' },
         body: text
       });
     }
@@ -150,7 +162,7 @@ try {
   {
     const env = await freshContext(browser);
     oe = env;
-    await signInThroughTheForm(env.page, state.identities.oe.email, state.identities.oe.password);
+    await signInThroughTheForm(env.page, state.identities.oe.email, STAFF_PASSWORD);
     const token = await storedToken(env.page);
     check('the real sign-in form established a session token', typeof token === 'string' && token.length > 20);
     check('sign-in went to the real authentication endpoint',
@@ -223,7 +235,7 @@ try {
       ['the staff review administrator', state.identities.reviewer]
     ]) {
       const { context, page, pageErrors } = await freshContext(browser);
-      await signInThroughTheForm(page, identity.email, identity.password);
+      await signInThroughTheForm(page, identity.email, STAFF_PASSWORD);
       await settle(page);
       check(`${label} is offered no Operations entry point`, !(await operationsEntryOffered(page)));
       check(`${label} causes no uncaught page error`, pageErrors.length === 0, pageErrors.join(' | '));

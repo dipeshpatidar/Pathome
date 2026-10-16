@@ -27,16 +27,14 @@ OE_P4_POSTGRES_TESTS='ListingReviewAuthorityHttpPostgresTest'
 
 # shellcheck source=lib/db-guard.sh
 . "$OE_TOOL_DIR/lib/db-guard.sh"
+# shellcheck source=lib/env-isolation.sh
+. "$OE_TOOL_DIR/lib/env-isolation.sh"
 
 oe_log() { printf '%s\n' "$*"; }
 oe_die() { printf 'ERROR  %s\n' "$*" >&2; exit 1; }
 
 oe_load_designation() {
-  [ -f "$OE_ENV_FILE" ] || oe_die "No target designation found at $OE_ENV_FILE."
-  # shellcheck disable=SC1090
-  set -a
-  . "$OE_ENV_FILE"
-  set +a
+  oe_runtime_load_designation
 }
 
 oe_p4_dir() { printf '%s' "$PATHOME_OE_TEST_RUN_DIR/package4"; }
@@ -45,17 +43,11 @@ oe_p4_state() { printf '%s' "$(oe_p4_dir)/journey-state.json"; }
 oe_p4_ensure_secrets() {
   local secrets="$PATHOME_OE_TEST_RUN_DIR/secrets.env"
   [ -s "$secrets" ] || oe_die "No disposable secrets at $secrets. Run 'run.sh backend' first."
-  # shellcheck disable=SC1090
-  set -a
-  . "$secrets"
-  set +a
+  oe_runtime_load_secrets
 }
 
 oe_p4_require_backend() {
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$OE_API_BASE_URL/staff/me/capabilities" || true)"
-  [ "$code" = '401' ] || [ "$code" = '403' ] || \
-    oe_die "no disposable backend answered $OE_API_BASE_URL (HTTP '$code'); run 'run.sh backend'"
+  oe_runtime_require_backend
 }
 
 cmd_status() {
@@ -85,6 +77,8 @@ cmd_status() {
 
 cmd_verify_unit() {
   oe_load_designation
+  oe_iso_apply_test_env "$(oe_guard_jdbc_url)"
+  unset PATHOME_VISIT_OPERATIONS_POSTGRES_TEST
   oe_log 'focused unit + controller-security matrix (no database)'
   mvn -f "$OE_REPO_ROOT/backend/pom.xml" -o \
     -Dtest="$OE_P4_FOCUSED_UNIT_TESTS" -DfailIfNoTests=false test
@@ -105,13 +99,7 @@ cmd_verify_postgres() {
 
   oe_log "real HTTP/PostgreSQL listing-review authority matrix against $jdbc_url"
   (
-    set -a
-    [ -f "$OE_REPO_ROOT/.env.local" ] && . "$OE_REPO_ROOT/.env.local"
-    set +a
-    export PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true
-    export SPRING_DATASOURCE_URL="$jdbc_url"
-    export SPRING_DATASOURCE_USERNAME="$PATHOME_OE_TEST_DB_APP_USER"
-    export PATHOME_OE_TEST_DB
+    oe_iso_apply_test_env "$jdbc_url"
     mvn -f "$OE_REPO_ROOT/backend/pom.xml" -o \
       -Dtest="$OE_P4_POSTGRES_TESTS" -DfailIfNoTests=false test
   )
@@ -127,7 +115,7 @@ cmd_journey() {
   [ -f "$media" ] || oe_die "the journey needs a real photo to upload at $media"
 
   oe_log 'genuine lessor -> tenant -> OE journey over real HTTP (nothing seeded through SQL)'
-  P4_BACKEND_URL="http://localhost:$OE_BACKEND_PORT" \
+  P4_BACKEND_URL="http://127.0.0.1:$OE_BACKEND_PORT" \
   P4_ADMIN_EMAIL="$OE_BOOTSTRAP_ADMIN_EMAIL" \
   P4_ADMIN_PASSWORD="$OE_BOOTSTRAP_ADMIN_PASSWORD" \
   P4_STAFF_PASSWORD="$OE_STAFF_PASSWORD" \
@@ -139,6 +127,7 @@ cmd_journey() {
 
 cmd_journey_browser() {
   oe_load_designation
+  oe_p4_ensure_secrets
   local harness="$OE_REPO_ROOT/frontend-web/browser-verification/listing-publication-journey/run.mjs"
   [ -f "$harness" ] || oe_die "the journey browser harness is missing"
   [ -f "$(oe_p4_state)" ] || oe_die "run 'package4.sh journey' first: no journey state found"
@@ -147,7 +136,11 @@ cmd_journey_browser() {
   oe_p4_require_backend
 
   oe_log 'controlled Chromium pass over the genuine journey tail'
-  P4_STATE_FILE="$(oe_p4_state)" node "$harness"
+  # The disposable password is supplied from the ephemeral run secrets, never from the state file.
+  P4_STATE_FILE="$(oe_p4_state)" \
+  P4_BACKEND_URL="http://127.0.0.1:$OE_BACKEND_PORT" \
+  P4_STAFF_PASSWORD="$OE_STAFF_PASSWORD" \
+  node "$harness"
 }
 
 case "${1:-}" in

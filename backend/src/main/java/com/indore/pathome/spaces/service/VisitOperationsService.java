@@ -49,6 +49,7 @@ public class VisitOperationsService {
     private final VisitSchedulingDecisionRepository decisions;
     private final OperationalSecurityGuards operationalGuards;
     private final OperationalAuditService operationalAudit;
+    private final VisitSchedulingCommandStore schedulingCommands;
 
     public VisitOperationsService(PropertyVisitRequestRepository requests,
                                   VisitSessionRepository sessions,
@@ -64,7 +65,8 @@ public class VisitOperationsService {
                                   VisitSchedulingRecommendationService recommendations,
                                   VisitSchedulingDecisionRepository decisions,
                                   OperationalSecurityGuards operationalGuards,
-                                  OperationalAuditService operationalAudit) {
+                                  OperationalAuditService operationalAudit,
+                                  VisitSchedulingCommandStore schedulingCommands) {
         this.requests = requests;
         this.sessions = sessions;
         this.users = users;
@@ -80,6 +82,7 @@ public class VisitOperationsService {
         this.decisions = decisions;
         this.operationalGuards = operationalGuards;
         this.operationalAudit = operationalAudit;
+        this.schedulingCommands = schedulingCommands;
     }
 
     @Transactional(readOnly = true)
@@ -106,11 +109,17 @@ public class VisitOperationsService {
     @Transactional
     public VisitSchedulingApprovalView selectForOwner(Long actorId, Long sessionId,
             ApproveVisitRecommendationCommand command) {
+        schedulingCommands.applyBounds();
         OwnedOperationsAuthorizationService.Actor actor = ownedAuthorization.admit(actorId);
         if (actor.admin()) throw new AccessDeniedException("Use the Admin recommendation endpoint");
         requireSelectionCommand(command);
+        if (command.commandId() == null) throw new IllegalArgumentException("Scheduling command ID is required");
         VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
-        ownedAuthorization.requireOwnedDraftSession(actor, session);
+        ownedAuthorization.requireOwnedSession(actor, session);
+        VisitSchedulingApprovalView replay = schedulingCommands.begin(actor.id(), sessionId, command);
+        if (replay != null) return replay;
+        if (session.getStatus() != VisitSessionStatus.DRAFT)
+            throw new VisitOperationsConflictException("Only draft sessions can be changed");
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
         if (!recommendations.isPotentialOwnedGe(command.groundExecutiveUserId(), session.getCity()))
             throw new VisitOperationsConflictException(VisitSchedulingRecommendationService.OWNED_SELECTION_STALE);
@@ -123,7 +132,20 @@ public class VisitOperationsService {
         ScheduleVisitSessionCommand booking = new ScheduleVisitSessionCommand(session.getVersion(),
                 command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
         OperationsVisitSessionView scheduled = scheduleLocked(session, booking);
-        return recordSelection(session, actor.user(), command, assessment, reason, scheduled);
+        VisitSchedulingApprovalView result = recordSelection(session, actor.user(), command, assessment, reason, scheduled);
+        schedulingCommands.complete(actor.id(), command.commandId(), result);
+        return result;
+    }
+
+    @Transactional
+    public VisitSchedulingCommandView schedulingCommand(Long actorId, Long sessionId, UUID commandId) {
+        schedulingCommands.applyBounds();
+        var actor = ownedAuthorization.admit(actorId);
+        if (actor.admin()) throw new AccessDeniedException("Use the Admin scheduling endpoint");
+        VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
+        ownedAuthorization.requireOwnedSession(actor, session);
+        var approval = schedulingCommands.find(actor.id(), sessionId, commandId);
+        return new VisitSchedulingCommandView(commandId, approval == null ? "NOT_RECORDED" : "COMPLETED", approval);
     }
 
     @Transactional

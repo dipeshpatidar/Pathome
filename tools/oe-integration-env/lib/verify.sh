@@ -3,20 +3,12 @@
 #
 # Every proof below is executed against the live local server. Nothing is reported as
 # passing unless the command actually ran and produced the stated result.
+#
+# Disposable-only by construction: this suite reads, and compares against, the designated disposable
+# database and repository artefacts only. It never inspects, dumps, fingerprints or compares against
+# a protected database, and it therefore makes - and claims - nothing about one.
 
 OE_VERIFY_RESPONSE=''
-
-# Schema comparison queries. The disposable marker table is excluded because it is
-# infrastructure for this environment and intentionally not part of the application schema.
-OE_VERIFY_COLUMN_NAMES="select string_agg(table_name || '.' || column_name, ',' order by table_name, column_name)
-  from information_schema.columns
-  where table_schema = 'public' and table_name <> 'pathome_oe_test_env'"
-
-OE_VERIFY_COLUMN_TYPES="select table_name || '.' || column_name || ' = ' || data_type ||
-    coalesce('(' || character_maximum_length || ')', '')
-  from information_schema.columns
-  where table_schema = 'public' and table_name <> 'pathome_oe_test_env'
-  order by table_name, column_name"
 
 # Minimal API helper. Writes the body to OE_VERIFY_RESPONSE and prints the HTTP status.
 oe_verify_api() {
@@ -122,101 +114,145 @@ oe_verify_main() {
   # -----------------------------------------------------------------------------------
   printf -- '--- 3. an unmarked database cannot be destroyed -----------------------------\n'
   # -----------------------------------------------------------------------------------
-  local probe="pathome_oe_test_guardprobe_$(date +%s)"
-  local code
-  code="$(oe_verify_static_exit "$probe")"
-  check "a freshly named disposable target passes the static rules ($probe)" '0' "$code"
-
-  oe_psql_admin postgres -c "CREATE DATABASE \"$probe\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\"" >/dev/null
-  code="$(oe_verify_destructive_exit "$probe")"
-  check 'destruction of that database is REFUSED while it lacks the marker' \
-    "$OE_GUARD_ERR_MISSING_SENTINEL" "$code"
-
-  oe_psql_app "$probe" -q \
-    -v "oe_database=$probe" -v "oe_guard_version=$OE_GUARD_VERSION" -v "oe_run_id=guardprobe" \
-    -f "$OE_TOOL_DIR/sql/00-disposable-marker.sql" >/dev/null
-  code="$(oe_verify_destructive_exit "$probe")"
-  check 'destruction is permitted once the disposable marker is present' '0' "$code"
-
-  oe_psql_admin postgres -c "DROP DATABASE IF EXISTS \"$probe\" WITH (FORCE)" >/dev/null
-  check 'the probe database was removed again' '0' \
-    "$(oe_psql_admin postgres -Atc "select count(*) from pg_database where datname = '$probe'")"
-  printf '\n'
+  # The no-marker refusal is covered by inert negative controls. Creating an intentionally
+  # unmarked live database introduced an unrecoverable interruption window and is unnecessary.
+  printf 'NOT TESTED  live unmarked-probe destruction (no extra database is created).\n'
+  printf 'Guard refusal is verified by the nonconnecting regression batch.\n\n'
 
   # -----------------------------------------------------------------------------------
-  printf -- '--- 4. the normal schema was reproduced by supported Flyway migrations ------\n'
+  printf -- '--- 4. the schema was reproduced by the repository-controlled migrations ----\n'
   # -----------------------------------------------------------------------------------
-  local disposable_max preserved_max disposable_count preserved_count
-  disposable_max="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-    'select version from flyway_schema_history where success order by installed_rank desc limit 1')"
-  preserved_max="$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc \
-    'select version from flyway_schema_history where success order by installed_rank desc limit 1')"
-  disposable_count="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-    'select count(*) from flyway_schema_history')"
-  preserved_count="$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc \
-    'select count(*) from flyway_schema_history')"
+  # Every expectation below is read from a repository artefact - the Flyway migration files, the
+  # supported legacy v1 baseline, and the committed expected-schema.txt. Nothing is compared with,
+  # or derived from, any database outside this environment.
+  local expected_versions applied_versions expected_count applied_count live_base expected_base
+  local live_views expected_views missing_objects unexpected_objects
 
-  check 'completed Flyway history matches the preserved development database' "$preserved_count" "$disposable_count"
-  check 'highest applied migration matches the preserved development database' "$preserved_max" "$disposable_max"
+  expected_versions="$(oe_repo_expected_versions | paste -sd, -)"
+  applied_versions="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select string_agg(version, ',' order by installed_rank) from flyway_schema_history where success")"
+  expected_count="$(oe_repo_expected_versions | wc -l | tr -d ' ')"
+  applied_count="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    'select count(*) from flyway_schema_history where success')"
+
+  check 'the applied migration sequence equals the repository migration sequence' \
+    "$expected_versions" "$applied_versions"
+  check 'the applied migration count equals the repository migration count' \
+    "$expected_count" "$applied_count"
+  check 'the highest applied migration is the highest repository migration' \
+    "$(oe_repo_migration_versions | tail -1)" \
+    "$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+      'select version from flyway_schema_history where success order by installed_rank desc limit 1')"
   check 'no failed migration is recorded' '0' \
     "$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
       'select count(*) from flyway_schema_history where not success')"
-  check 'the v1 legacy baseline row is present' '1' \
+  check 'the v1 legacy baseline row is present and successful' '1' \
     "$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-      "select count(*) from flyway_schema_history where version = '1'")"
+      "select count(*) from flyway_schema_history where version = '1' and success")"
 
-  local disposable_versions preserved_versions
-  disposable_versions="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-    'select string_agg(version, E'"'"','"'"' order by installed_rank) from flyway_schema_history')"
-  preserved_versions="$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc \
-    'select string_agg(version, E'"'"','"'"' order by installed_rank) from flyway_schema_history')"
-  check 'the applied migration sequence is identical' "$preserved_versions" "$disposable_versions"
-
-  local disposable_tables preserved_tables
-  disposable_tables="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-    "select string_agg(table_name, ',' order by table_name) from information_schema.tables
-      where table_schema='public' and table_name <> 'pathome_oe_test_env'")"
-  preserved_tables="$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc \
-    "select string_agg(table_name, ',' order by table_name) from information_schema.tables
-      where table_schema='public'")"
-  if [ "$disposable_tables" = "$preserved_tables" ]; then
-    check 'the public table set matches the preserved development database' 'identical' 'identical'
+  expected_base="$( { oe_repo_expected_tables base; oe_repo_expected_tables infra; } | LC_ALL=C sort -u )"
+  live_base="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select table_name from information_schema.tables
+      where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name" | LC_ALL=C sort -u)"
+  if [ "$live_base" = "$expected_base" ]; then
+    check 'the public base-table set equals the repository-controlled expectation' 'identical' 'identical'
   else
-    check 'the public table set matches the preserved development database' 'identical' 'differs'
-    printf '       present only in disposable: %s\n' \
-      "$(comm -13 <(printf '%s' "$preserved_tables" | tr ',' '\n' | sort) \
-                  <(printf '%s' "$disposable_tables" | tr ',' '\n' | sort) | paste -sd, -)"
-    printf '       present only in preserved:  %s\n' \
-      "$(comm -23 <(printf '%s' "$preserved_tables" | tr ',' '\n' | sort) \
-                  <(printf '%s' "$disposable_tables" | tr ',' '\n' | sort) | paste -sd, -)"
+    check 'the public base-table set equals the repository-controlled expectation' 'identical' 'differs'
+    printf '       expected but absent: %s\n' \
+      "$(comm -23 <(printf '%s\n' "$expected_base") <(printf '%s\n' "$live_base") | paste -sd, -)"
+    printf '       present but unexpected: %s\n' \
+      "$(comm -13 <(printf '%s\n' "$expected_base") <(printf '%s\n' "$live_base") | paste -sd, -)"
+    printf '       update %s only with a reviewed repository change\n' "$OE_EXPECTED_SCHEMA"
   fi
 
-  check 'the staff-governance tables exist in the disposable schema' '3' \
-    "$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-      "select count(*) from information_schema.tables where table_schema='public'
-        and table_name in ('staff_access_grants','operational_audit_events','employee_profiles')")"
+  expected_views="$(oe_repo_expected_tables view | LC_ALL=C sort -u)"
+  live_views="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select table_name from information_schema.tables
+      where table_schema = 'public' and table_type = 'VIEW' order by table_name" | LC_ALL=C sort -u)"
+  check 'the public view set equals the repository-controlled expectation' \
+    "$(printf '%s' "$expected_views" | shasum -a 256 | awk '{print $1}')" \
+    "$(printf '%s' "$live_views" | shasum -a 256 | awk '{print $1}')"
 
-  local disposable_columns preserved_columns
-  disposable_columns="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc "$OE_VERIFY_COLUMN_NAMES")"
-  preserved_columns="$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc "$OE_VERIFY_COLUMN_NAMES")"
-  check 'the public column set matches the preserved development database' \
-    "$(printf '%s' "$preserved_columns" | shasum -a 256 | awk '{print $1}')" \
-    "$(printf '%s' "$disposable_columns" | shasum -a 256 | awk '{print $1}')"
+  # The columns every approved Phase 2A Operations workflow depends on, all declared by migrations.
+  # A missing column means the disposable schema is not the schema this environment claims to test.
+  local required_columns='property_visit_requests.id
+property_visit_requests.tenant_id
+property_visit_requests.status
+property_visit_requests.version
+property_visit_requests.session_id
+property_visit_requests.supported_city_id
+property_visit_requests.operating_team_id
+property_visit_requests.coordinator_user_id
+property_visit_requests.operational_scope_ready
+property_visit_requests.availability_start_at
+property_visit_requests.availability_end_at
+property_visit_requests.availability_zone_id
+visit_sessions.id
+visit_sessions.tenant_id
+visit_sessions.status
+visit_sessions.version
+visit_sessions.scheduled_at
+visit_sessions.zone_id
+visit_sessions.representative_user_id
+visit_sessions.supported_city_id
+visit_sessions.operating_team_id
+visit_sessions.coordinator_user_id
+visit_sessions.operational_scope_ready
+visit_session_items.id
+visit_session_items.session_id
+visit_session_items.listing_id
+visit_session_items.position
+visit_session_items.confirmation_status
+visit_session_items.availability_start_at
+visit_session_items.availability_end_at
+visit_session_items.availability_zone_id
+visit_session_items.availability_source
+visit_session_items.confirmed_by_user_id
+visit_session_items.removed_at
+operating_teams.id
+operating_teams.city_id
+operating_teams.code
+operating_teams.active
+operating_teams.version
+supported_cities.id
+supported_cities.code
+supported_cities.active
+supported_cities.version
+staff_access_grants.id
+staff_access_grants.user_id
+staff_access_grants.capability
+staff_access_grants.scope_type
+staff_access_grants.city_id
+staff_access_grants.team_id
+staff_access_grants.revoked_at
+staff_access_grants.provisioning_source
+operational_audit_events.id
+operational_audit_events.action_code
+operational_audit_events.target_type
+operational_audit_events.target_id
+employee_profiles.staff_active
+employee_profiles.version
+listings.id
+listings.status
+listings.canonical_locality_id
+listings.published_at'
+  missing_objects="$(while IFS= read -r column; do
+    [ -n "$column" ] || continue
+    table="${column%%.*}"
+    name="${column#*.}"
+    found="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+      "select count(*) from information_schema.columns
+        where table_schema = 'public' and table_name = '$table' and column_name = '$name'")"
+    [ "$found" = '1' ] || printf '%s,' "$column"
+  done <<< "$required_columns")"
+  check 'every column the Phase 2A workflows depend on exists' '' "$missing_objects"
+  unexpected_objects="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select count(*) from information_schema.columns
+      where table_schema = 'public' and column_name in ('oe_database', 'oe_marker')")"
+  check 'the disposable marker never leaks into an application table' '0' "$unexpected_objects"
 
-  # Column *types* are reported separately. The preserved database was converged over time by
-  # Hibernate schema updates, so a Flyway-only database can legitimately differ here; the
-  # difference is measured and printed rather than hidden.
-  local type_diff
-  type_diff="$(comm -3 \
-    <(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc "$OE_VERIFY_COLUMN_TYPES" | sort) \
-    <(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc "$OE_VERIFY_COLUMN_TYPES" | sort))"
-  if [ -z "$type_diff" ]; then
-    printf 'NOTE  no column-type divergence from the preserved development database\n'
-  else
-    printf 'NOTE  column types converged by earlier Hibernate runs in the preserved database,\n'
-    printf '      and therefore absent from a Flyway-only build (informational):\n'
-    printf '%s\n' "$type_diff" | sed -e 's/^\t/      disposable: /' -e 's/^\([^ 	]\)/      preserved:  \1/'
-  fi
+  printf 'NOTE  repository schema-source fingerprint: %s\n' "$(oe_repo_schema_source_fingerprint)"
+  printf '      (sha256 over the legacy baseline and every migration file: recorded as evidence)\n'
   printf '\n'
 
   # -----------------------------------------------------------------------------------
@@ -236,11 +272,8 @@ oe_verify_main() {
 
   local email token status
   for email in codex.oe.env.cityadmin@pathome.test codex.oe.env.intake@pathome.test codex.oe.env.nogrant@pathome.test; do
-    check "staff identity $email exists on the disposable database" '1' \
+    check "staff identity $email exists exactly once on the disposable database" '1' \
       "$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
-        "select count(*) from users where email = '$email'")"
-    check "staff identity $email is absent from the preserved database" '0' \
-      "$(oe_psql_app "$OE_PROTECTED_DEV_DB" -Atc \
         "select count(*) from users where email = '$email'")"
   done
 
@@ -298,21 +331,27 @@ oe_verify_main() {
   printf '\n'
 
   # -----------------------------------------------------------------------------------
-  printf -- '--- 7. the preserved development database is unchanged ---------------------\n'
+  printf -- '--- 7. auditable evidence of the actual disposable test target ------------\n'
   # -----------------------------------------------------------------------------------
-  local before_file="$evidence_dir/protected-db-before.txt"
-  if [ -f "$before_file" ]; then
-    local expected actual
-    expected="$(cat "$before_file")"
-    actual="$(oe_protected_fingerprint)"
-    if [ "$expected" = "$actual" ]; then
-      check 'pathome_db data and schema digests match the pre-run recording' 'identical' 'identical'
-    else
-      check 'pathome_db data and schema digests match the pre-run recording' 'identical' 'CHANGED'
-      printf '       before:\n%s\n       after:\n%s\n' "$expected" "$actual"
-    fi
+  # Disposable-only. This environment never reads, dumps, fingerprints or compares against a
+  # protected database, so no proof here - and no proof anywhere in this run - is a claim about one.
+  local attestation="$evidence_dir/target-attestation.txt"
+  cmd_attest >/dev/null 2>&1 || true
+  if [ -f "$attestation" ]; then
+    check 'the target attestation records the live designation as its own name' '1' \
+      "$(grep -c "^live_current_database=$PATHOME_OE_TEST_DB\$" "$attestation")"
+    check 'the target attestation records the positive DISPOSABLE marker' '1' \
+      "$(grep -c "^disposable_marker=DISPOSABLE db_name=$PATHOME_OE_TEST_DB " "$attestation")"
+    check 'the target attestation records the guard deny rules' '1' \
+      "$(grep -c '^protected_deny_rules=' "$attestation")"
+    check 'the guard deny list still names the protected databases' '1' \
+      "$(grep -c '^protected_deny_rules=.*pathome_db' "$attestation")"
+    check 'the target attestation states that no protected database was inspected' '1' \
+      "$(grep -c 'NOT evidence that any protected database is unchanged' "$attestation")"
+    check 'the attestation records exactly one live database identity' '1' \
+      "$(grep -c '^live_current_database=' "$attestation")"
   else
-    check "a pre-run fingerprint was recorded at $before_file" 'present' 'missing'
+    check "the target attestation was produced at $attestation" 'present' 'missing'
   fi
   printf '\n'
 

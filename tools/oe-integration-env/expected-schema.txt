@@ -1,0 +1,67 @@
+# Pathome OE integration environment - repository-controlled expected schema.
+#
+# This file is the authoritative, reviewable expectation for the public objects of the designated
+# disposable database. Every entry below is declared by a repository artefact:
+#   * `base`  - declared by `backend/src/main/resources/db/migration/V*.sql`
+#               or by `backend/src/test/resources/db/baseline/pathome-v1-legacy-core.sql`
+#   * `view`  - declared by a migration's CREATE [OR REPLACE] VIEW
+#   * `infra` - created by this environment's own tooling or by Flyway itself, never by the
+#               application schema
+#
+# `tests/oe-harness-static.test.mjs` re-derives the `base` and `view` sets from those repository
+# artefacts on every run, so this file cannot silently drift from the migrations. It is compared with
+# the live database by `run.sh verify` (section 4) and `run.sh attest`; nothing here is derived from,
+# or compared with, any other database.
+#
+# Field one is the kind, field two is the object name.
+
+base employee_profiles
+base ground_executive_coverage
+base ground_executive_scheduling_profiles
+base ground_executive_shifts
+base ground_executive_unavailability
+base lead_routing_queue
+base lessor_profiles
+base listings
+base localities
+base media_upload_claims
+base media_upload_failures
+base operating_teams
+base operational_audit_events
+base parser_field_reviews
+base parser_model_versions
+base parser_training_examples
+base property_draft_media
+base property_media_assets
+base property_upload_drafts
+base property_visit_requests
+base rental_details
+base sale_details
+base search_alias
+base search_alias_audit
+base search_alias_candidate
+base search_alias_evidence
+base search_query_event
+base staff_access_grants
+base supported_cities
+base system_notifications
+base tenant_visit_entitlement_accounts
+base tenant_visit_logs
+base user_favorites
+base users
+base visit_entitlement_ledger
+base visit_execution_events
+base visit_notification_outbox
+base visit_policy
+base visit_scheduling_decisions
+base visit_session_item_outcomes
+base visit_session_items
+base visit_session_outcome_reports
+base visit_sessions
+base visit_start_challenges
+
+view property_media_debug_view
+
+infra flyway_schema_history
+infra pathome_oe_test_env
+base visit_scheduling_commands

@@ -71,7 +71,7 @@ import static org.mockito.Mockito.when;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({VisitOperationsService.class, VisitOperationsAuthorizationService.class,
+@Import({VisitOperationsService.class, VisitSchedulingCommandStore.class, TransactionalCommandBounds.class, VisitOperationsAuthorizationService.class,
         OwnedOperationsAuthorizationService.class, StaffAccessService.class,
         OperationalSecurityGuards.class, OperationalAuditService.class, DatabaseClock.class,
         OperationalNotificationAuthorizationService.class,
@@ -85,8 +85,7 @@ import static org.mockito.Mockito.when;
         VisitRepairOperationsService.class})
 @EnabledIfEnvironmentVariable(named = "PATHOME_VISIT_OPERATIONS_POSTGRES_TEST", matches = "true")
 class VisitOperationsPostgresIntegrationTest {
-    private static final String BASE_URL = System.getenv().getOrDefault(
-            "SPRING_DATASOURCE_URL", "jdbc:postgresql://localhost:5432/pathome_db");
+    private static final String BASE_URL = DisposableSchedulingTestDatabase.url();
     private static final String USERNAME = System.getenv().getOrDefault("SPRING_DATASOURCE_USERNAME", "pathome");
     private static final String PASSWORD = System.getenv().getOrDefault("SPRING_DATASOURCE_PASSWORD", "");
     private static final String SCHEMA = "visit_ops_test_" + UUID.randomUUID().toString().replace("-", "");
@@ -99,6 +98,7 @@ class VisitOperationsPostgresIntegrationTest {
         }
         String schemaUrl = BASE_URL + (BASE_URL.contains("?") ? "&" : "?") + "currentSchema=" + SCHEMA;
         registry.add("spring.datasource.url", () -> schemaUrl);
+        registry.add("spring.datasource.hikari.jdbc-url", () -> schemaUrl);
         registry.add("spring.datasource.username", () -> USERNAME);
         registry.add("spring.datasource.password", () -> PASSWORD);
         registry.add("spring.flyway.enabled", () -> "false");
@@ -188,17 +188,17 @@ class VisitOperationsPostgresIntegrationTest {
         assertThrows(EntityNotFoundException.class, () -> operations.selectForOwner(ownerA.getId(),
                 second.sessionId(), new ApproveVisitRecommendationCommand(sessionVersion(second.sessionId()),
                         firstView.candidates().get(0).groundExecutiveUserId(),
-                        firstView.candidates().get(0).scheduledAt(), "Asia/Kolkata", null)));
+                        firstView.candidates().get(0).scheduledAt(), "Asia/Kolkata", null, java.util.UUID.randomUUID())));
 
         var lower = firstView.candidates().get(1);
         long version = sessionVersion(first.sessionId());
         assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(ownerA.getId(),
                 first.sessionId(), new ApproveVisitRecommendationCommand(version,
-                        lower.groundExecutiveUserId(), lower.scheduledAt(), lower.zoneId(), null)));
+                        lower.groundExecutiveUserId(), lower.scheduledAt(), lower.zoneId(), null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(first.sessionId()).orElseThrow().getStatus());
         var approved = operations.selectForOwner(ownerA.getId(), first.sessionId(),
                 new ApproveVisitRecommendationCommand(version, lower.groundExecutiveUserId(),
-                        lower.scheduledAt(), lower.zoneId(), "Selected for local availability"));
+                        lower.scheduledAt(), lower.zoneId(), "Selected for local availability", java.util.UUID.randomUUID()));
         assertEquals(VisitSessionStatus.SCHEDULED, approved.session().status());
         VisitSchedulingDecision decision = decisions.findById(approved.decisionId()).orElseThrow();
         assertEquals(ownerA.getId(), decision.getApprovedBy().getId());
@@ -208,7 +208,7 @@ class VisitOperationsPostgresIntegrationTest {
         assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(ownerA.getId(),
                 first.sessionId(), new ApproveVisitRecommendationCommand(version,
                         lower.groundExecutiveUserId(), lower.scheduledAt(), lower.zoneId(),
-                        "Selected for local availability")));
+                        "Selected for local availability", java.util.UUID.randomUUID())));
     }
 
     @Test
@@ -229,7 +229,7 @@ class VisitOperationsPostgresIntegrationTest {
                 employees.findByUserId(candidate.groundExecutiveUserId()).orElseThrow().setStaffActive(false));
         assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(owner.getId(),
                 scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
-                        candidate.groundExecutiveUserId(), candidate.scheduledAt(), candidate.zoneId(), null)));
+                        candidate.groundExecutiveUserId(), candidate.scheduledAt(), candidate.zoneId(), null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
         assertEquals(0, decisions.countBySessionId(scenario.sessionId()));
     }
@@ -245,10 +245,10 @@ class VisitOperationsPostgresIntegrationTest {
         Instant alternate = top.scheduledAt().plusSeconds(60);
         assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(fixture.owner().getId(),
                 scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
-                        top.groundExecutiveUserId(), alternate, top.zoneId(), null)));
+                        top.groundExecutiveUserId(), alternate, top.zoneId(), null, java.util.UUID.randomUUID())));
         var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(version, top.groundExecutiveUserId(), alternate,
-                        top.zoneId(), "Tenant requested a nearby time"));
+                        top.zoneId(), "Tenant requested a nearby time", java.util.UUID.randomUUID()));
         assertEquals(alternate, approval.session().scheduledAt());
         assertEquals("Tenant requested a nearby time",
                 decisions.findById(approval.decisionId()).orElseThrow().getOverrideReason());
@@ -269,7 +269,7 @@ class VisitOperationsPostgresIntegrationTest {
         assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
                 pending.owner().getId(), pending.scenario().sessionId(),
                 new ApproveVisitRecommendationCommand(pendingVersion, planned.groundExecutiveUserId(),
-                        planned.scheduledAt(), planned.zoneId(), null)));
+                        planned.scheduledAt(), planned.zoneId(), null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT,
                 sessions.findById(pending.scenario().sessionId()).orElseThrow().getStatus());
     }
@@ -292,11 +292,11 @@ class VisitOperationsPostgresIntegrationTest {
                 scenario.desiredAt().plus(Duration.ofHours(4)));
         VisitOperationsConflictException foreign = assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
                 fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
-                        foreignGe.getId(), top.scheduledAt(), top.zoneId(), "Requested")));
+                        foreignGe.getId(), top.scheduledAt(), top.zoneId(), "Requested", java.util.UUID.randomUUID())));
         VisitOperationsConflictException missing = assertThrows(VisitOperationsConflictException.class,
                 () -> operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
                         new ApproveVisitRecommendationCommand(version, Long.MAX_VALUE,
-                                top.scheduledAt(), top.zoneId(), "Requested")));
+                                top.scheduledAt(), top.zoneId(), "Requested", java.util.UUID.randomUUID())));
         assertEquals(missing.getMessage(), foreign.getMessage());
 
         new TransactionTemplate(transactionManager).executeWithoutResult(status ->
@@ -306,7 +306,7 @@ class VisitOperationsPostgresIntegrationTest {
                 scenario.sessionId(), new RecommendationRequest(version), false));
         assertThrows(AccessDeniedException.class, () -> operations.selectForOwner(fixture.owner().getId(),
                 scenario.sessionId(), new ApproveVisitRecommendationCommand(version,
-                        top.groundExecutiveUserId(), top.scheduledAt(), top.zoneId(), null)));
+                        top.groundExecutiveUserId(), top.scheduledAt(), top.zoneId(), null, java.util.UUID.randomUUID())));
     }
 
     @Test
@@ -336,12 +336,12 @@ class VisitOperationsPostgresIntegrationTest {
                 geId, firstCandidate.scheduledAt(), firstCandidate.zoneId(),
                 firstTop.groundExecutiveUserId().equals(geId)
                         && firstTop.scheduledAt().equals(firstCandidate.scheduledAt())
-                        ? null : "Selected for coverage");
+                        ? null : "Selected for coverage", java.util.UUID.randomUUID());
         var secondCommand = new ApproveVisitRecommendationCommand(sessionVersion(secondScenario.sessionId()),
                 geId, secondCandidate.scheduledAt(), secondCandidate.zoneId(),
                 secondTop.groundExecutiveUserId().equals(geId)
                         && secondTop.scheduledAt().equals(secondCandidate.scheduledAt())
-                        ? null : "Selected for coverage");
+                        ? null : "Selected for coverage", java.util.UUID.randomUUID());
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch gate = new CountDownLatch(1);
         var pool = Executors.newFixedThreadPool(2);
@@ -396,7 +396,7 @@ class VisitOperationsPostgresIntegrationTest {
         var top = first.candidates().get(0);
         var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(version, top.groundExecutiveUserId(),
-                        top.scheduledAt(), top.zoneId(), null));
+                        top.scheduledAt(), top.zoneId(), null, java.util.UUID.randomUUID()));
         assertFalse(approval.override());
         assertNull(decisions.findById(approval.decisionId()).orElseThrow().getOverrideReason());
     }
@@ -419,7 +419,7 @@ class VisitOperationsPostgresIntegrationTest {
             assertEquals(1, bounded.candidates().size());
             var approved = operations.selectForOwner(fixture.owner().getId(), fixture.scenario().sessionId(),
                     new ApproveVisitRecommendationCommand(version, other.groundExecutiveUserId(),
-                            other.scheduledAt(), other.zoneId(), "Selected beyond the displayed search"));
+                            other.scheduledAt(), other.zoneId(), "Selected beyond the displayed search", java.util.UUID.randomUUID()));
             assertEquals(other.groundExecutiveUserId(), approved.session().representativeUserId());
         } finally {
             recommendationPolicy.setMaximumGroundExecutives(previousMaximum);
@@ -448,7 +448,7 @@ class VisitOperationsPostgresIntegrationTest {
             assertEquals(scenario.geB().getId(), selected.groundExecutiveUserId());
             var approval = operations.selectForOwner(fixture.owner().getId(), scenario.sessionId(),
                     new ApproveVisitRecommendationCommand(version, selected.groundExecutiveUserId(),
-                            selected.scheduledAt(), selected.zoneId(), "Eligible GE found through search"));
+                            selected.scheduledAt(), selected.zoneId(), "Eligible GE found through search", java.util.UUID.randomUUID()));
             assertEquals(VisitSessionStatus.SCHEDULED, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
             assertEquals(scenario.geB().getId(), approval.session().representativeUserId());
             assertTrue(approval.override());
@@ -488,16 +488,16 @@ class VisitOperationsPostgresIntegrationTest {
                 assertThrows(IllegalArgumentException.class, () -> operations.selectForOwner(
                         fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
                                 version, selected.groundExecutiveUserId(), selected.scheduledAt(),
-                                selected.zoneId(), reason)));
+                                selected.zoneId(), reason, java.util.UUID.randomUUID())));
             }
             var command = new ApproveVisitRecommendationCommand(version, selected.groundExecutiveUserId(),
-                    selected.scheduledAt(), selected.zoneId(), "Eligible selection with no top recommendation");
+                    selected.scheduledAt(), selected.zoneId(), "Eligible selection with no top recommendation", java.util.UUID.randomUUID());
             assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
                     fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
-                            version, scenario.geA().getId(), selected.scheduledAt(), selected.zoneId(), "Cannot bypass shift")));
+                            version, scenario.geA().getId(), selected.scheduledAt(), selected.zoneId(), "Cannot bypass shift", java.util.UUID.randomUUID())));
             assertThrows(VisitOperationsConflictException.class, () -> operations.selectForOwner(
                     fixture.owner().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(
-                            version + 1, selected.groundExecutiveUserId(), selected.scheduledAt(), selected.zoneId(), "Stale version")));
+                            version + 1, selected.groundExecutiveUserId(), selected.scheduledAt(), selected.zoneId(), "Stale version", java.util.UUID.randomUUID())));
             User foreignOwner = ownedScheduler("oe-empty-foreign", fixture.team());
             assertThrows(EntityNotFoundException.class, () -> operations.selectForOwner(
                     foreignOwner.getId(), scenario.sessionId(), command));
@@ -672,7 +672,7 @@ class VisitOperationsPostgresIntegrationTest {
                 new ApproveVisitRecommendationCommand(version,
                         matching.candidates().get(0).groundExecutiveUserId(),
                         matching.candidates().get(0).scheduledAt(),
-                        matching.candidates().get(0).zoneId(), "Known local GE for this visit"));
+                        matching.candidates().get(0).zoneId(), "Known local GE for this visit", java.util.UUID.randomUUID()));
         assertEquals(matching.candidates().get(0).groundExecutiveUserId(),
                 selected.session().representativeUserId());
         assertTrue(selected.override());
@@ -881,7 +881,7 @@ class VisitOperationsPostgresIntegrationTest {
 
         var approval = operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geB().getId(), scenario.desiredAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
 
         assertEquals(VisitSessionStatus.SCHEDULED, approval.session().status());
         assertFalse(approval.override());
@@ -1020,7 +1020,7 @@ class VisitOperationsPostgresIntegrationTest {
         assertThrows(VisitOperationsConflictException.class, () -> operations.approveRecommendation(
                 staleScenario.admin().getId(), staleScenario.sessionId(), new ApproveVisitRecommendationCommand(
                         stale.getVersion(), stalePreview.groundExecutiveUserId(), stalePreview.scheduledAt(),
-                        stalePreview.zoneId(), null)));
+                        stalePreview.zoneId(), null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.REPAIR_REQUIRED, sessions.findById(staleScenario.sessionId()).orElseThrow().getStatus());
         assertTrue(entitlements.hasReservation(staleScenario.sessionId()));
 
@@ -1033,7 +1033,7 @@ class VisitOperationsPostgresIntegrationTest {
                 new RecommendationRequest(pendingRepair.getVersion())).candidates().get(0);
         operations.approveRecommendation(successScenario.admin().getId(), successScenario.sessionId(),
                 new ApproveVisitRecommendationCommand(pendingRepair.getVersion(), option.groundExecutiveUserId(),
-                        option.scheduledAt(), option.zoneId(), null));
+                        option.scheduledAt(), option.zoneId(), null, java.util.UUID.randomUUID()));
         VisitSession booked = sessions.findById(successScenario.sessionId()).orElseThrow();
         assertEquals(VisitSessionStatus.SCHEDULED, booked.getStatus());
         assertEquals("NONE", booked.getRepairState());
@@ -1221,7 +1221,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant lateStartSlot = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), lateStartSlot, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -1479,7 +1479,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -1522,7 +1522,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         addPreStartNonExecutionItems(scenario);
@@ -1832,7 +1832,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -1900,7 +1900,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -1957,7 +1957,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -2045,7 +2045,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), planned.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L).truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, planned.durationMinutes(), true);
         execution.markArrived(scenario.geA().getId(), scenario.sessionId());
@@ -3721,7 +3721,7 @@ class VisitOperationsPostgresIntegrationTest {
                 scenario.sessionId(), new RecommendationRequest(0L)));
         assertThrows(AccessDeniedException.class, () -> operations.approveRecommendation(scenario.tenant().getId(),
                 scenario.sessionId(), new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(),
-                        scenario.desiredAt(), "Asia/Kolkata", null)));
+                        scenario.desiredAt(), "Asia/Kolkata", null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
         assertEquals(0, decisions.countBySessionId(scenario.sessionId()));
     }
@@ -3764,11 +3764,11 @@ class VisitOperationsPostgresIntegrationTest {
 
         assertThrows(IllegalArgumentException.class, () -> operations.approveRecommendation(
                 scenario.admin().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(0L,
-                        top.groundExecutiveUserId(), alternate, "Asia/Kolkata", null)));
+                        top.groundExecutiveUserId(), alternate, "Asia/Kolkata", null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
         var approved = operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, top.groundExecutiveUserId(), alternate,
-                        "Asia/Kolkata", "Tenant confirmed the later feasible time"));
+                        "Asia/Kolkata", "Tenant confirmed the later feasible time", java.util.UUID.randomUUID()));
 
         assertTrue(approved.override());
         VisitSchedulingDecision decision = decisions.findById(approved.decisionId()).orElseThrow();
@@ -3952,7 +3952,7 @@ class VisitOperationsPostgresIntegrationTest {
 
         assertThrows(VisitOperationsConflictException.class, () -> operations.approveRecommendation(
                 scenario.admin().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(0L,
-                        candidate.groundExecutiveUserId(), candidate.scheduledAt(), candidate.zoneId(), null)));
+                        candidate.groundExecutiveUserId(), candidate.scheduledAt(), candidate.zoneId(), null, java.util.UUID.randomUUID())));
 
         VisitSession unchanged = sessions.findById(scenario.sessionId()).orElseThrow();
         assertEquals(VisitSessionStatus.DRAFT, unchanged.getStatus());
@@ -4105,7 +4105,7 @@ class VisitOperationsPostgresIntegrationTest {
 
         assertThrows(VisitOperationsConflictException.class, () -> operations.approveRecommendation(
                 scenario.admin().getId(), scenario.sessionId(), new ApproveVisitRecommendationCommand(0L,
-                        selected.groundExecutiveUserId(), selected.scheduledAt(), "Asia/Kolkata", null)));
+                        selected.groundExecutiveUserId(), selected.scheduledAt(), "Asia/Kolkata", null, java.util.UUID.randomUUID())));
         assertEquals(VisitSessionStatus.DRAFT, sessions.findById(scenario.sessionId()).orElseThrow().getStatus());
         assertEquals(0, decisions.countBySessionId(scenario.sessionId()));
         assertTrue(notifications.findByEventKey("VISIT_SESSION_SCHEDULED:" + scenario.sessionId()
@@ -4189,7 +4189,7 @@ class VisitOperationsPostgresIntegrationTest {
         assertThrows(IllegalStateException.class, () -> tx.execute(status -> {
             operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                     new ApproveVisitRecommendationCommand(0L, candidate.groundExecutiveUserId(),
-                            candidate.scheduledAt(), "Asia/Kolkata", null));
+                            candidate.scheduledAt(), "Asia/Kolkata", null, java.util.UUID.randomUUID()));
             throw new IllegalStateException("rollback recommendation approval");
         }));
 
@@ -4213,7 +4213,7 @@ class VisitOperationsPostgresIntegrationTest {
                 .findFirst().orElseThrow();
         operations.approveRecommendation(scenario.admin().getId(), scenario.sessionId(),
                 new ApproveVisitRecommendationCommand(0L, scenario.geA().getId(), candidate.scheduledAt(),
-                        "Asia/Kolkata", null));
+                        "Asia/Kolkata", null, java.util.UUID.randomUUID()));
         Instant startAt = Instant.now().minusSeconds(5 * 60L)
                 .truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
         scheduleForExecution(scenario, scenario.geA(), startAt, candidate.durationMinutes(), true);
@@ -4629,7 +4629,7 @@ class VisitOperationsPostgresIntegrationTest {
         try {
             if (!gate.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("approval start gate timed out");
             operations.approveRecommendation(actorId, sessionId, new ApproveVisitRecommendationCommand(0L,
-                    candidate.groundExecutiveUserId(), candidate.scheduledAt(), "Asia/Kolkata", null));
+                    candidate.groundExecutiveUserId(), candidate.scheduledAt(), "Asia/Kolkata", null, java.util.UUID.randomUUID()));
             return "COMMITTED";
         } catch (VisitOperationsConflictException expected) {
             return "CONFLICT";

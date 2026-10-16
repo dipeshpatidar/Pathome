@@ -37,10 +37,10 @@ import './operationsSchedule.css';
  */
 
 export type ScheduleOutcome =
-  | { kind: 'scheduled'; approval: OperationsSchedulingApproval; refreshFailed: boolean }
+  | { kind: 'scheduled'; approval: OperationsSchedulingApproval; currentSession: OperationsSessionDetail | null; refreshFailed: boolean; verificationFailed?: boolean }
   | { kind: 'conflict'; status: number; message: string; detail: string | null }
   | { kind: 'denied'; message: string }
-  | { kind: 'uncertain'; message: string }
+  | { kind: 'uncertain'; message: string; retryCommandId?: string }
   /** The reviewed evaluation no longer matches the authoritative Session: nothing may be booked. */
   | { kind: 'review-required'; message: string }
   | { kind: 'not-sent'; message: string };
@@ -66,6 +66,7 @@ interface Props {
   loadDiscovery: DiscoveryLoader;
   /** Safe GET refresh of the authoritative session after a conflict. */
   onRefreshSession: () => void;
+  onRetryScheduling: () => void;
 }
 
 const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
@@ -141,9 +142,10 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
   onConfirm,
   loadRanked,
   loadDiscovery,
-  onRefreshSession
+  onRefreshSession,
+  onRetryScheduling
 }) => {
-  const [step, setStep] = useState<Step>('choose');
+  const [step, setStep] = useState<Step>(() => outcome?.kind === 'scheduled' ? 'result' : outcome ? 'conflict' : 'choose');
   const [selection, setSelection] = useState<OperationsSchedulingSelection | null>(null);
   const [reason, setReason] = useState('');
   const [showError, setShowError] = useState(false);
@@ -155,7 +157,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
   const reasonRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeItems = useMemo(() => activeSessionItems(session.items), [session.items]);
-  const blockers = useMemo(() => schedulingBlockersForSession(session), [session]);
+  const blockers = useMemo(() => outcome ? [] : schedulingBlockersForSession(session), [session, outcome]);
   const needsReason = selectionNeedsReason(rankedView, selection);
   const reasonInvalid = needsReason && showError && reason.trim().length === 0;
 
@@ -238,9 +240,9 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
     onConfirm(selection, rankedView, reason);
   };
 
-  // A confirmed booking always carries the authoritative Session, so the Result view never falls back
-  // to the pre-booking snapshot.
-  const scheduledSession = outcome?.kind === 'scheduled' ? outcome.approval.session : null;
+  // Only a verified Session read supplies result details. Historical acceptance must never turn
+  // the pre-booking snapshot into a current or last verified booking result.
+  const scheduledSession = outcome?.kind === 'scheduled' ? outcome.currentSession : null;
 
   return (
     <div className="oe-sch-scrim">
@@ -402,24 +404,36 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     <CheckCircle2 size={20} aria-hidden="true" />
                     <p>
                       <strong>
-                        {(scheduledSession?.status ?? '') === 'SCHEDULED'
+                        {outcome.verificationFailed
+                          ? scheduledSession ? `Last verified Session status: ${scheduledSession.status}.` : 'Current Session status is temporarily unavailable.'
+                          : (scheduledSession?.status ?? '') === 'SCHEDULED'
                           ? 'The visit is scheduled.'
-                          : 'The server accepted the booking and returned this session state.'}
+                          : `Current Session status: ${scheduledSession?.status ?? 'Not returned'}.`}
                       </strong>{' '}
-                      The details below are the session the server returned.
+                      The original booking command was accepted. {outcome.verificationFailed
+                        ? 'Current Session details are temporarily unavailable. Any retained details below are last verified observations.'
+                        : 'The details below show the current Session.'}
                     </p>
                   </div>
-                  {outcome.refreshFailed ? (
+                  {outcome.verificationFailed ? (
                     <div className="oe-notice oe-notice--warn" role="alert">
                       <span className="oe-notice-icon" aria-hidden="true"><CircleAlert size={18} /></span>
                       <div>
-                        <p className="oe-notice-title">Scheduled, but your work lists couldn’t be refreshed</p>
+                        <p className="oe-notice-title">Session refresh is temporarily unavailable</p>
+                        <p className="oe-notice-body">Check again when the connection is available. Checking only reads the Session; it does not repeat the booking.</p>
+                      </div>
+                    </div>
+                  ) : outcome.refreshFailed ? (
+                    <div className="oe-notice oe-notice--warn" role="alert">
+                      <span className="oe-notice-icon" aria-hidden="true"><CircleAlert size={18} /></span>
+                      <div>
+                        <p className="oe-notice-title">Current Session: {scheduledSession?.status}. Your work lists couldn’t be refreshed</p>
                         <p className="oe-notice-body">
-                          The server confirmed the booking. Only reloading your queues failed, so they may
-                          not show it yet. Don’t schedule again — refresh to see the current record.
+                          The current Session details were verified. Reloading your queues failed, so
+                          those lists may be out of date. Refresh to see the current record.
                         </p>
                         <div className="oe-notice-actions">
-                          <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={onRefreshSession}>
+                          <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" disabled={blocked} onClick={onRefreshSession}>
                             Refresh session details
                           </button>
                         </div>
@@ -427,6 +441,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     </div>
                   ) : null}
                   <dl className="oe-review-list">
+                    <Row label={outcome.verificationFailed ? 'Last verified Session status' : 'Current Session status'}>{scheduledSession?.status ?? 'Not verified'}</Row>
                     <Row label="Session">
                       <span className="oe-mono">{operationsRecordReference(scheduledSession?.sessionId ?? session.sessionId)}</span>
                     </Row>
@@ -435,8 +450,8 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                         ?? <span className="oe-quiet">Not returned</span>}
                     </Row>
                     <Row label="Assigned Ground Executive">
-                      {scheduledSession?.representativeUserId === null || scheduledSession === null
-                        ? <span className="oe-quiet">Not assigned</span>
+                      {scheduledSession === null || scheduledSession.representativeUserId === null
+                        ? <span className="oe-quiet">{scheduledSession === null ? 'Not verified' : 'Not assigned'}</span>
                         : <span className="oe-mono">User {scheduledSession.representativeUserId}</span>}
                     </Row>
                     <Row label="Tenant confirmation">
@@ -458,6 +473,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
               {step === 'conflict' && outcome && outcome.kind !== 'scheduled' ? (
                 <ConflictStep
                   outcome={outcome}
+                  blocked={blocked}
                   onRefreshCandidates={() => {
                     onAcknowledgeOutcome();
                     setSelection(null);
@@ -465,6 +481,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     setStep('choose');
                   }}
                   onRefreshSession={() => {
+                    if (outcome.kind === 'uncertain') { onRefreshSession(); return; }
                     onAcknowledgeOutcome();
                     onRefreshSession();
                     // The command is never replayed: refresh the authoritative record, then re-review.
@@ -476,6 +493,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     setStep('choose');
                   }}
                   onClose={onClose}
+                  onRetryScheduling={onRetryScheduling}
                 />
               ) : null}
             </>
@@ -525,6 +543,9 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
         ) : null}
         {blockers.length === 0 && step === 'result' ? (
           <footer className="oe-sch-foot">
+            <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" disabled={blocked} onClick={onRefreshSession}>
+              {outcome?.kind === 'scheduled' && outcome.verificationFailed ? 'Check the session' : 'Refresh session details'}
+            </button>
             <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onClose}>
               Close
             </button>
@@ -537,11 +558,13 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
 
 const ConflictStep: React.FC<{
   outcome: Exclude<ScheduleOutcome, { kind: 'scheduled' }>;
+  blocked: boolean;
   onRefreshCandidates: () => void;
   onRefreshSession: () => void;
   onChooseDifferent: () => void;
   onClose: () => void;
-}> = ({ outcome, onRefreshCandidates, onRefreshSession, onChooseDifferent, onClose }) => {
+  onRetryScheduling: () => void;
+}> = ({ outcome, blocked, onRefreshCandidates, onRefreshSession, onChooseDifferent, onClose, onRetryScheduling }) => {
   const copy = (() => {
     switch (outcome.kind) {
       case 'denied':
@@ -573,18 +596,18 @@ const ConflictStep: React.FC<{
           ? {
               category: 'Conflict',
               title: 'This selection is no longer available',
-              body: 'The Ground Executive’s eligibility or the evaluated slot changed after it was listed. Nothing was booked. Refresh the session to continue.'
+              body: 'The server rejected this command. Review the authoritative session before choosing again.'
             }
           : outcome.status === 400
             ? {
                 category: 'Refused',
                 title: 'The server refused this selection',
-                body: 'Nothing was booked. The selection and its reason must match the server’s current recommendation baseline.'
+                body: 'The selection and its reason must match the server’s current recommendation baseline.'
               }
             : {
                 category: 'Conflict',
                 title: 'This booking couldn’t be completed',
-                body: 'Nothing was booked. Refresh the candidates and choose again.'
+                body: 'Review the authoritative session before choosing again.'
               };
     }
   })();
@@ -603,6 +626,11 @@ const ConflictStep: React.FC<{
       </div>
       {detail ? <p className="oe-inline-note"><Info size={14} aria-hidden="true" />{detail}</p> : null}
       <div className="oe-conflict-actions">
+        {outcome.kind === 'uncertain' && outcome.retryCommandId ? (
+          <button type="button" className="oe-btn oe-btn--primary oe-btn--md" disabled={blocked} onClick={onRetryScheduling}>
+            {blocked ? 'Checking…' : 'Retry scheduling'}
+          </button>
+        ) : null}
         {outcome.kind === 'conflict' && outcome.status === 409 ? (
           <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onRefreshSession}>
             Refresh the session
@@ -614,8 +642,8 @@ const ConflictStep: React.FC<{
           </button>
         ) : null}
         {outcome.kind === 'not-sent' || outcome.kind === 'uncertain' ? (
-          <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onRefreshSession}>
-            Check the session
+          <button type="button" className="oe-btn oe-btn--primary oe-btn--md" disabled={blocked} onClick={onRefreshSession}>
+            {blocked ? 'Checking…' : 'Check the session'}
           </button>
         ) : null}
         {outcome.kind === 'review-required' ? (
@@ -623,8 +651,8 @@ const ConflictStep: React.FC<{
             Reload the session
           </button>
         ) : null}
-        <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={outcome.kind === 'denied' ? onClose : onRefreshCandidates}>
-          {outcome.kind === 'denied' ? 'Return to session details' : 'Reload candidates'}
+        <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={outcome.kind === 'denied' || outcome.kind === 'uncertain' ? onClose : onRefreshCandidates}>
+          {outcome.kind === 'denied' || outcome.kind === 'uncertain' ? 'Return to session details' : 'Reload candidates'}
         </button>
       </div>
     </div>

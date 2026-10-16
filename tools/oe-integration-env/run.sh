@@ -3,17 +3,26 @@
 # Pathome OE integration environment - single entry point.
 #
 # Creates, migrates, provisions, verifies and destroys one disposable PostgreSQL database
-# that is completely separate from the preserved `pathome_db` development database. Every
-# server-touching step runs through lib/db-guard.sh first and aborts on any refusal.
+# that is provably separate from every protected local database. Every server-touching step runs
+# through lib/db-guard.sh first and aborts on any refusal.
+#
+# This environment is disposable-only. It never reads, dumps, fingerprints or compares against a
+# protected database, and no command here makes any claim about one. Protected database names are
+# held as explicit deny rules in lib/db-guard.sh, and the launch configuration is isolated by
+# lib/env-isolation.sh, which never sources `.env.local`.
 #
 #   run.sh doctor        report tooling, target designation and guard verdict
-#   run.sh fingerprint   record the protected reference digest (pathome_db)
+#   run.sh preflight     nonconnecting prerequisites, offline compile and approved local build
+#   run.sh recover       prove ownership and archive interrupted/dead runtime artifacts
+#   run.sh recover-probe quarantine a legacy unowned probe; never bypass marker/ownership proof
+#   run.sh plan          static plan: deny rules, destination register, command sequence
 #   run.sh create        create the designated disposable database (refuses if it exists)
 #   run.sh recreate      guarded teardown + create (the repeatability cycle)
 #   run.sh backend       start Spring Boot against the disposable database
 #   run.sh stop-backend  stop the Spring Boot instance this tool started
 #   run.sh provision     provision disposable staff identities through supported APIs
 #   run.sh verify        run the isolation, migration, provisioning and immutability proofs
+#   run.sh attest        record auditable evidence of the actual disposable test target
 #   run.sh teardown      drop the designated disposable database (guarded, destructive)
 #   run.sh status        show the current state of the disposable environment
 
@@ -24,15 +33,16 @@ OE_REPO_ROOT="$(cd "$OE_TOOL_DIR/../.." && pwd)"
 OE_ENV_FILE="${PATHOME_OE_TEST_ENV_FILE:-$OE_TOOL_DIR/oe-test.env}"
 OE_LEGACY_BASELINE="$OE_REPO_ROOT/backend/src/test/resources/db/baseline/pathome-v1-legacy-core.sql"
 OE_MARKER_SQL="$OE_TOOL_DIR/sql/00-disposable-marker.sql"
-
-# The preserved local development database. Never a valid target in this environment.
-OE_PROTECTED_DEV_DB='pathome_db'
+OE_MIGRATION_DIR="$OE_REPO_ROOT/backend/src/main/resources/db/migration"
+OE_EXPECTED_SCHEMA="$OE_TOOL_DIR/expected-schema.txt"
 
 OE_BACKEND_PORT="${PATHOME_OE_TEST_BACKEND_PORT:-8080}"
 OE_API_BASE_URL="http://localhost:$OE_BACKEND_PORT/api/v1"
 
 # shellcheck source=lib/db-guard.sh
 . "$OE_TOOL_DIR/lib/db-guard.sh"
+# shellcheck source=lib/env-isolation.sh
+. "$OE_TOOL_DIR/lib/env-isolation.sh"
 # shellcheck source=lib/provision.sh
 . "$OE_TOOL_DIR/lib/provision.sh"
 # shellcheck source=lib/verify.sh
@@ -48,24 +58,21 @@ oe_die() {
 }
 
 oe_load_designation() {
-  if [ ! -f "$OE_ENV_FILE" ]; then
-    oe_die "No target designation found at $OE_ENV_FILE. Copy oe-test.env or set PATHOME_OE_TEST_ENV_FILE. Nothing is defaulted."
-  fi
-  # shellcheck disable=SC1090
-  set -a
-  . "$OE_ENV_FILE"
-  set +a
+  oe_runtime_load_designation
 }
 
 oe_require_tools() {
   local tool
-  for tool in psql pg_dump curl jq mvn java; do
-    command -v "$tool" >/dev/null 2>&1 || oe_die "Required tool '$tool' is not on PATH."
+  for tool in psql curl jq mvn java node npm uuidgen lsof; do
+    PATH="$OE_RUNTIME_PATH" type -P "$tool" >/dev/null 2>&1 || oe_die "Required trusted tool '$tool' is missing."
   done
 }
 
 oe_ensure_run_dir() {
-  mkdir -p "$PATHOME_OE_TEST_RUN_DIR/evidence"
+  oe_runtime_validate_dir
+  umask 077
+  mkdir -p "$PATHOME_OE_TEST_RUN_DIR"/{evidence,home,tmp}
+  chmod 700 "$PATHOME_OE_TEST_RUN_DIR"
 }
 
 oe_random_secret() {
@@ -73,81 +80,112 @@ oe_random_secret() {
 }
 
 # Disposable credentials live only in the ephemeral run directory, never in the repository.
+# Every value is generated for this run: the bootstrap administrator, the shared staff password and
+# the JWT signing secret this environment signs its own tokens with. No secret here is ever reused
+# from `.env.local` or from another environment.
+oe_ensure_secret_line() { # <file> <key> <value>
+  grep -q "^$2=" "$1" 2>/dev/null || printf '%s=%s\n' "$2" "$3" >> "$1"
+}
+
 oe_ensure_secrets() {
   local secrets="$PATHOME_OE_TEST_RUN_DIR/secrets.env"
-  if [ -s "$secrets" ]; then
-    # shellcheck disable=SC1090
-    set -a
-    . "$secrets"
-    set +a
-    return 0
-  fi
   umask 077
-  {
-    printf 'OE_BOOTSTRAP_ADMIN_EMAIL=%s\n' 'codex.oe.env.admin@pathome.test'
-    printf 'OE_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$(oe_random_secret)"
-    printf 'OE_BOOTSTRAP_OPERATOR_REFERENCE=%s\n' 'CODEX_OE_INTEGRATION_ENV'
-    printf 'OE_STAFF_PASSWORD=%s\n' "$(oe_random_secret)"
-  } > "$secrets"
+  [ ! -L "$secrets" ] || oe_die 'symlinked secrets file'
+  local run_id
+  run_id="$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")"
+  if [ -s "$secrets" ] && ! grep -qx "OE_RUN_ID=$run_id" "$secrets"; then
+    oe_die 'credentials belong to another run; recreate generates fresh credentials'
+  fi
+  if [ ! -s "$secrets" ]; then
+    {
+      printf 'OE_RUN_ID=%s\n' "$run_id"
+      printf 'OE_BOOTSTRAP_ADMIN_EMAIL=%s\n' 'codex.oe.env.admin@pathome.test'
+      printf 'OE_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$(oe_random_secret)"
+      printf 'OE_BOOTSTRAP_OPERATOR_REFERENCE=%s\n' 'CODEX_OE_INTEGRATION_ENV'
+      printf 'OE_STAFF_PASSWORD=%s\n' "$(oe_random_secret)"
+      printf 'OE_JWT_SECRET=%s\n' "$(oe_random_secret)"
+      # Approval is validated before setup; copy literal media values from the approved private file.
+      cat "$PATHOME_OE_TEST_MEDIA_ENV_FILE"
+      printf '\n'
+      printf '# Optional: only for an explicitly approved disposable media account.\n'
+      printf '# PATHOME_OE_TEST_MEDIA_MODE=disposable-account\n'
+      printf '# PATHOME_OE_TEST_ALLOW_EXTERNAL_MEDIA_UPLOAD=true\n'
+      printf '# OE_TEST_CLOUDINARY_CLOUD_NAME=\n'
+      printf '# OE_TEST_CLOUDINARY_API_KEY=\n'
+      printf '# OE_TEST_CLOUDINARY_API_SECRET=\n'
+    } > "$secrets"
+  fi
+  # Top up keys introduced after an earlier run so existing identities and grants stay valid.
+  oe_ensure_secret_line "$secrets" 'OE_JWT_SECRET' "$(oe_random_secret)"
   chmod 600 "$secrets"
-  # shellcheck disable=SC1090
-  set -a
-  . "$secrets"
-  set +a
+  oe_runtime_load_secrets
 }
 
 oe_psql_admin() { # <database> <psql args...>
   local database="$1"
   shift
+  # The only non-designation database this environment opens is the `postgres` maintenance catalog, and
+  # only for catalog-level existence checks. Every other target must pass the deny rules below.
+  [ "$database" = 'postgres' ] || oe_guard_assert_not_protected "$database" 'connection target'
   oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_ADMIN_USER" "$@"
 }
 
 oe_psql_app() { # <database> <psql args...>
   local database="$1"
   shift
+  oe_guard_assert_not_protected "$database" 'connection target'
   oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_APP_USER" "$@"
 }
 
-oe_pg_dump() { # <database> [pg_dump args...]
-  local database="$1"
-  shift
-  if [ -n "${PATHOME_OE_TEST_DB_PASSWORD:-}" ]; then
-    PGPASSWORD="$PATHOME_OE_TEST_DB_PASSWORD" pg_dump \
-      -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" \
-      -U "$PATHOME_OE_TEST_DB_APP_USER" -d "$database" \
-      --no-owner --no-privileges --schema=public "$@"
-  else
-    pg_dump -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" \
-      -U "$PATHOME_OE_TEST_DB_APP_USER" -d "$database" \
-      --no-owner --no-privileges --schema=public "$@"
-  fi
-}
-
 oe_database_exists() {
+  oe_guard_resolve
   local count
   count="$(oe_psql_admin postgres -Atc "select count(*) from pg_database where datname = '$PATHOME_OE_TEST_DB'")"
   [ "$count" = '1' ]
 }
 
-# Read-only digest of the preserved development database, used to prove it is untouched.
-oe_protected_fingerprint() {
-  local data schema
-  data="$(oe_pg_dump "$OE_PROTECTED_DEV_DB" --data-only | shasum -a 256 | awk '{print $1}')"
-  schema="$(oe_pg_dump "$OE_PROTECTED_DEV_DB" --schema-only | shasum -a 256 | awk '{print $1}')"
-  printf 'database=%s\ndata_sha256=%s\nschema_sha256=%s\n' "$OE_PROTECTED_DEV_DB" "$data" "$schema"
+# --- repository-controlled schema expectations ----------------------------------------------------
+# Everything the disposable database is compared against lives in the repository: the Flyway migration
+# files, the supported legacy v1 baseline, and the committed expected-schema.txt. Nothing here is
+# derived from, or compared with, any database outside this environment.
+oe_repo_migration_files() {
+  ls "$OE_MIGRATION_DIR"/V*__*.sql 2>/dev/null | awk -F/ '{n=$NF; sub(/^V/,"",n); sub(/__.*/,"",n); print n " " $0}' | sort -n -k1,1 | cut -d' ' -f2-
+}
+
+oe_repo_migration_versions() {
+  oe_repo_migration_files | sed -E 's#.*/V([0-9]+)__.*#\1#'
+}
+
+oe_repo_expected_versions() { # includes the legacy v1 baseline row Flyway records
+  printf '1\n'
+  oe_repo_migration_versions
+}
+
+oe_repo_schema_source_fingerprint() {
+  { shasum -a 256 "$OE_LEGACY_BASELINE" 2>/dev/null; shasum -a 256 $(oe_repo_migration_files) 2>/dev/null; } \
+    | awk '{print $1}' | sort | shasum -a 256 | awk '{print $1}'
+}
+
+# Expected public objects, as declared by the migrations and the legacy baseline. The committed file
+# is authoritative and is verified against the migration sources by the static test suite.
+oe_repo_expected_tables() { # [base|view]
+  local kind="${1:-base}"
+  [ -f "$OE_EXPECTED_SCHEMA" ] || oe_die "Expected-schema file missing at $OE_EXPECTED_SCHEMA"
+  awk -v kind="$kind" '$1 == kind { print $2 }' "$OE_EXPECTED_SCHEMA" | sort -u
 }
 
 cmd_doctor() {
   oe_load_designation
   oe_log '== tooling =='
   local tool
-  for tool in psql pg_dump curl jq mvn java node; do
+  for tool in psql curl jq mvn java node; do
     if command -v "$tool" >/dev/null 2>&1; then
       oe_log "present  $tool -> $(command -v "$tool")"
     else
       oe_log "MISSING  $tool"
     fi
   done
+  oe_log 'note     no database dump utility is required: this environment never dumps any database.'
 
   oe_log ''
   oe_log '== target designation =='
@@ -166,10 +204,15 @@ cmd_doctor() {
   oe_guard_selftest || true
 
   oe_log ''
+  oe_log '== runtime configuration isolation =='
+  oe_iso_report
+
+  oe_log ''
   oe_log '== local server =='
   if oe_psql_admin postgres -Atc 'select version()' >/dev/null 2>&1; then
     oe_log "reachable  $(oe_psql_admin postgres -Atc 'select current_user')@$(oe_guard_jdbc_url)"
     oe_log "databases  $(oe_psql_admin postgres -Atc "select string_agg(datname, ', ' order by datname) from pg_database")"
+    oe_log '           (catalog names only; no protected database is ever opened)'
     if oe_database_exists; then
       oe_log "disposable  $PATHOME_OE_TEST_DB exists"
     else
@@ -180,15 +223,38 @@ cmd_doctor() {
   fi
 }
 
-cmd_fingerprint() {
-  local label="${1:-current}"
+# Static plan: what a run would do, what is denied, and which destinations are replaced. No server,
+# database, container or external service is contacted.
+cmd_plan() {
   oe_load_designation
-  oe_guard_resolve
   oe_require_tools
   oe_ensure_run_dir
-  local file="$PATHOME_OE_TEST_RUN_DIR/evidence/protected-db-$label.txt"
-  oe_protected_fingerprint | tee "$file"
-  oe_log "written to $file"
+  mkdir -p "$PATHOME_OE_TEST_RUN_DIR/evidence"
+  local plan="$PATHOME_OE_TEST_RUN_DIR/evidence/static-plan.txt"
+  {
+    oe_log '=== Pathome OE disposable environment - static plan (no execution) ==='
+    oe_log ''
+    oe_log '-- guard deny rules (lib/db-guard.sh) --'
+    oe_guard_describe
+    oe_log ''
+    oe_log '-- runtime configuration isolation (lib/env-isolation.sh) --'
+    oe_iso_report
+    oe_log ''
+    oe_log '-- future sequence after independent safety review (see PHASE2A.md) --'
+    oe_log '0. Configure the external mode-600 disposable-media file and explicit local-build approval; then run run.sh preflight'
+    oe_log '1. bash tools/oe-integration-env/run.sh recreate'
+    oe_log '   A current preflight receipt is mandatory before any destructive setup; never source credential files.'
+    oe_log '2. bash tools/oe-integration-env/run.sh backend'
+    oe_log '3. bash tools/oe-integration-env/run.sh provision'
+    oe_log '4. bash tools/oe-integration-env/run.sh verify'
+    oe_log '5. bash tools/oe-integration-env/run.sh attest'
+    oe_log '6. PATHOME_OE_TEST_PHASE2A_LIVE=true PATHOME_OE_TEST_FIXTURE_ROLES=true bash tools/oe-integration-env/phase2a.sh acceptance'
+    oe_log '7. PATHOME_OE_TEST_PHASE2A_LIVE=true bash tools/oe-integration-env/phase2a.sh browser'
+    oe_log '8. bash tools/oe-integration-env/run.sh stop-backend'
+    oe_log '9. bash tools/oe-integration-env/run.sh teardown'
+  } | tee "$plan"
+  oe_log ''
+  oe_log "written to $plan"
 }
 
 cmd_create() {
@@ -196,6 +262,8 @@ cmd_create() {
   oe_guard_resolve
   oe_require_tools
   oe_ensure_run_dir
+  node "$OE_TOOL_DIR/lib/readiness.mjs" require
+  oe_runtime_checkpoint PREFLIGHT_VERIFIED
 
   if oe_database_exists; then
     oe_die "Disposable database '$PATHOME_OE_TEST_DB' already exists. Use 'recreate' for the guarded teardown+create cycle, or 'teardown' to remove it."
@@ -203,16 +271,27 @@ cmd_create() {
 
   oe_log "creating disposable database '$PATHOME_OE_TEST_DB' (owner $PATHOME_OE_TEST_DB_APP_USER)"
   oe_psql_admin postgres -c "CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\""
+  oe_runtime_checkpoint DATABASE_CREATED
+  local previous="$PATHOME_OE_TEST_RUN_DIR/previous-runs/$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  mkdir -p "$previous"
+  for artifact in run-id secrets.env; do
+    if [ -f "$PATHOME_OE_TEST_RUN_DIR/$artifact" ]; then mv "$PATHOME_OE_TEST_RUN_DIR/$artifact" "$previous/$artifact"; fi
+  done
+  uuidgen | tr '[:upper:]' '[:lower:]' > "$PATHOME_OE_TEST_RUN_DIR/run-id"
+  chmod 600 "$PATHOME_OE_TEST_RUN_DIR/run-id"
+  # These are tool-owned ephemeral artifacts; a new database receives a new signing identity.
 
   # Marker first: from this point on the database is positively identifiable as disposable.
   oe_apply_marker
+  oe_runtime_checkpoint SENTINEL_WRITTEN
 
   oe_log 'applying the supported legacy v1 baseline'
   [ -f "$OE_LEGACY_BASELINE" ] || oe_die "Legacy baseline missing at $OE_LEGACY_BASELINE"
   oe_psql_app "$PATHOME_OE_TEST_DB" -q -f "$OE_LEGACY_BASELINE" >/dev/null
+  oe_ensure_secrets
 
   oe_log 'creating canonical supported cities (migration-seeded, not hand-written fixtures)'
-  oe_log "CREATE OK  $PATHOME_OE_TEST_DB ready; Flyway V2-V49 run on first backend start"
+  oe_log "CREATE OK  $PATHOME_OE_TEST_DB ready; repository Flyway migrations run on first backend start"
 }
 
 oe_apply_marker() {
@@ -220,12 +299,15 @@ oe_apply_marker() {
     -q \
     -v "oe_database=$PATHOME_OE_TEST_DB" \
     -v "oe_guard_version=$OE_GUARD_VERSION" \
-    -v "oe_run_id=$(date +%Y%m%dT%H%M%S)-$$" \
+    -v "oe_run_id=$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")" \
     -f "$OE_MARKER_SQL" >/dev/null
 }
 
 cmd_recreate() {
   oe_load_designation
+  oe_guard_resolve
+  oe_require_tools
+  node "$OE_TOOL_DIR/lib/readiness.mjs" require
   if oe_database_exists; then
     cmd_teardown
   fi
@@ -237,8 +319,12 @@ cmd_teardown() {
   oe_guard_resolve
   oe_require_tools
   oe_ensure_run_dir
-
   if ! oe_database_exists; then
+    for artifact in backend.pid backend-binding.json backend-startup.json; do
+      if [ -e "$PATHOME_OE_TEST_RUN_DIR/$artifact" ] || [ -L "$PATHOME_OE_TEST_RUN_DIR/$artifact" ]; then
+        oe_die 'database absent but runtime artifacts remain; preserve evidence for explicit ownership resolution'
+      fi
+    done
     oe_log "nothing to do: '$PATHOME_OE_TEST_DB' does not exist"
     return 0
   fi
@@ -246,9 +332,13 @@ cmd_teardown() {
   # Destructive path: the target must be provably disposable before anything is dropped.
   oe_guard_check_live_identity "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
   oe_guard_check_sentinel "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
+  oe_guard_require_run
+  node "$OE_TOOL_DIR/lib/runtime.mjs" recover
+  oe_runtime_checkpoint OWNED_BACKEND_STOPPED
 
   oe_log "dropping disposable database '$PATHOME_OE_TEST_DB' (marker verified)"
-  oe_psql_admin postgres -c "DROP DATABASE IF EXISTS \"$PATHOME_OE_TEST_DB\" WITH (FORCE)"
+  oe_guard_drop
+  oe_runtime_checkpoint DATABASE_DROPPED
   oe_log "TEARDOWN OK  $PATHOME_OE_TEST_DB removed"
 }
 
@@ -262,39 +352,47 @@ cmd_backend() {
   local jdbc_url
   jdbc_url="$(oe_guard_jdbc_url)"
   oe_guard_verify_jdbc "$jdbc_url"
+  # Validate media/configuration synchronously, before writing a PID or starting a subprocess.
+  ( oe_iso_apply_backend_env "$jdbc_url" ) >/dev/null
 
   if ! oe_database_exists; then
     oe_die "Disposable database '$PATHOME_OE_TEST_DB' does not exist. Run 'create' first."
   fi
+  oe_guard_verify --destructive
+  oe_guard_require_run
+
+  for artifact in backend.pid backend-binding.json backend-startup.json; do
+    [ ! -L "$PATHOME_OE_TEST_RUN_DIR/$artifact" ] || oe_die 'symlinked runtime artifact'
+  done
 
   if [ -f "$PATHOME_OE_TEST_RUN_DIR/backend.pid" ] && \
      kill -0 "$(cat "$PATHOME_OE_TEST_RUN_DIR/backend.pid")" 2>/dev/null; then
-    oe_log "backend already running with pid $(cat "$PATHOME_OE_TEST_RUN_DIR/backend.pid")"
+    oe_runtime_require_backend
+    oe_log 'existing backend process, listener, signing identity and run verified'
     return 0
   fi
+  [ ! -f "$PATHOME_OE_TEST_RUN_DIR/backend.pid" ] || oe_die 'stale PID file; inspect it and stop the previous owned run first'
+  [ ! -e "$PATHOME_OE_TEST_RUN_DIR/backend-startup.json" ] && [ ! -e "$PATHOME_OE_TEST_RUN_DIR/backend-binding.json" ] || oe_die 'orphan runtime records; run recover first'
+  command -v lsof >/dev/null || oe_die 'lsof is required to prove the listener identity'
+  if /usr/sbin/lsof -nP -iTCP:"$OE_BACKEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then oe_die 'backend port is already occupied'; fi
 
-  local log="$PATHOME_OE_TEST_RUN_DIR/backend.log"
+  local log="${OE_COMMAND_ATTEMPT_DIR:?supervised backend command required}/backend.log"
+  [ ! -L "$log" ] || oe_die 'symlinked backend log'
   : > "$log"
 
   (
-    set -a
-    if [ -f "$OE_REPO_ROOT/.env.local" ]; then
-      # shellcheck disable=SC1091
-      . "$OE_REPO_ROOT/.env.local"
-    fi
-    set +a
+    # `.env.local` is never sourced. Every destination is neutralised, then repinned to the
+    # disposable target, and an unapproved media destination refuses the launch outright.
+    oe_iso_apply_backend_env "$jdbc_url"
 
-    # Re-point the application at the designated disposable database only.
-    export SPRING_DATASOURCE_URL="$jdbc_url"
-    export SPRING_DATASOURCE_USERNAME="$PATHOME_OE_TEST_DB_APP_USER"
     export PATHOME_DATABASE_ALLOW_FLYWAY_BASELINE=true
 
     # The disposable schema is authoritative from Flyway, never from Hibernate schema tooling.
     # Upstream application.yml defaults ddl-auto=update, which cannot converge a database built
     # purely from the supported migrations: the v1 legacy baseline declares
     # property_media_assets.caption as TEXT while the entity maps varchar(255), and PostgreSQL
-    # refuses that ALTER because V9's property_media_debug_view depends on the column. The
-    # preserved pathome_db only boots because earlier Hibernate runs had already converged it.
+    # refuses that ALTER because V9's property_media_debug_view depends on the column. A preserved
+    # development database only boots because earlier Hibernate runs had already converged it.
     # Pinning `none` here is a launch-time property for this environment only - it is the same
     # setting the repository's existing PostgreSQL integration tests use, and it changes no
     # source file, entity, migration, or application default.
@@ -305,25 +403,38 @@ cmd_backend() {
     export APP_BOOTSTRAP_ADMIN_PASSWORD="$OE_BOOTSTRAP_ADMIN_PASSWORD"
     export APP_BOOTSTRAP_OPERATOR_REFERENCE="$OE_BOOTSTRAP_OPERATOR_REFERENCE"
     export SERVER_PORT="$OE_BACKEND_PORT"
+    export SERVER_ADDRESS=127.0.0.1
 
     case "$SPRING_DATASOURCE_URL" in
       *"/$PATHOME_OE_TEST_DB") ;;
       *) printf 'REFUSED: datasource override did not take effect\n' >&2; exit 90 ;;
     esac
+    # The datasource must not name any protected database, and the only host it may address is the
+    # local loopback address the designation itself carries.
     case "$SPRING_DATASOURCE_URL" in
-      *"/$OE_PROTECTED_DEV_DB"*) printf 'REFUSED: reserved development database\n' >&2; exit 90 ;;
+      *"//$PATHOME_OE_TEST_DB_HOST"*) ;;
+      *) printf 'REFUSED: datasource host is not the designated local host\n' >&2; exit 90 ;;
     esac
+    case "$SPRING_DATASOURCE_URL" in
+      *"@"*) printf 'REFUSED: datasource URL must not embed credentials\n' >&2; exit 90 ;;
+    esac
+    jdbc_database="${SPRING_DATASOURCE_URL%%\?*}"
+    jdbc_database="${jdbc_database##*/}"
+    oe_guard_assert_not_protected "$jdbc_database" 'datasource database'
 
-    exec mvn -o -q -f "$OE_REPO_ROOT/backend/pom.xml" spring-boot:run
+    OE_RUNTIME_REPLACE=true mvn -o -q -f "$OE_REPO_ROOT/backend/pom.xml" spring-boot:run
   ) >> "$log" 2>&1 &
 
   local pid=$!
   printf '%s\n' "$pid" > "$PATHOME_OE_TEST_RUN_DIR/backend.pid"
+  node "$OE_TOOL_DIR/lib/runtime.mjs" record-startup
+  oe_runtime_checkpoint STARTUP_IDENTITY_RECORDED
   oe_log "backend starting (pid $pid) against $jdbc_url"
   oe_log "log: $log"
 
-  local attempt code
+  local attempt code deadline=$((SECONDS + 180))
   for attempt in $(seq 1 120); do
+    [ "$SECONDS" -lt "$deadline" ] || break
     if ! kill -0 "$pid" 2>/dev/null; then
       oe_log 'backend process exited before becoming ready; last log lines:'
       tail -30 "$log" >&2 || true
@@ -331,39 +442,62 @@ cmd_backend() {
     fi
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$OE_API_BASE_URL/staff/me/capabilities" || true)"
     if [ "$code" = '401' ]; then
-      oe_log "BACKEND READY  $OE_API_BASE_URL (after ${attempt}s)"
+      oe_guard_require_run
+      node "$OE_TOOL_DIR/lib/runtime.mjs" record
+      oe_runtime_checkpoint BACKEND_BOUND
+      oe_log "BACKEND READY  $OE_API_BASE_URL (readiness attempt $attempt)"
       return 0
     fi
     sleep 1
   done
 
   tail -40 "$log" >&2 || true
-  oe_die 'backend did not become ready within 120s'
+  oe_die 'backend did not become ready within the bounded startup window; run recover'
 }
 
 cmd_stop_backend() {
   oe_load_designation
-  local pidfile="$PATHOME_OE_TEST_RUN_DIR/backend.pid"
-  if [ ! -f "$pidfile" ]; then
-    oe_log 'no backend pid recorded'
-    return 0
+  oe_guard_verify --destructive
+  oe_guard_require_run
+  node "$OE_TOOL_DIR/lib/runtime.mjs" stop
+  oe_log 'verified disposable backend and listener stopped; PID/binding artifacts removed'
+}
+
+cmd_recover() {
+  oe_load_designation
+  oe_require_tools
+  # A partial database with no sentinel is quarantined: recovery never creates proof to enable drop.
+  if oe_database_exists; then
+    oe_guard_verify --destructive
+    oe_guard_require_run
+  elif [ -e "$PATHOME_OE_TEST_RUN_DIR/backend.pid" ]; then
+    oe_die 'runtime artifacts exist but database identity cannot be proven; preserve evidence for explicit operator resolution'
   fi
-  local pid
-  pid="$(cat "$pidfile")"
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    oe_log "stopped backend pid $pid"
-  else
-    oe_log "backend pid $pid is not running"
-  fi
-  rm -f "$pidfile"
+  node "$OE_TOOL_DIR/lib/runtime.mjs" recover
+  oe_log 'RECOVERY OK: owned process stopped/dead artifacts archived; database and diagnostic evidence retained'
+}
+
+cmd_recover_probe() {
+  oe_load_designation
+  [ "$#" = 1 ] && [[ "$1" =~ ^pathome_oe_test_guardprobe_[0-9]+$ ]] || oe_die 'exact legacy guardprobe identifier required'
+  # Previous harness probes had no per-run ownership journal. Names alone cannot prove ownership.
+  printf 'QUARANTINED legacy probe %s: automatic cleanup refused; no sentinel or ownership evidence will be fabricated.\n' "$1"
+  oe_die 'legacy unowned probe requires explicit operator resolution; the corrected verifier creates no probe database'
+}
+
+cmd_preflight() {
+  oe_load_designation
+  oe_require_tools
+  oe_ensure_run_dir
+  node "$OE_TOOL_DIR/lib/readiness.mjs" check
+  [ "${PATHOME_OE_TEST_ALLOW_LOCAL_BUILD:-}" = true ] || oe_die 'preflight requires explicit approval PATHOME_OE_TEST_ALLOW_LOCAL_BUILD=true for the safe local frontend build'
+  # Offline compilation and plugin help load build/runtime dependencies without executing tests or
+  # starting Spring. The outer command supervisor bounds the entire prerequisite batch.
+  ( oe_iso_neutralise_environment; mvn -o -q -f "$OE_REPO_ROOT/backend/pom.xml" -DskipTests test-compile spring-boot:help )
+  oe_runtime_exec build npm --prefix "$OE_REPO_ROOT/frontend-web" run build
+  node "$OE_TOOL_DIR/lib/readiness.mjs" record
+  oe_runtime_checkpoint PREREQUISITES_COMPLETE
+  oe_log 'PREFLIGHT OK: local tooling/cache/build/browser/image/media/private-directory checks passed; no database contacted'
 }
 
 cmd_provision() {
@@ -371,6 +505,7 @@ cmd_provision() {
   oe_ensure_run_dir
   oe_require_tools
   oe_ensure_secrets
+  oe_runtime_require_backend
   oe_provision_main "$@"
 }
 
@@ -379,11 +514,77 @@ cmd_verify() {
   oe_ensure_run_dir
   oe_require_tools
   oe_ensure_secrets
+  oe_runtime_require_backend
   oe_verify_main "$@"
+}
+
+# Auditable evidence of the actual test target. Disposable-only: this command reads nothing but the
+# designated database and records explicitly that it makes no claim about any protected database.
+cmd_attest() {
+  oe_load_designation
+  oe_guard_resolve
+  oe_guard_assert_not_protected "$PATHOME_OE_TEST_DB" 'the designated database'
+  oe_require_tools
+  oe_ensure_run_dir
+  oe_guard_verify --destructive
+  oe_guard_require_run
+  node "$OE_TOOL_DIR/lib/runtime.mjs" verify
+  mkdir -p "$PATHOME_OE_TEST_RUN_DIR/evidence"
+
+  local file="$PATHOME_OE_TEST_RUN_DIR/evidence/target-attestation.txt"
+  local live live_user server_address server_port server_version sentinel highest applied live_tables
+  local expected_tables expected_views expected_infra
+
+  live="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc 'select current_database()')"
+  [ "$live" = "$PATHOME_OE_TEST_DB" ] || oe_die "the live connection reports '$live', not the designation '$PATHOME_OE_TEST_DB'. Attestation refused."
+
+  live_user="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc 'select current_user')"
+  server_address="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc "select coalesce(inet_server_addr()::text, 'local-socket')")"
+  server_port="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc 'select inet_server_port()::text')"
+  server_version="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc 'select version()')"
+  sentinel="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select env_marker || ' db_name=' || db_name || ' guard=' || guard_version || ' run=' || run_id from $OE_GUARD_SENTINEL_TABLE where env_marker = '$OE_GUARD_SENTINEL_MARKER' and db_name = current_database()")"
+  highest="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select coalesce(version, 'baseline-only') from flyway_schema_history where success order by installed_rank desc limit 1")"
+  applied="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc 'select count(*) from flyway_schema_history where success')"
+  live_tables="$(oe_psql_app "$PATHOME_OE_TEST_DB" -Atc \
+    "select count(*) from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'")"
+  expected_tables="$(oe_repo_expected_tables base | wc -l | tr -d ' ')"
+  expected_views="$(oe_repo_expected_tables view | wc -l | tr -d ' ')"
+  expected_infra="$(oe_repo_expected_tables infra | wc -l | tr -d ' ')"
+
+  {
+    printf 'attested_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'guard_version=%s\n' "$OE_GUARD_VERSION"
+    printf 'isolation_version=%s\n' "$OE_ISO_VERSION"
+    printf 'designation=%s\n' "$PATHOME_OE_TEST_DB"
+    printf 'run_id=%s\n' "$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")"
+    printf 'backend_origin=http://127.0.0.1:%s\n' "$OE_BACKEND_PORT"
+    printf 'backend_listener_pid=%s\n' "$(node -e 'const fs=require("node:fs"); process.stdout.write(String(JSON.parse(fs.readFileSync(process.env.PATHOME_OE_TEST_RUN_DIR+"/backend-binding.json")).listenerPid))')"
+    printf 'jdbc_target=%s\n' "$(oe_guard_jdbc_url)"
+    printf 'live_current_database=%s\n' "$live"
+    printf 'live_current_user=%s\n' "$live_user"
+    printf 'server_address=%s\n' "$server_address"
+    printf 'server_port=%s\n' "$server_port"
+    printf 'server_version=%s\n' "$server_version"
+    printf 'disposable_marker=%s\n' "$sentinel"
+    printf 'flyway_highest_applied=%s\n' "$highest"
+    printf 'flyway_applied_count=%s\n' "$applied"
+    printf 'expected_applied_count=%s\n' "$(oe_repo_expected_versions | wc -l | tr -d ' ')"
+    printf 'public_base_tables=%s (expected base=%s infra=%s)\n' "$live_tables" "$expected_tables" "$expected_infra"
+    printf 'expected_views=%s\n' "$expected_views"
+    printf 'schema_source_fingerprint_sha256=%s\n' "$(oe_repo_schema_source_fingerprint)"
+    printf 'protected_deny_rules=%s | %s\n' "$OE_GUARD_PROTECTED_NAMES" "$OE_GUARD_PROTECTED_PREFIXES"
+    printf 'statement=%s\n' \
+      'Disposable-only attestation. This run read, dumped, fingerprinted and compared only the designated disposable database. No protected database was inspected, and this evidence therefore proves only the identity of the disposable target; it is NOT evidence that any protected database is unchanged.'
+  } | tee "$file"
+
+  oe_log "written to $file"
 }
 
 cmd_status() {
   oe_load_designation
+  oe_guard_resolve
   oe_log "designation   $PATHOME_OE_TEST_DB"
   oe_log "jdbc target   $(oe_guard_jdbc_url)"
   oe_log "run dir       $PATHOME_OE_TEST_RUN_DIR"
@@ -408,18 +609,25 @@ cmd_status() {
 }
 
 case "${1:-}" in
+  preflight|create|recreate|backend|stop-backend|recover|recover-probe|provision|verify|attest|teardown) oe_runtime_supervise "$OE_TOOL_DIR/run.sh" "$@" ;;
+esac
+case "${1:-}" in
+  preflight)    shift; cmd_preflight "$@" ;;
+  recover)      shift; cmd_recover "$@" ;;
+  recover-probe) shift; cmd_recover_probe "$@" ;;
   doctor)       shift; cmd_doctor "$@" ;;
-  fingerprint)  shift; cmd_fingerprint "$@" ;;
+  plan)         shift; cmd_plan "$@" ;;
   create)       shift; cmd_create "$@" ;;
   recreate)     shift; cmd_recreate "$@" ;;
   backend)      shift; cmd_backend "$@" ;;
   stop-backend) shift; cmd_stop_backend "$@" ;;
   provision)    shift; cmd_provision "$@" ;;
   verify)       shift; cmd_verify "$@" ;;
+  attest)       shift; cmd_attest "$@" ;;
   teardown)     shift; cmd_teardown "$@" ;;
   status)       shift; cmd_status "$@" ;;
   *)
-    sed -n '2,17p' "$0" >&2
+    sed -n '2,24p' "$0" >&2
     exit 2
     ;;
 esac

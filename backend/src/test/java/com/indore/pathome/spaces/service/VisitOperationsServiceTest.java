@@ -57,7 +57,7 @@ class VisitOperationsServiceTest {
         OperationalAuditService operationalAudit = mock(OperationalAuditService.class);
         service = new VisitOperationsService(requests, sessions, users, visitPolicies, items, listings, localities,
                 authorization, ownedAuthorization, events, entityManager, recommendations, decisions,
-                operationalGuards, operationalAudit);
+                operationalGuards, operationalAudit, mock(VisitSchedulingCommandStore.class));
         when(ownedAuthorization.admit(9L))
                 .thenAnswer(invocation -> new OwnedOperationsAuthorizationService.Actor(user(9L, Role.ROLE_ADMIN), true));
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
@@ -480,7 +480,7 @@ class VisitOperationsServiceTest {
                         Instant.parse("2099-10-02T11:00:00Z"), Instant.now(), "test", true,
                         "UNAVAILABLE", "UNKNOWN", RecommendationStatus.RECOMMENDATION_AVAILABLE));
         ApproveVisitRecommendationCommand withoutReason = new ApproveVisitRecommendationCommand(0L, 41L,
-                Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", null);
+                Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", null, java.util.UUID.randomUUID());
         assertThrows(IllegalArgumentException.class, () -> service.selectForOwner(17L, 500L, withoutReason));
         assertEquals(VisitSessionStatus.DRAFT, session.getStatus());
         verify(decisions, never()).saveAndFlush(any());

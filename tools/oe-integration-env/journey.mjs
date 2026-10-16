@@ -15,15 +15,24 @@
  *   node journey.mjs
  *
  * Prints one line per check and exits non-zero on the first failed stage's end. The state file it writes
- * holds the disposable identities and identifiers the browser pass then reuses; it never holds a secret.
+ * holds the disposable identities and identifiers the browser pass then reuses. It holds e-mail
+ * addresses and ids only: no password and no bearer token is ever written to it, printed, or committed.
+ * Credentials come exclusively from the ephemeral run (`$PATHOME_OE_TEST_RUN_DIR/secrets.env`), never
+ * from this file and never from the repository.
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { boundClient } from './lib/runtime.mjs';
 
-const BACKEND = process.env.P4_BACKEND_URL ?? 'http://localhost:8080';
+const bound = boundClient();
+const BACKEND = bound.origin;
 const API = `${BACKEND}/api/v1`;
 const ADMIN = { email: process.env.P4_ADMIN_EMAIL, password: process.env.P4_ADMIN_PASSWORD };
 const STAFF_PASSWORD = process.env.P4_STAFF_PASSWORD;
+if (!ADMIN.password || !STAFF_PASSWORD) {
+  throw new Error('disposable run credentials are required: P4_ADMIN_PASSWORD and P4_STAFF_PASSWORD come '
+    + 'from $PATHOME_OE_TEST_RUN_DIR/secrets.env (see package4.sh journey). No password is defaulted here.');
+}
 const MEDIA_FILE = process.env.P4_MEDIA_FILE;
 const STATE_FILE = process.env.P4_STATE_FILE;
 const CITY_CODE = process.env.P4_CITY_CODE ?? 'indore';
@@ -52,30 +61,10 @@ const api = async (method, path, token, body, headers = {}) => {
     request.headers['Content-Type'] = 'application/json';
     request.body = JSON.stringify(body);
   }
-  const response = await fetch(`${API}${path}`, request);
-  const text = await response.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
-  return { status: response.status, json, text, cacheControl: response.headers.get('cache-control') };
+  return bound.request(method, path, token, body, headers);
 };
 const multipart = async (path, token, form) => {
-  const response = await fetch(`${API}${path}`, {
-    method: 'POST',
-    headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: form
-  });
-  const text = await response.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
-  return { status: response.status, json, text };
+  return bound.request('POST', path, token, form);
 };
 
 const register = async (email, fullName, phoneNumber) => {
@@ -430,11 +419,13 @@ const run = async () => {
     listingId,
     requestId,
     canonicalLocalityName: canonicalLocality.name,
+    // Credentials are deliberately absent: the browser pass resolves the shared disposable password
+    // from the ephemeral run environment (P4_STAFF_PASSWORD), so no secret is ever written to disk.
     identities: {
-      lessor: { email: lessorEmail, password: STAFF_PASSWORD },
-      tenant: { email: tenant.email, password: STAFF_PASSWORD },
-      oe: { email: oe.email, password: STAFF_PASSWORD },
-      reviewer: { email: reviewer.email, password: STAFF_PASSWORD }
+      lessor: { email: lessorEmail },
+      tenant: { email: tenant.email },
+      oe: { email: oe.email },
+      reviewer: { email: reviewer.email }
     }
   };
   if (STATE_FILE) await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });

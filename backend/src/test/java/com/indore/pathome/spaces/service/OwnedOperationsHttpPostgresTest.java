@@ -65,8 +65,7 @@ import static org.junit.jupiter.api.Assertions.*;
 })
 @EnabledIfEnvironmentVariable(named = "PATHOME_VISIT_OPERATIONS_POSTGRES_TEST", matches = "true")
 class OwnedOperationsHttpPostgresTest {
-    private static final String BASE_URL = System.getenv().getOrDefault(
-            "SPRING_DATASOURCE_URL", "jdbc:postgresql://localhost:5432/pathome_db");
+    private static final String BASE_URL = DisposableSchedulingTestDatabase.url();
     private static final String USERNAME = System.getenv().getOrDefault("SPRING_DATASOURCE_USERNAME", "pathome");
     private static final String PASSWORD = System.getenv().getOrDefault("SPRING_DATASOURCE_PASSWORD", "");
     private static final String SCHEMA = "owned_ops_http_test_" + UUID.randomUUID().toString().replace("-", "");
@@ -89,6 +88,7 @@ class OwnedOperationsHttpPostgresTest {
             }
         }
         registry.add("spring.datasource.url", OwnedOperationsHttpPostgresTest::schemaUrl);
+        registry.add("spring.datasource.hikari.jdbc-url", OwnedOperationsHttpPostgresTest::schemaUrl);
         registry.add("spring.datasource.username", () -> USERNAME);
         registry.add("spring.datasource.password", () -> PASSWORD);
     }
@@ -128,6 +128,129 @@ class OwnedOperationsHttpPostgresTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SchedulingRecommendationPolicy recommendationPolicy;
     @LocalServerPort private int httpPort;
+
+    @Test
+    void concurrentSchedulingCommandsReplayOneCommittedOutcomeAndRejectChangedContents() throws Exception {
+        BookingFixture b = bookingFixture("b09-concurrent");
+        var pool = Executors.newFixedThreadPool(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            Callable<HttpResponse<String>> task = () -> { start.await(); return send("POST", b.path(), b.owner().token(), b.body()); };
+            Future<HttpResponse<String>> first = pool.submit(task), second = pool.submit(task);
+            start.countDown();
+            var a = first.get(20, TimeUnit.SECONDS); var duplicate = second.get(20, TimeUnit.SECONDS);
+            assertEquals(200, a.statusCode(), a.body()); assertEquals(200, duplicate.statusCode(), duplicate.body());
+            assertEquals(mapper.readTree(a.body()), mapper.readTree(duplicate.body()));
+            long version = sessionVersion(b.sessionId());
+            long outbox = count("visit_notification_outbox"), audit = count("operational_audit_events");
+            assertEquals(1L, jdbc.queryForObject("select count(*) from visit_scheduling_decisions where session_id=?", Long.class, b.sessionId()));
+            assertEquals(1L, jdbc.queryForObject("select count(*) from visit_scheduling_commands where session_id=?", Long.class, b.sessionId()));
+            assertEquals(2L, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ?", Long.class, "%:" + b.sessionId() + ":v%"));
+            var replay = send("POST", b.path(), b.owner().token(), b.body());
+            assertEquals(200, replay.statusCode()); assertEquals(mapper.readTree(a.body()), mapper.readTree(replay.body()));
+            var changed = mapper.readTree(b.body()).deepCopy();
+            ((com.fasterxml.jackson.databind.node.ObjectNode) changed).put("expectedSessionVersion", version);
+            assertEquals(409, send("POST", b.path(), b.owner().token(), changed.toString()).statusCode());
+            ((com.fasterxml.jackson.databind.node.ObjectNode) changed).put("commandId", UUID.randomUUID().toString());
+            assertEquals(409, send("POST", b.path(), b.owner().token(), changed.toString()).statusCode());
+            assertEquals(version, sessionVersion(b.sessionId()));
+            assertEquals(outbox, count("visit_notification_outbox")); assertEquals(audit, count("operational_audit_events"));
+            var receipt = send("GET", b.path() + "/" + b.commandId(), b.owner().token(), null);
+            assertEquals(200, receipt.statusCode()); assertEquals("COMPLETED", mapper.readTree(receipt.body()).path("state").asText());
+            assertEquals(mapper.readTree(a.body()), mapper.readTree(receipt.body()).path("approval"));
+            Actor foreign = actor("b09-foreign", Role.ROLE_TENANT, "OPERATIONS", true);
+            assertTrue(List.of(403, 404).contains(send("POST", b.path(), foreign.token(), b.body()).statusCode()));
+            assertTrue(List.of(403, 404).contains(send("GET", b.path() + "/" + b.commandId(), foreign.token(), null).statusCode()));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void interruptedDatabaseTransactionLeavesNoReceiptReservationDecisionOrOutboxAndSameIdRecovers() throws Exception {
+        BookingFixture b = bookingFixture("b09-interrupt");
+        long version = sessionVersion(b.sessionId()), outbox = count("visit_notification_outbox");
+        jdbc.execute("create function b09_pause_decision() returns trigger language plpgsql as $$ begin "
+                + "if NEW.session_id=" + b.sessionId() + " then perform pg_sleep(20); end if; return NEW; end $$");
+        jdbc.execute("create trigger b09_pause before insert on visit_scheduling_decisions for each row execute function b09_pause_decision()");
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<HttpResponse<String>> pending = pool.submit(() -> send("POST", b.path(), b.owner().token(), b.body()));
+            Integer pid = null; long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (System.nanoTime() < deadline && pid == null) {
+                var pids = jdbc.queryForList("select pid from pg_stat_activity where datname=current_database() "
+                        + "and usename=current_user and wait_event='PgSleep' and query like '%visit_scheduling_decisions%'", Integer.class);
+                if (!pids.isEmpty()) pid = pids.get(0); else Thread.sleep(25);
+            }
+            assertNotNull(pid, "Real scheduling transaction must reach the decision write before interruption");
+            assertEquals(Boolean.TRUE, jdbc.queryForObject("select pg_terminate_backend(?)", Boolean.class, pid));
+            assertEquals(500, pending.get(15, TimeUnit.SECONDS).statusCode());
+        } finally {
+            jdbc.execute("drop trigger b09_pause on visit_scheduling_decisions"); jdbc.execute("drop function b09_pause_decision()"); pool.shutdownNow();
+        }
+        assertEquals(version, sessionVersion(b.sessionId()));
+        assertEquals(VisitSessionStatus.DRAFT, sessions.findById(b.sessionId()).orElseThrow().getStatus());
+        assertEquals(0L, jdbc.queryForObject("select count(*) from visit_scheduling_commands where session_id=?", Long.class, b.sessionId()));
+        assertEquals(0L, jdbc.queryForObject("select count(*) from visit_scheduling_decisions where session_id=?", Long.class, b.sessionId()));
+        assertEquals(outbox, count("visit_notification_outbox"));
+        var unknown = send("GET", b.path() + "/" + b.commandId(), b.owner().token(), null);
+        assertEquals("NOT_RECORDED", mapper.readTree(unknown.body()).path("state").asText());
+        assertEquals(200, send("POST", b.path(), b.owner().token(), b.body()).statusCode());
+    }
+
+    private record BookingFixture(long sessionId, Actor owner, String commandId, String body) {
+        String path() { return "/api/v1/operations/visit-sessions/" + sessionId + "/oe-recommendations/selection"; }
+    }
+
+    private BookingFixture bookingFixture(String prefix) throws Exception {
+        return bookingFixture(prefix, fixture(prefix));
+    }
+
+    private BookingFixture bookingFixture(String prefix, Fixture f) throws Exception {
+        Actor admin = admin(prefix + "-admin");
+        VisitSession s = session(prefix, f, VisitSessionStatus.DRAFT, f.owner().user(), 0);
+        PropertyVisitRequest request = linkedRequest(prefix, f, s, VisitRequestStatus.COORDINATING, f.owner().user());
+        Instant start = Instant.now().plus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.MINUTES), end = start.plus(Duration.ofHours(2));
+        request.setAvailabilityStartAt(start); request.setAvailabilityEndAt(end); request.setAvailabilityZoneId("Asia/Kolkata"); request.setPreferredAt(start);
+        requests.saveAndFlush(request);
+        VisitSessionItem item = directItem(s, request, request.getListing(), 1);
+        item.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED); item.setConfirmedBy(admin.user()); item.setAvailabilityConfirmedAt(Instant.now());
+        item.setAvailabilityStartAt(start); item.setAvailabilityEndAt(end); item.setAvailabilityZoneId("Asia/Kolkata"); item.setAvailabilitySource(PropertyAvailabilitySource.PHONE);
+        visitSessionItems.saveAndFlush(item);
+        Actor ge = actor(prefix + "-ge", Role.ROLE_GROUND_BOY, "GROUND_BOY", true);
+        long profile = employees.findByUserId(ge.user().getId()).orElseThrow().getId();
+        jdbc.update("insert into ground_executive_scheduling_profiles(employee_profile_id,scheduling_active,updated_by_user_id) values (?,true,?)", profile, admin.user().getId());
+        jdbc.update("insert into ground_executive_coverage(employee_profile_id,city,created_by_user_id) values (?,?,?)", profile, f.city().getDisplayName(), admin.user().getId());
+        jdbc.update("insert into ground_executive_shifts(employee_profile_id,starts_at,ends_at,zone_id,created_by_user_id,updated_by_user_id) values (?,?,?,'Asia/Kolkata',?,?)",
+                profile, java.sql.Timestamp.from(start.minus(Duration.ofHours(4))), java.sql.Timestamp.from(end.plus(Duration.ofHours(4))), admin.user().getId(), admin.user().getId());
+        var response = send("POST", "/api/v1/operations/visit-sessions/" + s.getId() + "/oe-recommendations", f.owner().token(), "{\"expectedSessionVersion\":" + sessionVersion(s.getId()) + "}");
+        assertEquals(200, response.statusCode(), response.body());
+        var candidate = mapper.readTree(response.body()).path("candidates").get(0); assertNotNull(candidate);
+        String commandId = UUID.randomUUID().toString();
+        String body = mapper.writeValueAsString(Map.of("commandId", commandId, "expectedSessionVersion", sessionVersion(s.getId()),
+                "groundExecutiveUserId", candidate.path("groundExecutiveUserId").asLong(), "scheduledAt", candidate.path("scheduledAt").asText(), "zoneId", candidate.path("zoneId").asText()));
+        return new BookingFixture(s.getId(), f.owner(), commandId, body);
+    }
+
+    @Test
+    void sameActorCommandIdAcrossDistinctSessionLocksIsArbitratedByPostgresUniqueness() throws Exception {
+        Fixture f = fixture("b09-unique");
+        BookingFixture a = bookingFixture("b09-unique-a", f), b = bookingFixture("b09-unique-b", f);
+        var changed = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(b.body());
+        changed.put("commandId", a.commandId());
+        var pool = Executors.newFixedThreadPool(2); var gate = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var first = pool.submit(() -> { gate.await(); return send("POST", a.path(), a.owner().token(), a.body()); });
+            var second = pool.submit(() -> { gate.await(); return send("POST", b.path(), b.owner().token(), changed.toString()); });
+            gate.countDown();
+            var statuses = new ArrayList<>(List.of(first.get(20, TimeUnit.SECONDS).statusCode(), second.get(20, TimeUnit.SECONDS).statusCode()));
+            statuses.sort(Integer::compareTo); assertEquals(List.of(200, 409), statuses);
+            assertEquals(1L, jdbc.queryForObject("select count(*) from visit_scheduling_commands where actor_user_id=? and command_id=?::uuid",
+                    Long.class, f.owner().user().getId(), a.commandId()));
+            assertEquals(1L, jdbc.queryForObject("select count(*) from visit_sessions where id in (?,?) and status='SCHEDULED'", Long.class, a.sessionId(), b.sessionId()));
+            assertEquals(1L, jdbc.queryForObject("select count(*) from visit_scheduling_decisions where session_id in (?,?)", Long.class, a.sessionId(), b.sessionId()));
+            assertEquals(2L, jdbc.queryForObject("select count(*) from visit_notification_outbox where event_key like ? or event_key like ?",
+                    Long.class, "%:" + a.sessionId() + ":v%", "%:" + b.sessionId() + ":v%"));
+        } finally { pool.shutdownNow(); }
+    }
 
     @Test
     void oeSchedulingRoutesRequireCurrentOwnedScopeAndHideForeignSessions() throws Exception {
@@ -224,6 +347,7 @@ class OwnedOperationsHttpPostgresTest {
         assertEquals(1, candidates.size());
         JsonNode selected = candidates.get(0);
         Map<String, Object> selection = new java.util.HashMap<>();
+        selection.put("commandId", UUID.randomUUID().toString());
         selection.put("expectedSessionVersion", version);
         selection.put("groundExecutiveUserId", eligible.user().getId());
         selection.put("scheduledAt", selected.path("scheduledAt").asText());

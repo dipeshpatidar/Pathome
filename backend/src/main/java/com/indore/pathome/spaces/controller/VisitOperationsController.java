@@ -70,7 +70,15 @@ public class VisitOperationsController {
     @PostMapping("/visit-sessions/{sessionId}/oe-recommendations/selection")
     public ResponseEntity<VisitSchedulingApprovalView> selectForOwner(Authentication authentication,
             @PathVariable Long sessionId, @RequestBody ApproveVisitRecommendationCommand command) {
-        return ResponseEntity.ok(operations.selectForOwner(authenticatedUserId(authentication), sessionId, command));
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(operations.selectForOwner(authenticatedUserId(authentication), sessionId, command));
+    }
+
+    @GetMapping("/visit-sessions/{sessionId}/oe-recommendations/selection/{commandId}")
+    public ResponseEntity<VisitSchedulingCommandView> schedulingCommand(Authentication authentication,
+            @PathVariable Long sessionId, @PathVariable java.util.UUID commandId) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(operations.schedulingCommand(authenticatedUserId(authentication), sessionId, commandId));
     }
 
     @PostMapping("/visit-sessions/{sessionId}/items")

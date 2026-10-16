@@ -1,4 +1,5 @@
 import { API_ROOT_URL } from '../config/endpoints';
+import type { SchedulingIntent } from '../utils/operationsSchedulingIntent';
 import { ApiRequestError, createApiRequestError } from './apiError';
 import {
   captureOperationsSession,
@@ -543,7 +544,7 @@ export const operationsWorkspaceService = {
    * inconsistent Session is refused here, which is what makes the caller report an unconfirmed
    * outcome rather than announce a booking the client cannot display.
    */
-  selectGroundExecutive(
+  async selectGroundExecutive(
     sessionId: number,
     body: {
       expectedSessionVersion: number;
@@ -551,10 +552,16 @@ export const operationsWorkspaceService = {
       scheduledAt: string;
       zoneId: string;
       overrideReason: string | null;
+      commandId: string;
     },
     context: OperationsRequestContext = {}
   ): Promise<OperationsSchedulingApproval> {
-    return sendJsonCommand(
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (context.signal?.aborted) abort();
+    context.signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, 10000);
+    try { return await sendJsonCommand(
       `/operations/visit-sessions/${sessionId}/oe-recommendations/selection`,
       'POST',
       body,
@@ -565,7 +572,28 @@ export const operationsWorkspaceService = {
         groundExecutiveUserId: body.groundExecutiveUserId,
         scheduledAt: body.scheduledAt
       }),
-      context
+      { ...context, signal: controller.signal }
     );
+    } finally { clearTimeout(timer); context.signal?.removeEventListener('abort', abort); }
+  },
+
+  async schedulingCommand(sessionId: number, intent: SchedulingIntent, context: OperationsRequestContext = {}): Promise<OperationsSchedulingApproval | null> {
+    const session = requireSession(context);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (context.signal?.aborted) abort();
+    context.signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, 10000);
+    try {
+      const response = await sendOperationsRequest(`/operations/visit-sessions/${sessionId}/oe-recommendations/selection/${intent.commandId}`,
+        'The booking could not be verified. Check again when the connection is available.', { ...context, session, signal: controller.signal });
+      const payload = await readOperationsPayload(response, 'The booking could not be verified.') as Record<string, unknown> | null;
+      assertOperationsSessionActive(session);
+      if (payload?.commandId !== intent.commandId) throw Error('The booking receipt did not match this command.');
+      if (payload.state === 'NOT_RECORDED' && payload.approval === null) return null;
+      const approval = payload.state === 'COMPLETED' ? toSchedulingApproval(payload.approval, { sessionId, ...intent.body }) : null;
+      if (!approval) throw Error('The booking receipt could not be verified.');
+      return approval;
+    } finally { clearTimeout(timer); context.signal?.removeEventListener('abort', abort); }
   }
 };

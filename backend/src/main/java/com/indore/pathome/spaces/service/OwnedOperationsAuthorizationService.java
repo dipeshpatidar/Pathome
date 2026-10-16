@@ -125,10 +125,15 @@ public class OwnedOperationsAuthorizationService {
      * is a lifecycle conflict, never an Operations Executive mutation.
      */
     public void requireOwnedDraftSession(Actor actor, VisitSession session) {
+        requireOwnedSession(actor, session);
+        requireDraft(session);
+    }
+
+    /** Replay/read still requires current ownership and fresh guarded authority after booking. */
+    public void requireOwnedSession(Actor actor, VisitSession session) {
         Scope scope = scopeOf(session.getSupportedCity(), session.getOperatingTeam());
         lockScopes(actor, scope);
         requireOwnedSessionRoot(actor, session, scope);
-        requireDraft(session);
     }
 
     private void requireOwnedRequestRoot(Actor actor, PropertyVisitRequest request, Scope scope) {

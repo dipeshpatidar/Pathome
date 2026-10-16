@@ -19,13 +19,7 @@ oe_p3b_verify_postgres_main() {
 
   oe_log "focused Package 3B PostgreSQL/HTTP tests against $jdbc_url"
   (
-    set -a
-    [ -f "$OE_REPO_ROOT/.env.local" ] && . "$OE_REPO_ROOT/.env.local"
-    set +a
-    export PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true
-    export SPRING_DATASOURCE_URL="$jdbc_url"
-    export SPRING_DATASOURCE_USERNAME="$PATHOME_OE_TEST_DB_APP_USER"
-    export PATHOME_OE_TEST_DB
+    oe_iso_apply_test_env "$jdbc_url"
     mvn -f "$OE_REPO_ROOT/backend/pom.xml" -o \
       -Dtest="$P3B_POSTGRES_TESTS" -DfailIfNoTests=false test
   )
@@ -37,12 +31,9 @@ oe_p3b_verify_browser_main() {
   [ -f "$OE_P3_IDENTITIES" ] || oe_die "run 'package3.sh provision' first: no ephemeral identities found"
   [ -d "$OE_REPO_ROOT/frontend-web/dist" ] || oe_die "frontend-web/dist is missing; run 'npm --prefix frontend-web run build'"
   (
-    set -a
-    [ -f "$PATHOME_OE_TEST_RUN_DIR/secrets.env" ] && . "$PATHOME_OE_TEST_RUN_DIR/secrets.env"
-    # shellcheck disable=SC1090
-    . "$OE_P3_IDENTITIES"
-    set +a
-    export P3B_BACKEND_URL="http://localhost:$OE_BACKEND_PORT"
+    oe_runtime_load_secrets
+    oe_data_read "$OE_P3_IDENTITIES" 'oe_alpha_EMAIL oe_alpha_PASSWORD oe_bravo_EMAIL oe_bravo_PASSWORD staff_nogrant_EMAIL staff_nogrant_PASSWORD city_admin_EMAIL city_admin_PASSWORD P3A_CITY_ID P3A_TEAM_ALPHA_ID P3A_TEAM_BRAVO_ID'
+    export P3B_BACKEND_URL="http://127.0.0.1:$OE_BACKEND_PORT"
     export P3B_ADMIN_EMAIL="$OE_BOOTSTRAP_ADMIN_EMAIL"
     export P3B_ADMIN_PASSWORD="$OE_BOOTSTRAP_ADMIN_PASSWORD"
     export P3B_CITY_ID="$P3A_CITY_ID"

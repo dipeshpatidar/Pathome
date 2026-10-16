@@ -9,6 +9,17 @@
 # integration database. Everything else - production, staging, the preserved `pathome_db`
 # development database, a mistyped name, or an unstated target - is refused.
 #
+# Explicit deny rules (evaluated before the disposable-shaped-name allow rule):
+#   * OE_GUARD_PROTECTED_NAMES     reserved local databases, never opened by this environment
+#   * OE_GUARD_PROTECTED_PREFIXES  names derived from a reserved database (e.g. `pathome_db_clone`)
+#   * OE_GUARD_AMBIGUOUS_TOKENS    environment-suggesting names refused even when well-formed
+#   * OE_GUARD_LOCAL_HOSTS         loopback only; remote targets are refused outright
+#
+# This file contains no protected-database inspection of any kind: it never reads, dumps, fingerprints
+# or compares against a protected database. Every connection it authorises targets the designated
+# disposable database (or, for catalog-level existence checks only, the `postgres` maintenance
+# database, which is itself refused as a target).
+#
 # This file is sourced by the other scripts and can also be invoked directly:
 #   db-guard.sh check [--destructive]
 #   db-guard.sh check-jdbc <jdbc-url>
@@ -18,6 +29,7 @@ OE_GUARD_VERSION='1.0.0'
 
 # Absolute path back to this file so the self test can re-source it in a clean subshell.
 OE_GUARD_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+. "$(dirname "$OE_GUARD_SELF")/env-isolation.sh"
 
 # Stable refusal codes. The verification suite asserts these exact values.
 OE_GUARD_ERR_NO_OPT_IN=10
@@ -47,12 +59,17 @@ OE_GUARD_NAME_PATTERN='^pathome_oe_test_[a-z0-9_]{1,40}$'
 # Databases that must never be created, migrated, reset, or dropped by this tooling.
 OE_GUARD_PROTECTED_NAMES='pathome_db pathome_autonomous_v2_test postgres template0 template1 divyavastu_db hotel_booking'
 
+# Any name beginning with one of these prefixes is refused as protected *before* the disposable name
+# shape is considered, so a copy such as `pathome_db_backup` or `pathome_db_clone` can never be treated
+# as a target merely because it happens to be spelled differently from the preserved database.
+OE_GUARD_PROTECTED_PREFIXES='pathome_db'
+
 # Any of these substrings makes a name ambiguous, so it is refused even if it matches the
 # disposable name pattern.
 OE_GUARD_AMBIGUOUS_TOKENS='prod production stage staging live main master dev demo uat'
 
 # Local-only hosts. A remote host can only be production or staging, so it is refused.
-OE_GUARD_LOCAL_HOSTS='localhost 127.0.0.1 ::1 [::1]'
+OE_GUARD_LOCAL_HOSTS='localhost 127.0.0.1'
 
 # Positive disposable marker written at creation time and required before destruction.
 OE_GUARD_SENTINEL_TABLE='pathome_oe_test_env'
@@ -90,10 +107,25 @@ oe_guard_host_is_local() {
   return 1
 }
 
+oe_guard_port() {
+  [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$1" -le 65535 ] || \
+    oe_guard_refuse "$OE_GUARD_ERR_PORT_NOT_APPROVED" 'Port must be an integer from 1 through 65535'
+}
+
 oe_guard_name_is_protected() {
   local name="$1" protected
   for protected in $OE_GUARD_PROTECTED_NAMES; do
     [ "$name" = "$protected" ] && return 0
+  done
+  return 1
+}
+
+oe_guard_name_has_protected_prefix() {
+  local name="$1" prefix
+  for prefix in $OE_GUARD_PROTECTED_PREFIXES; do
+    case "$name" in
+      "$prefix"*) return 0 ;;
+    esac
   done
   return 1
 }
@@ -108,10 +140,16 @@ oe_guard_name_is_ambiguous() {
   return 1
 }
 
-# Static rules: explicit opt-in, explicit designation, local host, disposable-shaped name,
-# and no protected or ambiguous name. No server connection is made here.
+# Static rules, applied in this order: explicit opt-in, explicit designation, local host, **explicit
+# protected-name deny rules**, disposable-shaped name, and no ambiguous name. The deny rules come
+# before the shape rule so a protected database is refused for being protected, never merely for
+# being misspelled. No server connection is made here.
 oe_guard_resolve() {
   oe_guard_env_defaults
+
+  oe_guard_port "$PATHOME_OE_TEST_DB_PORT"
+  [[ "$PATHOME_OE_TEST_DB_APP_USER" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] && \
+    [[ "$PATHOME_OE_TEST_DB_ADMIN_USER" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || oe_guard_refuse 11 'Invalid database role identifier'
 
   if [ "${PATHOME_OE_TEST_ALLOW_DISPOSABLE:-}" != 'true' ]; then
     oe_guard_refuse "$OE_GUARD_ERR_NO_OPT_IN" \
@@ -128,14 +166,19 @@ oe_guard_resolve() {
       "Host '$PATHOME_OE_TEST_DB_HOST' is not a local loopback address. Remote targets are refused because they cannot be positively identified as disposable."
   fi
 
-  if ! printf '%s' "$PATHOME_OE_TEST_DB" | grep -Eq "$OE_GUARD_NAME_PATTERN"; then
-    oe_guard_refuse "$OE_GUARD_ERR_NAME_PATTERN" \
-      "Database '$PATHOME_OE_TEST_DB' does not match the disposable integration name pattern $OE_GUARD_NAME_PATTERN."
-  fi
-
   if oe_guard_name_is_protected "$PATHOME_OE_TEST_DB"; then
     oe_guard_refuse "$OE_GUARD_ERR_PROTECTED_NAME" \
       "Database '$PATHOME_OE_TEST_DB' is a protected local database and is never a valid integration target."
+  fi
+
+  if oe_guard_name_has_protected_prefix "$PATHOME_OE_TEST_DB"; then
+    oe_guard_refuse "$OE_GUARD_ERR_PROTECTED_NAME" \
+      "Database '$PATHOME_OE_TEST_DB' carries a protected prefix ($OE_GUARD_PROTECTED_PREFIXES) and is never a valid integration target."
+  fi
+
+  if ! printf '%s' "$PATHOME_OE_TEST_DB" | grep -Eq "$OE_GUARD_NAME_PATTERN"; then
+    oe_guard_refuse "$OE_GUARD_ERR_NAME_PATTERN" \
+      "Database '$PATHOME_OE_TEST_DB' does not match the disposable integration name pattern $OE_GUARD_NAME_PATTERN."
   fi
 
   if oe_guard_name_is_ambiguous "$PATHOME_OE_TEST_DB"; then
@@ -147,16 +190,93 @@ oe_guard_resolve() {
   return 0
 }
 
+# Static assertion for the launcher: a candidate name (the designation, or any database this
+# environment is about to open) must not be protected. Refuses without any server connection.
+oe_guard_assert_not_protected() { # <name> [what]
+  local candidate="$1" what="${2:-the designated database}"
+  if oe_guard_name_is_protected "$candidate" || oe_guard_name_has_protected_prefix "$candidate"; then
+    oe_guard_refuse "$OE_GUARD_ERR_PROTECTED_NAME" \
+      "$what '$candidate' is a protected local database and is never opened by this environment."
+  fi
+  return 0
+}
+
 # psql helper honouring the optional password without ever printing it.
+oe_guard_sql_file() {
+  local file="$1" root="$(cd "$(dirname "$OE_GUARD_SELF")/../../.." && pwd)" line
+  case "$file" in
+    "$root/backend/src/test/resources/db/baseline/pathome-v1-legacy-core.sql"|"$root/tools/oe-integration-env/sql/00-disposable-marker.sql"|"$root/tools/oe-integration-env/sql/fixture-roles.sql") ;;
+    *) oe_guard_refuse 19 'SQL file is not on the reviewed allowlist' ;;
+  esac
+  [ -f "$file" ] && [ ! -L "$file" ] || oe_guard_refuse 19 'SQL file missing or symlinked'
+  # The reviewed files need only this inert psql directive. Includes, reconnects, shell escapes,
+  # variable-generated commands and equivalent meta-command forms all fail closed.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *'\'*) [ "$line" = '\set ON_ERROR_STOP on' ] || oe_guard_refuse 19 'Executable SQL-file meta-command refused' ;; esac
+  done < "$file"
+}
+
+oe_guard_psql_arguments() {
+  local arg value operations=0
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      -q) ;;
+      -c|-Atc|-f|-v)
+        [ "$#" -gt 0 ] || oe_guard_refuse 19 'Missing PostgreSQL argument value'
+        value="$1"; shift
+        case "$arg" in
+          -c|-Atc) case "$value" in *'\'*) oe_guard_refuse 19 'PostgreSQL meta-commands are refused' ;; esac
+                    operations=$((operations + 1)) ;;
+          -f) oe_guard_sql_file "$value"; operations=$((operations + 1)) ;;
+          -v) case "$value" in oe_database=*|oe_guard_version=*|oe_run_id=*|target_db=*|run_id=*|admin_id=*|ge_id=*|tag=*) ;; *) oe_guard_refuse 19 'Unapproved PostgreSQL variable' ;; esac
+              case "$value" in *'\'*|*$'\n'*|*$'\r'*) oe_guard_refuse 19 'Invalid PostgreSQL variable' ;; esac ;;
+        esac ;;
+      *) oe_guard_refuse 19 'Unapproved PostgreSQL argument or connection override' ;;
+    esac
+  done
+  [ "$operations" = 1 ] || oe_guard_refuse 19 'Exactly one PostgreSQL operation is required'
+}
+
 oe_guard_psql() {
   local database="$1" user="$2"
   shift 2
-  if [ -n "${PATHOME_OE_TEST_DB_PASSWORD:-}" ]; then
-    PGPASSWORD="$PATHOME_OE_TEST_DB_PASSWORD" \
-      psql -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" -U "$user" -d "$database" -v ON_ERROR_STOP=1 "$@"
+  oe_guard_resolve
+  local connection_arg
+  for connection_arg in "$@"; do
+    case "$connection_arg" in -d*|-h*|-p*|-U*|--dbname*|--host*|--port*|--username*|--service*) oe_guard_refuse 19 'Connection override arguments are refused' ;; esac
+  done
+  oe_guard_psql_arguments "$@"
+  if [ "$database" != postgres ]; then
+    oe_guard_assert_not_protected "$database" 'connection target'
+    [ "$database" = "$PATHOME_OE_TEST_DB" ] || oe_guard_refuse 19 'Connection differs from designation'
   else
-    psql -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" -U "$user" -d "$database" -v ON_ERROR_STOP=1 "$@"
+    # The maintenance connection accepts only repository-controlled catalog/DDL statements.
+    [ "$#" = 2 ] || oe_guard_refuse 19 'Maintenance permits exactly one controlled statement'
+    case "$1" in -c|-Atc) ;; *) oe_guard_refuse 19 'Unapproved maintenance arguments' ;; esac
+    local sql="$2"
+    case "$sql" in
+      'select version()'|'select current_user'|"select string_agg(datname, ', ' order by datname) from pg_database"|"select count(*) from pg_database where datname = '$PATHOME_OE_TEST_DB'"|"CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\"") ;;
+      "DROP DATABASE IF EXISTS \"$PATHOME_OE_TEST_DB\" WITH (FORCE)")
+        oe_guard_verify --destructive || return $? ;;
+      *) oe_guard_refuse 19 'Unapproved maintenance operation' ;;
+    esac
   fi
+  oe_runtime_exec psql psql -X -w -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" -U "$user" -d "$database" -v ON_ERROR_STOP=1 "$@"
+}
+
+oe_guard_drop() { # mandatory live proofs; callers cannot turn a failed check into a soft assertion
+  oe_guard_verify --destructive || return $?
+  oe_guard_psql postgres "$PATHOME_OE_TEST_DB_ADMIN_USER" -c "DROP DATABASE IF EXISTS \"$PATHOME_OE_TEST_DB\" WITH (FORCE)"
+}
+
+oe_guard_require_run() {
+  local run_id actual
+  [ -f "$PATHOME_OE_TEST_RUN_DIR/run-id" ] && [ ! -L "$PATHOME_OE_TEST_RUN_DIR/run-id" ] || oe_guard_refuse 17 'Run identity missing'
+  run_id="$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")"
+  [[ "$run_id" =~ ^[a-z0-9-]{16,64}$ ]] || oe_guard_refuse 17 'Invalid run identity'
+  actual="$(oe_guard_psql "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER" -Atc "select run_id from pathome_oe_test_env where env_marker = 'DISPOSABLE' and db_name = current_database()")"
+  [ "$actual" = "$run_id" ] || oe_guard_refuse 17 'Database belongs to another run'
 }
 
 # Proves the live connection really reached the designated database.
@@ -177,7 +297,7 @@ oe_guard_check_live_identity() {
 oe_guard_check_sentinel() { # <database> <user> [operation]
   local database="$1" user="$2" operation="${3:-Destruction}" count
   count="$(oe_guard_psql "$database" "$user" -Atc \
-    "select count(*) from $OE_GUARD_SENTINEL_TABLE where env_marker = '$OE_GUARD_SENTINEL_MARKER' and db_name = current_database()" 2>/dev/null)" || \
+    "select count(*) from public.$OE_GUARD_SENTINEL_TABLE where env_marker = '$OE_GUARD_SENTINEL_MARKER' and db_name = current_database()" 2>/dev/null)" || \
     oe_guard_refuse "$OE_GUARD_ERR_MISSING_SENTINEL" \
       "Database '$database' has no positive disposable marker. $operation is refused because the target is not proven disposable."
 
@@ -210,19 +330,11 @@ oe_guard_verify_jdbc() {
   local jdbc_url="$1" database
   oe_guard_resolve
 
-  database="${jdbc_url%%\?*}"
-  database="${database##*/}"
-
-  if [ "$database" != "$PATHOME_OE_TEST_DB" ]; then
+  if [ "$jdbc_url" != "$(oe_guard_jdbc_url)" ]; then
     oe_guard_refuse "$OE_GUARD_ERR_JDBC_MISMATCH" \
-      "Refusing to start against JDBC target '$database'. The only permitted target in this environment is the designated disposable database '$PATHOME_OE_TEST_DB'."
+      'Datasource must exactly match the designated loopback host, port and database without parameters'
   fi
-  case "$jdbc_url" in
-    *"//$PATHOME_OE_TEST_DB_HOST"*) return 0 ;;
-    *'//localhost'*|*'//127.0.0.1'*) return 0 ;;
-  esac
-  oe_guard_refuse "$OE_GUARD_ERR_JDBC_MISMATCH" \
-    "JDBC URL '$jdbc_url' does not address a local host."
+  return 0
 }
 
 oe_guard_jdbc_url() {
@@ -241,6 +353,11 @@ oe_guard_describe() {
   printf 'admin_user=%s\n' "$PATHOME_OE_TEST_DB_ADMIN_USER"
   printf 'app_user=%s\n' "$PATHOME_OE_TEST_DB_APP_USER"
   printf 'expected_jdbc=%s\n' "$(oe_guard_jdbc_url)"
+  printf 'deny_protected_names=%s\n' "$OE_GUARD_PROTECTED_NAMES"
+  printf 'deny_protected_prefixes=%s\n' "$OE_GUARD_PROTECTED_PREFIXES"
+  printf 'deny_ambiguous_tokens=%s\n' "$OE_GUARD_AMBIGUOUS_TOKENS"
+  printf 'allowed_local_hosts=%s\n' "$OE_GUARD_LOCAL_HOSTS"
+  printf 'allowed_name_shape=%s\n' "$OE_GUARD_NAME_PATTERN"
 }
 
 # Package 3A acceptance preflight: one approved disposable database, one approved loopback port, the
@@ -321,7 +438,7 @@ oe_guard_package3_selftest() {
     PATHOME_OE_TEST_ALLOW_DISPOSABLE="$enabled" PATHOME_OE_TEST_DB="$designated_db"
   expect_p3_refusal 'refuses when no database is designated' "$OE_GUARD_ERR_NO_DESIGNATION" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE="$enabled" PATHOME_VISIT_OPERATIONS_POSTGRES_TEST="$enabled"
-  expect_p3_refusal 'refuses the preserved pathome_db development database' "$OE_GUARD_ERR_NAME_PATTERN" \
+  expect_p3_refusal 'refuses the preserved pathome_db development database as protected' "$OE_GUARD_ERR_PROTECTED_NAME" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE="$enabled" PATHOME_VISIT_OPERATIONS_POSTGRES_TEST="$enabled" \
     PATHOME_OE_TEST_DB='pathome_db'
   expect_p3_refusal 'refuses a remote host' "$OE_GUARD_ERR_NON_LOCAL_HOST" \
@@ -398,13 +515,15 @@ oe_guard_selftest() {
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='false' PATHOME_OE_TEST_DB='pathome_oe_test_guard'
   expect_refusal 'refuses when no target is designated' "$OE_GUARD_ERR_NO_DESIGNATION" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true'
-  expect_refusal 'refuses the preserved pathome_db development database' "$OE_GUARD_ERR_NAME_PATTERN" \
+  expect_refusal 'refuses the preserved pathome_db development database as protected' "$OE_GUARD_ERR_PROTECTED_NAME" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='pathome_db'
-  expect_refusal 'refuses the pre-existing pathome_autonomous_v2_test database' "$OE_GUARD_ERR_NAME_PATTERN" \
+  expect_refusal 'refuses a protected-prefix copy of the preserved database' "$OE_GUARD_ERR_PROTECTED_NAME" \
+    PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='pathome_db_clone'
+  expect_refusal 'refuses the pre-existing pathome_autonomous_v2_test database as protected' "$OE_GUARD_ERR_PROTECTED_NAME" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='pathome_autonomous_v2_test'
-  expect_refusal 'refuses an unrelated local database' "$OE_GUARD_ERR_NAME_PATTERN" \
+  expect_refusal 'refuses an unrelated local database as protected' "$OE_GUARD_ERR_PROTECTED_NAME" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='divyavastu_db'
-  expect_refusal 'refuses the postgres maintenance database' "$OE_GUARD_ERR_NAME_PATTERN" \
+  expect_refusal 'refuses the postgres maintenance database as protected' "$OE_GUARD_ERR_PROTECTED_NAME" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='postgres'
   expect_refusal 'refuses a remote host' "$OE_GUARD_ERR_NON_LOCAL_HOST" \
     PATHOME_OE_TEST_ALLOW_DISPOSABLE='true' PATHOME_OE_TEST_DB='pathome_oe_test_guard' \

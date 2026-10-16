@@ -26,6 +26,8 @@ OE_API_BASE_URL="http://localhost:$OE_BACKEND_PORT/api/v1"
 
 # shellcheck source=lib/db-guard.sh
 . "$OE_TOOL_DIR/lib/db-guard.sh"
+# shellcheck source=lib/env-isolation.sh
+. "$OE_TOOL_DIR/lib/env-isolation.sh"
 # shellcheck source=lib/provision.sh
 . "$OE_TOOL_DIR/lib/provision.sh"
 # shellcheck source=lib/package3-fixtures.sh
@@ -45,11 +47,7 @@ oe_die() {
 }
 
 oe_load_designation() {
-  [ -f "$OE_ENV_FILE" ] || oe_die "No target designation found at $OE_ENV_FILE."
-  # shellcheck disable=SC1090
-  set -a
-  . "$OE_ENV_FILE"
-  set +a
+  oe_runtime_load_designation
 }
 
 oe_require_tools() {
@@ -59,16 +57,19 @@ oe_require_tools() {
   done
 }
 
-# Same guarded psql wrappers run.sh uses: the guard decides whether a connection is allowed at all.
+# Same guarded psql wrappers run.sh uses: the guard decides whether a connection is allowed at all, and
+# the only non-designation database this environment opens is the `postgres` maintenance catalog.
 oe_psql_admin() { # <database> <psql args...>
   local database="$1"
   shift
+  [ "$database" = 'postgres' ] || oe_guard_assert_not_protected "$database" 'connection target'
   oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_ADMIN_USER" "$@"
 }
 
 oe_psql_app() { # <database> <psql args...>
   local database="$1"
   shift
+  oe_guard_assert_not_protected "$database" 'connection target'
   oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_APP_USER" "$@"
 }
 
@@ -79,17 +80,11 @@ oe_ensure_run_dir() {
 oe_ensure_secrets() {
   local secrets="$PATHOME_OE_TEST_RUN_DIR/secrets.env"
   [ -s "$secrets" ] || oe_die "No disposable secrets at $secrets. Run 'run.sh backend' first."
-  # shellcheck disable=SC1090
-  set -a
-  . "$secrets"
-  set +a
+  oe_runtime_load_secrets
 }
 
 oe_require_backend() {
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$OE_API_BASE_URL/staff/me/capabilities" || true)"
-  [ "$code" = '401' ] || [ "$code" = '403' ] || \
-    oe_die "no disposable backend answered $OE_API_BASE_URL (HTTP '$code'); run 'run.sh backend'"
+  oe_runtime_require_backend
 }
 
 oe_p3_bootstrap() {
@@ -135,9 +130,7 @@ cmd_verify_http() {
     oe_die "run 'package3.sh provision' first"
   oe_p3_prepare
   # shellcheck disable=SC1090
-  set -a
-  . "$OE_P3_IDENTITIES"
-  set +a
+  oe_data_read "$OE_P3_IDENTITIES" 'oe_alpha_EMAIL oe_alpha_PASSWORD oe_bravo_EMAIL oe_bravo_PASSWORD staff_nogrant_EMAIL staff_nogrant_PASSWORD city_admin_EMAIL city_admin_PASSWORD P3A_CITY_ID P3A_TEAM_ALPHA_ID P3A_TEAM_BRAVO_ID'
   local state="$OE_P3_STATE"
   local city_id team_alpha team_bravo
   city_id="$(jq -r '.cityId' < "$state")"

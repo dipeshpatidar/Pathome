@@ -106,7 +106,7 @@ import org.mockito.InOrder;
         OperationalAuditService.class, DatabaseClock.class, StaffGovernanceLock.class,
         OperationalSecurityGuards.class, VisitOperationsAuthorizationService.class,
         OwnedOperationsAuthorizationService.class,
-        OperationalOwnershipService.class, TrustedOperationalIntakeService.class, VisitOperationsService.class,
+        OperationalOwnershipService.class, TrustedOperationalIntakeService.class, VisitOperationsService.class, VisitSchedulingCommandStore.class,
         VisitRepairOperationsService.class,
         TransactionalCommandBounds.class,
         StaffAccessGovernancePostgresTest.TestBeans.class})

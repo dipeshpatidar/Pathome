@@ -14,12 +14,14 @@ import { createHash } from 'node:crypto';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import playwright from '/opt/homebrew/lib/node_modules/playwright/index.js';
+import { verifyBinding, safeOrigin } from '../../../tools/oe-integration-env/lib/runtime.mjs';
 
 const { chromium } = playwright;
 
 const DIST = fileURLToPath(new URL('../../dist/', import.meta.url));
 const ORIGIN = 'http://oe.local';
-const BACKEND = process.env.P3A_BACKEND_URL ?? 'http://localhost:8080';
+const bound = verifyBinding();
+const BACKEND = safeOrigin(process.env.P3A_BACKEND_URL ?? bound.origin, new URL(bound.origin).port);
 
 const IDENTITY = {
   oeAlphaEmail: process.env.oe_alpha_EMAIL,
@@ -82,7 +84,8 @@ const freshContext = async (browser) => {
       const body = request.postData();
       const init = { method: request.method(), headers, redirect: 'manual' };
       if (body !== null && body !== undefined && request.method() !== 'GET') init.body = body;
-      const response = await fetch(`${BACKEND}${url.pathname}${url.search}`, init);
+      verifyBinding();
+      const response = await fetch(`${BACKEND}${url.pathname}${url.search}`, { ...init, signal: AbortSignal.timeout(15000) });
       const text = await response.text();
       network.push({
         method: request.method(),
@@ -94,7 +97,7 @@ const freshContext = async (browser) => {
       return route.fulfill({
         status: response.status,
         contentType: response.headers.get('content-type') ?? 'application/json',
-        headers: { 'Cache-Control': 'no-store' },
+        headers: { 'Cache-Control': response.headers.get('cache-control') ?? '' },
         body: text
       });
     }
@@ -243,7 +246,7 @@ try {
   {
     const { context, page, network } = await freshContext(browser);
     const email = `codex.p3a.browser.tenant.${Date.now()}@pathome.test`;
-    await registerThroughTheForm(page, email, 'P3aBrowserTenant2026', 'P3A Browser Tenant');
+    await registerThroughTheForm(page, email, IDENTITY.oeAlphaPassword, 'P3A Browser Tenant');
     check('the real registration form established a session', typeof (await storedToken(page)) === 'string');
     check('registration used the real registration endpoint', callsTo(network, '/auth/register')[0]?.status === 200);
     await settle(page, 2500);
