@@ -6,6 +6,8 @@ import {
   formatOperationsDetailDateTime,
   formatOperationsDuration,
   formatOperationsTime,
+  formatOperationsZonedDateTime,
+  formatOperationsZonedWindow,
   formatStoredLocalDateTime,
   isOwnedRequestReleasable,
   isOwnedSessionReleasable,
@@ -26,7 +28,8 @@ import {
   type OperationsMyWorkItem,
   type OperationsRequestDetail,
   type OperationsSessionDetail,
-  type OperationsTargetType
+  type OperationsTargetType,
+  type OperationsTenantContact
 } from '../../utils/operationsWorkspacePresentation';
 import {
   Field,
@@ -44,7 +47,8 @@ import {
 import {
   OperationsDraftItinerary,
   type AddStopInput,
-  type DiscoveryListingOption
+  type DiscoveryListingOption,
+  type OperationsAvailabilityEditing
 } from './OperationsDraftItinerary';
 
 export type OperationsDetailKind = 'claimable' | 'request' | 'session';
@@ -61,14 +65,6 @@ export type OperationsDetailState =
   | { status: 'error' }
   | { status: 'missing' }
   | { status: 'ready'; snapshot: OperationsDetailSnapshot };
-
-/** Window input collected by the availability editor, in the shape the command builder expects. */
-export interface OperationsAvailabilityWindowInput {
-  availabilityStartAt: string | null;
-  availabilityEndAt: string | null;
-  availabilityZoneId: string | null;
-  availabilitySource: 'PHONE' | 'WHATSAPP' | 'DIRECT' | 'OTHER' | null;
-}
 
 /**
  * Everything an owned record can do, supplied by the workspace.
@@ -88,6 +84,8 @@ export interface OperationsDetailActions {
   /** Reveals the canonical contact; the signal cancels the read when the contact context changes. */
   revealRequestContact: (signal: AbortSignal) => Promise<OperationsLessorContact>;
   revealItemContact: (itemId: number, signal: AbortSignal) => Promise<OperationsLessorContact>;
+  revealRequestTenantContact: (signal: AbortSignal) => Promise<OperationsTenantContact>;
+  revealSessionTenantContact: (signal: AbortSignal) => Promise<OperationsTenantContact>;
   searchListings: (query: string, signal: AbortSignal) => Promise<DiscoveryListingOption[]>;
   loadOwnedCandidates: (
     page: number,
@@ -103,14 +101,15 @@ interface Props {
   busyAction: 'claim' | 'release' | null;
   /** The in-flight Phase 2A command key, or null when none is running. */
   busyCommand: string | null;
+  /** A fresh, guarded Session read is in progress before the scheduling drawer opens. */
+  schedulingOpening: boolean;
+  /** Truthful retry copy when that fresh read could not complete. */
+  schedulingOpenError: string | null;
   /** Identity and version of the visible root; a change clears revealed lessor contact. */
   contactContextKey: string;
   actions: OperationsDetailActions;
-  onSaveAvailability: (
-    itemId: number,
-    choice: 'window' | 'confirm-only' | 'unavailable',
-    window: OperationsAvailabilityWindowInput
-  ) => void;
+  /** The workspace-owned availability draft and its generation-scoped transitions. */
+  availability: OperationsAvailabilityEditing;
   onBack: () => void;
   onRetry: () => void;
   onClaim: () => void;
@@ -156,9 +155,11 @@ export const OperationsWorkDetail: React.FC<Props> = ({
   state,
   busyAction,
   busyCommand,
+  schedulingOpening,
+  schedulingOpenError,
   contactContextKey,
   actions,
-  onSaveAvailability,
+  availability,
   onBack,
   onRetry,
   onClaim
@@ -255,9 +256,11 @@ export const OperationsWorkDetail: React.FC<Props> = ({
         back={back}
         busy={busyAction === 'release'}
         busyCommand={busyCommand}
+        schedulingOpening={schedulingOpening}
+        schedulingOpenError={schedulingOpenError}
         contactContextKey={contactContextKey}
         actions={actions}
-        onSaveAvailability={onSaveAvailability}
+        availability={availability}
       />
     );
   }
@@ -322,7 +325,7 @@ const DetailHead: React.FC<{
 };
 
 const LinkedRequests: React.FC<{ items: { requestId: number; version: number }[] }> = ({ items }) => {
-  if (items.length === 0) return <p className="oe-quiet">No linked requests.</p>;
+  if (items.length === 0) return <p className="oe-quiet">No tenant visit requests.</p>;
   return (
     <ul className="oe-linked">
       {items.map((entry) => (
@@ -332,6 +335,45 @@ const LinkedRequests: React.FC<{ items: { requestId: number; version: number }[]
         </li>
       ))}
     </ul>
+  );
+};
+
+const LinkedRequestTimingFacts: React.FC<{
+  facts: OperationsSessionDetail['linkedRequestTimingFacts'];
+}> = ({ facts }) => {
+  if (facts.length === 0) {
+    return <p className="oe-quiet">No tenant visit request timing is recorded for this visit plan.</p>;
+  }
+  return (
+    <div className="oe-stack">
+      {facts.map((fact) => {
+        const start = formatOperationsZonedDateTime(fact.availabilityStartAt, fact.availabilityZoneId);
+        const end = formatOperationsZonedDateTime(fact.availabilityEndAt, fact.availabilityZoneId);
+        const preferred = formatOperationsZonedDateTime(fact.preferredAt, fact.availabilityZoneId);
+        return (
+          <div key={fact.requestId} className="oe-section" aria-label={`Timing for request ${fact.requestId}`}>
+            <p className="oe-mono">
+              {operationsRecordReference(fact.requestId)} · v{fact.version}
+            </p>
+            <dl className="oe-fields">
+              <Field label="Original tenant request" wide>
+                {fact.preferredVisitTiming ?? <MissingValue>No original text recorded</MissingValue>}
+              </Field>
+              <Field label="Current tenant availability" wide>
+                {start && end
+                  ? `${start} → ${end}${fact.availabilityZoneId ? ` · ${fact.availabilityZoneId}` : ''}`
+                  : start
+                    ? `From ${start}${fact.availabilityZoneId ? ` · ${fact.availabilityZoneId}` : ''}`
+                    : <MissingValue>No current availability recorded</MissingValue>}
+              </Field>
+              <Field label="Tenant preferred time">
+                {preferred ?? <MissingValue>No current preference recorded</MissingValue>}
+              </Field>
+            </dl>
+          </div>
+        );
+      })}
+    </div>
   );
 };
 
@@ -427,9 +469,13 @@ const OwnedRequest: React.FC<{
   const closed = isTerminalOperationsStatus('REQUEST', detail.status);
   const coordinationOpen = detail.status === 'RECEIVED' && detail.sessionId === null;
   const flagged = needsCoordinatorAttention({ targetType: 'REQUEST', status: detail.status });
-  const start = formatOperationsDetailDateTime(detail.availabilityStartAt);
-  const end = formatOperationsDetailDateTime(detail.availabilityEndAt);
-  const windowLabel = start && end ? `${start} → ${end}` : start ? `From ${start}` : end ? `Until ${end}` : null;
+  const start = formatOperationsZonedDateTime(detail.availabilityStartAt, detail.availabilityZoneId);
+  const end = formatOperationsZonedDateTime(detail.availabilityEndAt, detail.availabilityZoneId);
+  const windowLabel = formatOperationsZonedWindow(
+    detail.availabilityStartAt,
+    detail.availabilityEndAt,
+    detail.availabilityZoneId
+  ) ?? (start ? `From ${start}` : end ? `Until ${end}` : null);
   const blocked = busyCommand !== null || busy;
 
   return (
@@ -471,10 +517,10 @@ const OwnedRequest: React.FC<{
                   disabled={busy}
                 >
                   {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
-                  {busy ? 'Releasing…' : 'Release request'}
+                  {busy ? 'Releasing…' : 'Release visit request'}
                 </button>
                 <p className="oe-action-note">
-                  Releasing returns this request to your teams’ claimable work. It stays available to
+                  Releasing returns this visit request to your teams’ available work. It stays available to
                   claim again, and this page stops showing it once released.
                 </p>
               </div>
@@ -494,7 +540,7 @@ const OwnedRequest: React.FC<{
                   disabled={busy}
                 >
                   {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
-                  {busy ? 'Releasing…' : 'Release request'}
+                  {busy ? 'Releasing…' : 'Release visit request'}
                 </button>
               </div>
             ) : null}
@@ -529,6 +575,9 @@ const OwnedRequest: React.FC<{
             </Section>
             <Section title="Availability">
               <dl className="oe-fields">
+                <Field label="Original tenant request" wide>
+                  {detail.preferredVisitTiming ?? <MissingValue>No original text recorded</MissingValue>}
+                </Field>
                 <Field label="Availability window" wide>
                   {windowLabel ?? <MissingValue>No window on record</MissingValue>}
                 </Field>
@@ -536,14 +585,14 @@ const OwnedRequest: React.FC<{
                   {detail.availabilityZoneId ?? <MissingValue>Not recorded</MissingValue>}
                 </Field>
                 <Field label="Preferred time">
-                  {formatOperationsDetailDateTime(detail.preferredAt)
+                  {formatOperationsZonedDateTime(detail.preferredAt, detail.availabilityZoneId)
                     ?? <MissingValue>No preference given</MissingValue>}
                 </Field>
               </dl>
               <p className="oe-footnote">
                 {requestHasCompleteWindow(detail)
-                  ? 'The tenant’s window is complete, so this request can be evaluated for scheduling once it is on a session.'
-                  : 'The tenant’s window is incomplete or missing. The server needs a start, an end and a zone before it will evaluate scheduling.'}
+                  ? 'This is the tenant’s current availability. It is separate from the original request text above and may change before coordination.'
+                  : 'The tenant’s current window is incomplete or missing. The server needs a start, an end and a zone before it will evaluate scheduling.'}
               </p>
             </Section>
             <Section title="Lessor contact">
@@ -555,6 +604,18 @@ const OwnedRequest: React.FC<{
               <p className="oe-footnote">
                 Contact is shown only when the backend resolves a canonical, trusted record for this
                 property. It is never taken from another source, and it is not stored in this browser.
+              </p>
+            </Section>
+            <Section title="Tenant contact">
+              <OperationsLessorContactPanel
+                variant="tenant"
+                contextKey={contactContextKey}
+                subject={operationsRecordReference(detail.requestId)}
+                reveal={actions.revealRequestTenantContact}
+              />
+              <p className="oe-footnote">
+                Only the tenant’s account name and mobile are shown, and only when the backend confirms
+                you currently own this request. The disclosure is audited and never stored in this browser.
               </p>
             </Section>
           </>
@@ -591,14 +652,12 @@ const OwnedSession: React.FC<{
   back: React.ReactNode;
   busy: boolean;
   busyCommand: string | null;
+  schedulingOpening: boolean;
+  schedulingOpenError: string | null;
   contactContextKey: string;
   actions: OperationsDetailActions;
-  onSaveAvailability: (
-    itemId: number,
-    choice: 'window' | 'confirm-only' | 'unavailable',
-    window: OperationsAvailabilityWindowInput
-  ) => void;
-}> = ({ detail, back, busy, busyCommand, contactContextKey, actions, onSaveAvailability }) => {
+  availability: OperationsAvailabilityEditing;
+}> = ({ detail, back, busy, busyCommand, schedulingOpening, schedulingOpenError, contactContextKey, actions, availability }) => {
   const city = detail.city ?? 'City not recorded';
   const team = detail.teamDisplayName ?? 'Team not recorded';
   const releasable = isOwnedSessionReleasable(detail);
@@ -615,7 +674,9 @@ const OwnedSession: React.FC<{
   const blockers = schedulingBlockersForSession(detail);
   const readyStopCount = activeItems.filter((item) => operationsAvailabilityMeta(item).schedulingReady).length;
   const unavailableStopCount = unavailableActiveStopCount(detail);
-  const lede = `${detail.items.length} ${detail.items.length === 1 ? 'visit item' : 'visit items'}${
+  const lede = `${linkedRequestsLabel(detail.linkedRequestVersions.length)} · ${activeItems.length} ${
+    activeItems.length === 1 ? 'property' : 'properties'
+  } to visit${
     detail.areaName ? ` · ${detail.areaName}` : ''
   }`;
   const visitTime = formatOperationsTime(detail.scheduledAt);
@@ -667,11 +728,28 @@ const OwnedSession: React.FC<{
                       type="button"
                       className="oe-btn oe-btn--primary oe-btn--md oe-btn--block"
                       onClick={actions.onOpenScheduling}
-                      disabled={blocked}
+                      disabled={blocked || schedulingOpening}
+                      aria-busy={schedulingOpening}
                     >
-                      <CalendarPlus size={16} aria-hidden="true" />
-                      Schedule visit
+                      {schedulingOpening
+                        ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" />
+                        : <CalendarPlus size={16} aria-hidden="true" />}
+                      {schedulingOpening ? 'Checking latest visit details…' : 'Schedule visit'}
                     </button>
+                    {schedulingOpenError ? (
+                      <div className="oe-banner oe-banner--warn" role="alert">
+                        <p>{schedulingOpenError}</p>
+                        <button
+                          type="button"
+                          className="oe-btn oe-btn--secondary oe-btn--sm"
+                          onClick={actions.onOpenScheduling}
+                          disabled={blocked || schedulingOpening}
+                        >
+                          <RefreshCw size={14} aria-hidden="true" />
+                          Try again
+                        </button>
+                      </div>
+                    ) : null}
                     <p className="oe-action-note">
                       {blockers.length === 0
                         ? `${readyStopCount} of ${activeItems.length} active stops have a complete confirmed window${
@@ -688,7 +766,7 @@ const OwnedSession: React.FC<{
                       disabled={blocked}
                     >
                       <ListOrdered size={16} aria-hidden="true" />
-                      Itinerary and availability
+                      Properties and availability
                     </button>
                   </>
                 ) : null}
@@ -701,11 +779,11 @@ const OwnedSession: React.FC<{
                       disabled={busy}
                     >
                       {busy ? <LoaderCircle className="oe-spin" size={16} aria-hidden="true" /> : null}
-                      {busy ? 'Releasing…' : 'Release session'}
+                      {busy ? 'Releasing…' : 'Release visit plan'}
                     </button>
                     <p className="oe-action-note">
-                      Releasing returns this session and its linked requests to your teams’ claimable
-                      work. It stays available to claim again, and this page stops showing it once
+                      Releasing returns this visit plan and its tenant visit requests to your teams’
+                      available work. It stays available to claim again, and this page stops showing it once
                       released.
                     </p>
                   </>
@@ -730,7 +808,7 @@ const OwnedSession: React.FC<{
               <dl className="oe-fields">
                 <Field label="Visit date and time">
                   {formatOperationsDetailDateTime(detail.scheduledAt)
-                    ?? <MissingValue>Not scheduled yet</MissingValue>}
+                    ?? <MissingValue>No visit time booked</MissingValue>}
                 </Field>
                 <Field label="Tenant confirmation">
                   <TenantConfirmationLabel value={detail.tenantConfirmationState} />
@@ -764,7 +842,20 @@ const OwnedSession: React.FC<{
               </p>
             </Section>
 
-            <Section title={`Visit items (${activeItems.length} active)`}>
+            <Section title="Tenant contact">
+              <OperationsLessorContactPanel
+                variant="tenant"
+                contextKey={contactContextKey}
+                subject={operationsRecordReference(detail.sessionId)}
+                reveal={actions.revealSessionTenantContact}
+              />
+              <p className="oe-footnote">
+                Shown only while you currently own this visit and the backend can resolve the tenant’s
+                account contact. The scheduled time and the tenant’s confirmation remain separate facts.
+              </p>
+            </Section>
+
+            <Section title={`Properties to visit (${activeItems.length} active)`}>
               <OperationsDraftItinerary
                 session={detail}
                 editable={draft}
@@ -772,7 +863,7 @@ const OwnedSession: React.FC<{
                 busyCommand={busyCommand}
                 onReorder={actions.onReorderItems}
                 onRemove={actions.onRemoveItem}
-                onSaveAvailability={onSaveAvailability}
+                availability={availability}
                 onAddStop={actions.onAddStop}
                 revealItemContact={actions.revealItemContact}
                 contactContextKey={contactContextKey}
@@ -805,7 +896,14 @@ const OwnedSession: React.FC<{
             <Section title={linkedRequestsLabel(detail.linkedRequestVersions.length)}>
               <LinkedRequests items={detail.linkedRequestVersions} />
               <p className="oe-footnote">
-                Linked requests belong to this session and do not appear separately in your queues.
+                Tenant visit requests belong to this visit plan and do not appear separately in your queues.
+              </p>
+            </Section>
+            <Section title="Tenant timing">
+              <LinkedRequestTimingFacts facts={detail.linkedRequestTimingFacts} />
+              <p className="oe-footnote">
+                Each tenant visit request keeps its own original request text and current availability.
+                The scheduled visit above is the only confirmed appointment time.
               </p>
             </Section>
             <Section title="Coordination">
@@ -816,11 +914,6 @@ const OwnedSession: React.FC<{
                   {detail.coordinatorUserId === null
                     ? <MissingValue>Not assigned</MissingValue>
                     : <span className="oe-mono">User {detail.coordinatorUserId}</span>}
-                </Field>
-                <Field label="Session version">
-                  {detail.version === null
-                    ? <MissingValue>Not recorded</MissingValue>
-                    : <span className="oe-mono">v{detail.version}</span>}
                 </Field>
                 <Field label="Last updated">
                   {formatOperationsDetailDateTime(detail.updatedAt)

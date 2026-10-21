@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -116,6 +117,7 @@ class OwnedOperationsHttpPostgresTest {
     @Autowired private UserRepository users;
     @Autowired private EmployeeProfileRepository employees;
     @Autowired private StaffAccessGrantRepository grants;
+    @Autowired private GroundExecutiveSchedulingProfileRepository geProfiles;
     @Autowired private SupportedCityRepository cities;
     @Autowired private OperatingTeamRepository teams;
     @Autowired private LocalityRepository localities;
@@ -162,6 +164,105 @@ class OwnedOperationsHttpPostgresTest {
             assertTrue(List.of(403, 404).contains(send("POST", b.path(), foreign.token(), b.body()).statusCode()));
             assertTrue(List.of(403, 404).contains(send("GET", b.path() + "/" + b.commandId(), foreign.token(), null).statusCode()));
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void receiptReplaysShowCurrentMediaVisibilityButNeverRewriteBookingFacts() throws Exception {
+        BookingFixture booking = bookingFixture("f5-media");
+        long listingId = jdbc.queryForObject("select listing_id from visit_session_items where session_id=?",
+                Long.class, booking.sessionId());
+        jdbc.update("insert into property_media_assets"
+                        + "(listing_id,media_url,media_type,room_tag,is_primary_cover,uploaded_at) "
+                        + "values (?,?,'IMAGE','GENERAL',true,now())",
+                listingId, "https://res.cloudinary.com/demo/image/upload/f5-cover.jpg");
+
+        HttpResponse<String> first = send("POST", booking.path(), booking.owner().token(), booking.body());
+        assertEquals(200, first.statusCode(), first.body());
+        JsonNode booked = mapper.readTree(first.body());
+        JsonNode bookedItem = booked.path("session").path("items").get(0);
+        assertEquals("ACTIVE", bookedItem.path("listingStatus").asText());
+        assertTrue(bookedItem.path("coverImageUrl").asText().contains("/image/upload/w_800,"),
+                bookedItem.path("coverImageUrl").asText());
+        long decisionId = booked.path("decisionId").asLong();
+        long version = booked.path("session").path("version").asLong();
+        String scheduledAt = booked.path("session").path("scheduledAt").asText();
+        String receiptBefore = jdbc.queryForObject(
+                "select response_json from visit_scheduling_commands where actor_user_id=? and command_id=?::uuid",
+                String.class, booking.owner().user().getId(), booking.commandId());
+        long decisions = count("visit_scheduling_decisions");
+        long outbox = count("visit_notification_outbox");
+        long commands = count("visit_scheduling_commands");
+
+        jdbc.update("update listings set status='PENDING' where id=?", listingId);
+
+        HttpResponse<String> replay = send("POST", booking.path(), booking.owner().token(), booking.body());
+        assertEquals(200, replay.statusCode(), replay.body());
+        JsonNode replayedItem = mapper.readTree(replay.body()).path("session").path("items").get(0);
+        assertTrue(replayedItem.path("coverImageUrl").isNull(), "an unpublished listing exposes no cover");
+        assertEquals("PENDING", replayedItem.path("listingStatus").asText(),
+                "presentation reflects the current listing, not historical receipt metadata");
+        JsonNode replayed = mapper.readTree(replay.body());
+        assertEquals(decisionId, replayed.path("decisionId").asLong());
+        assertEquals(version, replayed.path("session").path("version").asLong());
+        assertEquals(scheduledAt, replayed.path("session").path("scheduledAt").asText());
+        assertEquals("SCHEDULED", replayed.path("session").path("status").asText());
+
+        HttpResponse<String> command = send("GET", booking.path() + "/" + booking.commandId(),
+                booking.owner().token(), null);
+        assertEquals(200, command.statusCode(), command.body());
+        JsonNode commandItem = mapper.readTree(command.body()).path("approval").path("session").path("items").get(0);
+        assertTrue(commandItem.path("coverImageUrl").isNull());
+        assertEquals("PENDING", commandItem.path("listingStatus").asText());
+
+        ExecutorService mediaPool = Executors.newSingleThreadExecutor();
+        AtomicBoolean toggling = new AtomicBoolean(true);
+        Future<?> toggler = mediaPool.submit(() -> {
+            try {
+                int index = 0;
+                while (toggling.get() && index < 20) {
+                    jdbc.update("update listings set status=? where id=?",
+                            index % 2 == 0 ? "ACTIVE" : "PENDING", listingId);
+                    index += 1;
+                    Thread.sleep(10);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                mediaPool.shutdownNow();
+            }
+        });
+        try {
+            for (int index = 0; index < 12; index++) {
+                HttpResponse<String> concurrent = send("GET", booking.path() + "/" + booking.commandId(),
+                        booking.owner().token(), null);
+                assertEquals(200, concurrent.statusCode(), concurrent.body());
+                JsonNode concurrentItem = mapper.readTree(concurrent.body())
+                        .path("approval").path("session").path("items").get(0);
+                String status = concurrentItem.path("listingStatus").asText();
+                boolean coverPresent = !concurrentItem.path("coverImageUrl").isNull();
+                assertEquals("ACTIVE".equals(status), coverPresent,
+                        "each concurrent read must expose media only under the ACTIVE status it reports");
+            }
+        } finally {
+            toggling.set(false);
+            toggler.get(10, TimeUnit.SECONDS);
+        }
+        jdbc.update("update listings set status='PENDING' where id=?", listingId);
+
+        String receiptAfter = jdbc.queryForObject(
+                "select response_json from visit_scheduling_commands where actor_user_id=? and command_id=?::uuid",
+                String.class, booking.owner().user().getId(), booking.commandId());
+        assertEquals(receiptBefore, receiptAfter, "the historical receipt JSON is immutable");
+        assertEquals(decisions, count("visit_scheduling_decisions"));
+        assertEquals(outbox, count("visit_notification_outbox"));
+        assertEquals(commands, count("visit_scheduling_commands"));
+        assertEquals(version, sessionVersion(booking.sessionId()), "the retry creates no second booking");
+
+        Actor foreign = actor("f5-media-foreign", Role.ROLE_TENANT, "OPERATIONS", true);
+        assertTrue(List.of(403, 404).contains(
+                send("POST", booking.path(), foreign.token(), booking.body()).statusCode()));
+        assertTrue(List.of(403, 404).contains(
+                send("GET", booking.path() + "/" + booking.commandId(), foreign.token(), null).statusCode()));
     }
 
     @Test
@@ -376,6 +477,390 @@ class OwnedOperationsHttpPostgresTest {
         assertEquals(selection.get("overrideReason"), audit.get("override_reason"));
         assertEquals(Boolean.TRUE, audit.get("was_override"));
         assertNull(sessions.findById(session.getId()).orElseThrow().getStartedAt());
+    }
+
+    @Test
+    void restrictedGeAvailabilityIsScopedPagedAuditedAndInformationalOnly() throws Exception {
+        Fixture fixture = fixture("batch-c-availability");
+        Fixture foreign = fixture("batch-c-foreign");
+        Actor admin = admin("batch-c-admin");
+        VisitSession session = session("batch-c-availability", fixture, VisitSessionStatus.DRAFT,
+                fixture.owner().user(), 0);
+        PropertyVisitRequest request = linkedRequest("batch-c-availability", fixture, session,
+                VisitRequestStatus.COORDINATING, fixture.owner().user());
+        Instant start = Instant.now().plus(Duration.ofDays(1))
+                .truncatedTo(java.time.temporal.ChronoUnit.MINUTES);
+        Instant end = start.plus(Duration.ofHours(2));
+        request.setAvailabilityStartAt(start);
+        request.setAvailabilityEndAt(end);
+        request.setAvailabilityZoneId("Asia/Kolkata");
+        request.setPreferredAt(start);
+        requests.saveAndFlush(request);
+        VisitSessionItem item = directItem(session, request, request.getListing(), 1);
+        item.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
+        item.setConfirmedBy(admin.user());
+        item.setAvailabilityConfirmedAt(Instant.now());
+        item.setAvailabilityStartAt(start);
+        item.setAvailabilityEndAt(end);
+        item.setAvailabilityZoneId("Asia/Kolkata");
+        item.setAvailabilitySource(PropertyAvailabilitySource.PHONE);
+        visitSessionItems.saveAndFlush(item);
+
+        Locality otherLocality = locality(fixture.city(), "batch-c-mismatch");
+        Actor mismatch = schedulingGe("batch-c-mismatch-ge", fixture, otherLocality, true, start, end, true);
+        Actor feasible = schedulingGe("batch-c-feasible-ge", fixture, fixture.locality(), true, start, end, true);
+        Actor noShift = schedulingGe("batch-c-no-shift-ge", fixture, fixture.locality(), false, start, end, true);
+        Actor inactive = schedulingGe("batch-c-inactive-ge", fixture, fixture.locality(), true, start, end, false);
+        Actor foreignGe = schedulingGe("batch-c-foreign-ge", foreign, foreign.locality(), true, start, end, true);
+        // A second, city-wide coverage path for the same profile must not duplicate its page row.
+        long feasibleProfileId = employees.findByUserId(feasible.user().getId()).orElseThrow().getId();
+        jdbc.update("insert into ground_executive_coverage"
+                        + "(employee_profile_id,city,locality_id,created_by_user_id) values (?,?,null,?)",
+                feasibleProfileId, fixture.city().getDisplayName(), admin.user().getId());
+        assertEquals(3, geProfiles.scanActiveStaffCoveringCity(session.getCity(), 0L,
+                org.springframework.data.domain.PageRequest.of(0, 10)).size(),
+                "fixture must place three active City candidates in the existing population predicate");
+
+        String path = "/api/v1/operations/visit-sessions/" + session.getId() + "/oe-ge-availability";
+        long version = sessionVersion(session.getId());
+        String body = "{\"expectedSessionVersion\":" + version + "}";
+
+        HttpResponse<String> first = send("POST", path + "?size=1", fixture.owner().token(), body);
+        assertEquals(200, first.statusCode(), first.body());
+        assertEquals("no-store", first.headers().firstValue("cache-control").orElse(""));
+        JsonNode firstPage = mapper.readTree(first.body());
+        assertEquals("RECOMMENDATION_AVAILABLE", firstPage.path("planStatus").asText());
+        assertFalse(List.of("LOCATION_UNAVAILABLE_FALLBACK_USED", "TRAVEL_ESTIMATE_UNCERTAIN")
+                        .contains(firstPage.path("planStatus").asText()),
+                "the restricted envelope never carries GE-derived evaluator statuses");
+        assertTrue(firstPage.path("planReady").asBoolean());
+        assertEquals(15, firstPage.path("timing").path("configuredStopDwellMinutes").asInt());
+        assertEquals(60, firstPage.path("timing").path("maximumSessionDurationMinutes").asInt());
+        assertEquals(15, firstPage.path("timing").path("calculatedItineraryDurationMinutes").asInt());
+        assertEquals("PHONE", firstPage.path("timing").path("stops").get(0)
+                .path("availabilitySource").asText());
+        assertEquals("Asia/Kolkata", firstPage.path("timing").path("tenantWindow").path("zoneId").asText());
+        assertEquals(64, firstPage.path("planInputFingerprint").asText().length());
+        assertEquals(1, firstPage.path("returnedEntryCount").asInt());
+        assertEquals(mismatch.user().getId(), firstPage.path("entries").get(0)
+                .path("groundExecutiveUserId").asLong());
+        assertEquals(mismatch.user().getFullName(), firstPage.path("entries").get(0)
+                .path("displayName").asText(), "the real Jackson DTO carries displayName");
+        assertFalse(firstPage.path("entries").get(0).has("groundExecutiveName"),
+                "the recommendation-only key is not part of the availability contract");
+        assertEquals("COVERAGE_NOT_SUITABLE", firstPage.path("entries").get(0)
+                .path("resultCode").asText());
+        assertFalse(firstPage.path("entries").get(0).has("phone"));
+        assertFalse(firstPage.path("entries").get(0).has("email"));
+        assertTrue(firstPage.path("evaluationBounded").isBoolean());
+        String cursor = firstPage.path("nextCursor").asText();
+        assertFalse(cursor.isBlank());
+
+        HttpResponse<String> second = send("POST", path + "?size=1&cursor=" + cursor,
+                fixture.owner().token(), body);
+        assertEquals(200, second.statusCode(), second.body());
+        JsonNode secondPage = mapper.readTree(second.body());
+        assertEquals(feasible.user().getId(), secondPage.path("entries").get(0)
+                .path("groundExecutiveUserId").asLong());
+        assertEquals("FEASIBLE_OPTION_FOUND", secondPage.path("entries").get(0)
+                .path("resultCode").asText());
+        assertFalse(secondPage.path("nextCursor").isNull());
+
+        HttpResponse<String> third = send("POST", path + "?size=1&cursor="
+                + secondPage.path("nextCursor").asText(), fixture.owner().token(), body);
+        assertEquals(200, third.statusCode(), third.body());
+        JsonNode thirdPage = mapper.readTree(third.body());
+        assertEquals(noShift.user().getId(), thirdPage.path("entries").get(0)
+                .path("groundExecutiveUserId").asLong());
+        assertEquals("NO_FEASIBLE_OPTION_FOUND", thirdPage.path("entries").get(0)
+                .path("resultCode").asText());
+        assertTrue(thirdPage.path("nextCursor").isNull());
+
+        List<Long> returnedIds = new ArrayList<>();
+        for (HttpResponse<String> page : List.of(first, second, third)) {
+            for (JsonNode entry : mapper.readTree(page.body()).path("entries"))
+                returnedIds.add(entry.path("groundExecutiveUserId").asLong());
+        }
+        assertEquals(List.of(mismatch.user().getId(), feasible.user().getId(), noShift.user().getId()),
+                returnedIds);
+        assertFalse(returnedIds.contains(inactive.user().getId()));
+        assertFalse(returnedIds.contains(foreignGe.user().getId()));
+
+        /*
+         * C16: a row in the informational availability view is not booking authority. Selecting the
+         * coverage-mismatched GE must go through the unchanged owned-selection revalidation and fail.
+         */
+        long decisionsBefore = jdbc.queryForObject(
+                "select count(*) from visit_scheduling_decisions where session_id=?",
+                Long.class, session.getId());
+        Map<String, Object> forbiddenSelection = new java.util.HashMap<>();
+        forbiddenSelection.put("expectedSessionVersion", version);
+        forbiddenSelection.put("groundExecutiveUserId", mismatch.user().getId());
+        forbiddenSelection.put("scheduledAt", start.toString());
+        forbiddenSelection.put("zoneId", "Asia/Kolkata");
+        forbiddenSelection.put("overrideReason", "Availability view is informational only");
+        forbiddenSelection.put("commandId", UUID.randomUUID().toString());
+        HttpResponse<String> forbiddenBooking = send("POST",
+                "/api/v1/operations/visit-sessions/" + session.getId()
+                        + "/oe-recommendations/selection",
+                fixture.owner().token(), mapper.writeValueAsString(forbiddenSelection));
+        assertEquals(409, forbiddenBooking.statusCode(), forbiddenBooking.body());
+        assertEquals(decisionsBefore, jdbc.queryForObject(
+                "select count(*) from visit_scheduling_decisions where session_id=?",
+                Long.class, session.getId()));
+        assertEquals(VisitSessionStatus.DRAFT,
+                sessions.findById(session.getId()).orElseThrow().getStatus());
+
+        assertEquals(3L, jdbc.queryForObject("select count(*) from operational_audit_events "
+                        + "where action_code='GE_AVAILABILITY_VIEWED' and target_type='VISIT_SESSION' "
+                        + "and target_id=? and actor_user_id=? and reason_code='ROSTER_PAGE_DISCLOSED'",
+                Long.class, session.getId(), fixture.owner().user().getId()));
+        assertEquals("{}", jdbc.queryForObject("select details::text from operational_audit_events "
+                        + "where action_code='GE_AVAILABILITY_VIEWED' and target_id=? order by id desc limit 1",
+                String.class, session.getId()));
+
+        HttpResponse<String> search = send("POST", path + "?size=20&q=batch-c-mismatch-ge",
+                fixture.owner().token(), body);
+        assertEquals(200, search.statusCode(), search.body());
+        assertEquals(1, mapper.readTree(search.body()).path("entries").size());
+        HttpResponse<String> literalWildcard = send("POST", path + "?size=20&q=%25",
+                fixture.owner().token(), body);
+        assertEquals(200, literalWildcard.statusCode(), literalWildcard.body());
+        assertEquals(0, mapper.readTree(literalWildcard.body()).path("entries").size());
+
+        HttpResponse<String> overlong = send("POST", path + "?size=20&q=" + "a".repeat(81),
+                fixture.owner().token(), body);
+        assertEquals(400, overlong.statusCode());
+        assertEquals("no-store", overlong.headers().firstValue("cache-control").orElse(""));
+        assertEquals(400, send("POST", path + "?size=51", fixture.owner().token(), body).statusCode());
+        assertEquals(400, send("POST", path + "?size=20&cursor=malformed",
+                fixture.owner().token(), body).statusCode());
+        HttpResponse<String> stale = send("POST", path + "?size=20", fixture.owner().token(),
+                "{\"expectedSessionVersion\":" + (version + 1) + "}");
+        assertEquals(409, stale.statusCode());
+        assertEquals("no-store", stale.headers().firstValue("cache-control").orElse(""));
+
+        HttpResponse<String> adminDenied = send("POST", path + "?size=20", admin.token(), body);
+        assertEquals(403, adminDenied.statusCode());
+        assertEquals("no-store", adminDenied.headers().firstValue("cache-control").orElse(""));
+        Actor tenant = new Actor(fixture.tenant(),
+                jwt.generateToken(fixture.tenant().getId(), fixture.tenant().getEmail(),
+                        fixture.tenant().getRole().name()));
+        assertEquals(403, send("POST", path + "?size=20", tenant.token(), body).statusCode());
+        String foreignPath = "/api/v1/operations/visit-sessions/"
+                + session("batch-c-foreign-session", foreign, VisitSessionStatus.DRAFT,
+                foreign.owner().user(), 0).getId() + "/oe-ge-availability";
+        HttpResponse<String> hidden = send("POST", foreignPath + "?size=20",
+                fixture.owner().token(), body);
+        HttpResponse<String> absent = send("POST", "/api/v1/operations/visit-sessions/"
+                + Long.MAX_VALUE + "/oe-ge-availability?size=20", fixture.owner().token(), body);
+        assertEquals(404, hidden.statusCode());
+        assertEquals(absent.statusCode(), hidden.statusCode());
+        assertEquals(mapper.readTree(absent.body()).path("message").asText(),
+                mapper.readTree(hidden.body()).path("message").asText());
+
+        /*
+         * Discriminating audit control: a failing audit write must abort the read rather than release
+         * any roster content. The trigger is scoped to this action and removed before the next check.
+         */
+        jdbc.execute("create function batch_c_block_audit() returns trigger language plpgsql as $$ begin "
+                + "if NEW.action_code='GE_AVAILABILITY_VIEWED' then raise exception 'audit blocked'; end if; "
+                + "return NEW; end $$");
+        jdbc.execute("create trigger batch_c_block_audit before insert on operational_audit_events "
+                + "for each row execute function batch_c_block_audit()");
+        try {
+            HttpResponse<String> auditFailure = send("POST", path + "?size=20",
+                    fixture.owner().token(), body);
+            assertEquals(500, auditFailure.statusCode(), auditFailure.body());
+            assertEquals("no-store", auditFailure.headers().firstValue("cache-control").orElse(""));
+            assertFalse(auditFailure.body().contains(feasible.user().getFullName()));
+            assertFalse(auditFailure.body().contains("FEASIBLE_OPTION_FOUND"));
+        } finally {
+            jdbc.execute("drop trigger batch_c_block_audit on operational_audit_events");
+            jdbc.execute("drop function batch_c_block_audit()");
+        }
+        assertEquals(200, send("POST", path + "?size=20", fixture.owner().token(), body).statusCode());
+    }
+
+    @Test
+    void geAvailabilityExplainsPendingDisjointAndConfiguredMultiStopTiming() throws Exception {
+        Actor admin = admin("batch-c-boundary-admin");
+        Instant tenantStart = Instant.now().plus(Duration.ofDays(1))
+                .truncatedTo(java.time.temporal.ChronoUnit.MINUTES).plus(Duration.ofHours(8));
+        Instant tenantEnd = tenantStart.plus(Duration.ofHours(6));
+
+        // Pending property window: the plan is not ready and no duration is presented as fact.
+        Fixture pendingFixture = fixture("batch-c-pending");
+        VisitSession pendingSession = session("batch-c-pending", pendingFixture,
+                VisitSessionStatus.DRAFT, pendingFixture.owner().user(), 0);
+        PropertyVisitRequest pendingRequest = linkedRequest("batch-c-pending", pendingFixture,
+                pendingSession, VisitRequestStatus.COORDINATING, pendingFixture.owner().user());
+        pendingRequest.setAvailabilityStartAt(tenantStart);
+        pendingRequest.setAvailabilityEndAt(tenantEnd);
+        pendingRequest.setAvailabilityZoneId("Asia/Kolkata");
+        pendingRequest.setPreferredAt(tenantStart);
+        requests.saveAndFlush(pendingRequest);
+        VisitSessionItem pendingItem = directItem(pendingSession, pendingRequest,
+                pendingRequest.getListing(), 1);
+        visitSessionItems.saveAndFlush(pendingItem);
+        Actor pendingGe = schedulingGe("batch-c-pending-ge", pendingFixture,
+                pendingFixture.locality(), true, tenantStart, tenantEnd, true);
+        JsonNode pendingView = geAvailability(pendingFixture, pendingSession);
+        assertFalse(pendingView.path("planReady").asBoolean());
+        assertEquals("SESSION_NOT_SCHEDULABLE", pendingView.path("planStatus").asText());
+        assertTrue(planCodes(pendingView).contains("ACTIVE_ITEM_PENDING_CONFIRMATION"));
+        assertEquals("PLAN_NOT_READY", entryCode(pendingView, pendingGe.user().getId()));
+        assertTrue(pendingView.path("timing").path("calculatedItineraryDurationMinutes").isNull());
+
+        // Disjoint tenant and property windows: inputs are complete, but no feasible time exists.
+        Fixture disjointFixture = fixture("batch-c-disjoint");
+        VisitSession disjointSession = session("batch-c-disjoint", disjointFixture,
+                VisitSessionStatus.DRAFT, disjointFixture.owner().user(), 0);
+        PropertyVisitRequest disjointRequest = linkedRequest("batch-c-disjoint", disjointFixture,
+                disjointSession, VisitRequestStatus.COORDINATING, disjointFixture.owner().user());
+        disjointRequest.setAvailabilityStartAt(tenantStart);
+        disjointRequest.setAvailabilityEndAt(tenantStart.plus(Duration.ofHours(1)));
+        disjointRequest.setAvailabilityZoneId("Asia/Kolkata");
+        disjointRequest.setPreferredAt(tenantStart);
+        requests.saveAndFlush(disjointRequest);
+        Instant disjointPropertyStart = tenantStart.plus(Duration.ofHours(2));
+        VisitSessionItem disjointItem = directItem(disjointSession, disjointRequest,
+                disjointRequest.getListing(), 1);
+        disjointItem.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
+        disjointItem.setConfirmedBy(admin.user());
+        disjointItem.setAvailabilityConfirmedAt(Instant.now());
+        disjointItem.setAvailabilityStartAt(disjointPropertyStart);
+        disjointItem.setAvailabilityEndAt(disjointPropertyStart.plus(Duration.ofHours(1)));
+        disjointItem.setAvailabilityZoneId("Asia/Kolkata");
+        disjointItem.setAvailabilitySource(PropertyAvailabilitySource.PHONE);
+        visitSessionItems.saveAndFlush(disjointItem);
+        Actor disjointGe = schedulingGe("batch-c-disjoint-ge", disjointFixture,
+                disjointFixture.locality(), true, tenantStart, tenantEnd, true);
+        JsonNode disjointView = geAvailability(disjointFixture, disjointSession);
+        assertTrue(disjointView.path("planReady").asBoolean());
+        assertEquals("NO_FEASIBLE_TIME", disjointView.path("planStatus").asText());
+        assertEquals("NO_FEASIBLE_OPTION_FOUND",
+                entryCode(disjointView, disjointGe.user().getId()));
+        assertEquals(15, disjointView.path("timing")
+                .path("calculatedItineraryDurationMinutes").asInt());
+        assertEquals(tenantStart, Instant.parse(disjointView.path("timing")
+                .path("tenantWindow").path("startAt").asText()));
+        assertEquals(disjointPropertyStart, Instant.parse(disjointView.path("timing")
+                .path("stops").get(0).path("availabilityStartAt").asText()));
+
+        // Configured two-stop dwell + between-stop travel, including the equality boundary.
+        Fixture twoFixture = fixture("batch-c-two");
+        VisitSession twoSession = session("batch-c-two", twoFixture,
+                VisitSessionStatus.DRAFT, twoFixture.owner().user(), 0);
+        PropertyVisitRequest firstRequest = linkedRequest("batch-c-two-a", twoFixture, twoSession,
+                VisitRequestStatus.COORDINATING, twoFixture.owner().user());
+        PropertyVisitRequest secondRequest = linkedRequest("batch-c-two-b", twoFixture, twoSession,
+                VisitRequestStatus.COORDINATING, twoFixture.owner().user());
+        for (PropertyVisitRequest request : List.of(firstRequest, secondRequest)) {
+            request.setAvailabilityStartAt(tenantStart);
+            request.setAvailabilityEndAt(tenantEnd);
+            request.setAvailabilityZoneId("Asia/Kolkata");
+            request.setPreferredAt(tenantStart);
+        }
+        requests.saveAllAndFlush(List.of(firstRequest, secondRequest));
+        VisitSessionItem firstItem = confirmedDirectItem(twoSession, firstRequest,
+                firstRequest.getListing(), 1, tenantStart, tenantEnd, admin);
+        VisitSessionItem secondItem = confirmedDirectItem(twoSession, secondRequest,
+                secondRequest.getListing(), 2, tenantStart, tenantEnd, admin);
+        assertEquals(1, firstItem.getPosition());
+        assertEquals(2, secondItem.getPosition());
+        Actor twoGe = schedulingGe("batch-c-two-ge", twoFixture, twoFixture.locality(),
+                true, tenantStart, tenantEnd, true);
+
+        int originalDwell = recommendationPolicy.getStopDwellMinutes();
+        Integer originalMaximum = jdbc.queryForObject(
+                "select max_visit_session_duration_minutes from visit_policy where id=1",
+                Integer.class);
+        assertNotNull(originalMaximum);
+        try {
+            recommendationPolicy.setStopDwellMinutes(30);
+            jdbc.update("update visit_policy set max_visit_session_duration_minutes=240, "
+                    + "version=version+1 where id=1");
+
+            JsonNode baseline = geAvailability(twoFixture, twoSession);
+            assertTrue(baseline.path("planReady").asBoolean());
+            assertEquals(30, baseline.path("timing")
+                    .path("configuredStopDwellMinutes").asInt());
+            assertEquals(240, baseline.path("timing")
+                    .path("maximumSessionDurationMinutes").asInt());
+            assertEquals(2, baseline.path("timing").path("stops").size());
+            assertEquals(0, baseline.path("timing").path("stops").get(0)
+                    .path("offsetMinutes").asInt());
+            assertEquals(1, baseline.path("timing").path("betweenStopTravel").size());
+            int travelMinutes = baseline.path("timing").path("betweenStopTravel").get(0)
+                    .path("minutes").asInt();
+            assertTrue(travelMinutes > 0);
+            int calculated = baseline.path("timing")
+                    .path("calculatedItineraryDurationMinutes").asInt();
+            assertEquals(2 * 30 + travelMinutes, calculated);
+            assertEquals(30 + travelMinutes, baseline.path("timing").path("stops").get(1)
+                    .path("offsetMinutes").asInt());
+            assertEquals("FEASIBLE_OPTION_FOUND", entryCode(baseline, twoGe.user().getId()));
+
+            jdbc.update("update visit_policy set max_visit_session_duration_minutes=?, "
+                    + "version=version+1 where id=1", calculated);
+            JsonNode equalBoundary = geAvailability(twoFixture, twoSession);
+            assertTrue(equalBoundary.path("planReady").asBoolean());
+            assertEquals(calculated, equalBoundary.path("timing")
+                    .path("calculatedItineraryDurationMinutes").asInt());
+            assertEquals("FEASIBLE_OPTION_FOUND", entryCode(equalBoundary, twoGe.user().getId()));
+
+            jdbc.update("update visit_policy set max_visit_session_duration_minutes=?, "
+                    + "version=version+1 where id=1", calculated - 1);
+            JsonNode belowBoundary = geAvailability(twoFixture, twoSession);
+            assertFalse(belowBoundary.path("planReady").asBoolean());
+            assertEquals("NO_FEASIBLE_TIME", belowBoundary.path("planStatus").asText());
+            assertTrue(planCodes(belowBoundary)
+                    .contains("ITINERARY_EXCEEDS_SESSION_DURATION_POLICY"));
+            assertEquals("PLAN_NOT_READY", entryCode(belowBoundary, twoGe.user().getId()));
+            assertEquals(calculated, belowBoundary.path("timing")
+                    .path("calculatedItineraryDurationMinutes").asInt());
+        } finally {
+            recommendationPolicy.setStopDwellMinutes(originalDwell);
+            jdbc.update("update visit_policy set max_visit_session_duration_minutes=?, "
+                    + "version=version+1 where id=1", originalMaximum);
+        }
+    }
+
+    private VisitSessionItem confirmedDirectItem(VisitSession session, PropertyVisitRequest request,
+            Listing listing, int position, Instant start, Instant end, Actor admin) {
+        VisitSessionItem item = directItem(session, request, listing, position);
+        item.setConfirmationStatus(VisitSessionItemConfirmationStatus.CONFIRMED);
+        item.setConfirmedBy(admin.user());
+        item.setAvailabilityConfirmedAt(Instant.now());
+        item.setAvailabilityStartAt(start);
+        item.setAvailabilityEndAt(end);
+        item.setAvailabilityZoneId("Asia/Kolkata");
+        item.setAvailabilitySource(PropertyAvailabilitySource.PHONE);
+        return visitSessionItems.saveAndFlush(item);
+    }
+
+    private JsonNode geAvailability(Fixture fixture, VisitSession session) throws Exception {
+        HttpResponse<String> response = send("POST", "/api/v1/operations/visit-sessions/"
+                        + session.getId() + "/oe-ge-availability?size=20",
+                fixture.owner().token(),
+                "{\"expectedSessionVersion\":" + sessionVersion(session.getId()) + "}");
+        assertEquals(200, response.statusCode(), response.body());
+        return mapper.readTree(response.body());
+    }
+
+    private List<String> planCodes(JsonNode view) {
+        List<String> codes = new ArrayList<>();
+        for (JsonNode code : view.path("planExplanationCodes")) codes.add(code.asText());
+        return codes;
+    }
+
+    private String entryCode(JsonNode view, long geId) {
+        for (JsonNode entry : view.path("entries")) {
+            if (entry.path("groundExecutiveUserId").asLong() == geId)
+                return entry.path("resultCode").asText();
+        }
+        throw new AssertionError("Missing GE entry " + geId + " in " + view);
     }
 
     // ------------------------------------------------------------------ admission (401 / 403)
@@ -1458,6 +1943,28 @@ class OwnedOperationsHttpPostgresTest {
             }
         }
         return new Actor(user, jwt.generateToken(user.getId(), user.getEmail(), user.getRole().name()));
+    }
+
+    private Actor schedulingGe(String label, Fixture fixture, Locality coverageLocality,
+            boolean withShift, Instant windowStart, Instant windowEnd, boolean staffActive) {
+        Actor ge = actor(label, Role.ROLE_GROUND_BOY, "GROUND_BOY", staffActive);
+        long profileId = employees.findByUserId(ge.user().getId()).orElseThrow().getId();
+        jdbc.update("insert into ground_executive_scheduling_profiles"
+                        + "(employee_profile_id,scheduling_active,updated_by_user_id) values (?,true,?)",
+                profileId, fixture.owner().user().getId());
+        jdbc.update("insert into ground_executive_coverage"
+                        + "(employee_profile_id,city,locality_id,created_by_user_id) values (?,?,?,?)",
+                profileId, coverageLocality.getCity(), coverageLocality.getId(),
+                fixture.owner().user().getId());
+        if (withShift) {
+            jdbc.update("insert into ground_executive_shifts"
+                            + "(employee_profile_id,starts_at,ends_at,zone_id,created_by_user_id,updated_by_user_id) "
+                            + "values (?,?,?,'Asia/Kolkata',?,?)",
+                    profileId, java.sql.Timestamp.from(windowStart.minus(Duration.ofHours(4))),
+                    java.sql.Timestamp.from(windowEnd.plus(Duration.ofHours(4))),
+                    fixture.owner().user().getId(), fixture.owner().user().getId());
+        }
+        return ge;
     }
 
     private StaffAccessGrant coordinatorGrant(Actor actor, OperatingTeam team) {

@@ -33,6 +33,7 @@ import {
 import { MasterAdminDashboard } from './MasterAdminDashboard';
 import { EmployeeCrmDashboard } from './EmployeeCrmDashboard';
 import { OperationsDestination } from './operations/OperationsDestination';
+import { isOperationsPath, operationsReturnPath } from '../utils/operationsWorkspaceRoute';
 import { LandingV0 } from './LandingV0';
 import { propertyService } from '../services/propertyService';
 import { lessorCapabilityService } from '../services/lessorCapabilityService';
@@ -49,7 +50,8 @@ const VALID_ADMIN_TABS = new Set([
   'media',
   'failed-uploads',
   'visit-repairs',
-  'visit-outcomes'
+  'visit-outcomes',
+  'operations'
 ]);
 
 type PropertyVisitLookup = {
@@ -86,13 +88,21 @@ export const Home: React.FC = () => {
    * Executive whose authority is a staff capability - not a role - reaches it through ordinary
    * navigation instead of the employee console.
    */
-  const operationsRoute = normalizeRoutePathname(location.pathname) === '/operations';
+  const operationsRoute = isOperationsPath(normalizeRoutePathname(location.pathname));
   /**
    * True while an embedded console tab is showing the same workspace. It is reported up rather than
    * owned locally so the one shared authority keeps its focus, visibility and cadence revalidation
    * while either surface is on screen.
    */
   const [embeddedOperationsOpen, setEmbeddedOperationsOpen] = useState(false);
+  /**
+   * The return route already captured for the active session expiry. The protected-route guard also
+   * runs as the workspace tears down, and must not replace the operator's displayed detail with the
+   * neutral Operations entry that the teardown briefly canonicalizes to.
+   */
+  const sessionExpiryReturnRef = useRef<string | null>(null);
+  /** Destination being restored after sign-in, so role routing cannot race it to a dashboard. */
+  const restoringAfterAuthRef = useRef<string | null>(null);
 
   const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
   const role: UserRole = user?.role ?? 'GUEST';
@@ -562,17 +572,28 @@ export const Home: React.FC = () => {
     const handleSessionExpired = (event: Event) => {
       const requestToken = (event as CustomEvent<{ token?: string }>).detail?.token;
       if (requestToken && requestToken !== localStorage.getItem('pathome_auth_token')) return;
-      if (location.pathname.startsWith('/lessor') || location.pathname === '/operations') {
-        try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
+      // Read the displayed location at the moment the failure is confirmed. Router location can lag a
+      // detail entry opened by the workspace, and a captured queue URL must never replace the detail
+      // the operator is actually on.
+      const currentPath = window.location.pathname;
+      const currentSearch = window.location.search;
+      if (currentPath.startsWith('/lessor') || isOperationsPath(currentPath)) {
+        try {
+          const returnPath = isOperationsPath(currentPath)
+            ? operationsReturnPath(currentPath, currentSearch)
+            : currentPath;
+          sessionStorage.setItem('pathome_pending_after_auth', returnPath);
+          sessionExpiryReturnRef.current = returnPath;
+        } catch (_) {}
       }
       clearUserSession();
-      if (!location.pathname.startsWith('/lessor')) navigate('/', { replace: true });
+      if (!currentPath.startsWith('/lessor')) navigate('/', { replace: true });
       setShowAuthModal(true);
     };
 
     window.addEventListener('pathome_session_expired', handleSessionExpired);
     return () => window.removeEventListener('pathome_session_expired', handleSessionExpired);
-  }, [navigate, location.pathname, clearUserSession]);
+  }, [navigate, clearUserSession]);
 
   // 1c. AUTHORITATIVE LESSOR CAPABILITY SYNCHRONIZATION
   useEffect(() => {
@@ -649,7 +670,7 @@ export const Home: React.FC = () => {
   useEffect(() => {
     const path = location.pathname.toLowerCase();
     const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm'
-      || path === '/operations';
+      || isOperationsPath(path);
     if (!isProtectedRoute) logoutInProgressRef.current = false;
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
@@ -658,8 +679,17 @@ export const Home: React.FC = () => {
       if (isProtectedRoute) {
         if (logoutInProgressRef.current) return;
         // A deliberate destination is restored after sign-in rather than being silently dropped.
-        if (path.startsWith('/lessor') || path === '/operations') {
-          try { sessionStorage.setItem('pathome_pending_after_auth', location.pathname); } catch (_) {}
+        if (path.startsWith('/lessor') || isOperationsPath(path)) {
+          try {
+            if (sessionExpiryReturnRef.current === null) {
+              sessionStorage.setItem(
+                'pathome_pending_after_auth',
+                isOperationsPath(path)
+                  ? operationsReturnPath(window.location.pathname, window.location.search)
+                  : location.pathname
+              );
+            }
+          } catch (_) {}
         }
         // BLOCK ACCESS! Redirect to landing page & prompt login modal
         clearUserSession();
@@ -675,6 +705,14 @@ export const Home: React.FC = () => {
       localStorage.setItem('pathome_user', JSON.stringify(user));
 
       if (isPropertyRoute) return;
+      if (restoringAfterAuthRef.current !== null) {
+        const restored = restoringAfterAuthRef.current;
+        if (`${location.pathname}${location.search}` === restored) {
+          restoringAfterAuthRef.current = null;
+        } else {
+          return;
+        }
+      }
       // The Operations destination is capability-gated, never role-routed: a staff capability is
       // what admits an account, so no role label may bounce an eligible Executive away from it.
       // Authority is decided by the workspace itself, which fails closed on every non-granted
@@ -688,7 +726,7 @@ export const Home: React.FC = () => {
         navigate('/admin', { replace: true });
       }
     }
-  }, [location.pathname, user, role, navigate, isPropertyRoute, operationsRoute, clearUserSession]);
+  }, [location.pathname, location.search, user, role, navigate, isPropertyRoute, operationsRoute, clearUserSession]);
 
   const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>, nextLandingState?: LandingState) => {
     focusResultsAfterSearch.current = true;
@@ -800,16 +838,24 @@ export const Home: React.FC = () => {
     if (userProfile.role === 'TENANT' && location.pathname.startsWith('/lessor/') &&
         (sessionStorage.getItem('pathome_guest_submit_draft') || sessionStorage.getItem('pathome_guest_save_draft'))) return;
     const pendingLessor = sessionStorage.getItem('pathome_pending_after_auth');
+    sessionExpiryReturnRef.current = null;
     if (pendingLessor?.startsWith('/lessor') && userProfile.role === 'TENANT') {
       sessionStorage.removeItem('pathome_pending_after_auth');
+      restoringAfterAuthRef.current = pendingLessor;
       navigate(pendingLessor);
       return;
     }
     // A deliberate /operations destination survives sign-in. The destination re-verifies the
     // capability itself and fails closed, so restoring the route grants nothing on its own.
-    if (pendingLessor === '/operations') {
+    if (isOperationsPath(pendingLessor)) {
       sessionStorage.removeItem('pathome_pending_after_auth');
-      navigate('/operations');
+      const separator = pendingLessor!.indexOf('?');
+      const returnPath = operationsReturnPath(
+        separator === -1 ? pendingLessor! : pendingLessor!.slice(0, separator),
+        separator === -1 ? '' : pendingLessor!.slice(separator)
+      );
+      restoringAfterAuthRef.current = returnPath;
+      navigate(returnPath);
       return;
     }
     if (pendingVisitProperty && userProfile.role === 'TENANT') {

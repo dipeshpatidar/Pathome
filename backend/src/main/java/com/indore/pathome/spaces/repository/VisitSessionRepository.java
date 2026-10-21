@@ -1,6 +1,7 @@
 package com.indore.pathome.spaces.repository;
 
 import com.indore.pathome.spaces.dto.GroundExecutiveReservation;
+import com.indore.pathome.spaces.dto.OperationsLinkedRequestTimingView;
 import com.indore.pathome.spaces.entity.VisitSession;
 import com.indore.pathome.spaces.entity.VisitSessionStatus;
 import org.springframework.data.domain.Page;
@@ -32,6 +33,23 @@ public interface VisitSessionRepository extends JpaRepository<VisitSession, Long
             GROUP BY s.id, s.version
             """, nativeQuery = true)
     Optional<OwnershipVersionSnapshotRow> findOwnershipVersionSnapshotById(@Param("sessionId") Long sessionId);
+
+    /**
+     * One coherent Session-scoped read of every linked Request's original text and current V37
+     * availability. Association is by that Request's own id and version; no per-Request lookup or
+     * cross-association is possible.
+     */
+    @Query("""
+            select new com.indore.pathome.spaces.dto.OperationsLinkedRequestTimingView(
+                r.id, r.version, r.preferredVisitTiming,
+                r.availabilityStartAt, r.availabilityEndAt,
+                r.availabilityZoneId, r.preferredAt)
+            from PropertyVisitRequest r
+            where r.session.id = :sessionId
+            order by r.id asc
+            """)
+    List<OperationsLinkedRequestTimingView> findLinkedRequestTimingFactsBySessionId(
+            @Param("sessionId") Long sessionId);
 
     @Query(value = """
             SELECT s.version AS version,

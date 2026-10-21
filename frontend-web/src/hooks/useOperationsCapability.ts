@@ -11,6 +11,7 @@ import {
 } from '../utils/operationsSession';
 import {
   hasOperationsWorkspaceAccess,
+  operationsAuthorityScopeFingerprint,
   type StaffCapabilities
 } from '../utils/operationsWorkspacePresentation';
 
@@ -264,6 +265,12 @@ export const useOperationsCapability = (
   });
   /** Last *verified* eligibility. A transient failure keeps the entry point but never the data. */
   const verifiedGrantRef = useRef(false);
+  /**
+   * The City/Team authority the current grant actually covers. A meaningful change advances the
+   * authorization generation in the same tick as the new verdict, so every operation that captured
+   * the previous scope can no longer transmit and every protected read is re-established.
+   */
+  const authorityScopeRef = useRef<string | null>(null);
   /*
    * No ref is written anywhere during a render pass of this hook.
    *
@@ -284,7 +291,14 @@ export const useOperationsCapability = (
     admittedEntry: number
   ): void => {
     verifiedGrantRef.current = true;
-    verdictRef.current = { state: 'granted', session, generation: verdictRef.current.generation };
+    const scope = operationsAuthorityScopeFingerprint(result);
+    const scopeChanged = authorityScopeRef.current !== null && authorityScopeRef.current !== scope;
+    authorityScopeRef.current = scope;
+    verdictRef.current = {
+      state: 'granted',
+      session,
+      generation: verdictRef.current.generation + (scopeChanged ? 1 : 0)
+    };
     if (!mountedRef.current) return;
     // Admission is entry-scoped: a verdict produced for an earlier entry can never admit a later one,
     // even when the same account and credential produced it.
@@ -321,6 +335,7 @@ export const useOperationsCapability = (
    */
   const applyInvalidation = useCallback((next: 'restricted' | 'unavailable'): void => {
     if (next === 'restricted') verifiedGrantRef.current = false;
+    authorityScopeRef.current = null;
     verdictRef.current = { state: next, session: null, generation: verdictRef.current.generation + 1 };
     if (!mountedRef.current) return;
     // An explicit denial withdraws the entry admission itself, so the workspace can never stay
@@ -533,6 +548,7 @@ export const useOperationsCapability = (
       requestRef.current += 1;
       inFlightRef.current = null;
       verifiedGrantRef.current = false;
+      authorityScopeRef.current = null;
       verdictRef.current = { state: 'checking', session: null, generation: verdictRef.current.generation + 1 };
       // The previous account's in-flight checks are retired and aborted before the new account's
       // verification starts, so they can neither keep gating dispatch nor be counted as current.
@@ -554,6 +570,7 @@ export const useOperationsCapability = (
       mountedRef.current = false;
       requestRef.current += 1;
       inFlightRef.current = null;
+      authorityScopeRef.current = null;
       verdictRef.current = { state: 'checking', session: null, generation: verdictRef.current.generation + 1 };
       // Unmounting retires (and aborts) every pending check: no verification may outlive its consumer.
       retireObsoleteChecks(null);

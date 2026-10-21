@@ -36,7 +36,13 @@ test('visit-request service preserves the backend created-versus-existing acknow
     }), { status: created ? 201 : 200, headers: { 'Content-Type': 'application/json' } });
   };
   try {
-    const payload = { preferredVisitTiming: 'Tomorrow · Morning' };
+    const payload = {
+      preferredVisitTiming: 'Tomorrow · Morning',
+      availabilityStartAt: '2026-11-21T10:00:00+05:30',
+      availabilityEndAt: '2026-11-21T13:00:00+05:30',
+      availabilityZoneId: 'Asia/Kolkata',
+      preferredAt: null
+    };
     const first = await propertyService.createVisitRequest(42, payload);
     const duplicate = await propertyService.createVisitRequest(42, payload);
     assert.equal(first.created, true);
@@ -46,6 +52,7 @@ test('visit-request service preserves the backend created-versus-existing acknow
     assert.equal(requests.length, 2);
     assert.equal(requests[0].url, '/api/v1/properties/42/visit-requests');
     assert.equal(requests[0].options.headers.Authorization, 'Bearer tenant-token');
+    assert.deepEqual(JSON.parse(requests[0].options.body), payload);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalStorage === undefined) delete globalThis.localStorage;

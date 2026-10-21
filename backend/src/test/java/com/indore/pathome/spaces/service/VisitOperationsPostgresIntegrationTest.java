@@ -24,11 +24,15 @@ import com.indore.pathome.spaces.service.field.FieldResourceKey;
 import com.indore.pathome.spaces.service.field.LocationAssessment;
 import com.indore.pathome.spaces.service.field.LocationSnapshot;
 import com.indore.pathome.spaces.service.field.LocationSnapshotProvider;
+import com.indore.pathome.spaces.support.C26DiagnosticOrderer;
+import com.indore.pathome.spaces.support.C26ExecutionProbe;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -70,6 +74,8 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 @DataJpaTest
+@TestMethodOrder(C26DiagnosticOrderer.class)
+@ExtendWith(C26ExecutionProbe.class)
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({VisitOperationsService.class, VisitSchedulingCommandStore.class, TransactionalCommandBounds.class, VisitOperationsAuthorizationService.class,
         OwnedOperationsAuthorizationService.class, StaffAccessService.class,
@@ -77,6 +83,7 @@ import static org.mockito.Mockito.when;
         OperationalNotificationAuthorizationService.class,
         VisitSessionNotificationListener.class, NotificationService.class, VisitSchedulingRecommendationService.class,
         ConservativeTravelTimeEstimator.class, SchedulingRecommendationPolicy.class,
+        OperationsPropertyCoverResolver.class,
         VisitExecutionService.class, VisitExecutionProperties.class, VisitEntitlementStore.class,
         VisitSessionOutcomeService.class,
         VisitSessionOutcomeCompletionService.class,
@@ -96,6 +103,7 @@ class VisitOperationsPostgresIntegrationTest {
              Statement statement = connection.createStatement()) {
             statement.execute("CREATE SCHEMA " + SCHEMA);
         }
+        System.out.println("PATHOME_TEST_SCHEMA=" + SCHEMA);
         String schemaUrl = BASE_URL + (BASE_URL.contains("?") ? "&" : "?") + "currentSchema=" + SCHEMA;
         registry.add("spring.datasource.url", () -> schemaUrl);
         registry.add("spring.datasource.hikari.jdbc-url", () -> schemaUrl);

@@ -36,6 +36,8 @@ class VisitOperationsServiceTest {
     private VisitSchedulingRecommendationService recommendations;
     private VisitSchedulingDecisionRepository decisions;
     private OperationalSecurityGuards operationalGuards;
+    private VisitSchedulingCommandStore schedulingCommands;
+    private OperationsPropertyCoverResolver propertyCovers;
     private VisitOperationsService service;
 
     @BeforeEach
@@ -54,10 +56,13 @@ class VisitOperationsServiceTest {
         recommendations = mock(VisitSchedulingRecommendationService.class);
         decisions = mock(VisitSchedulingDecisionRepository.class);
         operationalGuards = mock(OperationalSecurityGuards.class);
+        schedulingCommands = mock(VisitSchedulingCommandStore.class);
+        propertyCovers = mock(OperationsPropertyCoverResolver.class);
+        when(propertyCovers.resolve(anyCollection())).thenReturn(java.util.Map.of());
         OperationalAuditService operationalAudit = mock(OperationalAuditService.class);
         service = new VisitOperationsService(requests, sessions, users, visitPolicies, items, listings, localities,
                 authorization, ownedAuthorization, events, entityManager, recommendations, decisions,
-                operationalGuards, operationalAudit, mock(VisitSchedulingCommandStore.class));
+                operationalGuards, operationalAudit, schedulingCommands, propertyCovers);
         when(ownedAuthorization.admit(9L))
                 .thenAnswer(invocation -> new OwnedOperationsAuthorizationService.Actor(user(9L, Role.ROLE_ADMIN), true));
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
@@ -213,11 +218,23 @@ class VisitOperationsServiceTest {
         when(sessions.findVisibleToStaffById(8L, 500L)).thenReturn(Optional.of(session));
         stubOwnershipVersionSnapshot(5L, "[{\"requestId\":11,\"version\":3}]");
         when(items.findBySessionIdOrderByPositionAsc(500L)).thenReturn(List.of());
+        Instant start = Instant.parse("2026-11-02T04:30:00Z");
+        OperationsLinkedRequestTimingView timing = new OperationsLinkedRequestTimingView(
+                11L, 3L, "Saturday afternoon", start, start.plusSeconds(7200),
+                "Asia/Kolkata", start.plusSeconds(1800));
+        OperationsLinkedRequestTimingView second = new OperationsLinkedRequestTimingView(
+                12L, 9L, "Weekend morning", null, null, null, null);
+        when(sessions.findLinkedRequestTimingFactsBySessionId(500L)).thenReturn(List.of(timing, second));
 
         OperationsVisitSessionView view = service.getOperationsSession(8L, 500L);
 
         assertEquals(5L, view.version());
         assertEquals(List.of(new LinkedRequestVersion(11L, 3L)), view.linkedRequestVersions());
+        assertEquals(List.of(timing, second), view.linkedRequestTimingFacts());
+        assertEquals("Saturday afternoon", view.linkedRequestTimingFacts().get(0).preferredVisitTiming());
+        assertEquals("Weekend morning", view.linkedRequestTimingFacts().get(1).preferredVisitTiming());
+        assertEquals(12L, view.linkedRequestTimingFacts().get(1).requestId());
+        assertEquals(9L, view.linkedRequestTimingFacts().get(1).version());
     }
 
     @Test
@@ -489,6 +506,104 @@ class VisitOperationsServiceTest {
     }
 
     @Test
+    void receiptReplayProjectsCurrentMediaWithoutChangingHistoricalBookingFacts() {
+        User owner = user(17L, Role.ROLE_TENANT);
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(owner, false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        java.util.UUID commandId = java.util.UUID.randomUUID();
+        ApproveVisitRecommendationCommand command = new ApproveVisitRecommendationCommand(
+                0L, 41L, Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", null, commandId);
+        VisitSchedulingApprovalView stored = historicalApproval("https://media.example.test/stale-cover.jpg",
+                ListingStatus.ACTIVE);
+        when(schedulingCommands.begin(17L, 500L, command)).thenReturn(stored);
+        Listing current = listing(7001L, "Example City");
+        when(current.getStatus()).thenReturn(ListingStatus.PENDING);
+        when(listings.findAllById(anyCollection())).thenReturn(List.of(current));
+        when(propertyCovers.resolve(anyCollection())).thenReturn(java.util.Map.of(7001L,
+                new OperationsPropertyCoverResolver.PropertyCover(null, ListingStatus.PENDING)));
+
+        VisitSchedulingApprovalView replay = service.selectForOwner(17L, 500L, command);
+
+        VisitSessionItemView projected = replay.session().items().get(0);
+        assertNull(projected.coverImageUrl(), "an inactive listing cannot expose its historical cover");
+        assertEquals(ListingStatus.PENDING, projected.listingStatus(), "status is current, not historical");
+        assertEquals(71L, replay.decisionId());
+        assertEquals(41L, replay.topRecommendedGroundExecutiveUserId());
+        assertEquals(Instant.parse("2099-10-02T11:00:00Z"), replay.session().scheduledAt());
+        assertEquals(6L, replay.session().version());
+        assertEquals("https://media.example.test/stale-cover.jpg",
+                stored.session().items().get(0).coverImageUrl(), "the stored receipt itself is unchanged");
+        assertEquals(ListingStatus.ACTIVE, stored.session().items().get(0).listingStatus());
+        verify(decisions, never()).saveAndFlush(any());
+        verify(events, never()).publishEvent(any());
+        verify(schedulingCommands, never()).complete(anyLong(), any(), any());
+    }
+
+    @Test
+    void commandStatusReadsApplyTheSameCurrentMediaProjection() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(user(17L, Role.ROLE_TENANT), false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        java.util.UUID commandId = java.util.UUID.randomUUID();
+        VisitSchedulingApprovalView stored = historicalApproval("https://media.example.test/stale-cover.jpg",
+                ListingStatus.ACTIVE);
+        when(schedulingCommands.find(17L, 500L, commandId)).thenReturn(stored);
+        Listing current = listing(7001L, "Example City");
+        when(listings.findAllById(anyCollection())).thenReturn(List.of(current));
+        when(propertyCovers.resolve(anyCollection())).thenReturn(java.util.Map.of(7001L,
+                new OperationsPropertyCoverResolver.PropertyCover(
+                        "https://media.example.test/current-cover.jpg", ListingStatus.ACTIVE)));
+
+        VisitSchedulingCommandView read = service.schedulingCommand(17L, 500L, commandId);
+
+        assertEquals("COMPLETED", read.state());
+        assertEquals("https://media.example.test/current-cover.jpg",
+                read.approval().session().items().get(0).coverImageUrl());
+        assertEquals(ListingStatus.ACTIVE, read.approval().session().items().get(0).listingStatus());
+        assertEquals("https://media.example.test/stale-cover.jpg",
+                stored.session().items().get(0).coverImageUrl());
+    }
+
+    @Test
+    void missingListingYieldsNoCoverOrInventedStatus() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(user(17L, Role.ROLE_TENANT), false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        java.util.UUID commandId = java.util.UUID.randomUUID();
+        when(schedulingCommands.find(17L, 500L, commandId)).thenReturn(
+                historicalApproval("https://media.example.test/stale-cover.jpg", ListingStatus.ACTIVE));
+        when(listings.findAllById(anyCollection())).thenReturn(List.of());
+
+        VisitSchedulingCommandView read = service.schedulingCommand(17L, 500L, commandId);
+
+        VisitSessionItemView item = read.approval().session().items().get(0);
+        assertNull(item.coverImageUrl());
+        assertNull(item.listingStatus());
+    }
+
+    @Test
+    void deniedOwnedActorNeverReachesReceiptMediaResolution() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        when(ownedAuthorization.admit(17L))
+                .thenReturn(new OwnedOperationsAuthorizationService.Actor(user(17L, Role.ROLE_TENANT), false));
+        when(ownedAuthorization.lockTargetSession(500L)).thenReturn(session);
+        doThrow(new AccessDeniedException("Not the owner"))
+                .when(ownedAuthorization).requireOwnedSession(any(), same(session));
+        ApproveVisitRecommendationCommand command = new ApproveVisitRecommendationCommand(
+                0L, 41L, Instant.parse("2099-10-02T11:00:00Z"), "Asia/Kolkata", null, java.util.UUID.randomUUID());
+
+        assertThrows(AccessDeniedException.class, () -> service.selectForOwner(17L, 500L, command));
+
+        verify(schedulingCommands, never()).begin(anyLong(), anyLong(), any());
+        verify(listings, never()).findAllById(anyCollection());
+        verify(propertyCovers, never()).resolve(anyCollection());
+    }
+
+    @Test
     void availabilityConfirmationRecordsAuthenticatedActorAndTimestamp() {
         User actor = user(9L, Role.ROLE_ADMIN);
         VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
@@ -555,6 +670,53 @@ class VisitOperationsServiceTest {
 
         assertEquals(VisitSessionItemConfirmationStatus.PENDING, pending.getConfirmationStatus());
         assertNull(pending.getAvailabilityConfirmedAt());
+        verify(entityManager, never()).flush();
+    }
+
+    /**
+     * Batch A1 kept the backend contract intact. The defective build sent an untouched field back as
+     * the server's UTC `Z` instant beside Asia/Kolkata, and that representation must still be refused:
+     * the repair belongs on the client that produced it.
+     */
+    @Test
+    void rejectsServerUtcAvailabilityRepresentationBesideAnIanaZone() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 0L);
+        VisitSessionItem pending = item(700L, session, listing(101L, "Example City"),
+                VisitSessionItemConfirmationStatus.PENDING, null);
+        when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
+        when(items.findBySessionIdAndId(500L, 700L)).thenReturn(Optional.of(pending));
+
+        IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                () -> service.setAvailability(9L, 500L, 700L,
+                        new VisitSessionAvailabilityCommand(0L, VisitSessionItemConfirmationStatus.CONFIRMED,
+                                java.time.OffsetDateTime.parse("2099-10-02T13:00:00Z"),
+                                java.time.OffsetDateTime.parse("2099-10-02T17:00:00Z"),
+                                "Asia/Kolkata", PropertyAvailabilitySource.PHONE)));
+
+        assertEquals("Availability start offset does not match the supplied timezone", refusal.getMessage());
+        assertEquals(VisitSessionItemConfirmationStatus.PENDING, pending.getConfirmationStatus());
+        assertNull(pending.getAvailabilityConfirmedAt());
+        verify(entityManager, never()).flush();
+    }
+
+    /** A window edited from an older rendered version must never be recorded against a newer Session. */
+    @Test
+    void staleSessionVersionRejectsPropertyAvailabilityWithoutPartialConfirmation() {
+        VisitSession session = session(500L, 1L, "Example City", VisitSessionStatus.DRAFT, 4L);
+        VisitSessionItem pending = item(700L, session, listing(101L, "Example City"),
+                VisitSessionItemConfirmationStatus.PENDING, null);
+        when(sessions.findLockedById(500L)).thenReturn(Optional.of(session));
+        when(items.findBySessionIdAndId(500L, 700L)).thenReturn(Optional.of(pending));
+
+        assertThrows(VisitOperationsConflictException.class, () -> service.setAvailability(9L, 500L, 700L,
+                new VisitSessionAvailabilityCommand(3L, VisitSessionItemConfirmationStatus.CONFIRMED,
+                        java.time.OffsetDateTime.parse("2099-10-02T13:00:00+05:30"),
+                        java.time.OffsetDateTime.parse("2099-10-02T17:00:00+05:30"),
+                        "Asia/Kolkata", PropertyAvailabilitySource.PHONE)));
+
+        assertEquals(VisitSessionItemConfirmationStatus.PENDING, pending.getConfirmationStatus());
+        assertNull(pending.getAvailabilityConfirmedAt());
+        assertNull(pending.getAvailabilityStartAt());
         verify(entityManager, never()).flush();
     }
 
@@ -841,6 +1003,22 @@ class VisitOperationsServiceTest {
         session.setDurationSnapshotMinutes(30);
         session.setReservedEndAt(Instant.parse("2099-10-02T11:30:00Z"));
         return session;
+    }
+
+    private static VisitSchedulingApprovalView historicalApproval(String coverImageUrl, ListingStatus status) {
+        VisitSessionItemView item = new VisitSessionItemView(700L, 7001L, "Sunlit 3BHK",
+                "Vijay Nagar address", "Example City", "Vijay Nagar", 1, 502L, null,
+                VisitSessionItemOrigin.OE_ADDED, VisitSessionItemConfirmationStatus.CONFIRMED,
+                Instant.parse("2026-10-01T00:00:00Z"), null, null, null, null, null, null, null, null,
+                coverImageUrl, status);
+        OperationsVisitSessionView session = new OperationsVisitSessionView(500L,
+                VisitSessionStatus.SCHEDULED, 6L, "Example City", "Vijay Nagar",
+                Instant.parse("2099-10-02T11:00:00Z"), Instant.parse("2099-10-02T12:00:00Z"), 60,
+                "Asia/Kolkata", 41L, Instant.parse("2026-10-01T00:00:00Z"), List.of(item),
+                List.of(new LinkedRequestVersion(502L, 3L)), List.of(), 7L, "Team A Coordination", 17L,
+                Instant.parse("2026-10-18T11:00:00Z"), "CONFIRMED", null, null, null);
+        return new VisitSchedulingApprovalView(session, 71L, false, 41L,
+                Instant.parse("2026-10-18T04:30:00Z"));
     }
 
     private static User user(Long id, Role role) {

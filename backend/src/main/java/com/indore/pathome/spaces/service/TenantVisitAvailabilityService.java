@@ -4,51 +4,51 @@ import com.indore.pathome.spaces.dto.TenantVisitAvailabilityCommand;
 import com.indore.pathome.spaces.dto.TenantVisitAvailabilityView;
 import com.indore.pathome.spaces.entity.PropertyVisitRequest;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
-import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
-import jakarta.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
-import java.util.Objects;
-
+/**
+ * Tenant-self availability update seam.
+ *
+ * <p>Availability is a pre-booking fact. It may change only while the Request is standalone and
+ * {@code RECEIVED}, or while it is {@code COORDINATING} inside a still-{@code DRAFT} Session. The
+ * actual read, lock order, revalidation and write live in {@link TenantVisitAvailabilityTransaction}
+ * so a topology change discovered after locking can roll back and safely re-resolve in a fresh
+ * transaction instead of acquiring a Session lock while a Request lock is already held.</p>
+ */
 @Service
 public class TenantVisitAvailabilityService {
-    private final PropertyVisitRequestRepository requests;
+    private static final int MAX_TOPOLOGY_ATTEMPTS = 3;
 
-    public TenantVisitAvailabilityService(PropertyVisitRequestRepository requests) {
-        this.requests = requests;
+    private final TenantVisitAvailabilityTransaction transaction;
+
+    public TenantVisitAvailabilityService(TenantVisitAvailabilityTransaction transaction) {
+        this.transaction = transaction;
     }
 
-    @Transactional
+    /**
+     * The public retry boundary must never join an ambient transaction. Each attempt is its own
+     * proxied transaction, so a topology change genuinely rolls back and releases its locks before
+     * the next Session→Request lock order is discovered.
+     */
+    @Transactional(propagation = Propagation.NEVER)
     public TenantVisitAvailabilityView update(Long authenticatedTenantId, Long requestId,
                                               TenantVisitAvailabilityCommand command) {
         if (authenticatedTenantId == null || authenticatedTenantId <= 0)
             throw new IllegalArgumentException("Authenticated tenant identity is required");
         if (requestId == null || requestId <= 0) throw new IllegalArgumentException("Visit Request ID must be positive");
         if (command == null) throw new IllegalArgumentException("Availability details are required");
-        PropertyVisitRequest request = requests.findLockedByIdAndTenantId(requestId, authenticatedTenantId)
-                .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
-        if (command.expectedRequestVersion() == null
-                || !Objects.equals(request.getVersion(), command.expectedRequestVersion()))
-            throw new VisitOperationsConflictException("Visit Request changed; reload and retry");
-
-        var window = SchedulingWindowValidator.optional(command.availabilityStartAt(), command.availabilityEndAt(),
-                command.availabilityZoneId(), command.preferredAt(), Instant.now(), true);
-        if (window.isPresent()) {
-            var value = window.get();
-            request.setAvailabilityStartAt(value.startsAt());
-            request.setAvailabilityEndAt(value.endsAt());
-            request.setAvailabilityZoneId(value.zoneId());
-            request.setPreferredAt(value.preferredAt());
-        } else {
-            request.setAvailabilityStartAt(null);
-            request.setAvailabilityEndAt(null);
-            request.setAvailabilityZoneId(null);
-            request.setPreferredAt(null);
+        for (int attempt = 1; attempt <= MAX_TOPOLOGY_ATTEMPTS; attempt++) {
+            try {
+                return transaction.attempt(authenticatedTenantId, requestId, command);
+            } catch (TenantVisitAvailabilityTransaction.TopologyChangedException topologyChanged) {
+                // The transaction rolled back. A concurrent link/schedule may have changed the root,
+                // so re-discover from a fresh snapshot rather than holding a Request lock and then
+                // asking for the Session lock.
+            }
         }
-        requests.flush();
-        return view(request);
+        throw new VisitOperationsConflictException("Visit Request changed; reload and retry");
     }
 
     public static TenantVisitAvailabilityView view(PropertyVisitRequest request) {

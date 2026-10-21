@@ -6,6 +6,7 @@ import com.indore.pathome.spaces.dto.LinkedRequestVersion;
 import com.indore.pathome.spaces.dto.OperationsMyWorkItem;
 import com.indore.pathome.spaces.dto.OperationsRootType;
 import com.indore.pathome.spaces.dto.OperationsStandaloneRequestDetailView;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -108,10 +109,19 @@ public class OperationsMyWorkRepository {
                 WHERE s.operational_scope_ready = TRUE
                   AND s.coordinator_user_id = :userId
             ),
-            filtered_roots AS MATERIALIZED (
+            base_roots AS MATERIALIZED (
                 SELECT * FROM scoped_roots
                 WHERE CAST(:attentionOnly AS boolean) = FALSE OR needs_attention = TRUE
             ),
+            filtered_roots AS MATERIALIZED (
+                SELECT * FROM base_roots
+                WHERE (CAST(:targetType AS text) IS NULL OR target_type = CAST(:targetType AS text))
+                  AND (CAST(:status AS text) IS NULL OR status = CAST(:status AS text))
+                  AND (CAST(:cityId AS bigint) IS NULL OR city_id = CAST(:cityId AS bigint))
+                  AND (CAST(:teamId AS bigint) IS NULL OR team_id = CAST(:teamId AS bigint))
+                  AND (CAST(:targetId AS bigint) IS NULL OR target_id = CAST(:targetId AS bigint))
+            ),
+            unfiltered_total AS (SELECT count(*)::bigint AS total_count FROM base_roots),
             totals AS (SELECT count(*)::bigint AS total_count FROM filtered_roots),
             page_roots AS MATERIALIZED (
                 SELECT * FROM filtered_roots
@@ -127,11 +137,13 @@ public class OperationsMyWorkRepository {
                 GROUP BY r.session_id
             )
             SELECT EXISTS (SELECT 1 FROM eligible_teams) AS caller_eligible,
-                   totals.total_count, p.target_type, p.target_id, p.expected_version,
+                   totals.total_count, unfiltered_total.total_count AS unfiltered_total_count,
+                   p.target_type, p.target_id, p.expected_version,
                    p.city_id, p.city_display_name, p.team_id, p.team_display_name, p.status,
                    p.root_updated_at, p.root_scheduled_at, p.tenant_confirmation_state,
                    COALESCE(lt.versions, '[]') AS linked_request_versions
             FROM totals
+            CROSS JOIN unfiltered_total
             LEFT JOIN page_roots p ON TRUE
             LEFT JOIN linked_tokens lt ON lt.target_id = p.target_id AND p.target_type = 'SESSION'
             ORDER BY CASE p.target_type WHEN 'REQUEST' THEN 0 WHEN 'SESSION' THEN 1 ELSE 2 END,
@@ -151,6 +163,7 @@ public class OperationsMyWorkRepository {
                        r.availability_end_at AS availability_end_at,
                        r.availability_zone_id AS availability_zone_id,
                        r.preferred_at AS preferred_at,
+                       r.preferred_visit_timing AS preferred_visit_timing,
                        r.session_id AS session_id
                 FROM property_visit_requests r
                 JOIN listings l ON l.id = r.listing_id
@@ -170,7 +183,7 @@ public class OperationsMyWorkRepository {
                    s.city_id, s.city_display_name, s.team_id, s.team_display_name,
                    s.listing_id, s.listing_title, s.listing_address, s.listing_status,
                    s.listing_city, s.sector, s.availability_start_at, s.availability_end_at,
-                   s.availability_zone_id, s.preferred_at, s.session_id
+                   s.availability_zone_id, s.preferred_at, s.preferred_visit_timing, s.session_id
             FROM (VALUES (1)) AS singleton(value)
             LEFT JOIN selected_root s ON TRUE
             """;
@@ -183,14 +196,22 @@ public class OperationsMyWorkRepository {
         this.objectMapper = objectMapper;
     }
 
-    public Snapshot page(long userId, long offset, int size, boolean attentionOnly) {
+    public Snapshot page(long userId, long offset, int size, boolean attentionOnly,
+            OperationsWorkFilter filter) {
+        OperationsWorkFilter applied = filter == null ? OperationsWorkFilter.NONE : filter;
         MapSqlParameterSource parameters = new MapSqlParameterSource()
                 .addValue("userId", userId)
                 .addValue("offset", offset)
                 .addValue("size", size)
-                .addValue("attentionOnly", attentionOnly);
+                .addValue("attentionOnly", attentionOnly)
+                .addValue("targetType", applied.targetType() == null ? null : applied.targetType().name())
+                .addValue("status", applied.status())
+                .addValue("cityId", applied.cityId())
+                .addValue("teamId", applied.teamId())
+                .addValue("targetId", applied.targetId());
         List<SnapshotRow> rows = jdbc.query(PAGE_SQL, parameters, (rs, rowNum) -> new SnapshotRow(
                 rs.getBoolean("caller_eligible"), rs.getLong("total_count"),
+                rs.getLong("unfiltered_total_count"),
                 rs.getString("target_type"), nullableLong(rs, "target_id"),
                 nullableLong(rs, "expected_version"), nullableLong(rs, "city_id"),
                 rs.getString("city_display_name"), nullableLong(rs, "team_id"),
@@ -203,7 +224,8 @@ public class OperationsMyWorkRepository {
         for (SnapshotRow row : rows) {
             if (row.targetType() != null) items.add(toItem(row));
         }
-        return new Snapshot(first.callerEligible(), first.totalCount(), List.copyOf(items));
+        return new Snapshot(first.callerEligible(), first.totalCount(), first.unfilteredTotalCount(),
+                List.copyOf(items));
     }
 
     public DetailSnapshot requestDetail(long userId, long requestId) {
@@ -214,7 +236,8 @@ public class OperationsMyWorkRepository {
             Long id = nullableLong(rs, "request_id");
             OperationsStandaloneRequestDetailView detail = id == null ? null
                     : new OperationsStandaloneRequestDetailView(id, rs.getString("status"),
-                            nullableLong(rs, "expected_version"), nullableLocalDateTime(rs, "created_at"),
+                            nullableLong(rs, "expected_version"), rs.getString("preferred_visit_timing"),
+                            nullableLocalDateTime(rs, "created_at"),
                             nullableLong(rs, "city_id"), rs.getString("city_display_name"),
                             nullableLong(rs, "team_id"), rs.getString("team_display_name"),
                             nullableLong(rs, "listing_id"), rs.getString("listing_title"),
@@ -255,11 +278,13 @@ public class OperationsMyWorkRepository {
         return rs.getObject(column, LocalDateTime.class);
     }
 
-    private record SnapshotRow(boolean callerEligible, long totalCount, String targetType, Long targetId,
+    private record SnapshotRow(boolean callerEligible, long totalCount, long unfilteredTotalCount,
+            String targetType, Long targetId,
             Long expectedVersion, Long cityId, String cityDisplayName, Long teamId,
             String teamDisplayName, String status, Instant updatedAt, Instant scheduledAt,
             String tenantConfirmationState, String linkedRequestVersions) {}
 
-    public record Snapshot(boolean callerEligible, long totalCount, List<OperationsMyWorkItem> items) {}
+    public record Snapshot(boolean callerEligible, long totalCount, long unfilteredTotalCount,
+            List<OperationsMyWorkItem> items) {}
     public record DetailSnapshot(boolean callerEligible, OperationsStandaloneRequestDetailView detail) {}
 }

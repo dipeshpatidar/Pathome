@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, Inbox, RefreshCw, Search, Sparkles, X } from 'lucide-react';
+import { Check, CircleAlert, Info, Inbox, RefreshCw, Search, Sparkles, X } from 'lucide-react';
 import { ApiRequestError } from '../../services/apiError';
 import {
   formatOperationsDate,
@@ -10,11 +10,13 @@ import {
   recommendationViewMatchesContext,
   recommendationStatusHint,
   slotKeyFor,
+  type OperationsGeAvailabilityView,
   type OperationsRecommendationCandidate,
   type OperationsRecommendationView,
   type OperationsSchedulingSelection
 } from '../../utils/operationsWorkspacePresentation';
 import { OPERATIONS_DISCOVERY_QUERY_MAX } from '../../services/operationsWorkspaceService';
+import { OperationsGeAvailability } from './OperationsGeAvailability';
 
 /**
  * Ground Executive discovery: the bounded ranked suggestions, progressive cursor Browse, and search.
@@ -40,12 +42,16 @@ export type DiscoveryLoader = (
   input: DiscoveryLoadInput,
   signal: AbortSignal
 ) => Promise<OperationsRecommendationView | null>;
+export type AvailabilityLoader = (
+  input: DiscoveryLoadInput & { size?: number },
+  signal: AbortSignal
+) => Promise<OperationsGeAvailabilityView | null>;
 
 type TabKey = 'recommended' | 'browse' | 'search';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'recommended', label: 'Recommended' },
-  { key: 'browse', label: 'Browse all' },
+  { key: 'browse', label: 'Browse feasible GEs' },
   { key: 'search', label: 'Search' }
 ];
 
@@ -57,6 +63,7 @@ interface Props {
   onSelect: (selection: OperationsSchedulingSelection) => void;
   loadRanked: RecommendationLoader;
   loadDiscovery: DiscoveryLoader;
+  loadAvailability: AvailabilityLoader;
   /** Reports the ranked view that is currently displayed, so the review can reason about the top choice. */
   onRankedView: (view: OperationsRecommendationView | null) => void;
   /** Reloads the authoritative session, for an evaluation that no longer matches what is on screen. */
@@ -115,11 +122,13 @@ export const OperationsGePicker: React.FC<Props> = ({
   onSelect,
   loadRanked,
   loadDiscovery,
+  loadAvailability,
   onRankedView,
   onRefreshSession,
   blocked
 }) => {
   const [tab, setTab] = useState<TabKey>('recommended');
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);
 
   const [ranked, setRanked] = useState<OperationsRecommendationView | null>(null);
   const [rankedLoading, setRankedLoading] = useState(true);
@@ -229,6 +238,7 @@ export const OperationsGePicker: React.FC<Props> = ({
     });
     setRankedMismatch(false);
     setTab('recommended');
+    setAvailabilityOpen(false);
   }, [contextKey]);
 
   useEffect(() => () => {
@@ -531,10 +541,20 @@ export const OperationsGePicker: React.FC<Props> = ({
       </div>
 
       <div role="tabpanel" id="oe-ppanel-browse" aria-labelledby="oe-ptab-browse" hidden={tab !== 'browse'} className="oe-ppanel">
-        <p className="oe-ppanel-note">
-          Eligible Ground Executives in {city}, in the order the server returned them. This is not a
-          ranking, and it loads in pages rather than all at once.
-        </p>
+        <div className="oe-ppanel-head">
+          <p className="oe-ppanel-note">
+            Shows GEs with an evaluated time for this visit plan. It does not show every employee.
+          </p>
+          <button
+            type="button"
+            className="oe-btn oe-btn--secondary oe-btn--sm"
+            disabled={blocked}
+            onClick={() => setAvailabilityOpen(true)}
+          >
+            <Info size={14} aria-hidden="true" />
+            GE availability
+          </button>
+        </div>
 
         {browse.status === 'error' ? (
           <Notice tone="warn" icon={<CircleAlert size={18} />} title="Eligible Ground Executives couldn’t be loaded" body="Nothing was changed. Try again, or use the ranked suggestions.">
@@ -577,7 +597,11 @@ export const OperationsGePicker: React.FC<Props> = ({
         ) : null}
 
         {browseStarted.current && browse.status !== 'loading' && browse.status !== 'error' && browse.ended && browse.items.length === 0 ? (
-          <Notice icon={<Inbox size={18} />} title="No eligible Ground Executives were returned" body="The first page of eligible Ground Executives is empty. Check again later." />
+          <Notice
+            icon={<Inbox size={18} />}
+            title="No feasible matches found in this evaluation"
+            body="The server finished this bounded evaluation without returning a feasible Ground Executive. This does not mean no employee exists in the organization."
+          />
         ) : null}
 
         {browse.cursorRejected ? (
@@ -606,8 +630,7 @@ export const OperationsGePicker: React.FC<Props> = ({
               <>
                 {browse.lastAdded === 0 ? (
                   <p className="oe-ppanel-note">
-                    No eligible Ground Executives were on that page, but the server says more pages
-                    remain, so the list isn’t finished.
+                    No feasible Ground Executives were on that page. More records remain to check.
                   </p>
                 ) : null}
                 <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={() => void loadBrowse(false)} disabled={blocked}>
@@ -618,7 +641,7 @@ export const OperationsGePicker: React.FC<Props> = ({
           </div>
         ) : null}
         {browseStarted.current && browse.status !== 'error' && browse.ended && browse.items.length > 0 ? (
-          <p className="oe-ppanel-note">End of list. The server has no further pages.</p>
+          <p className="oe-ppanel-note">End of this evaluation. The server has no further records to check.</p>
         ) : null}
       </div>
 
@@ -675,7 +698,7 @@ export const OperationsGePicker: React.FC<Props> = ({
           {search.status === 'loading'
             ? 'Searching…'
             : search.status === 'done'
-              ? `${search.items.length} ${search.items.length === 1 ? 'candidate' : 'candidates'} loaded for “${search.ran}”.${search.nextCursor ? ' More are available.' : ''}`
+              ? `${search.items.length} ${search.items.length === 1 ? 'candidate' : 'candidates'} loaded for “${search.ran}”.${search.nextCursor ? ' More records remain to check.' : ''}`
               : ''}
         </div>
 
@@ -734,14 +757,14 @@ export const OperationsGePicker: React.FC<Props> = ({
             ) : search.mismatch || search.cursorRejected ? null : search.nextCursor ? (
               <Notice
                 icon={<Inbox size={18} />}
-                title={`No eligible matches yet for “${search.ran}”`}
-                body="That page had no eligible Ground Executives, but the server says more may remain. Load more to keep looking."
+                title={`No feasible matches yet for “${search.ran}”`}
+                body="That page returned no feasible Ground Executive. More records remain to check, so load more to keep looking."
               />
             ) : (
               <Notice
                 icon={<Inbox size={18} />}
-                title={`No eligible Ground Executive matched “${search.ran}”`}
-                body="Check the spelling or the user ID. Only Ground Executives eligible for this visit appear here."
+                title="No feasible matches found in this evaluation"
+                body={`The bounded evaluation finished without a feasible match for “${search.ran}”. Check the spelling or exact user ID. This does not mean no employee exists in the organization.`}
               />
             )}
             {search.more === 'error' ? (
@@ -765,6 +788,17 @@ export const OperationsGePicker: React.FC<Props> = ({
           </>
         )}
       </div>
+
+      {availabilityOpen ? (
+        <OperationsGeAvailability
+          sessionId={sessionId}
+          sessionVersion={sessionVersion}
+          city={city}
+          loadAvailability={loadAvailability}
+          onClose={() => setAvailabilityOpen(false)}
+          onRequireFreshSession={onRefreshSession}
+        />
+      ) : null}
     </div>
   );
 };

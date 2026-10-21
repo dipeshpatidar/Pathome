@@ -127,8 +127,9 @@ test('a malformed payload is an error, never an empty queue', () => {
 test('My Work sends the real server-side page, size and attentionOnly contract', () => {
   assert.match(
     service,
-    /const query = `page=\$\{page\}&size=\$\{OPERATIONS_WORK_PAGE_SIZE\}&attentionOnly=\$\{attentionOnly \? 'true' : 'false'\}`;/
+    /const query = `page=\$\{page\}&size=\$\{OPERATIONS_WORK_PAGE_SIZE\}&attentionOnly=\$\{attentionOnly \? 'true' : 'false'\}`\s*\n\s*\+ operationsFilterQuery\(filters\);/
   );
+  assert.match(service, /export const operationsFilterQuery = \(filters: OperationsQueueFilters\): string =>/);
   assert.match(service, /\/operations\/my-work\?\$\{query\}/);
   assert.match(service, /export const OPERATIONS_WORK_PAGE_SIZE = 20;/);
   assert.match(service, /attentionOnly=\$\{attentionOnly \? 'true' : 'false'\}/);
@@ -256,8 +257,8 @@ test('capability scopes list each coordinating team once and never fabricate a l
   });
   const scopes = operationsCapabilityScopes(parsed);
   assert.deepEqual(scopes, [
-    { teamId: 7, cityName: 'Indore', teamName: 'Team A' },
-    { teamId: 9, cityName: 'City not recorded', teamName: 'Team not recorded' }
+    { teamId: 7, cityId: 1, cityName: 'Indore', teamName: 'Team A' },
+    { teamId: 9, cityId: null, cityName: 'City not recorded', teamName: 'Team not recorded' }
   ]);
   assert.equal(parsed.serverTime, '2026-10-12T15:00:00Z');
 });
@@ -281,25 +282,26 @@ test('both consoles gate the OE destination on the shared server-verified author
 
   // Employee console: the entry point and the destination come from the shared authority.
   assert.match(dashboard, /\{authority\.canEnter && \(/);
-  assert.match(dashboard, /activeTab === 'operations' && <OperationsWorkspace authority=\{authority\} \/>/);
+  assert.match(dashboard, /activeTab === 'operations' && <OperationsWorkspace authority=\{authority\} layout="embedded" \/>/);
   assert.match(dashboard, /\['visits'\]\.includes|setActiveTab\('visits'\)/);
 
   // Admin console: the same component and authority, an entry built from verified authority only.
   assert.match(admin, /operationsAuthority\.canEnter \? \[\{ id: 'operations'/);
-  assert.match(admin, /activeTab === 'operations' && <OperationsWorkspace authority=\{operationsAuthority\} \/>/);
+  assert.match(admin, /activeTab === 'operations' && <OperationsWorkspace authority=\{operationsAuthority\} layout="embedded" \/>/);
   assert.match(
     admin,
     /if \(activeTab === 'operations' && operationsAuthority\.state === 'restricted'\) \{\s*\n\s*handleTabSelect\('media'\);/
   );
 
-  // A persisted tab selection can never restore the OE destination.
+  // The host tab is restored after refresh, but it restores no authority or protected data: the
+  // shared state machine re-verifies the exact entry and account before the workspace admits work.
   const persisted = admin.match(/const PERSISTED_ADMIN_TABS = new Set\(\[([\s\S]*?)\]\);/);
   assert.ok(persisted);
-  assert.equal(persisted[1].includes('operations'), false);
+  assert.equal(persisted[1].includes('operations'), true);
   assert.match(admin, /if \(PERSISTED_ADMIN_TABS\.has\(tabId\)\) localStorage\.setItem\('pathome_active_admin_tab'/);
   const homeValidTabs = home.match(/const VALID_ADMIN_TABS = new Set\(\[([\s\S]*?)\]\);/);
   assert.ok(homeValidTabs);
-  assert.equal(homeValidTabs[1].includes('operations'), false);
+  assert.equal(homeValidTabs[1].includes('operations'), true);
 
   // No role label participates in the operations gate, wherever the authority is constructed.
   const gate = home.match(/const operationsAuthority = useOperationsCapability[\s\S]*?\n/);
@@ -314,6 +316,7 @@ test('Request detail maps real fields only and keeps stored local created time i
     requestId: 501,
     status: 'RECEIVED',
     version: 4,
+    preferredVisitTiming: 'Saturday afternoon',
     createdAt: '2026-10-12T21:25:30',
     cityId: 1,
     cityDisplayName: 'Indore',
@@ -334,6 +337,7 @@ test('Request detail maps real fields only and keeps stored local created time i
   });
   assert.equal(detailPayload.requestId, 501);
   assert.equal(detailPayload.version, 4);
+  assert.equal(detailPayload.preferredVisitTiming, 'Saturday afternoon');
   assert.equal(detailPayload.createdAt, '2026-10-12T21:25:30');
   assert.equal(detailPayload.sessionId, null);
   assert.equal(detailPayload.preferredAt, null);
@@ -382,6 +386,26 @@ test('Session detail maps items, linked requests and never invents a name or an 
       }
     ],
     linkedRequestVersions: [{ requestId: 501, version: 4 }],
+    linkedRequestTimingFacts: [
+      {
+        requestId: 501,
+        version: 4,
+        preferredVisitTiming: 'Saturday afternoon',
+        availabilityStartAt: '2026-10-13T04:00:00Z',
+        availabilityEndAt: '2026-10-13T07:00:00Z',
+        availabilityZoneId: 'Asia/Kolkata',
+        preferredAt: null
+      },
+      {
+        requestId: 502,
+        version: 9,
+        preferredVisitTiming: 'Weekend morning',
+        availabilityStartAt: null,
+        availabilityEndAt: null,
+        availabilityZoneId: null,
+        preferredAt: null
+      }
+    ],
     teamId: 7,
     teamDisplayName: 'Team A',
     coordinatorUserId: 42,
@@ -399,6 +423,26 @@ test('Session detail maps items, linked requests and never invents a name or an 
   assert.equal(session.representativeUserId, null);
   assert.equal(session.coordinatorUserId, 42);
   assert.deepEqual(session.linkedRequestVersions, [{ requestId: 501, version: 4 }]);
+  assert.deepEqual(session.linkedRequestTimingFacts, [
+    {
+      requestId: 501,
+      version: 4,
+      preferredVisitTiming: 'Saturday afternoon',
+      availabilityStartAt: '2026-10-13T04:00:00Z',
+      availabilityEndAt: '2026-10-13T07:00:00Z',
+      availabilityZoneId: 'Asia/Kolkata',
+      preferredAt: null
+    },
+    {
+      requestId: 502,
+      version: 9,
+      preferredVisitTiming: 'Weekend morning',
+      availabilityStartAt: null,
+      availabilityEndAt: null,
+      availabilityZoneId: null,
+      preferredAt: null
+    }
+  ]);
   const serialized = JSON.stringify(session);
   assert.equal(serialized.includes('representativeName'), false);
   assert.equal(serialized.toLowerCase().includes('endedat'), false);
@@ -677,11 +721,16 @@ test('access loss is classified and released detail stops being shown', () => {
    * `browser-verification/operations-completion/` and by the real lifecycle decisions in
    * `operationsOwnershipRaceCorrections.test.mjs`.
    */
-  assert.match(workspace, /const withdrawDeniedRoot = useCallback\(\(operation: OwnershipOperation\) => \{/);
-  assert.match(workspace, /if \(!operationTargetIsMounted\(operation, openRootRef\.current\)\) return;/);
   assert.match(
     workspace,
-    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(operation\);\s*\n\s*\}/
+    /const withdrawDeniedRoot = useCallback\(\(\s*source: OwnershipOperation \| MountedRootIdentity\s*\): boolean => \{/
+  );
+  assert.match(workspace, /mounted\.targetType !== target\.targetType/);
+  assert.match(workspace, /mounted\.targetId !== target\.targetId/);
+  assert.match(workspace, /mounted\.mountGeneration !== target\.mountGeneration/);
+  assert.match(
+    workspace,
+    /if \(disposition\.withdrawRoot && failureContextCurrent\(\)\) \{\s*\n\s*withdrewRoot = withdrawDeniedRoot\(operation\);\s*\n\s*\}/
   );
   /**
    * Both failure paths withdraw the operation's own captured target, and both withhold a definitive
@@ -721,8 +770,9 @@ test('access loss is classified and released detail stops being shown', () => {
       `${label}: the fresh verdict is the last decision before the notice`
     );
   }
-  // Exactly the two failure paths call it, and neither calls it after its reconciliation any more.
-  assert.equal((workspace.match(/withdrawDeniedRoot\(/g) ?? []).length, 2);
+  // The two shared failure paths and availability settlement call it. None calls it after a
+  // reconciliation that could replace the display context it describes.
+  assert.equal((workspace.match(/withdrawDeniedRoot\(/g) ?? []).length, 3);
   assert.match(workspace, /signedOut \|\| accessLost/);
   assert.match(detail, /This item isn’t available to you/);
 });
@@ -732,7 +782,7 @@ test('access loss is classified and released detail stops being shown', () => {
 test('pending work is cancelled and a stale session can never populate the workspace', () => {
   assert.match(workspace, /controllers\[key\]\?\.abort\(\);/);
   assert.match(workspace, /new AbortController\(\)/);
-  assert.match(workspace, /subscribeOperationsSession\(\(\) => clearProtectedState\('session-changed', \{ neutralView: true \}\)\)/);
+  assert.match(workspace, /subscribeOperationsSession\(\(reason\) => clearProtectedState\(\s*\n\s*'session-changed',\s*\n\s*\{ neutralView: reason !== 'session-expired' \}/);
   assert.match(workspace, /isOperationsSessionActive\(session\)/);
   assert.match(workspace, /isOperationsSessionChangedError\(cause\)/);
   assert.match(workspace, /controller\.signal\.aborted \|\| !isMounted\(\)/);
@@ -801,7 +851,7 @@ test('approved Phase 2A controls reach the real command contracts', () => {
   assert.match(workspace, /operationsWorkspaceService\.lessorContactForRequest\(/);
   assert.match(workspace, /operationsWorkspaceService\.lessorContactForSessionItem\(/);
   // Active/History cannot be truthful without a server-wide filter, so it must not exist.
-  assert.equal(workspace.includes('History'), false);
+  assert.equal(workspace.includes('Active/History'), false);
   assert.match(workspace, /Totals and pages come from the server/);
 });
 
@@ -810,9 +860,9 @@ test('independent operational reads are cancelled independently (P1-3)', () => {
   // the user is still waiting for. The single shared slots this replaced must not come back.
   assert.match(
     workspace,
-    /type GuardedReadFamily = 'owned-candidates' \| 'listing-search' \| 'ge-ranked' \| 'ge-discovery';/
+    /type GuardedReadFamily = 'owned-candidates' \| 'listing-search' \| 'ge-ranked' \| 'ge-discovery' \| 'ge-availability';/
   );
-  for (const family of ['owned-candidates', 'listing-search', 'ge-ranked', 'ge-discovery']) {
+  for (const family of ['owned-candidates', 'listing-search', 'ge-ranked', 'ge-discovery', 'ge-availability']) {
     assert.equal(workspace.includes(`beginGuardedRead('${family}', signal)`), true, `missing family ${family}`);
   }
   assert.equal(workspace.includes('beginGuardedRead(signal,'), false, 'a shared read slot is still used');
@@ -829,14 +879,29 @@ test('the availability editor converts instants through the recorded zone (P0-1)
   // routes both fields through them.
   assert.equal(itinerary.includes('serverInstantToZoneInput'), true);
   assert.equal(itinerary.includes('resolveAvailabilityFieldInstant'), true);
+  assert.equal(itinerary.includes('rezoneAvailabilityFieldInput'), true);
+  // Each field's provenance is explicit state in the workspace-owned draft, and it is what both
+  // conversions are driven by: an edited text can coincide with what the recorded instant looks like
+  // in another zone.
+  assert.match(itinerary, /fieldProvenance = draft\.fieldProvenance/);
+  assert.match(itinerary, /provenance: fieldProvenance\.start/);
+  assert.match(itinerary, /provenance: fieldProvenance\.end/);
+  assert.match(itinerary, /markEdited\('start',/);
+  assert.match(itinerary, /markEdited\('end',/);
+  assert.equal(itinerary.includes('displayZoneId'), false);
+  // One editor instance belongs to one stop, so an abandoned edit cannot follow the OE to another item.
+  assert.match(itinerary, /<AvailabilityEditor\n\s+key=\{activeDraft\.editorGeneration\}/);
+  assert.equal(itinerary.includes('setEditingItemId'), false);
   assert.equal(itinerary.includes('slice(0, 16)'), false);
   assert.equal(itinerary.includes('ZONE_OFFSET'), false);
   assert.equal(typeof presentationModule.serverInstantToZoneInput, 'function');
   assert.equal(typeof presentationModule.resolveAvailabilityFieldInstant, 'function');
   assert.equal(typeof presentationModule.zoneInputToServerInstant, 'function');
+  assert.equal(typeof presentationModule.instantToZoneInstant, 'function');
   assert.equal(typeof presentationModule.operationsZoneOptions, 'function');
   // The conversion the editor actually relies on: a recorded instant is displayed in the property
-  // zone, and an untouched field is sent back byte-for-byte rather than re-derived.
+  // zone, and an untouched field is sent back as the same instant with that zone's own offset, which
+  // is the representation the backend validator accepts beside the declared zone.
   assert.equal(
     presentationModule.serverInstantToZoneInput('2027-02-14T04:00:00Z', 'Asia/Kolkata'),
     '2027-02-14T09:30'
@@ -844,12 +909,21 @@ test('the availability editor converts instants through the recorded zone (P0-1)
   assert.deepEqual(
     presentationModule.resolveAvailabilityFieldInstant({
       value: '2027-02-14T09:30',
-      initialValue: '2027-02-14T09:30',
+      provenance: 'RECORDED',
       zoneId: 'Asia/Kolkata',
-      initialZoneId: 'Asia/Kolkata',
       initialInstant: '2027-02-14T04:00:37.123Z'
     }),
-    { value: '2027-02-14T04:00:37.123Z', error: null }
+    { value: '2027-02-14T09:30:37.123+05:30', error: null }
+  );
+  // The same text with the other provenance is the OE's own wall clock, and is converted as entered.
+  assert.deepEqual(
+    presentationModule.resolveAvailabilityFieldInstant({
+      value: '2027-02-14T09:30',
+      provenance: 'EDITED',
+      zoneId: 'Asia/Kolkata',
+      initialInstant: '2027-02-14T04:00:37.123Z'
+    }),
+    { value: '2027-02-14T09:30:00+05:30', error: null }
   );
 });
 
@@ -915,8 +989,8 @@ test('status, confirmation and formatting degrade to real values', () => {
   assert.equal(tenantConfirmationLabel('REJECTED'), 'Tenant declined');
   assert.equal(tenantConfirmationLabel('NOT_REQUIRED'), 'Confirmation not required');
   assert.equal(tenantConfirmationLabel('WHATEVER'), 'whatever');
-  assert.equal(operationsRecordTitle('SESSION', 3108), 'Session #3108');
-  assert.equal(operationsRecordTitle('REQUEST', 501), 'Request #501');
+  assert.equal(operationsRecordTitle('SESSION', 3108), 'Visit plan #3108');
+  assert.equal(operationsRecordTitle('REQUEST', 501), 'Visit request #501');
   assert.equal(formatOperationsDate('2026-10-11T11:00:00Z'), 'Sun,\u00a011\u00a0Oct');
   assert.equal(formatOperationsDateTime('2026-10-11T11:00:00Z'), 'Sun,\u00a011\u00a0Oct\u00a0·\u00a04:30\u00a0pm');
   assert.equal(
@@ -948,9 +1022,9 @@ test('the Operations destination is a capability-gated path inside the single-ro
 
   // The destination is derived from the pathname alone, and the role-coercion guard yields to it so
   // that a staff capability - never a role label - decides admission.
-  assert.match(home, /const operationsRoute = normalizeRoutePathname\(location\.pathname\) === '\/operations';/);
+  assert.match(home, /const operationsRoute = isOperationsPath\(normalizeRoutePathname\(location\.pathname\)\);/);
   assert.match(home, /if \(operationsRoute\) return;/);
-  assert.match(home, /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| path === '\/operations';/);
+  assert.match(home, /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\);/);
 
   // Existing role destinations are preserved exactly as they were.
   assert.match(home, /role === 'EMPLOYEE' && path !== '\/crm'/);

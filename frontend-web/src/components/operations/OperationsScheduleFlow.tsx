@@ -21,10 +21,13 @@ import {
 } from '../../utils/operationsWorkspacePresentation';
 import {
   OperationsGePicker,
+  type AvailabilityLoader,
   type DiscoveryLoader,
   type RecommendationLoader
 } from './OperationsGePicker';
+import { OperationsGeAvailability } from './OperationsGeAvailability';
 import { TenantConfirmationLabel } from './OperationsWorkspacePrimitives';
+import { OperationsPropertyThumb } from './OperationsPropertyThumb';
 import './operationsSchedule.css';
 
 /**
@@ -64,6 +67,7 @@ interface Props {
   ) => void;
   loadRanked: RecommendationLoader;
   loadDiscovery: DiscoveryLoader;
+  loadAvailability: AvailabilityLoader;
   /** Safe GET refresh of the authoritative session after a conflict. */
   onRefreshSession: () => void;
   onRetryScheduling: () => void;
@@ -78,11 +82,18 @@ const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, ch
 
 const StopList: React.FC<{ items: OperationsSessionItem[] }> = ({ items }) => (
   <section className="oe-review-stops" aria-labelledby="oe-review-stops-title">
-    <h3 id="oe-review-stops-title" className="oe-review-stops-title">Visit stops ({items.length})</h3>
+    <h3 id="oe-review-stops-title" className="oe-review-stops-title">Properties to visit ({items.length})</h3>
     <ol className="oe-review-stops-list">
       {items.map((item, index) => (
         <li key={item.itemId} className="oe-review-stop">
           <span className="oe-review-stop-num oe-num" aria-hidden="true">{index + 1}</span>
+          <OperationsPropertyThumb
+            imageUrl={item.coverImageUrl}
+            title={item.title}
+            listingId={item.listingId}
+            listingStatus={item.listingStatus}
+            className="oe-thumb--compact"
+          />
           <span className="oe-review-stop-body">
             <span className="oe-review-stop-title">{item.title ?? 'Listing title not recorded'}</span>
             <span className="oe-review-stop-meta">
@@ -118,7 +129,7 @@ const SelectionSummary: React.FC<{
         {groundExecutiveLabel(candidate)}
         <span className="oe-field-sub oe-mono">GE user ID {candidate.groundExecutiveUserId}</span>
       </Row>
-      <Row label="Evaluated slot">
+      <Row label="Available visit time">
         {formatOperationsDate(candidate.scheduledAt) ?? 'Time not returned'}
         {formatOperationsSlotRange(candidate) ? ` · ${formatOperationsSlotRange(candidate)}` : ''}
         <span className="oe-field-sub">
@@ -127,7 +138,7 @@ const SelectionSummary: React.FC<{
         </span>
       </Row>
       <Row label="Found by">
-        {selection.source === 'recommended' ? 'Ranked suggestion' : selection.source === 'browse' ? 'Browse all' : 'Search'}
+        {selection.source === 'recommended' ? 'Ranked suggestion' : selection.source === 'browse' ? 'Browse feasible GEs' : 'Search'}
       </Row>
     </dl>
   );
@@ -142,6 +153,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
   onConfirm,
   loadRanked,
   loadDiscovery,
+  loadAvailability,
   onRefreshSession,
   onRetryScheduling
 }) => {
@@ -150,6 +162,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
   const [reason, setReason] = useState('');
   const [showError, setShowError] = useState(false);
   const [rankedView, setRankedView] = useState<OperationsRecommendationView | null>(null);
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);
   /** Bumped to remount the picker, which is how "reload candidates" issues a fresh ranked read. */
   const [pickerKey, setPickerKey] = useState(0);
 
@@ -313,6 +326,14 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                 {blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
               </ul>
               <div className="oe-conflict-actions">
+                <button
+                  type="button"
+                  className="oe-btn oe-btn--secondary oe-btn--md"
+                  onClick={() => setAvailabilityOpen(true)}
+                >
+                  <Info size={14} aria-hidden="true" />
+                  View plan timing and GE availability
+                </button>
                 <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onClose}>
                   Return to session details
                 </button>
@@ -338,6 +359,7 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     onSelect={setSelection}
                     loadRanked={loadRanked}
                     loadDiscovery={loadDiscovery}
+                    loadAvailability={loadAvailability}
                     onRankedView={setRankedView}
                     onRefreshSession={onRefreshSession}
                     blocked={blocked}
@@ -550,6 +572,16 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
               Close
             </button>
           </footer>
+        ) : null}
+        {availabilityOpen ? (
+          <OperationsGeAvailability
+            sessionId={session.sessionId}
+            sessionVersion={session.version ?? 0}
+            city={session.city ?? 'your city'}
+            loadAvailability={loadAvailability}
+            onClose={() => setAvailabilityOpen(false)}
+            onRequireFreshSession={onRefreshSession}
+          />
         ) : null}
       </div>
     </div>

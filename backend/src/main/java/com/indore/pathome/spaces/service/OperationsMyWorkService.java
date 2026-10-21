@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.OperationsMyWorkPage;
 import com.indore.pathome.spaces.dto.OperationsStandaloneRequestDetailView;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.repository.OperationsMyWorkRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.security.access.AccessDeniedException;
@@ -26,14 +27,21 @@ public class OperationsMyWorkService {
 
     @Transactional(readOnly = true)
     public OperationsMyWorkPage list(Long userId, int page, int size, boolean attentionOnly) {
+        return list(userId, page, size, attentionOnly, OperationsWorkFilter.NONE);
+    }
+
+    @Transactional(readOnly = true)
+    public OperationsMyWorkPage list(Long userId, int page, int size, boolean attentionOnly,
+            OperationsWorkFilter filter) {
         requireUser(userId);
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         if (size < 1 || size > MAX_PAGE_SIZE) throw new IllegalArgumentException("Size must be between 1 and 100");
         long offset = Math.multiplyExact((long) page, (long) size);
-        OperationsMyWorkRepository.Snapshot snapshot = repository.page(userId, offset, size, attentionOnly);
+        OperationsMyWorkRepository.Snapshot snapshot = repository.page(userId, offset, size, attentionOnly, filter);
         requireEligible(snapshot.callerEligible());
         long totalPages = snapshot.totalCount() == 0 ? 0 : ((snapshot.totalCount() - 1) / size) + 1;
-        return new OperationsMyWorkPage(snapshot.items(), snapshot.totalCount(), page, size, totalPages);
+        return new OperationsMyWorkPage(snapshot.items(), snapshot.totalCount(),
+                snapshot.unfilteredTotalCount(), page, size, totalPages);
     }
 
     @Transactional(readOnly = true)

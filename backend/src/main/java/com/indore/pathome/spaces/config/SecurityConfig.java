@@ -6,6 +6,7 @@ import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authorization.AuthorizationDecision;
@@ -21,6 +22,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import java.util.regex.Pattern;
 
 @Configuration
 @EnableWebSecurity
@@ -49,6 +52,18 @@ public class SecurityConfig {
             (authentication, context) ->
                     new AuthorizationDecision(context.getRequest().getDispatcherType() == DispatcherType.ERROR);
 
+    /**
+     * Tenant-contact and restricted GE-availability routes can disclose protected operational data.
+     * A header writer inside the security chain runs before authorization, so the entry point's 401
+     * and every later error response carry {@code no-store} too; the controller additionally sets it
+     * on the success response before any service work runs.
+     */
+    private static final Pattern NO_STORE_PROTECTED_PATH = Pattern.compile(
+            "^/api/v1/(?:(?:admin/(?:drafts|failed-uploads)(?:/.*)?)"
+                    + "|operations/(?:(?:visit-requests|visit-sessions)/[^/]+/tenant-contact"
+                    + "|visit-sessions/[^/]+/oe-ge-availability"
+                    + "|leads(?:/.*)?|lead-commands/.*))$");
+
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler,
                           @Value("${pathome.google-login.enabled:false}") boolean googleLoginEnabled,
@@ -66,6 +81,11 @@ public class SecurityConfig {
         http
             .csrf(AbstractHttpConfigurer::disable)
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .headers(headers -> headers.addHeaderWriter((request, response) -> {
+                if (NO_STORE_PROTECTED_PATH.matcher(request.getRequestURI()).matches()) {
+                    response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+                }
+            }))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/v1/lessor/guest/drafts/*/claim").authenticated()
@@ -112,9 +132,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/v1/properties/*/visit-requests").hasRole("TENANT")
                 .requestMatchers(HttpMethod.POST, "/api/v1/properties/search-feedback").permitAll()
                 .requestMatchers("/api/v1/properties/**").hasAnyRole("ADMIN", "SUB_ADMIN")
-                .requestMatchers("/api/v1/admin/failed-uploads/**").hasAnyRole("ADMIN", "SUB_ADMIN")
+                .requestMatchers("/api/v1/admin/failed-uploads/**").hasRole("ADMIN")
                 .requestMatchers("/api/v1/admin/drafts/**").hasAnyRole("ADMIN", "SUB_ADMIN")
-                // Approved listing-review authority extension (narrow by construction): these seven
+                // Approved listing-review authority extension (narrow by construction): these five
                 // listing-review operations additionally admit a caller holding a live effective
                 // STAFF_ADMIN@GLOBAL grant, which ListingReviewAuthority re-decides from database facts
                 // inside the service. They are listed as exact paths - and are matched before the
@@ -123,9 +143,7 @@ public class SecurityConfig {
                 // requirement. No general "/admin/**" access is granted to staff.
                 .requestMatchers(HttpMethod.GET,
                     "/api/v1/admin/lessor-review/listings",
-                    "/api/v1/admin/lessor-review/listings/*",
-                    "/api/v1/admin/lessor-review/revisions",
-                    "/api/v1/admin/lessor-review/revisions/*"
+                    "/api/v1/admin/lessor-review/listings/*"
                 ).authenticated()
                 .requestMatchers(HttpMethod.POST,
                     "/api/v1/admin/lessor-review/listings/*/start-review",

@@ -49,6 +49,7 @@ class TenantVisitRequestHistoryServiceTest {
         assertEquals(1, result.totalCount());
         assertFalse(result.hasMore());
         assertEquals(31L, result.requests().get(0).requestId());
+        assertEquals(0L, result.requests().get(0).version());
         assertEquals("Garden apartment", result.requests().get(0).propertyTitle());
         assertEquals("FLAT", result.requests().get(0).propertyType());
         assertEquals("2BHK", result.requests().get(0).bhk());

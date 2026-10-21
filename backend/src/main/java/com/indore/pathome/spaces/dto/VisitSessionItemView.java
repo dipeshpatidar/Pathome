@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.dto;
 
 import com.indore.pathome.spaces.entity.VisitSessionItemConfirmationStatus;
 import com.indore.pathome.spaces.entity.VisitSessionItemOrigin;
+import com.indore.pathome.spaces.entity.ListingStatus;
 
 import java.time.Instant;
 
@@ -25,4 +26,7 @@ public record VisitSessionItemView(
         Instant propertyAvailabilityEndAt,
         String propertyAvailabilityZoneId,
         com.indore.pathome.spaces.entity.PropertyAvailabilitySource propertyAvailabilitySource,
-        Long availabilityConfirmedByUserId) {}
+        Long availabilityConfirmedByUserId,
+        /** Safe public cover for an ACTIVE listing only; null when no authorized image exists. */
+        String coverImageUrl,
+        ListingStatus listingStatus) {}

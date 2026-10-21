@@ -124,6 +124,15 @@ public final class DisposableIntegrationTarget {
      * server. Everything is explicit - nothing is defaulted, and the approved name and port are pinned.
      */
     public static Target requireApprovedStaticTarget(Map<String, String> environment) {
+        return requireApprovedStaticTarget(environment, APPROVED_DATABASE);
+    }
+
+    /** Exact owner-approved R1 target; the older Package 3A policy remains unchanged. */
+    static Target requireR1StaticTarget(Map<String, String> environment) {
+        return requireApprovedStaticTarget(environment, DisposablePostgresTarget.APPROVED_R1_DATABASE);
+    }
+
+    private static Target requireApprovedStaticTarget(Map<String, String> environment, String approvedDatabase) {
         if (!"true".equals(environment.get(TEST_ENABLEMENT_FLAG))) {
             throw refuse(REFUSED_TEST_NOT_ENABLED, "the Package 3A PostgreSQL tests are not enabled; set "
                     + TEST_ENABLEMENT_FLAG + "=true explicitly.");
@@ -150,7 +159,7 @@ public final class DisposableIntegrationTarget {
                     + APPROVED_PORT + "; the port is never defaulted.");
         }
 
-        requireDesignatedDisposableName(designation);
+        requireDesignatedDisposableName(designation, approvedDatabase);
 
         String configuredUrl = trimmed(environment.get(DATASOURCE_URL_FLAG));
         if (configuredUrl == null) {
@@ -163,15 +172,17 @@ public final class DisposableIntegrationTarget {
                     + DATASOURCE_USERNAME_FLAG + " explicitly.");
         }
 
-        requireConfiguredDatasource(configuredUrl, designation);
+        requireConfiguredDatasource(configuredUrl, approvedDatabase);
 
         String password = environment.get(DATASOURCE_PASSWORD_FLAG);
         return new Target("jdbc:postgresql://" + host + ":" + port + "/" + designation, designation, host, port,
                 username, password == null ? "" : password);
     }
 
-    private static void requireDesignatedDisposableName(String designation) {
-        if (!Pattern.matches(DISPOSABLE_NAME_PATTERN, designation)) {
+    private static void requireDesignatedDisposableName(String designation, String approvedDatabase) {
+        if (!Pattern.matches(DISPOSABLE_NAME_PATTERN, designation)
+                && !(DisposablePostgresTarget.APPROVED_R1_DATABASE.equals(approvedDatabase)
+                && approvedDatabase.equals(designation))) {
             throw refuse(REFUSED_NAME, "database '" + designation + "' does not match the disposable integration "
                     + "name pattern " + DISPOSABLE_NAME_PATTERN + ".");
         }
@@ -185,37 +196,37 @@ public final class DisposableIntegrationTarget {
                         + "token '" + token + "', which makes its identity ambiguous.");
             }
         }
-        if (!APPROVED_DATABASE.equals(designation)) {
+        if (!approvedDatabase.equals(designation)) {
             throw refuse(REFUSED_NAME, "database '" + designation + "' is not the approved Package 3A disposable "
-                    + "database '" + APPROVED_DATABASE + "'.");
+                    + "database '" + approvedDatabase + "'.");
         }
     }
 
-    private static void requireConfiguredDatasource(String configuredUrl, String designation) {
+    private static void requireConfiguredDatasource(String configuredUrl, String approvedDatabase) {
         // Any query string is an override: the datasource must address exactly the designated database.
         if (configuredUrl.contains("?") || configuredUrl.contains("#")) {
-            throw refuse(REFUSED_DATASOURCE_MISMATCH, "JDBC URL '" + configuredUrl + "' carries query parameters or "
+            throw refuse(REFUSED_DATASOURCE_MISMATCH, "Configured JDBC URL carries query parameters or "
                     + "an override; the test datasource must address exactly the designated disposable database "
                     + "with no extra parameters.");
         }
         Matcher parsed = JDBC_URL.matcher(configuredUrl);
         if (!parsed.matches()) {
-            throw refuse(REFUSED_NAME, "JDBC URL '" + configuredUrl + "' is malformed; it must be exactly "
+            throw refuse(REFUSED_NAME, "Configured JDBC URL is malformed; it must be exactly "
                     + "jdbc:postgresql://<host>:<port>/<database>.");
         }
         String urlHost = parsed.group(1);
         String urlPort = parsed.group(2);
         String urlDatabase = parsed.group(3);
         if (!APPROVED_LOOPBACK_HOSTS.contains(urlHost) || !APPROVED_PORT.equals(urlPort)) {
-            throw refuse(REFUSED_ENDPOINT, "JDBC URL '" + configuredUrl + "' does not address the approved "
+            throw refuse(REFUSED_ENDPOINT, "Configured JDBC URL does not address the approved "
                     + "loopback endpoint on port " + APPROVED_PORT + ".");
         }
         // The designated name is already approved above, so this single comparison proves the configured
         // datasource and the designated database are the same target; the live guard then proves the
         // connection really resolves to that same database.
-        if (!APPROVED_DATABASE.equals(urlDatabase)) {
-            throw refuse(REFUSED_NAME, "JDBC URL '" + configuredUrl + "' does not address the approved "
-                    + "disposable database '" + APPROVED_DATABASE + "'.");
+        if (!approvedDatabase.equals(urlDatabase)) {
+            throw refuse(REFUSED_NAME, "Configured JDBC URL does not address the approved "
+                    + "disposable database '" + approvedDatabase + "'.");
         }
     }
 

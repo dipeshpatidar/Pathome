@@ -129,6 +129,51 @@ class OperationsMyWorkHttpPostgresTest {
     }
 
     @Test
+    void additiveFiltersValidateAtHttpAndStayInsideTheAuthorizedScope() throws Exception {
+        SupportedCity city = cities.saveAndFlush(new SupportedCity(code("filt"), "Filter City", true));
+        SupportedCity foreignCity = cities.saveAndFlush(new SupportedCity(code("filt-away"), "Foreign City", true));
+        OperatingTeam team = teams.saveAndFlush(new OperatingTeam(city, code("filt-team"), "Filter Team", true));
+        OperatingTeam foreignTeam = teams.saveAndFlush(
+                new OperatingTeam(foreignCity, code("filt-away-team"), "Foreign Team", true));
+        Locality locality = locality(city, "Filter");
+        Actor tenant = actor("filter-tenant", Role.ROLE_TENANT, null, false);
+        Actor owner = actor("filter-owner", Role.ROLE_ADMIN, "OPERATIONS", true);
+        teamGrant(owner, team, Instant.now().minusSeconds(60), null);
+        PropertyVisitRequest request = standaloneRequest("filter-request", tenant.user(), city, team, locality,
+                owner.user(), VisitRequestStatus.RECEIVED);
+        VisitSession draft = draftSession("filter-draft", tenant.user(), city, team, owner.user());
+
+        JsonNode filtered = read("GET",
+                "/api/v1/operations/my-work?page=0&size=20&targetType=REQUEST&status=RECEIVED", owner.token());
+        assertEquals(1, filtered.path("totalCount").asInt());
+        assertEquals(2, filtered.path("unfilteredTotalCount").asInt());
+        assertEquals(1, filtered.path("items").size());
+        assertEquals(request.getId(), filtered.path("items").get(0).path("targetId").asLong());
+
+        JsonNode exact = read("GET",
+                "/api/v1/operations/my-work?page=0&size=20&targetType=SESSION&targetId=" + draft.getId(),
+                owner.token());
+        assertEquals(1, exact.path("totalCount").asInt());
+        assertEquals(draft.getId(), exact.path("items").get(0).path("targetId").asLong());
+
+        JsonNode foreign = read("GET",
+                "/api/v1/operations/my-work?page=0&size=20&cityId=" + foreignCity.getId()
+                        + "&teamId=" + foreignTeam.getId(), owner.token());
+        assertEquals(0, foreign.path("totalCount").asInt());
+        assertEquals(2, foreign.path("unfilteredTotalCount").asInt());
+        assertEquals(0, foreign.path("items").size());
+
+        assertEquals(400, send("GET",
+                "/api/v1/operations/my-work?status=RECEIVED", owner.token()).statusCode());
+        assertEquals(400, send("GET",
+                "/api/v1/operations/my-work?targetType=REQUEST&status=DRAFT", owner.token()).statusCode());
+        assertEquals(400, send("GET",
+                "/api/v1/operations/my-work?targetType=REQUEST&targetId=abc", owner.token()).statusCode());
+        assertEquals(400, send("GET",
+                "/api/v1/operations/my-work?cityId=-1", owner.token()).statusCode());
+    }
+
+    @Test
     void eligibilityRequiresCurrentActiveCoordinatorScope() throws Exception {
         SupportedCity city = cities.saveAndFlush(new SupportedCity(code("elig"), "Eligibility City", true));
         OperatingTeam team = teams.saveAndFlush(new OperatingTeam(city, code("elig-team"), "Eligibility Team", true));
@@ -421,7 +466,7 @@ class OperationsMyWorkHttpPostgresTest {
         assertEquals(Set.of("requestId", "status", "version", "createdAt", "cityId", "cityDisplayName",
                 "teamId", "teamDisplayName", "listingId", "listingTitle", "listingAddress", "listingStatus",
                 "listingCity", "sector", "availabilityStartAt", "availabilityEndAt", "availabilityZoneId",
-                "preferredAt", "sessionId"), fieldNames(detail));
+                "preferredAt", "preferredVisitTiming", "sessionId"), fieldNames(detail));
         assertEquals(owned.getId(), detail.path("requestId").asLong());
         assertEquals("RECEIVED", detail.path("status").asText());
         assertEquals(owned.getVersion(), detail.path("version").asLong());
@@ -521,6 +566,9 @@ class OperationsMyWorkHttpPostgresTest {
         assertEquals(1, detail.path("items").size());
         assertEquals(child.getListing().getId(), detail.path("items").get(0).path("listingId").asLong());
         assertEquals(child.getId(), detail.path("items").get(0).path("sourceRequestId").asLong());
+        assertEquals("ACTIVE", detail.path("items").get(0).path("listingStatus").asText());
+        assertTrue(detail.path("items").get(0).path("coverImageUrl").isNull(),
+                "an ACTIVE listing with no media must not receive a fabricated cover");
 
         assertEquals(404, send("GET", "/api/v1/operations/visit-sessions/" + session.getId(),
                 teammate.token()).statusCode(),

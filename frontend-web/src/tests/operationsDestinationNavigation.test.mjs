@@ -28,7 +28,7 @@ test('a dedicated /operations destination hosts the existing workspace untouched
   // The destination renders the same approved workspace component; no second implementation exists.
   assert.match(destination, /<OperationsWorkspace authority=\{authority\} \/>/);
   assert.equal(destination.includes('useOperationsCapability('), false);
-  assert.match(home, /const operationsRoute = normalizeRoutePathname\(location\.pathname\) === '\/operations';/);
+  assert.match(home, /const operationsRoute = isOperationsPath\(normalizeRoutePathname\(location\.pathname\)\);/);
   assert.match(home, /\{operationsRoute && user && <OperationsDestination authority=\{operationsAuthority\} \/>\}/);
 });
 
@@ -42,13 +42,13 @@ test('the destination admits an account on capability alone, never on a role lab
   // A direct link or a refresh on /operations is treated as a protected destination.
   assert.match(
     home,
-    /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| path === '\/operations';/
+    /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\);/
   );
 
   // Signing in from an expired session returns the visitor to the destination they chose. Restoring
   // the route grants nothing: the destination re-verifies and fails closed on its own.
-  assert.match(home, /if \(pendingLessor === '\/operations'\) \{/);
-  assert.match(home, /location\.pathname\.startsWith\('\/lessor'\) \|\| location\.pathname === '\/operations'/);
+  assert.match(home, /if \(isOperationsPath\(pendingLessor\)\) \{/);
+  assert.match(home, /isOperationsPath\(currentPath\)\s*\n\s*\? operationsReturnPath\(currentPath, currentSearch\)/);
 });
 
 /* 2. One shared authority ---------------------------------------------------------- */

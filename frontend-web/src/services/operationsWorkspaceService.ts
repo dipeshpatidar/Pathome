@@ -2,6 +2,11 @@ import { API_ROOT_URL } from '../config/endpoints';
 import type { SchedulingIntent } from '../utils/operationsSchedulingIntent';
 import { ApiRequestError, createApiRequestError } from './apiError';
 import {
+  EMPTY_OPERATIONS_FILTERS,
+  hasOperationsFilters,
+  type OperationsQueueFilters
+} from '../utils/operationsWorkspaceRoute';
+import {
   captureOperationsSession,
   isOperationsSessionActive,
   OperationsSessionChangedError,
@@ -13,7 +18,9 @@ import {
   parseWorkPage,
   toClaimableWorkItem,
   toLessorContact,
+  toTenantContact,
   toMyWorkItem,
+  toGeAvailabilityView,
   toRecommendationView,
   toRequestDetail,
   toSchedulingApproval,
@@ -23,18 +30,36 @@ import {
   type LinkedRequestVersionMap,
   type OperationsDerivedItemOrigin,
   type OperationsLessorContact,
+  type OperationsGeAvailabilityView,
   type OperationsMyWorkItem,
   type OperationsRecommendationView,
   type OperationsRequestDetail,
   type OperationsSchedulingApproval,
   type OperationsSessionDetail,
   type OperationsTargetType,
+  type OperationsTenantContact,
   type OperationsWorkPage,
   type StaffCapabilities
 } from '../utils/operationsWorkspacePresentation';
 
 /** Server page size stays inside the backend's 1..100 bound. */
 export const OPERATIONS_WORK_PAGE_SIZE = 20;
+
+/**
+ * Builds the additive server-filter query exactly once, so the visible route state and the
+ * authoritative read can never drift apart.
+ */
+export const operationsFilterQuery = (filters: OperationsQueueFilters): string => {
+  if (!hasOperationsFilters(filters)) return '';
+  const params = new URLSearchParams();
+  if (filters.targetType) params.set('targetType', filters.targetType);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.cityId !== null) params.set('cityId', String(filters.cityId));
+  if (filters.teamId !== null) params.set('teamId', String(filters.teamId));
+  if (filters.targetId !== null) params.set('targetId', String(filters.targetId));
+  const query = params.toString();
+  return query ? `&${query}` : '';
+};
 
 /**
  * Discovery page size. The backend accepts 1..50 and returns `nextCursor` when more candidates
@@ -131,6 +156,7 @@ const fetchWorkPage = async <T,>(
   return {
     items: parsed.items.map(mapItem).filter((entry): entry is T => entry !== null),
     totalCount: parsed.totalCount,
+    unfilteredTotalCount: parsed.unfilteredTotalCount,
     page: parsed.page,
     size: parsed.size,
     totalPages: parsed.totalPages
@@ -227,9 +253,11 @@ export const operationsWorkspaceService = {
   myWork(
     page = 0,
     attentionOnly = false,
-    context: OperationsRequestContext = {}
+    context: OperationsRequestContext = {},
+    filters: OperationsQueueFilters = EMPTY_OPERATIONS_FILTERS
   ): Promise<OperationsWorkPage<OperationsMyWorkItem>> {
-    const query = `page=${page}&size=${OPERATIONS_WORK_PAGE_SIZE}&attentionOnly=${attentionOnly ? 'true' : 'false'}`;
+    const query = `page=${page}&size=${OPERATIONS_WORK_PAGE_SIZE}&attentionOnly=${attentionOnly ? 'true' : 'false'}`
+      + operationsFilterQuery(filters);
     return fetchWorkPage(
       `/operations/my-work?${query}`,
       { page, size: OPERATIONS_WORK_PAGE_SIZE },
@@ -241,9 +269,10 @@ export const operationsWorkspaceService = {
 
   claimableWork(
     page = 0,
-    context: OperationsRequestContext = {}
+    context: OperationsRequestContext = {},
+    filters: OperationsQueueFilters = EMPTY_OPERATIONS_FILTERS
   ): Promise<OperationsWorkPage<ClaimableWorkItem>> {
-    const query = `page=${page}&size=${OPERATIONS_WORK_PAGE_SIZE}`;
+    const query = `page=${page}&size=${OPERATIONS_WORK_PAGE_SIZE}${operationsFilterQuery(filters)}`;
     return fetchWorkPage(
       `/operations/claimable-work?${query}`,
       { page, size: OPERATIONS_WORK_PAGE_SIZE },
@@ -367,6 +396,35 @@ export const operationsWorkspaceService = {
       `/operations/visit-sessions/${sessionId}/items/${itemId}/lessor-contact`,
       'The lessor contact could not be loaded.',
       toLessorContact,
+      context
+    );
+  },
+
+  /**
+   * Canonical tenant contact for one owned standalone Request. On demand, never cached and never
+   * persisted; the backend marks the route `no-store` and audits a successful disclosure.
+   */
+  tenantContactForRequest(
+    requestId: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsTenantContact> {
+    return fetchDetail(
+      `/operations/visit-requests/${requestId}/tenant-contact`,
+      'The tenant contact could not be loaded.',
+      toTenantContact,
+      context
+    );
+  },
+
+  /** Canonical tenant contact for one revealable Session root. */
+  tenantContactForSession(
+    sessionId: number,
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsTenantContact> {
+    return fetchDetail(
+      `/operations/visit-sessions/${sessionId}/tenant-contact`,
+      'The tenant contact could not be loaded.',
+      toTenantContact,
       context
     );
   },
@@ -530,6 +588,31 @@ export const operationsWorkspaceService = {
       { expectedSessionVersion },
       'Eligible Ground Executives could not be loaded.',
       toRecommendationView,
+      context
+    );
+  },
+
+  /**
+   * Restricted, plan-specific Ground Executive availability information. This is not a roster and
+   * never carries booking authority; every page is a fresh evaluation for the exact Session version.
+   */
+  geAvailability(
+    sessionId: number,
+    expectedSessionVersion: number,
+    options: { q?: string | null; cursor?: string | null; size?: number } = {},
+    context: OperationsRequestContext = {}
+  ): Promise<OperationsGeAvailabilityView> {
+    const params = new URLSearchParams();
+    params.set('size', String(options.size ?? OPERATIONS_DISCOVERY_PAGE_SIZE));
+    const query = options.q?.trim();
+    if (query) params.set('q', query);
+    if (options.cursor) params.set('cursor', options.cursor);
+    return sendJsonCommand(
+      `/operations/visit-sessions/${sessionId}/oe-ge-availability?${params.toString()}`,
+      'POST',
+      { expectedSessionVersion },
+      'Ground Executive availability could not be loaded.',
+      toGeAvailabilityView,
       context
     );
   },

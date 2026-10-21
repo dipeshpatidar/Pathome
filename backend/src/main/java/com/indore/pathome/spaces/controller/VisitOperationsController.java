@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.*;
 import com.indore.pathome.spaces.entity.VisitRequestStatus;
+import com.indore.pathome.spaces.service.OperationsGeAvailabilityService;
 import com.indore.pathome.spaces.service.VisitOperationsService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -12,9 +13,12 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/operations")
 public class VisitOperationsController {
     private final VisitOperationsService operations;
+    private final OperationsGeAvailabilityService geAvailability;
 
-    public VisitOperationsController(VisitOperationsService operations) {
+    public VisitOperationsController(VisitOperationsService operations,
+            OperationsGeAvailabilityService geAvailability) {
         this.operations = operations;
+        this.geAvailability = geAvailability;
     }
 
     @GetMapping("/visit-requests")
@@ -72,6 +76,22 @@ public class VisitOperationsController {
             @PathVariable Long sessionId, @RequestBody ApproveVisitRecommendationCommand command) {
         return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
                 .body(operations.selectForOwner(authenticatedUserId(authentication), sessionId, command));
+    }
+
+    /**
+     * Restricted, plan-specific Ground Executive availability information. This is an informational
+     * read, never booking authority; the response is never cached on success or error.
+     */
+    @PostMapping("/visit-sessions/{sessionId}/oe-ge-availability")
+    public ResponseEntity<OperationsGeAvailabilityView> geAvailability(Authentication authentication,
+            @PathVariable Long sessionId,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestBody RecommendationRequest command) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(geAvailability.availability(authenticatedUserId(authentication), sessionId,
+                        command, q, cursor, size));
     }
 
     @GetMapping("/visit-sessions/{sessionId}/oe-recommendations/selection/{commandId}")

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CircleAlert, EyeOff, Phone, ShieldAlert, UserRound } from 'lucide-react';
 import { ApiRequestError } from '../../services/apiError';
-import type { OperationsLessorContact } from '../../utils/operationsWorkspacePresentation';
+import type { OperationsContact } from '../../utils/operationsWorkspacePresentation';
 import {
   beginContactReveal,
   contactRevealIsCurrent,
@@ -33,7 +33,7 @@ import {
  * deliberate reveal.
  */
 
-export type LessorContactReveal = (signal: AbortSignal) => Promise<OperationsLessorContact>;
+export type LessorContactReveal = (signal: AbortSignal) => Promise<OperationsContact>;
 
 interface Props {
   /** Identity of the root and version this reveal belongs to. A new value clears protected state. */
@@ -43,12 +43,14 @@ interface Props {
   /** Name of the property or item this contact belongs to, used for accessible labels. */
   subject: string;
   compact?: boolean;
+  /** Copy for the protected subject. Lessor behaviour remains the default. */
+  variant?: 'lessor' | 'tenant';
 }
 
 type ContactState =
   | { kind: 'hidden' }
   | { kind: 'loading' }
-  | { kind: 'shown'; contact: OperationsLessorContact }
+  | { kind: 'shown'; contact: OperationsContact }
   | { kind: 'unavailable' }
   | { kind: 'lost' }
   | { kind: 'error' };
@@ -63,7 +65,8 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
   contextKey,
   reveal,
   subject,
-  compact = false
+  compact = false,
+  variant = 'lessor'
 }) => {
   const [state, setState] = useState<ContactState>({ kind: 'hidden' });
   const timers = useRef<number[]>([]);
@@ -75,6 +78,7 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
    */
   const gateRef = useRef<ContactRevealGate>(createContactRevealGate());
   const revealController = useRef<AbortController | null>(null);
+  const isTenant = variant === 'tenant';
 
   const clearTimers = useCallback(() => {
     timers.current.forEach((id) => window.clearTimeout(id));
@@ -184,10 +188,10 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
            * The accessible name starts with the visible label in both states, so the control is
            * announced exactly as it reads (WCAG "Label in Name") while loading and while idle.
            */
-          aria-label={`${state.kind === 'loading' ? 'Loading contact…' : 'Show lessor contact'} for ${subject}`}
+          aria-label={`${state.kind === 'loading' ? 'Loading contact…' : `Show ${isTenant ? 'tenant' : 'lessor'} contact`} for ${subject}`}
         >
           <UserRound size={14} aria-hidden="true" />
-          {state.kind === 'loading' ? 'Loading contact…' : 'Show lessor contact'}
+          {state.kind === 'loading' ? 'Loading contact…' : `Show ${isTenant ? 'tenant' : 'lessor'} contact`}
         </button>
       ) : null}
 
@@ -196,7 +200,7 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
           <div className="oe-contact-card">
             <dl className="oe-contact-fields">
               <div>
-                <dt>Lessor</dt>
+                <dt>{isTenant ? 'Tenant' : 'Lessor'}</dt>
                 <dd>{state.contact.name}</dd>
               </div>
               <div>
@@ -211,7 +215,7 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
                   href={`tel:${(state.contact.mobile as string).replace(/[\s-]/g, '')}`}
                 >
                   <Phone size={14} aria-hidden="true" />
-                  Call lessor
+                  {isTenant ? 'Call tenant' : 'Call lessor'}
                 </a>
               ) : null}
               <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={hide}>
@@ -222,14 +226,15 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
             <p className="oe-footnote">
               Hidden again after two minutes, when you leave this record, or when its details change.
               It is also cleared as soon as this tab is hidden. This workspace doesn’t record calls or
-              notes, so record availability after you speak with the lessor.
+              notes{isTenant ? '.' : ', so record availability after you speak with the lessor.'}
             </p>
           </div>
         ) : state.kind === 'unavailable' ? (
           <div className="oe-contact-card">
             <p className="oe-contact-msg">
-              No canonical lessor contact is on record for this property. Contact is only ever shown
-              when the backend can resolve it for you.
+              {isTenant
+                ? 'The tenant’s account has no usable name and mobile on record. Contact is only ever shown when the backend can resolve it for you.'
+                : 'No canonical lessor contact is on record for this property. Contact is only ever shown when the backend can resolve it for you.'}
             </p>
             <button type="button" className="oe-link" onClick={hide}>Dismiss</button>
           </div>
@@ -237,7 +242,7 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
           <div className="oe-contact-card oe-contact-card--warn" role="alert">
             <p className="oe-contact-msg">
               <ShieldAlert size={14} aria-hidden="true" />
-              You no longer have access to this lessor’s contact.
+              You no longer have access to this {isTenant ? 'tenant’s' : 'lessor’s'} contact.
             </p>
             <button type="button" className="oe-link" onClick={hide}>Dismiss</button>
           </div>

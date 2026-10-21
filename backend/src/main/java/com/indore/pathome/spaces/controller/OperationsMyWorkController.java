@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.OperationsMyWorkPage;
 import com.indore.pathome.spaces.dto.OperationsStandaloneRequestDetailView;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.service.OperationsMyWorkService;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -28,9 +29,15 @@ public class OperationsMyWorkController {
     public ResponseEntity<OperationsMyWorkPage> list(Authentication authentication,
             @RequestParam(defaultValue = "0") String page,
             @RequestParam(defaultValue = "20") String size,
-            @RequestParam(defaultValue = "false") String attentionOnly) {
+            @RequestParam(defaultValue = "false") String attentionOnly,
+            @RequestParam(required = false) String targetType,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String cityId,
+            @RequestParam(required = false) String teamId,
+            @RequestParam(required = false) String targetId) {
+        OperationsWorkFilter filter = OperationsWorkFilter.parse(targetType, status, cityId, teamId, targetId);
         OperationsMyWorkPage result = myWork.list(StaffAuthentication.userId(authentication),
-                parseInteger(page, "page"), parseInteger(size, "size"), parseBoolean(attentionOnly));
+                parseInteger(page, "page"), parseInteger(size, "size"), parseBoolean(attentionOnly), filter);
         return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
 

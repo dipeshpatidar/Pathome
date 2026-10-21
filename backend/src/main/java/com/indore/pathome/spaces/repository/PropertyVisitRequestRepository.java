@@ -16,6 +16,19 @@ import java.util.Optional;
 public interface PropertyVisitRequestRepository extends JpaRepository<PropertyVisitRequest, Long> {
     Optional<PropertyVisitRequest> findByTenantIdAndListingId(Long tenantId, Long listingId);
 
+    interface RequestTopologyRow {
+        Long getTenantId();
+        Long getSessionId();
+    }
+
+    /**
+     * Lock-free topology discovery. A caller that later needs to lock a linked Session must learn its
+     * id before taking any Request lock, so it can follow the canonical Session &rarr; Request order.
+     */
+    @Query("select r.tenant.id as tenantId, r.session.id as sessionId "
+            + "from PropertyVisitRequest r where r.id = :requestId")
+    Optional<RequestTopologyRow> findTopologyById(@Param("requestId") Long requestId);
+
     @Query("select r.session.id from PropertyVisitRequest r where r.id = :requestId")
     Optional<Long> findSessionIdByRequestId(@Param("requestId") Long requestId);
 

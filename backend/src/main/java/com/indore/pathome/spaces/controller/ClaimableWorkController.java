@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.controller;
 import com.indore.pathome.spaces.dto.ClaimableWorkItem;
 import com.indore.pathome.spaces.dto.ClaimableWorkPage;
 import com.indore.pathome.spaces.dto.ClaimableWorkTargetType;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.service.ClaimableWorkService;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -27,9 +28,15 @@ public class ClaimableWorkController {
     @GetMapping
     public ResponseEntity<ClaimableWorkPage> list(Authentication authentication,
             @RequestParam(defaultValue = "0") String page,
-            @RequestParam(defaultValue = "20") String size) {
+            @RequestParam(defaultValue = "20") String size,
+            @RequestParam(required = false) String targetType,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String cityId,
+            @RequestParam(required = false) String teamId,
+            @RequestParam(required = false) String targetId) {
+        OperationsWorkFilter filter = OperationsWorkFilter.parse(targetType, status, cityId, teamId, targetId);
         ClaimableWorkPage result = claimableWork.list(StaffAuthentication.userId(authentication),
-                parseInteger(page, "page"), parseInteger(size, "size"));
+                parseInteger(page, "page"), parseInteger(size, "size"), filter);
         return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
 

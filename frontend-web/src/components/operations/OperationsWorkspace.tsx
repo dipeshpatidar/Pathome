@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowRight, CircleAlert, Flag, Home, Inbox, ListChecks, Lock, MapPin, RefreshCw } from 'lucide-react';
+import { ArrowRight, CircleAlert, Flag, Home, Inbox, ListChecks, Lock, MapPin, RefreshCw, Filter } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { ApiRequestError } from '../../services/apiError';
 import { readSchedulingIntent, preserveSchedulingIntent, forgetSchedulingIntent } from '../../utils/operationsSchedulingIntent';
 import {
@@ -28,12 +29,20 @@ import { useNotification } from '../../context/NotificationContext';
 import { propertyService } from '../../services/propertyService';
 import {
   addSessionItemCommand,
+  availabilityChoicesFor,
+  availabilityEvidenceChanged,
+  availabilityEvidenceSnapshot,
+  availabilityItemSatisfiesDraft,
+  availabilityIntentEqualsAttempt,
   claimCommandFor,
   commandFailureDisposition,
   coordinateAttachCommand,
   coordinateNewSessionCommand,
+  createAvailabilityDraft,
   formatOperationsDateTime,
+  freshSchedulingSessionIsEligible,
   linkedRequestsLabel,
+  operationsAuthorityScopeFingerprint,
   operationsCapabilityScopes,
   operationsDetailFailureState,
   operationsLoadFailureState,
@@ -45,21 +54,30 @@ import {
   removeSessionItemCommand,
   reorderSessionItemsCommand,
   requestUnavailableCommand,
+  sameOperationsRootInstance,
   scheduleSelectionCommand,
   schedulingFailureOutcome,
   sessionListingIds,
   setAvailabilityCommand,
   type ClaimableWorkItem,
+  type AvailabilityEvidenceSnapshot,
+  type AvailabilityWindowInput,
   type OperationsLoadFailure,
   type OperationsLessorContact,
-  type OperationsAvailabilityChoice,
+  type OperationsAvailabilityAttempt,
+  type OperationsAvailabilityDraft,
+  type OperationsAvailabilityDraftValues,
+  type OperationsAvailabilitySaveOutcome,
   type OperationsMyWorkItem,
   type OperationsRecommendationView,
+  type OperationsGeAvailabilityView,
   type OperationsRequestDetail,
+  type OperationsScope,
   type OperationsSchedulingApproval,
   type OperationsSchedulingSelection,
   type OperationsSessionDetail,
   type OperationsTargetType,
+  type OperationsTenantContact,
   type OwnershipFailureKind,
   type OwnershipOutcomeInput,
   type OwnershipReconciliation,
@@ -78,17 +96,33 @@ import {
   TypeTag,
   WorkspaceNotice
 } from './OperationsWorkspacePrimitives';
-import { ClaimableList, OwnedList, workItemKey } from './OperationsWorkLists';
+import { ClaimableList, OperationsFilterBar, OwnedList, workItemKey } from './OperationsWorkLists';
 import {
   OperationsWorkDetail,
-  type OperationsAvailabilityWindowInput,
   type OperationsDetailActions,
   type OperationsDetailSnapshot,
   type OperationsDetailState
 } from './OperationsWorkDetail';
-import type { AddStopInput, DiscoveryListingOption } from './OperationsDraftItinerary';
+import type {
+  AddStopInput,
+  DiscoveryListingOption,
+  OperationsAvailabilityEditing
+} from './OperationsDraftItinerary';
 import type { OperationsOwnedCandidatePage } from './OperationsRequestCoordination';
 import { OperationsScheduleFlow, type ScheduleOutcome } from './OperationsScheduleFlow';
+import {
+  EMPTY_OPERATIONS_FILTERS,
+  detailRoute,
+  hasOperationsFilters,
+  normalizeOperationsFilters,
+  operationsRoutesEqual,
+  queueRoute,
+  readBrowserOperationsRoute,
+  returnRouteForDetail,
+  serializeOperationsRoute,
+  type OperationsQueueFilters,
+  type OperationsRoute
+} from '../../utils/operationsWorkspaceRoute';
 import './operationsWorkspace.css';
 
 type QueueKey = 'attention' | 'my-work' | 'claimable';
@@ -99,12 +133,13 @@ type QueueStatus = 'loading' | 'ready' | OperationsLoadFailure;
  * Independent guarded read families. Each is superseded only by a newer request of the same family,
  * so an unrelated read can never cancel the one the user is waiting on.
  */
-type GuardedReadFamily = 'owned-candidates' | 'listing-search' | 'ge-ranked' | 'ge-discovery';
+type GuardedReadFamily = 'owned-candidates' | 'listing-search' | 'ge-ranked' | 'ge-discovery' | 'ge-availability';
 
 interface PageState<T> {
   status: QueueStatus;
   items: T[];
   totalCount: number;
+  unfilteredTotalCount: number;
   page: number;
   totalPages: number;
 }
@@ -115,6 +150,7 @@ const initialPageState = <T,>(): PageState<T> => ({
   status: 'loading',
   items: EMPTY_ITEMS,
   totalCount: 0,
+  unfilteredTotalCount: 0,
   page: 0,
   totalPages: 0
 });
@@ -149,15 +185,15 @@ const QUEUE_COPY: Record<QueueKey, { title: string; description: string; emptyTi
   },
   'my-work': {
     title: 'My work',
-    description: 'Request and session roots you own in your teams. Totals and pages come from the server.',
-    emptyTitle: 'You don’t own any work yet',
-    emptyBody: 'Work you claim appears here. Browse claimable work in your teams to get started.'
+    description: 'Visit requests and visit plans you own in your teams. Totals and pages come from the server.',
+    emptyTitle: 'You don’t own any work in your current teams.',
+    emptyBody: 'Work you claim appears here. Available work shows unclaimed records in your authorized teams.'
   },
   claimable: {
-    title: 'Claimable work',
-    description: 'Unclaimed standalone requests and sessions in your teams.',
-    emptyTitle: 'No claimable work right now',
-    emptyBody: 'There are no unclaimed requests or sessions in your teams at the moment.'
+    title: 'Available work',
+    description: 'Unclaimed visit requests and visit plans in your authorized teams. Work owned by another coordinator is not shown here as available.',
+    emptyTitle: 'No unclaimed work was returned',
+    emptyBody: 'The server returned no unclaimed visit requests or visit plans within your current authorized scope. New intake appears only after an authorized Team routes it.'
   }
 };
 
@@ -184,6 +220,7 @@ type QueueLoadOutcome = 'loaded' | 'failed' | 'skipped';
 interface QueuePageLoad<T> {
   key: QueueKey;
   page: number;
+  filters: OperationsQueueFilters;
   /** The session captured when this logical load began. Every request re-uses it. */
   session: OperationsSession;
   /** The component-local session epoch captured when this logical load began. */
@@ -194,6 +231,8 @@ interface QueuePageLoad<T> {
   isMounted: () => boolean;
   /** True while the component-local session epoch is still the captured one. */
   isEpochCurrent: (epoch: number) => boolean;
+  /** Receives the page the server actually settled on, so the URL can be canonicalised. */
+  onSettledPage?: (page: number) => void;
   attempt?: number;
 }
 
@@ -205,7 +244,10 @@ interface QueuePageLoad<T> {
  * committed (`skipped`) instead of assuming a refresh succeeded because it was permitted.
  */
 async function loadQueuePage<T>(load: QueuePageLoad<T>): Promise<QueueLoadOutcome> {
-  const { key, page, session, epoch, fetch: fetchPage, apply, controllers, isMounted, isEpochCurrent, attempt = 0 } = load;
+  const {
+    key, page, session, epoch, fetch: fetchPage, apply, controllers, isMounted, isEpochCurrent,
+    onSettledPage, attempt = 0
+  } = load;
   controllers[key]?.abort();
   const controller = new AbortController();
   controllers[key] = controller;
@@ -225,9 +267,11 @@ async function loadQueuePage<T>(load: QueuePageLoad<T>): Promise<QueueLoadOutcom
       status: 'ready',
       items: result.items,
       totalCount: result.totalCount,
+      unfilteredTotalCount: result.unfilteredTotalCount,
       page: result.page,
       totalPages: result.totalPages
     }));
+    onSettledPage?.(result.page);
     return 'loaded';
   } catch (cause) {
     if (controller.signal.aborted || !isMounted()) return 'skipped';
@@ -262,10 +306,11 @@ interface GuardedCommandFailure {
 
 interface GuardedCommandOutcome<Applied> {
   /** `abandoned` covers "the flow stopped before dispatch" and "the operation lost the right to commit". */
-  status: 'applied' | 'abandoned' | 'missing-version' | 'failed';
+  status: 'applied' | 'abandoned' | 'missing-version' | 'preflight-refused' | 'failed';
   applied: Applied | null;
   reconciliation: QueueLoadOutcome;
   failure: GuardedCommandFailure | null;
+  preflight: GuardedCommandPreflightRefusal | null;
   /**
    * The operation that ran this command, so a caller reporting its outcome can re-evaluate the display
    * verdict in the same tick as its own post-reconciliation write. `null` only when no operation ever
@@ -285,6 +330,15 @@ interface GuardedCommandOutcome<Applied> {
 }
 
 /**
+ * A bounded, availability-specific stop after the guarded preflight read. `conflict` keeps the draft
+ * for review; `inapplicable` means the current lifecycle or item no longer permits this editor.
+ */
+interface GuardedCommandPreflightRefusal {
+  disposition: 'conflict' | 'inapplicable';
+  message: string;
+}
+
+/**
  * One Phase 2A command, described as the pieces the shared lifecycle needs.
  *
  * `loadFresh` re-reads the authoritative root immediately before the command is built, so the version
@@ -298,6 +352,23 @@ interface GuardedCommandOptions<Fresh, Applied> {
   /** Human name used in the truthful outcome notice. */
   name: string;
   loadFresh: (context: OperationsRequestContext) => Promise<Fresh | null>;
+  /**
+   * Availability's preflight needs to compare the fresh root with the exact snapshot the OE saw
+   * before a command may be built. Returning a refusal stops this submission without transmitting.
+   */
+  preflight?: (fresh: Fresh) => GuardedCommandPreflightRefusal | null;
+  /**
+   * A caller-owned, synchronous verdict on whether the editor that started this command is still the
+   * current one. It is checked after every pre-dispatch await and again in the same tick as transmit.
+   * A false verdict is a supersession, not a missing-version or lifecycle refusal: nothing is written
+   * and no command leaves the client.
+   */
+  contextCurrent?: () => boolean;
+  onPreflightRefusal?: (
+    refusal: GuardedCommandPreflightRefusal,
+    fresh: Fresh,
+    operation: OwnershipOperation
+  ) => void;
   buildTransmit: (
     fresh: Fresh
   ) => ((context: OperationsRequestContext) => Promise<Applied>) | null;
@@ -333,10 +404,17 @@ interface ScheduleDrawerIdentity {
 
 interface Props {
   authority: OperationsAuthority;
+  /**
+   * `page` is the dedicated Operations destination and receives the responsive sidebar/tab shell.
+   * `embedded` keeps the compact presentation used inside the Employee and Admin consoles.
+   */
+  layout?: 'page' | 'embedded';
 }
 
-export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
+export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page' }) => {
   const { notifySuccess } = useNotification();
+  const routerNavigate = useNavigate();
+  const isPageLayout = layout === 'page';
   const capabilities: StaffCapabilities | null = authority.capabilities;
   /**
    * The read-admission boundary. Granted authority is not enough on its own: the workspace may only
@@ -346,10 +424,28 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
    * everything - no effect has to run, and no protected request can be issued, in the meantime.
    */
   const accessGranted = authority.state === 'granted' && authority.entryAdmitted;
+  /**
+   * Effective City/Team authority is part of admission, not just a label. The workspace keeps the
+   * scope its protected state was built against and withholds every queue/detail/contact snapshot in
+   * the same render that sees a different fingerprint. The layout effect below clears the stale state
+   * and refetches from the server under the new scope.
+   */
+  const effectiveScopeFingerprint = operationsAuthorityScopeFingerprint(capabilities);
+  const [admittedScopeFingerprint, setAdmittedScopeFingerprint] = useState<string | null>(null);
+  const scopeCurrent = admittedScopeFingerprint === effectiveScopeFingerprint;
+  const protectedAccess = accessGranted && scopeCurrent;
   const authorityRef = useRef(authority);
   authorityRef.current = authority;
 
-  const [view, setView] = useState<QueueView>('home');
+  const initialRoute = useRef<OperationsRoute | null>(null);
+  if (initialRoute.current === null) initialRoute.current = readBrowserOperationsRoute();
+  const firstRoute = initialRoute.current;
+  const [view, setView] = useState<QueueView>(
+    firstRoute.kind === 'detail' ? firstRoute.from : firstRoute.kind === 'queue' ? firstRoute.queue : 'home'
+  );
+  const [filters, setFilters] = useState<OperationsQueueFilters>(
+    firstRoute.kind === 'home' ? EMPTY_OPERATIONS_FILTERS : firstRoute.filters
+  );
   const [attention, setAttention] = useState<PageState<OperationsMyWorkItem>>(
     initialPageState<OperationsMyWorkItem>
   );
@@ -359,15 +455,87 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   const [claimable, setClaimable] = useState<PageState<ClaimableWorkItem>>(
     initialPageState<ClaimableWorkItem>
   );
-  const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
+  const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(
+    firstRoute.kind === 'detail'
+      ? {
+          targetType: firstRoute.targetType,
+          targetId: firstRoute.targetId,
+          source: firstRoute.from === 'claimable' ? 'claimable' : 'owned'
+        }
+      : null
+  );
   const [detail, setDetail] = useState<OperationsDetailState>({ status: 'loading' });
   const [busyAction, setBusyAction] = useState<'claim' | 'release' | null>(null);
   const [busyClaimKey, setBusyClaimKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   /** The one in-flight Phase 2A command, so only the control that started it shows progress. */
   const [busyCommand, setBusyCommand] = useState<string | null>(null);
+  /**
+   * The one bounded availability draft, owned here rather than by the itinerary.
+   *
+   * A detail refresh replaces `session.items`; if the editor owned the draft, that refresh would
+   * unmount it and silently revert an unsuccessful save. Keeping the draft at the workspace level
+   * also lets the identity/authority invalidation paths clear it in the same tick they drop the
+   * protected detail.
+   */
+  const [availabilityDraft, setAvailabilityDraft] = useState<OperationsAvailabilityDraft | null>(null);
+  const routeRef = useRef<OperationsRoute>(firstRoute);
+  const filtersRef = useRef<OperationsQueueFilters>(filters);
+  filtersRef.current = filters;
+  const viewRef = useRef<QueueView>(view);
+  viewRef.current = view;
+
+  /**
+   * One URL writer for every Operations navigation.
+   *
+   * The standalone destination goes through React Router so its location, history metadata and
+   * Back/Forward handling stay in one model. The embedded console never writes the host URL or
+   * host history: its navigation belongs to the Employee/Admin workspace that owns the tab.
+   * Only a genuine pushed detail entry is marked as an in-app origin, which is what makes browser
+   * Back safe while a direct-loaded detail can still restore its encoded queue route.
+   */
+  const commitRoute = useCallback((next: OperationsRoute, mode: 'push' | 'replace' = 'push') => {
+    routeRef.current = next;
+    if (!isPageLayout || typeof window === 'undefined') return;
+    const url = serializeOperationsRoute(next);
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (url === current) return;
+    routerNavigate(url, {
+      replace: mode === 'replace',
+      state: {
+        pathomeOperations: true,
+        pathomeOperationsDetail: next.kind === 'detail',
+        pathomeOperationsPushed: next.kind === 'detail' && mode === 'push'
+      }
+    });
+  }, [isPageLayout, routerNavigate]);
+
+  /**
+   * When the server settles a page outside the requested range, replace the current history entry
+   * with the last valid page instead of adding a second entry for a page that never existed.
+   */
+  const canonicalizePage = useCallback((key: QueueKey, page: number) => {
+    const route = routeRef.current;
+    const publicPage = page + 1;
+    if (route.kind === 'queue' && route.queue === key && route.page !== publicPage) {
+      commitRoute({ ...route, page: publicPage }, 'replace');
+    }
+  }, [commitRoute]);
+  const availabilityDraftRef = useRef<OperationsAvailabilityDraft | null>(null);
+  const availabilityEditorGeneration = useRef(0);
+  /**
+   * One read-only settlement in flight per editor generation. The map is keyed by the captured
+   * identity/epoch/Session/item/editor generation, so a repeated Save joins the existing read while a
+   * newer editor gets its own entry. Cleanup below compares the exact promise before removing it:
+   * an older settlement can never unlock or erase a newer editor's flight.
+   */
+  const availabilitySettlementFlights = useRef(
+    new Map<string, Promise<OperationsAvailabilitySaveOutcome>>()
+  );
   /** The session whose scheduling drawer is open, or null. */
   const [scheduleSessionId, setScheduleSessionId] = useState<number | null>(null);
+  const [schedulingOpening, setSchedulingOpening] = useState(false);
+  const [schedulingOpenError, setSchedulingOpenError] = useState<string | null>(null);
   /**
    * The authoritative outcome of the last scheduling attempt. It lives here because the server's
    * returned Session — not the drawer — decides what is true about the visit.
@@ -385,6 +553,8 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
    * ref always carries the latest committed root.
    */
   const openRootRef = useRef<MountedRootIdentity | null>(null);
+  /** Latest exact-root withdrawal primitive, callable from callbacks declared above it. */
+  const withdrawDeniedRootRef = useRef<((source: OwnershipOperation | MountedRootIdentity) => boolean) | null>(null);
   /**
    * The scheduling drawer the workspace currently holds, read synchronously: which Session it belongs
    * to and how many times it has been opened or closed.
@@ -397,6 +567,10 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
    * started from — the same reason the mounted-root ref carries one.
    */
   const scheduleDrawerRef = useRef<ScheduleDrawerIdentity>({ sessionId: null, generation: 0 });
+  const schedulingOpenRef = useRef<{ generation: number; controller: AbortController | null }>({
+    generation: 0,
+    controller: null
+  });
   const mountedDetailRef = useRef<DetailTarget | null>(null);
   const detailMountGenerationRef = useRef(0);
   if (mountedDetailRef.current !== detailTarget) {
@@ -442,6 +616,12 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   const noticeCounter = useRef(0);
   const noticeRef = useRef<HTMLDivElement | null>(null);
 
+  /** Writes the bounded draft through one ref, so an awaited completion never reads stale state. */
+  const writeAvailabilityDraft = useCallback((next: OperationsAvailabilityDraft | null) => {
+    availabilityDraftRef.current = next;
+    setAvailabilityDraft(next);
+  }, []);
+
   /**
    * The scheduling drawer is opened and closed through these helpers — leaving the detail, withdrawing
    * a denied root and an account change all close it the same way — so its state and the identity a
@@ -462,6 +642,13 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   }, []);
 
   const closeScheduleDrawer = useCallback(() => {
+    schedulingOpenRef.current.controller?.abort();
+    schedulingOpenRef.current = {
+      generation: schedulingOpenRef.current.generation + 1,
+      controller: null
+    };
+    setSchedulingOpening(false);
+    setSchedulingOpenError(null);
     scheduleDrawerRef.current = {
       sessionId: null,
       generation: scheduleDrawerRef.current.generation + 1
@@ -469,6 +656,104 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     setScheduleOutcome(null);
     setScheduleSessionId(null);
   }, []);
+
+  /**
+   * Opens a new scheduling drawer only after a fresh, context-bound Session read.
+   *
+   * The read is a UX safety measure, not a replacement for selection-time server checks. It never
+   * touches a pending B09/V50 command receipt: the drawer still restores and reconciles that command
+   * through the existing scheduling flow. A late answer from a previous account, authority, root or
+   * drawer generation is dropped.
+   */
+  const openSchedulingDrawerFresh = useCallback(async (sessionId: number) => {
+    if (schedulingOpenRef.current.controller !== null
+      || scheduleDrawerRef.current.sessionId !== null) return;
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession || openSession.sessionId !== sessionId || openSession.status !== 'DRAFT') return;
+    const captured = captureOperationsSession();
+    if (!captured) {
+      setSchedulingOpenError('Please sign in again before scheduling this visit.');
+      return;
+    }
+    // Bind every continuation to the exact mounted root instance, captured as an immutable value.
+    // A remount of the same Session is a different instance and can never inherit this answer.
+    const mountedRoot = openRootRef.current;
+    if (mountedRoot === null) return;
+    const root: MountedRootIdentity = Object.freeze({ ...mountedRoot });
+    const authorityGeneration = authorityRef.current.authorizationGeneration();
+    const epoch = ownership.sessionEpoch;
+    const generation = schedulingOpenRef.current.generation + 1;
+    const controller = new AbortController();
+    schedulingOpenRef.current = { generation, controller };
+    setSchedulingOpening(true);
+    setSchedulingOpenError(null);
+    const stillCurrent = (): boolean =>
+      schedulingOpenRef.current.generation === generation
+      && schedulingOpenRef.current.controller === controller
+      && !controller.signal.aborted
+      && mountedRef.current
+      && isOperationsSessionActive(captured)
+      && ownership.sessionEpoch === epoch
+      && authorityRef.current.authorizationGeneration() === authorityGeneration
+      && openRootRef.current !== null
+      && openRootRef.current.targetType === root.targetType
+      && openRootRef.current.targetId === root.targetId
+      && openRootRef.current.mountGeneration === root.mountGeneration;
+    try {
+      const verified = await authorityRef.current.verifySession(captured, { signal: controller.signal });
+      if (!verified || !stillCurrent()) return;
+      const fresh = await operationsWorkspaceService.sessionDetail(sessionId, {
+        session: captured,
+        signal: controller.signal
+      });
+      if (!stillCurrent()) return;
+      if (!fresh
+        || fresh.sessionId !== sessionId
+        || !Number.isSafeInteger(fresh.sessionId)
+        || fresh.sessionId <= 0) {
+        // A wrong-ID or malformed body is never installed as the current detail.
+        setSchedulingOpenError('This visit could not be verified. Check your connection and try again.');
+        return;
+      }
+      if (fresh.coordinatorUserId !== captured.userId) {
+        // The protected root now belongs to another coordinator. Retire exactly the mounted
+        // instance; this is not a global loss of the current OE's authority.
+        withdrawDeniedRootRef.current?.(root);
+        setSchedulingOpenError('This visit is no longer assigned to you. It has been closed.');
+        return;
+      }
+      if (!freshSchedulingSessionIsEligible(fresh, sessionId, captured.userId)) {
+        // Same owned root, but no longer DRAFT: publish the truthful current snapshot and keep a
+        // NEW scheduling drawer closed.
+        setDetail({ status: 'ready', snapshot: { kind: 'session', session: fresh } });
+        setSchedulingOpenError('This visit has already moved past scheduling. The current session is shown, but a new scheduling decision cannot be opened.');
+        return;
+      }
+      setDetail({ status: 'ready', snapshot: { kind: 'session', session: fresh } });
+      openScheduleDrawer(sessionId);
+    } catch (cause) {
+      if (!stillCurrent() || isOperationsSessionChangedError(cause)) return;
+      const status = cause instanceof ApiRequestError ? cause.status : undefined;
+      if (status === 403 || status === 404) {
+        // A fresh, definitive denial for this exact root removes the previously mounted protected
+        // detail and any revealed contact in the same tick. Nothing here awaits a queue refresh.
+        withdrawDeniedRootRef.current?.(root);
+        setSchedulingOpenError('This visit is no longer available to schedule here. It has been closed.');
+        return;
+      }
+      setSchedulingOpenError(status === 401 || status === 403 || status === 404
+        ? 'This visit is no longer available to schedule here.'
+        : 'The latest visit details could not be loaded, so scheduling was not opened. Check your connection and try again.');
+    } finally {
+      if (stillCurrent()) {
+        schedulingOpenRef.current = { generation, controller: null };
+        setSchedulingOpening(false);
+      } else if (schedulingOpenRef.current.controller === controller) {
+        schedulingOpenRef.current = { generation, controller: null };
+        setSchedulingOpening(false);
+      }
+    }
+  }, [authorityRef, detail, openScheduleDrawer, ownership]);
 
   /**
    * True only while the drawer the OE is looking at is still the exact instance a booking was started
@@ -566,6 +851,9 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     setClaimable(initialPageState<ClaimableWorkItem>());
     setDisplayContext(null);
     setDetail({ status: 'loading' });
+    // A protected availability draft is dropped with every other protected surface before its
+    // identity/authority can change, so no later render or completion can restore it.
+    writeAvailabilityDraft(null);
     setBusyAction(null);
     setBusyClaimKey(null);
     setBusyCommand(null);
@@ -575,10 +863,12 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     setNotice(null);
     if (options.neutralView === true) {
       setView('home');
+      setFilters(EMPTY_OPERATIONS_FILTERS);
+      filtersRef.current = EMPTY_OPERATIONS_FILTERS;
+      commitRoute({ kind: 'home' }, 'replace');
       if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
     }
-  }, [abortGuardedReads, closeScheduleDrawer, ownership, setDisplayContext]);
-
+  }, [abortGuardedReads, closeScheduleDrawer, commitRoute, ownership, setDisplayContext, writeAvailabilityDraft]);
   // React layout cleanup closes the commit window synchronously as the workspace is removed: the
   // component-local epoch advances and the operation is invalidated before any pending continuation
   // can observe the unmount, so nothing writes into a tree that is being torn down.
@@ -599,9 +889,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   }, [abortGuardedReads, ownership]);
 
   // Logout, account switch or cross-tab session replacement cancels pending work immediately and
-  // returns the workspace to its neutral entry view for whichever identity comes next.
+  // returns the workspace to its neutral entry view for whichever identity comes next. A session
+  // expiry is different: the shell captures and owns the sign-in return route, so the workspace must
+  // not rewrite the currently displayed detail URL before that capture happens.
   useEffect(
-    () => subscribeOperationsSession(() => clearProtectedState('session-changed', { neutralView: true })),
+    () => subscribeOperationsSession((reason) => clearProtectedState(
+      'session-changed',
+      { neutralView: reason !== 'session-expired' }
+    )),
     [clearProtectedState]
   );
 
@@ -611,61 +906,96 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     if (!accessGranted) clearProtectedState('authorization-lost');
   }, [accessGranted, clearProtectedState, ownership]);
 
+  /**
+   * A draft is only applicable while its exact session is open, still a DRAFT, and still carries the
+   * active editable item. Losing any of those — an authoritative removal, a lifecycle transition to
+   * SCHEDULED/STARTED, or a non-editable availability state — invalidates the draft in memory.
+   */
+  useEffect(() => {
+    const draft = availabilityDraftRef.current;
+    if (!draft) return;
+    if (!accessGranted) {
+      writeAvailabilityDraft(null);
+      return;
+    }
+    if (detail.status !== 'ready') return;
+    const openSession = detail.snapshot.session;
+    if (!openSession
+      || openSession.sessionId !== draft.sessionId
+      || openSession.status !== 'DRAFT') {
+      writeAvailabilityDraft(null);
+      return;
+    }
+    const item = openSession.items.find(
+      (candidate) => candidate.itemId === draft.itemId && candidate.removedAt === null
+    );
+    if (!item || item.confirmationStatus === 'UNAVAILABLE') writeAvailabilityDraft(null);
+  }, [accessGranted, detail, writeAvailabilityDraft]);
+
   const isMounted = useCallback(() => mountedRef.current, []);
   const isEpochCurrent = useCallback((epoch: number) => ownership.sessionEpoch === epoch, [ownership]);
 
   const loadAttention = useCallback(
-    (page: number, session?: OperationsSession, epoch?: number): Promise<QueueLoadOutcome> => {
+    (page: number, session?: OperationsSession, epoch?: number,
+      appliedFilters: OperationsQueueFilters = filtersRef.current): Promise<QueueLoadOutcome> => {
       const captured = session ?? captureOperationsSession();
       if (!captured) return Promise.resolve<QueueLoadOutcome>('skipped');
       return loadQueuePage<OperationsMyWorkItem>({
         key: 'attention',
         page,
+        filters: appliedFilters,
         session: captured,
         epoch: epoch ?? ownership.sessionEpoch,
-        fetch: (nextPage, context) => operationsWorkspaceService.myWork(nextPage, true, context),
+        fetch: (nextPage, context) => operationsWorkspaceService.myWork(nextPage, true, context, appliedFilters),
         apply: setAttention,
         controllers: queueControllers.current,
         isMounted,
-        isEpochCurrent
+        isEpochCurrent,
+        onSettledPage: (settled) => canonicalizePage('attention', settled)
       });
     },
     [isEpochCurrent, isMounted, ownership]
   );
 
   const loadMyWork = useCallback(
-    (page: number, session?: OperationsSession, epoch?: number): Promise<QueueLoadOutcome> => {
+    (page: number, session?: OperationsSession, epoch?: number,
+      appliedFilters: OperationsQueueFilters = filtersRef.current): Promise<QueueLoadOutcome> => {
       const captured = session ?? captureOperationsSession();
       if (!captured) return Promise.resolve<QueueLoadOutcome>('skipped');
       return loadQueuePage<OperationsMyWorkItem>({
         key: 'my-work',
         page,
+        filters: appliedFilters,
         session: captured,
         epoch: epoch ?? ownership.sessionEpoch,
-        fetch: (nextPage, context) => operationsWorkspaceService.myWork(nextPage, false, context),
+        fetch: (nextPage, context) => operationsWorkspaceService.myWork(nextPage, false, context, appliedFilters),
         apply: setMyWork,
         controllers: queueControllers.current,
         isMounted,
-        isEpochCurrent
+        isEpochCurrent,
+        onSettledPage: (settled) => canonicalizePage('my-work', settled)
       });
     },
     [isEpochCurrent, isMounted, ownership]
   );
 
   const loadClaimable = useCallback(
-    (page: number, session?: OperationsSession, epoch?: number): Promise<QueueLoadOutcome> => {
+    (page: number, session?: OperationsSession, epoch?: number,
+      appliedFilters: OperationsQueueFilters = filtersRef.current): Promise<QueueLoadOutcome> => {
       const captured = session ?? captureOperationsSession();
       if (!captured) return Promise.resolve<QueueLoadOutcome>('skipped');
       return loadQueuePage<ClaimableWorkItem>({
         key: 'claimable',
         page,
+        filters: appliedFilters,
         session: captured,
         epoch: epoch ?? ownership.sessionEpoch,
-        fetch: (nextPage, context) => operationsWorkspaceService.claimableWork(nextPage, context),
+        fetch: (nextPage, context) => operationsWorkspaceService.claimableWork(nextPage, context, appliedFilters),
         apply: setClaimable,
         controllers: queueControllers.current,
         isMounted,
-        isEpochCurrent
+        isEpochCurrent,
+        onSettledPage: (settled) => canonicalizePage('claimable', settled)
       });
     },
     [isEpochCurrent, isMounted, ownership]
@@ -714,11 +1044,19 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     // The callback is delayed by a frame, so it re-checks the component-local epoch: a scroll/focus
     // from a previous account must never run against the new account's rows.
     const epoch = ownership.sessionEpoch;
-    window.requestAnimationFrame(() => {
+    const restore = (attempt: number) => {
       if (epoch !== ownership.sessionEpoch) return;
-      window.scrollTo({ top });
-      document.querySelector<HTMLElement>(`[data-row-key="${target.rowKey}"]`)?.focus({ preventScroll: true });
-    });
+      const row = document.querySelector<HTMLElement>(`[data-row-key="${target.rowKey}"]`);
+      if (row) {
+        window.scrollTo({ top });
+        row.focus({ preventScroll: true });
+        return;
+      }
+      // A queue reload renders its skeleton before the authoritative rows. Keep the restore pending
+      // for a bounded window so Back never silently loses the operator's place.
+      if (attempt < 90) window.requestAnimationFrame(() => restore(attempt + 1));
+    };
+    window.requestAnimationFrame(() => restore(0));
   }, [detailTarget, ownership]);
 
   // A fresh rejection or conflict is announced, scrolled into view and focused.
@@ -751,7 +1089,13 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   const openDetail = useCallback(async (
     target: DetailTarget,
     session?: OperationsSession,
-    operation?: OwnershipOperation
+    operation?: OwnershipOperation,
+    routeContext?: {
+      from: QueueView;
+      page: number;
+      filters: OperationsQueueFilters;
+      writeHistory?: boolean;
+    }
   ) => {
     const captured = session ?? captureOperationsSession();
     if (!captured) return;
@@ -768,6 +1112,20 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       ? ownership.canCommit(operation, authorityRef.current) && ownership.displayContextIsOwned(operation)
       : isOperationsSessionActive(captured) && ownership.sessionEpoch === epoch);
     if (!contextHolds()) return;
+    const from = routeContext?.from ?? view;
+    const page = routeContext?.page
+      ?? ((view === 'attention' ? attention.page : view === 'my-work' ? myWork.page : view === 'claimable' ? claimable.page : 0) + 1);
+    const appliedFilters = normalizeOperationsFilters(routeContext?.filters ?? filtersRef.current);
+    if (routeContext?.writeHistory !== false) {
+      commitRoute(detailRoute(target.targetType, target.targetId, from === 'home' ? 'home' : from, page, appliedFilters));
+    }
+    // Opening a different record is a context change: the one bounded draft belongs to the record it
+    // was started from and may never be shown under another one.
+    const openDraft = availabilityDraftRef.current;
+    if (openDraft
+      && (target.targetType !== 'SESSION' || target.targetId !== openDraft.sessionId)) {
+      writeAvailabilityDraft(null);
+    }
     savedScroll.current[view] = window.scrollY;
     returnToRow.current = { view, rowKey: workItemKey(target) };
     detailController.current?.abort();
@@ -810,14 +1168,15 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       // A resource-specific 403/404 clears that resource only; it is never global revocation.
       setDetail({ status: operationsDetailFailureState(cause instanceof ApiRequestError ? cause.status : undefined) });
     }
-  }, [view, ownership, setDisplayContext, openScheduleDrawer]);
+  }, [attention.page, claimable.page, commitRoute, myWork.page, view, ownership, setDisplayContext, openScheduleDrawer, writeAvailabilityDraft]);
 
   const closeDetail = useCallback(() => {
     detailController.current?.abort();
     abortGuardedReads();
     closeScheduleDrawer();
+    writeAvailabilityDraft(null);
     setDisplayContext(null);
-  }, [abortGuardedReads, closeScheduleDrawer, setDisplayContext]);
+  }, [abortGuardedReads, closeScheduleDrawer, setDisplayContext, writeAvailabilityDraft]);
 
   /**
    * The exact mounted instance a command acts on, captured the moment its operation begins.
@@ -836,36 +1195,47 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   }, []);
 
   /**
-   * Withdraws the exact protected root instance a failed command acted on, after the server has
-   * definitively denied access to it.
+   * Synchronously retires the exact protected root a definitive denial addressed.
    *
-   * A learned denial must not leave the previously revealed detail — including a revealed lessor
-   * name and number — mounted behind a now-refused root. Aborting the detail transport and the read
-   * families invalidates their responses, and clearing the target unmounts the detail (and with it
-   * the contact panel, whose own cleanup invalidates its reveal generation).
+   * This is the shared clearing primitive for both mutation failures and read-side settlement. It
+   * needs only the exact captured type, id and mount generation, never another command's mutation
+   * lock: a newer record or remount is untouched while unrelated ownership remains intact.
    *
-   * Every action here is synchronous, so callers decide and apply the withdrawal in one tick,
-   * *before* awaiting any reconciliation. Only the instance the operation itself was started against
-   * may be withdrawn: a record the OE opened later — or the same record re-opened in a new mount
-   * context — is never cleared by an older command's denial.
+   * Mutation callers also record the display change as their own, so their later refusal notice still
+   * describes the record they removed. Settlement supplies only the mounted-root identity it captured
+   * before its read.
    *
-   * Clearing the target is also the one display change that belongs to this operation, so it is
-   * recorded on the operation: a refusal whose own record it correctly unmounted still describes the
-   * context on screen, while any later navigation past that withdrawal does not.
-   *
-   * This is deliberately *not* global account revocation: it touches only the open root's protected
-   * state, leaving the queues and a still-valid authenticated session in place for the next action.
+   * This is deliberately *not* global account revocation: it touches only the matching open root's
+   * protected state, leaving queues and the authenticated session in place for the next action.
    */
-  const withdrawDeniedRoot = useCallback((operation: OwnershipOperation) => {
-    if (!operationTargetIsMounted(operation, openRootRef.current)) return;
+  const withdrawDeniedRoot = useCallback((
+    source: OwnershipOperation | MountedRootIdentity
+  ): boolean => {
+    let operation: OwnershipOperation | null = null;
+    let target: MountedRootIdentity | null;
+    if ('target' in source) {
+      operation = source;
+      target = source.target;
+    } else {
+      target = source;
+    }
+    const mounted = openRootRef.current;
+    if (target === null
+      || mounted === null
+      || mounted.targetType !== target.targetType
+      || mounted.targetId !== target.targetId
+      || mounted.mountGeneration !== target.mountGeneration) return false;
     detailController.current?.abort();
     abortGuardedReads();
+    writeAvailabilityDraft(null);
     setDisplayContext(null);
-    ownership.markWithdrewOwnDisplayContext(operation);
+    if (operation) ownership.markWithdrewOwnDisplayContext(operation);
     // The drawer leaves the screen with the refused root, and its instance is retired: no outcome an
     // in-flight command captured for it may be published into whatever the OE opens next.
     closeScheduleDrawer();
-  }, [abortGuardedReads, closeScheduleDrawer, ownership, setDisplayContext]);
+    return true;
+  }, [abortGuardedReads, closeScheduleDrawer, ownership, setDisplayContext, writeAvailabilityDraft]);
+  withdrawDeniedRootRef.current = withdrawDeniedRoot;
 
   /**
    * True while a refused operation's own record is still the display context the refusal describes.
@@ -1190,8 +1560,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     cause: unknown,
     operation: OwnershipOperation,
     name: string,
-    options: { dropDetailWhenRejected?: boolean } = {}
+    options: {
+      dropDetailWhenRejected?: boolean;
+      contextCurrent?: () => boolean;
+    } = {}
   ): Promise<GuardedCommandFailure> => {
+    const failureContextCurrent = (): boolean =>
+      ownership.canCommit(operation, authorityRef.current)
+      && options.contextCurrent?.() !== false;
     const apiError = cause instanceof ApiRequestError ? cause : null;
     const input: OwnershipOutcomeInput = {
       dispatched: operation.dispatched,
@@ -1199,6 +1575,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       message: apiError?.message ?? null
     };
     const disposition = commandFailureDisposition(input, options);
+    let withdrewRoot = false;
     /**
      * The root this command acted on is the one its operation captured when it began — never whatever
      * happens to be on screen when the failure arrives. `withdrawDeniedRoot` re-checks that exact
@@ -1206,14 +1583,26 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
      * after navigating away, is never dropped by an older command's denial. The withdrawal is gated on
      * the operation still being allowed to commit, exactly like every other write it makes.
      */
-    if (disposition.withdrawRoot && ownership.canCommit(operation, authorityRef.current)) {
-      withdrawDeniedRoot(operation);
+    if (disposition.withdrawRoot && failureContextCurrent()) {
+      withdrewRoot = withdrawDeniedRoot(operation);
     }
+    /**
+     * A successful denial withdrawal necessarily clears the editor predicate's draft. Its own exact
+     * display generation is the equivalent publication scope from that point on: the refusal may be
+     * reported while that withdrawal is still in force, but a remount, navigation or account change
+     * invalidates it. Every non-withdrawal failure continues to use the caller's full editor predicate
+     * after its reconciliation.
+     */
+    const publicationContextCurrent = (): boolean =>
+      ownership.canCommit(operation, authorityRef.current)
+      && (withdrewRoot
+        ? noticeContextHolds(operation)
+        : options.contextCurrent?.() !== false);
     let reconciliation: OwnershipReconciliation = 'not-attempted';
-    if (disposition.reconcile && ownership.canCommit(operation, authorityRef.current)) {
+    if (disposition.reconcile && publicationContextCurrent()) {
       reconciliation = await refreshAll(operation.session);
     }
-    if (!ownership.canCommit(operation, authorityRef.current)) {
+    if (!publicationContextCurrent()) {
       return { kind: disposition.kind, status: apiError?.status ?? null, message: '', detail: null, published: false };
     }
     /**
@@ -1295,6 +1684,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       applied: null,
       reconciliation: 'skipped',
       failure: null,
+      preflight: null,
       operation: null,
       published: false
     };
@@ -1316,19 +1706,30 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       if (!await authorityRef.current.verifySession(session, { signal: operation.controller.signal })) {
         return nothing;
       }
-      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      if (!ownership.canCommit(operation, authorityRef.current)
+        || options.contextCurrent?.() === false) return nothing;
       const fresh = await options.loadFresh({ session, signal: operation.controller.signal });
-      if (fresh === null || !ownership.canCommit(operation, authorityRef.current)) return nothing;
+      if (fresh === null
+        || !ownership.canCommit(operation, authorityRef.current)
+        || options.contextCurrent?.() === false) return nothing;
+      const preflight = options.preflight?.(fresh) ?? null;
+      if (preflight !== null) {
+        options.onPreflightRefusal?.(preflight, fresh, operation);
+        return { ...nothing, status: 'preflight-refused', preflight };
+      }
       const transmit = options.buildTransmit(fresh);
       if (transmit === null) {
         // No version means no command: reconcile the reads first so the message can be truthful.
         const reconciliation = await refreshAll(session);
-        if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+        if (!ownership.canCommit(operation, authorityRef.current)
+          || options.contextCurrent?.() === false) return nothing;
         options.onMissingVersion(fresh, reconciliation, operation);
         return { ...nothing, status: 'missing-version', reconciliation };
       }
       const blocked = ownership.blockReasonForDispatch(operation, authorityRef.current);
-      if (blocked !== null || operation.dispatched) return nothing;
+      if (blocked !== null
+        || operation.dispatched
+        || options.contextCurrent?.() === false) return nothing;
       const onDispatch = () => { ownership.markDispatched(operation); };
       const applied = await transmit({ session, signal: operation.controller.signal, onDispatch });
       if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
@@ -1345,16 +1746,26 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       const published = options.applyResult(fresh, applied, operation);
       const reconciliation = await refreshAll(session);
       if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
-      return { status: 'applied', applied, reconciliation, failure: null, operation, published };
+      return {
+        status: 'applied',
+        applied,
+        reconciliation,
+        failure: null,
+        preflight: null,
+        operation,
+        published
+      };
     } catch (cause) {
       if (isOperationsSessionChangedError(cause)) return nothing;
-      if (!ownership.canCommit(operation, authorityRef.current)) return nothing;
+      if (!ownership.canCommit(operation, authorityRef.current)
+        || options.contextCurrent?.() === false) return nothing;
       if (options.onFailure) {
         await options.onFailure(cause, operation);
         return { ...nothing, status: 'failed' };
       }
       const failure = await reportCommandFailure(cause, operation, options.name, {
-        dropDetailWhenRejected: options.dropDetailWhenRejected
+        dropDetailWhenRejected: options.dropDetailWhenRejected,
+        contextCurrent: options.contextCurrent
       });
       return { ...nothing, status: 'failed', failure };
     } finally {
@@ -1471,6 +1882,40 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       itemId,
       { session, signal }
     );
+    if (!isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) {
+      throw new OperationsSessionChangedError();
+    }
+    return contact;
+  }, [detail, ownership]);
+
+  /** Canonical tenant contact for the open Request, gated exactly like the lessor read. */
+  const revealRequestTenantContact = useCallback(async (signal: AbortSignal): Promise<OperationsTenantContact> => {
+    const request = detail.status === 'ready' ? detail.snapshot.request : undefined;
+    if (!request) throw new ApiRequestError('This request is not open.', 404);
+    const session = captureOperationsSession();
+    if (!session) throw new ApiRequestError('Please sign in to use the Operations workspace.', 401);
+    const epoch = ownership.sessionEpoch;
+    const contact = await operationsWorkspaceService.tenantContactForRequest(request.requestId, {
+      session,
+      signal
+    });
+    if (!isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) {
+      throw new OperationsSessionChangedError();
+    }
+    return contact;
+  }, [detail, ownership]);
+
+  /** Canonical tenant contact for the open Session. */
+  const revealSessionTenantContact = useCallback(async (signal: AbortSignal): Promise<OperationsTenantContact> => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession) throw new ApiRequestError('This session is not open.', 404);
+    const session = captureOperationsSession();
+    if (!session) throw new ApiRequestError('Please sign in to use the Operations workspace.', 401);
+    const epoch = ownership.sessionEpoch;
+    const contact = await operationsWorkspaceService.tenantContactForSession(openSession.sessionId, {
+      session,
+      signal
+    });
     if (!isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) {
       throw new OperationsSessionChangedError();
     }
@@ -1794,65 +2239,613 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     showNotice
   ]);
 
-  /** Records the lessor-stated availability for one DRAFT item. */
-  const saveAvailability = useCallback(async (
-    itemId: number,
-    choice: OperationsAvailabilityChoice,
-    window: OperationsAvailabilityWindowInput
+  /** Removes exactly the draft this completion belongs to; a newer editor is never touched. */
+  const clearAvailabilityDraftIfGeneration = useCallback((editorGeneration: number): boolean => {
+    const current = availabilityDraftRef.current;
+    if (!current || current.editorGeneration !== editorGeneration) return false;
+    writeAvailabilityDraft(null);
+    return true;
+  }, [writeAvailabilityDraft]);
+
+  /**
+   * Opens the one availability editor for an item of the visible DRAFT session. The draft captures
+   * the exact recorded instants, zone and source it opens with, so a later refresh can be compared
+   * against them instead of silently rewriting their meaning.
+   */
+  const beginAvailabilityDraft = useCallback((itemId: number) => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession || openSession.status !== 'DRAFT' || !accessGranted) return;
+    const item = openSession.items.find(
+      (candidate) => candidate.itemId === itemId && candidate.removedAt === null
+    );
+    if (!item) return;
+    const session = captureOperationsSession();
+    if (!session) return;
+    availabilityEditorGeneration.current += 1;
+    writeAvailabilityDraft(createAvailabilityDraft({
+      sessionId: openSession.sessionId,
+      sessionVersion: openSession.version,
+      item,
+      identity: session.identity,
+      authorizationGeneration: authorityRef.current.authorizationGeneration(),
+      editorGeneration: availabilityEditorGeneration.current
+    }));
+  }, [accessGranted, detail, writeAvailabilityDraft]);
+
+  /**
+   * Applies one user edit to the current draft. Identity, authority and the editor generation are
+   * re-checked before the write, so an input event from a previous session or editor can never
+   * mutate the draft that replaced it.
+   */
+  const changeAvailabilityDraft = useCallback((
+    editorGeneration: number,
+    values: OperationsAvailabilityDraftValues
   ) => {
-    const sessionId = detail.status === 'ready' ? detail.snapshot.session?.sessionId ?? null : null;
-    if (sessionId === null) return;
+    const current = availabilityDraftRef.current;
+    if (!current || current.editorGeneration !== editorGeneration) return;
+    const session = captureOperationsSession();
+    if (!session
+      || session.identity !== current.identity
+      || !isOperationsSessionActive(session)
+      || current.authorizationGeneration !== authorityRef.current.authorizationGeneration()) {
+      clearAvailabilityDraftIfGeneration(editorGeneration);
+      return;
+    }
+    const keepOutcome = current.status === 'saving'
+      || current.status === 'reconciling'
+      || current.status === 'uncertain';
+    writeAvailabilityDraft({
+      ...current,
+      choice: values.choice,
+      window: values.window,
+      fieldProvenance: values.fieldProvenance,
+      status: keepOutcome ? current.status : 'editing',
+      // An unconfirmed outcome stays stated until a read or a new save resolves it.
+      failureMessage: current.status === 'editing' || current.status === 'refused'
+        ? null
+        : current.failureMessage
+    });
+  }, [clearAvailabilityDraftIfGeneration, writeAvailabilityDraft]);
+
+  /** Explicit cancellation discards the draft; a late completion may never recreate it. */
+  const discardAvailabilityDraft = useCallback((editorGeneration: number) => {
+    clearAvailabilityDraftIfGeneration(editorGeneration);
+  }, [clearAvailabilityDraftIfGeneration]);
+
+  /**
+   * Records the lessor-stated availability for one DRAFT item.
+   *
+   * The draft is never closed before the guarded command's outcome is known. A confirmed success
+   * clears exactly its own generation; a refusal, a pre-dispatch stop or an unconfirmed transmission
+   * keeps the raw input and provenance recoverable. An unconfirmed transmission is reconciled with
+   * one authoritative detail read and is never automatically resent.
+   */
+  const saveAvailability = useCallback(async (
+    editorGeneration: number,
+    window: AvailabilityWindowInput
+  ): Promise<OperationsAvailabilitySaveOutcome> => {
+    const draft = availabilityDraftRef.current;
+    if (!draft || draft.editorGeneration !== editorGeneration) {
+      return { status: 'superseded' };
+    }
+    const captured = captureOperationsSession();
+    if (!captured
+      || captured.identity !== draft.identity
+      || !isOperationsSessionActive(captured)
+      || draft.authorizationGeneration !== authorityRef.current.authorizationGeneration()
+      || !accessGranted) {
+      clearAvailabilityDraftIfGeneration(editorGeneration);
+      return { status: 'superseded' };
+    }
+    if (draft.status === 'saving') {
+      return {
+        status: 'unconfirmed',
+        message: 'A save is still in progress. Your changes are kept until its outcome is known.'
+      };
+    }
+    const sessionId = draft.sessionId;
+    const itemId = draft.itemId;
+    const choice = draft.choice;
     const name = operationsRecordTitle('SESSION', sessionId);
+    const epoch = ownership.sessionEpoch;
+    /**
+     * The exact availability facts rendered when the OE explicitly submitted. A preflight read may
+     * refresh an unrelated Session version, but a different window/status must first be published
+     * and reviewed rather than silently adopted as permission to overwrite it.
+     */
+    const presentedSession = detail.status === 'ready' ? detail.snapshot.session : null;
+    const presentedItem = presentedSession?.sessionId === sessionId
+      && presentedSession.status === 'DRAFT'
+      ? presentedSession.items.find(
+          (candidate) => candidate.itemId === draft.itemId && candidate.removedAt === null
+        ) ?? null
+      : null;
+    if (presentedItem === null) return { status: 'superseded' };
+    const presentedEvidence: AvailabilityEvidenceSnapshot = availabilityEvidenceSnapshot(presentedItem);
+    const draftStillCurrent = (): boolean => {
+      const current = availabilityDraftRef.current;
+      return ownership.sessionEpoch === epoch
+        && isOperationsSessionActive(captured)
+        && current !== null
+        && current.identity === draft.identity
+        && current.authorizationGeneration === draft.authorizationGeneration
+        && draft.authorizationGeneration === authorityRef.current.authorizationGeneration()
+        && current.sessionId === sessionId
+        && current.itemId === itemId
+        && current.editorGeneration === editorGeneration;
+    };
+    const draftValuesChanged = (): boolean => {
+      const current = availabilityDraftRef.current;
+      if (!current) return false;
+      return current.choice !== draft.choice
+        || current.window.availabilityStartAt !== draft.window.availabilityStartAt
+        || current.window.availabilityEndAt !== draft.window.availabilityEndAt
+        || current.window.availabilityZoneId !== draft.window.availabilityZoneId
+        || current.window.availabilitySource !== draft.window.availabilitySource
+        || current.fieldProvenance.start !== draft.fieldProvenance.start
+        || current.fieldProvenance.end !== draft.fieldProvenance.end;
+    };
+
+    /**
+     * Publishes a lifecycle/item result only while the same editor and display context are current.
+     */
+    const publishFresh = (fresh: OperationsSessionDetail): boolean => {
+      if (!draftStillCurrent()) return false;
+      if (fresh.sessionId !== sessionId) return false;
+      if (openRootRef.current?.targetType === 'SESSION'
+        && openRootRef.current.targetId === sessionId) {
+        setDetail({ status: 'ready', snapshot: { kind: 'session', session: fresh } });
+      }
+      return true;
+    };
+
+    const lifecycleRefusalMessage = (
+      fresh: OperationsSessionDetail,
+      earlierRequestMayHaveBeenSent: boolean
+    ): string => {
+      if (fresh.status !== 'DRAFT') {
+        return earlierRequestMayHaveBeenSent
+          ? `This session is now ${fresh.status}, so availability cannot be edited here. `
+            + 'The earlier request’s outcome remains unconfirmed; nothing new was sent.'
+          : `This session is now ${fresh.status}, so availability can no longer be edited here. `
+            + 'Nothing was sent, and the current session state is shown.';
+      }
+      return earlierRequestMayHaveBeenSent
+        ? 'That stop is no longer editable in this session. The earlier request’s outcome remains '
+          + 'unconfirmed; nothing new was sent.'
+        : 'That stop is no longer editable in this session. Nothing was sent, and the current '
+          + 'itinerary is shown.';
+    };
+
+    /**
+     * Settles one transmitted attempt whose response was lost. Current state can prove that the
+     * desired state is present, but a mismatch never proves the original command was not applied.
+     * A reliably read later version fences a still-late full-window command; anything else remains
+     * unknown and is never resent automatically.
+     */
+    const settleUnknownAttempt = async (
+      attempt: OperationsAvailabilityAttempt | null
+    ): Promise<OperationsAvailabilitySaveOutcome> => {
+      let fresh: OperationsSessionDetail | null = null;
+      const mountedAtSettlementStart = mountedTargetFor({
+        targetType: 'SESSION',
+        targetId: sessionId
+      });
+      try {
+        fresh = await operationsWorkspaceService.sessionDetail(sessionId, { session: captured });
+      } catch (cause) {
+        if (isOperationsSessionChangedError(cause)) return { status: 'superseded' };
+        if (cause instanceof ApiRequestError && (cause.status === 403 || cause.status === 404)) {
+          /**
+           * A definitive denial of this exact root is acted on synchronously, before any later read
+           * or publication. The captured mounted-root identity means a denial for editor A cannot
+           * withdraw editor B, a remounted root or a newer account.
+           */
+          const openAtSettlementDenial = openRootRef.current;
+          if (!draftStillCurrent()
+            || mountedAtSettlementStart === null
+            || openAtSettlementDenial === null
+            || openAtSettlementDenial.targetType !== mountedAtSettlementStart.targetType
+            || openAtSettlementDenial.targetId !== mountedAtSettlementStart.targetId
+            || openAtSettlementDenial.mountGeneration !== mountedAtSettlementStart.mountGeneration) {
+            return { status: 'superseded' };
+          }
+          // A definitive denial of this exact mounted root needs its protected state retired, not the
+          // mutation lock held by another command. Clearing synchronously leaves that operation's
+          // ownership untouched and retires the display context before any refresh can publish it.
+          withdrawDeniedRoot(mountedAtSettlementStart);
+          return { status: 'superseded' };
+        }
+        fresh = null;
+      }
+      if (!draftStillCurrent()) {
+        return availabilityDraftRef.current === null
+          ? { status: 'superseded' }
+          : {
+              status: 'unconfirmed',
+              message: 'The save’s outcome is still being checked. Your changes are kept.'
+            };
+      }
+      if (fresh !== null
+        && (!Number.isSafeInteger(fresh.sessionId) || !Array.isArray(fresh.items))) {
+        // A malformed read proves nothing about the command. It remains an unreadable transient
+        // outcome, never a lifecycle refusal or a reason to withdraw protected data.
+        fresh = null;
+      }
+      if (fresh === null) {
+        const message = 'The earlier save is not confirmed. Its outcome could not be read, so '
+          + 'nothing new was sent. Your changes are kept; check this session before saving again.';
+        const current = availabilityDraftRef.current;
+        if (current && current.editorGeneration === editorGeneration) {
+          writeAvailabilityDraft({ ...current, status: 'uncertain', failureMessage: message });
+        }
+        return { status: 'unconfirmed', message };
+      }
+
+      if (fresh.sessionId !== sessionId) {
+        clearAvailabilityDraftIfGeneration(editorGeneration);
+        return {
+          status: 'superseded',
+          message: 'The server returned a different session, so this editor was closed.'
+        };
+      }
+      publishFresh(fresh);
+      const item = fresh.items.find(
+        (candidate) => candidate.itemId === itemId && candidate.removedAt === null
+      );
+      if (!item) {
+        const message = lifecycleRefusalMessage(fresh, attempt !== null);
+        clearAvailabilityDraftIfGeneration(editorGeneration);
+        showNotice(message, captured);
+        return { status: 'superseded', message };
+      }
+
+      if (attempt !== null
+        && availabilityItemSatisfiesDraft(item, attempt.choice, attempt.window)) {
+        if (!draftValuesChanged() && availabilityIntentEqualsAttempt(choice, window, attempt)) {
+          clearAvailabilityDraftIfGeneration(editorGeneration);
+          announceSaved(true);
+          return {
+            status: 'saved',
+            message: 'The server now shows the availability you intended; there is nothing left to retry.'
+          };
+        }
+        const message = 'The server currently shows the availability from your earlier attempt. '
+          + 'That request’s outcome remains unconfirmed. Your newer edits have not been saved; '
+          + 'nothing new was sent.';
+        const current = availabilityDraftRef.current;
+        if (current && current.editorGeneration === editorGeneration) {
+          writeAvailabilityDraft({
+            ...current,
+            attempt: null,
+            status: 'refused',
+            failureMessage: message
+          });
+        }
+        return { status: 'not-saved', message };
+      }
+
+      if (fresh.status !== 'DRAFT' || !availabilityChoicesFor(item).includes(choice)) {
+        const message = lifecycleRefusalMessage(fresh, attempt !== null);
+        clearAvailabilityDraftIfGeneration(editorGeneration);
+        showNotice(message, captured);
+        return { status: 'superseded', message };
+      }
+
+      if (attempt === null) {
+        const message = 'The earlier save has no dispatch record, so its outcome cannot be verified '
+          + 'safely. Your changes are kept; check this session before saving again.';
+        const current = availabilityDraftRef.current;
+        if (current && current.editorGeneration === editorGeneration) {
+          writeAvailabilityDraft({ ...current, status: 'uncertain', failureMessage: message });
+        }
+        return { status: 'unconfirmed', message };
+      }
+
+      if (fresh.version !== null && fresh.version > attempt.expectedSessionVersion) {
+        const message = 'The availability changed after the earlier save, whose outcome is not '
+          + 'confirmed. Nothing new was sent. Review the current window shown above, then save your '
+          + 'changes again if needed.';
+        const current = availabilityDraftRef.current;
+        if (current && current.editorGeneration === editorGeneration) {
+          writeAvailabilityDraft({
+            ...current,
+            attempt: null,
+            status: 'refused',
+            failureMessage: message
+          });
+        }
+        return { status: 'not-saved', message };
+      }
+
+      const message = 'The earlier save is not confirmed. The server may still record it, so '
+        + 'nothing new was sent. Your changes are kept; check this session before saving again.';
+      const current = availabilityDraftRef.current;
+      if (current && current.editorGeneration === editorGeneration) {
+        writeAvailabilityDraft({ ...current, status: 'uncertain', failureMessage: message });
+      }
+      return { status: 'unconfirmed', message };
+    };
+
+    const announceSaved = (reconciled: boolean): void => {
+      notifySuccess(
+        'Property availability recorded',
+        reconciled
+          ? 'The server’s current state shows the availability you intended, so there is nothing left to retry.'
+          : choice === 'unavailable'
+            ? 'The stop is recorded as unavailable for this visit.'
+            : choice === 'confirm-only'
+              ? 'The confirmation was saved. Scheduling stays blocked until a complete window is recorded.'
+              : 'The complete window was saved for this stop.',
+        undefined,
+        'VISIT_SESSION'
+      );
+    };
+
+    const settlementKey = [
+      draft.identity,
+      epoch,
+      sessionId,
+      itemId,
+      editorGeneration
+    ].join('|');
+    const settleUnknownAttemptOnce = (
+      attempt: OperationsAvailabilityAttempt | null
+    ): Promise<OperationsAvailabilitySaveOutcome> => {
+      const flights = availabilitySettlementFlights.current;
+      const existing = flights.get(settlementKey);
+      if (existing) return existing;
+      const ownedFlight: { current: Promise<OperationsAvailabilitySaveOutcome> | null } = {
+        current: null
+      };
+      const flight = (async () => {
+        try {
+          return await settleUnknownAttempt(attempt);
+        } finally {
+          if (flights.get(settlementKey) === ownedFlight.current) flights.delete(settlementKey);
+        }
+      })();
+      ownedFlight.current = flight;
+      flights.set(settlementKey, flight);
+      return flight;
+    };
+
+    // A previous attempt was transmitted without a confirmed outcome. Establish what the server
+    // holds before building another command; if it already holds this intent, nothing is resent.
+    if (draft.status === 'reconciling') {
+      return settleUnknownAttemptOnce(draft.attempt);
+    }
+    if (draft.status === 'uncertain') {
+      writeAvailabilityDraft({ ...draft, status: 'reconciling' });
+      return settleUnknownAttemptOnce(draft.attempt);
+    }
+
+    const currentDraft = availabilityDraftRef.current;
+    if (!currentDraft || currentDraft.editorGeneration !== editorGeneration) {
+      return { status: 'superseded' };
+    }
+    writeAvailabilityDraft({
+      ...currentDraft,
+      attempt: null,
+      status: 'saving',
+      failureMessage: null
+    });
+    let preflightHandledForGeneration = false;
     const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSessionDetail>({
       kind: 'availability',
       busyKey: 'availability',
       name,
+      contextCurrent: draftStillCurrent,
       loadFresh: (context) => operationsWorkspaceService.sessionDetail(sessionId, context),
+      preflight: (fresh) => {
+        if (fresh.sessionId !== sessionId) {
+          return {
+            disposition: 'inapplicable',
+            message: 'The server returned a different session, so this editor was closed. Nothing was sent.'
+          };
+        }
+        if (fresh.status !== 'DRAFT') {
+          return { disposition: 'inapplicable', message: lifecycleRefusalMessage(fresh, false) };
+        }
+        const freshItem = fresh.items.find(
+          (candidate) => candidate.itemId === itemId && candidate.removedAt === null
+        );
+        if (!freshItem || !availabilityChoicesFor(freshItem).includes(choice)) {
+          return { disposition: 'inapplicable', message: lifecycleRefusalMessage(fresh, false) };
+        }
+        if (availabilityEvidenceChanged(presentedEvidence, freshItem)) {
+          return {
+            disposition: 'conflict',
+            message: 'The recorded availability changed on the server before your save was sent. '
+              + 'Nothing was sent. Review the current recorded window shown above, then save again '
+              + 'if you still want to replace it.'
+          };
+        }
+        return null;
+      },
+      onPreflightRefusal: (refusal, fresh) => {
+        if (!draftStillCurrent()) return;
+        if (fresh.sessionId === sessionId
+          && openRootRef.current?.targetType === 'SESSION'
+          && openRootRef.current.targetId === sessionId) {
+          setDetail({ status: 'ready', snapshot: { kind: 'session', session: fresh } });
+        }
+        const current = availabilityDraftRef.current;
+        if (!current || current.editorGeneration !== editorGeneration) return;
+        preflightHandledForGeneration = true;
+        if (refusal.disposition === 'inapplicable') {
+          clearAvailabilityDraftIfGeneration(editorGeneration);
+          showNotice(refusal.message, captured);
+          return;
+        }
+        writeAvailabilityDraft({
+          ...current,
+          attempt: null,
+          status: 'refused',
+          failureMessage: refusal.message
+        });
+      },
       buildTransmit: (fresh) => {
         const validation = setAvailabilityCommand(fresh, itemId, choice, window);
         const command = validation.command;
-        return command === null
-          ? null
-          : (context) => operationsWorkspaceService.setSessionItemAvailability(
-              sessionId,
-              command.itemId,
-              {
-                expectedSessionVersion: command.expectedSessionVersion,
-                status: command.status,
-                availabilityStartAt: command.availabilityStartAt,
-                availabilityEndAt: command.availabilityEndAt,
-                availabilityZoneId: command.availabilityZoneId,
-                availabilitySource: command.availabilitySource
-              },
-              context
-            );
+        if (command === null) return null;
+        const attempt: OperationsAvailabilityAttempt = {
+          choice,
+          itemId: command.itemId,
+          expectedSessionVersion: command.expectedSessionVersion,
+          window: {
+            availabilityStartAt: command.availabilityStartAt,
+            availabilityEndAt: command.availabilityEndAt,
+            availabilityZoneId: command.availabilityZoneId,
+            availabilitySource: command.availabilitySource
+          }
+        };
+        return (context) => operationsWorkspaceService.setSessionItemAvailability(
+          sessionId,
+          command.itemId,
+          {
+            expectedSessionVersion: command.expectedSessionVersion,
+            status: command.status,
+            availabilityStartAt: command.availabilityStartAt,
+            availabilityEndAt: command.availabilityEndAt,
+            availabilityZoneId: command.availabilityZoneId,
+            availabilitySource: command.availabilitySource
+          },
+          {
+            ...context,
+            onDispatch: () => {
+              context.onDispatch?.();
+              const current = availabilityDraftRef.current;
+              if (!current
+                || current.editorGeneration !== editorGeneration
+                || current.identity !== draft.identity
+                || current.authorizationGeneration !== draft.authorizationGeneration
+                || ownership.sessionEpoch !== epoch) return;
+              writeAvailabilityDraft({ ...current, attempt });
+            }
+          }
+        );
       },
       applyResult: (_fresh, session, operation) => applyAuthoritativeSession(session, operation),
       onMissingVersion: (_fresh, reconciliation, operation) => missingVersionNotice(name, 'record that availability', reconciliation, operation)
     });
+
+    if (outcome.status === 'preflight-refused' && outcome.preflight !== null) {
+      if (!preflightHandledForGeneration) return { status: 'superseded' };
+      return {
+        status: 'not-saved',
+        message: outcome.preflight.message
+      };
+    }
+
     if (outcome.status === 'applied') {
-      notifySuccess(
-        'Property availability recorded',
-        choice === 'unavailable'
-          ? 'The stop is recorded as unavailable for this visit.'
-          : choice === 'confirm-only'
-            ? 'The confirmation was saved. Scheduling stays blocked until a complete window is recorded.'
-            : 'The complete window was saved for this stop.',
-        undefined,
-        'VISIT_SESSION'
-      );
+      const sessionNow = captureOperationsSession();
+      if (!sessionNow
+        || sessionNow.identity !== draft.identity
+        || !isOperationsSessionActive(sessionNow)
+        || ownership.sessionEpoch !== epoch) {
+        return { status: 'superseded' };
+      }
+      // The business success is independent of the queue refresh that follows it: the draft is cleared
+      // at this completion boundary even when reconciliation failed, and the refresh error is reported
+      // separately rather than misclassifying the save.
+      const cleared = clearAvailabilityDraftIfGeneration(editorGeneration);
+      if (!cleared && availabilityDraftRef.current !== null) {
+        // The command succeeded, but this editor was explicitly cancelled or replaced while it was in
+        // flight. Its completion may never publish into the newer editing context.
+        return { status: 'superseded' };
+      }
+      announceSaved(false);
       if (outcome.reconciliation !== 'loaded' && commandContextHolds(outcome)) {
         showNotice(ownershipRefreshFailureNotice(name));
       }
+      return { status: 'saved', message: null };
     }
+
+    const afterCommand = availabilityDraftRef.current;
+    if (!afterCommand || afterCommand.editorGeneration !== editorGeneration) {
+      return { status: 'superseded' };
+    }
+    if (outcome.status === 'abandoned') {
+      const sessionNow = captureOperationsSession();
+      if (!sessionNow
+        || sessionNow.identity !== draft.identity
+        || !isOperationsSessionActive(sessionNow)
+        || ownership.sessionEpoch !== epoch) {
+        clearAvailabilityDraftIfGeneration(editorGeneration);
+        return { status: 'superseded' };
+      }
+      // A repeated tap never queues a second command. If another command still owns the lock, this
+      // editor must not claim a failure or re-enable Save ahead of that command's own completion.
+      if (ownership.isLocked()) {
+        return {
+          status: 'unconfirmed',
+          message: 'A save is still in progress. Your changes are kept until its outcome is known.'
+        };
+      }
+      writeAvailabilityDraft({ ...afterCommand, status: 'editing', failureMessage: null });
+      return { status: 'not-saved', message: 'The save did not start. Your changes are kept.' };
+    }
+    if (outcome.status === 'missing-version') {
+      const message = 'The session didn’t return the version needed to save availability, so nothing '
+        + 'was sent. Your changes are kept; refresh this session before trying again.';
+      writeAvailabilityDraft({
+        ...afterCommand,
+        attempt: null,
+        status: 'refused',
+        failureMessage: message
+      });
+      return { status: 'not-saved', message };
+    }
+
+    const failure = outcome.failure;
+    if (failure === null || !failure.published) {
+      if (!draftStillCurrent()) {
+        return availabilityDraftRef.current === null
+          ? { status: 'superseded' }
+          : {
+              status: 'unconfirmed',
+              message: 'The save’s outcome is still being checked. Your changes are kept.'
+            };
+      }
+      writeAvailabilityDraft({ ...afterCommand, status: 'editing', failureMessage: null });
+      return { status: 'not-saved', message: 'The save was cancelled. Your changes are kept.' };
+    }
+    if (failure.kind === 'uncertain') {
+      const current = availabilityDraftRef.current;
+      if (!current || current.editorGeneration !== editorGeneration) {
+        return { status: 'superseded' };
+      }
+      writeAvailabilityDraft({
+        ...current,
+        status: 'reconciling',
+        failureMessage: failure.message
+      });
+      return settleUnknownAttemptOnce(current.attempt);
+    }
+    // A definitive refusal (or a pre-dispatch stop) leaves the raw input and provenance recoverable
+    // wherever the item is still applicable and the OE is still authorized to edit it.
+    writeAvailabilityDraft({
+      ...afterCommand,
+      attempt: null,
+      status: 'refused',
+      failureMessage: failure.message
+    });
+    return { status: 'not-saved', message: failure.message };
   }, [
+    accessGranted,
     applyAuthoritativeSession,
+    clearAvailabilityDraftIfGeneration,
+    commandContextHolds,
     detail,
     missingVersionNotice,
+    mountedTargetFor,
     notifySuccess,
-    commandContextHolds,
+    ownership,
     runGuardedCommand,
-    showNotice
+    showNotice,
+    withdrawDeniedRoot,
+    writeAvailabilityDraft
   ]);
 
   /**
@@ -1896,6 +2889,66 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     );
     if (guarded.aborted || !isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) return null;
     return view;
+  }, [beginGuardedRead, detail, ownership]);
+
+  /**
+   * Restricted, plan-specific GE availability information. Every page is a fresh evaluation bound to
+   * the exact Session version, and the read is abandoned when the capturing identity, authority or
+   * mounted context changes.
+   */
+  const loadGeAvailability = useCallback(async (
+    input: { q: string | null; cursor: string | null; size?: number },
+    signal: AbortSignal
+  ): Promise<OperationsGeAvailabilityView | null> => {
+    const openSession = detail.status === 'ready' ? detail.snapshot.session : undefined;
+    if (!openSession || openSession.version === null) return null;
+    const session = captureOperationsSession();
+    if (!session) return null;
+    const epoch = ownership.sessionEpoch;
+    const authorizationGeneration = authorityRef.current.authorizationGeneration();
+    /*
+     * The exact mounted Session instance this read belongs to, captured before the first await. A
+     * denial is definitive only for this root instance: navigating to another protected root (or
+     * re-opening the same one) must never inherit the earlier denial, and a delayed response from
+     * this read must never touch whatever is on screen when it finally settles.
+     */
+    const mountedAtStart: MountedRootIdentity | null = openRootRef.current === null
+      ? null
+      : { ...openRootRef.current };
+    const guarded = beginGuardedRead('ge-availability', signal);
+    try {
+      const view = await operationsWorkspaceService.geAvailability(
+        openSession.sessionId,
+        openSession.version,
+        { q: input.q, cursor: input.cursor, size: input.size },
+        { session, signal: guarded }
+      );
+      if (guarded.aborted || !isOperationsSessionActive(session) || ownership.sessionEpoch !== epoch) return null;
+      if (mountedAtStart !== null && !sameOperationsRootInstance(openRootRef.current, mountedAtStart)) return null;
+      return view;
+    } catch (cause) {
+      const status = cause instanceof ApiRequestError ? cause.status : null;
+      const current = !guarded.aborted
+        && isOperationsSessionActive(session)
+        && ownership.sessionEpoch === epoch
+        && authorityRef.current.authorizationGeneration() === authorizationGeneration
+        && mountedAtStart !== null
+        && mountedAtStart.targetType === 'SESSION'
+        && mountedAtStart.targetId === openSession.sessionId
+        && sameOperationsRootInstance(openRootRef.current, mountedAtStart);
+      /*
+       * A 403/404 for the root still on screen is a definitive authorization/root denial. The
+       * withdrawal is synchronous and exact: it removes the protected detail, aborts sibling
+       * protected reads and closes the drawer before this error is rethrown to the informational
+       * view. A 403 also asks the authoritative capability endpoint for a fresh verdict; a 404
+       * never invents a Team revocation, and neither path logs out an otherwise valid session.
+       */
+      if (current && mountedAtStart !== null && (status === 403 || status === 404)) {
+        withdrawDeniedRootRef.current?.(mountedAtStart);
+        if (status === 403) authorityRef.current.revalidate();
+      }
+      throw cause;
+    }
   }, [beginGuardedRead, detail, ownership]);
 
   /**
@@ -2184,11 +3237,175 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
   }, [ownership, detail, scheduleOutcome, scheduleOutcomeContextHolds, applyAuthoritativeSession, refreshAll, reportCommandFailure]);
 
   const navigate = useCallback((next: QueueView) => {
+    const nextFilters = EMPTY_OPERATIONS_FILTERS;
     setView(next);
+    setFilters(nextFilters);
+    filtersRef.current = nextFilters;
+    commitRoute(next === 'home' ? { kind: 'home' } : queueRoute(next, 1, nextFilters));
+    if (next === 'attention') void loadAttention(0, undefined, undefined, nextFilters);
+    else if (next === 'my-work') void loadMyWork(0, undefined, undefined, nextFilters);
+    else if (next === 'claimable') void loadClaimable(0, undefined, undefined, nextFilters);
     returnToRow.current = null;
     window.scrollTo({ top: 0 });
     focusWorkspaceTitle();
-  }, []);
+  }, [commitRoute, loadAttention, loadClaimable, loadMyWork]);
+
+  /**
+   * Applies one parsed location to the workspace. History writing is separate so a popstate can
+   * restore a route without pushing a duplicate entry.
+   */
+  const applyOperationsRoute = useCallback((
+    route: OperationsRoute,
+    options: { writeHistory?: boolean } = {}
+  ) => {
+    routeRef.current = route;
+    if (route.kind === 'home') {
+      closeDetail();
+      setView('home');
+      setFilters(EMPTY_OPERATIONS_FILTERS);
+      filtersRef.current = EMPTY_OPERATIONS_FILTERS;
+    } else if (route.kind === 'queue') {
+      closeDetail();
+      setView(route.queue);
+      setFilters(route.filters);
+      filtersRef.current = route.filters;
+      const pageIndex = Math.max(0, route.page - 1);
+      if (route.queue === 'attention') void loadAttention(pageIndex, undefined, undefined, route.filters);
+      else if (route.queue === 'my-work') void loadMyWork(pageIndex, undefined, undefined, route.filters);
+      else void loadClaimable(pageIndex, undefined, undefined, route.filters);
+    } else {
+      const from = route.from === 'home' ? 'home' : route.from;
+      setView(from);
+      setFilters(route.filters);
+      filtersRef.current = route.filters;
+      void openDetail(
+        { targetType: route.targetType, targetId: route.targetId, source: from === 'claimable' ? 'claimable' : 'owned' },
+        undefined,
+        undefined,
+        { from, page: route.page, filters: route.filters, writeHistory: false }
+      );
+    }
+    if (options.writeHistory === true) commitRoute(route, 'replace');
+  }, [closeDetail, commitRoute, loadAttention, loadClaimable, loadMyWork, openDetail]);
+
+  const routeAdmissionRef = useRef(false);
+  useEffect(() => {
+    if (!isPageLayout) {
+      routeAdmissionRef.current = false;
+      return;
+    }
+    if (!accessGranted) {
+      routeAdmissionRef.current = false;
+      return;
+    }
+    if (routeAdmissionRef.current) return;
+    routeAdmissionRef.current = true;
+    const route = readBrowserOperationsRoute();
+    if (route.kind === 'home') {
+      // An unknown Operations sub-path or malformed query is safely canonicalised to the overview.
+      commitRoute({ kind: 'home' }, 'replace');
+      return;
+    }
+    if (route.kind === 'queue' && route.page === 1 && !hasOperationsFilters(route.filters)) return;
+    applyOperationsRoute(route, { writeHistory: true });
+  }, [accessGranted, applyOperationsRoute, commitRoute, isPageLayout]);
+
+  useEffect(() => {
+    if (!isPageLayout) return undefined;
+    const onPopState = () => {
+      const route = readBrowserOperationsRoute();
+      if (operationsRoutesEqual(route, routeRef.current)) return;
+      applyOperationsRoute(route);
+      focusWorkspaceTitle();
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [applyOperationsRoute, isPageLayout]);
+
+  const applyFilters = useCallback((next: OperationsQueueFilters) => {
+    if (view === 'home') return;
+    const canonical = normalizeOperationsFilters(next);
+    setFilters(canonical);
+    filtersRef.current = canonical;
+    commitRoute(queueRoute(view, 1, canonical));
+    if (view === 'attention') void loadAttention(0, undefined, undefined, canonical);
+    else if (view === 'my-work') void loadMyWork(0, undefined, undefined, canonical);
+    else void loadClaimable(0, undefined, undefined, canonical);
+    focusWorkspaceTitle();
+  }, [commitRoute, loadAttention, loadClaimable, loadMyWork, view]);
+
+  const backToQueue = useCallback(() => {
+    const historyState = typeof window === 'undefined'
+      ? null
+      : (window.history.state as { usr?: { pathomeOperationsPushed?: boolean } } | null)?.usr;
+    if (isPageLayout && historyState?.pathomeOperationsPushed === true) {
+      routerNavigate(-1);
+      return;
+    }
+    const current = routeRef.current;
+    const target = current.kind === 'detail'
+      ? returnRouteForDetail(current)
+      : current.kind === 'queue'
+        ? queueRoute(current.queue, 1, current.filters)
+        : { kind: 'home' as const };
+    applyOperationsRoute(target, { writeHistory: true });
+    focusWorkspaceTitle();
+  }, [applyOperationsRoute, isPageLayout, routerNavigate]);
+
+  /**
+   * Reconciles the visible context after the effective City/Team authority changed.
+   *
+   * Everything protected is dropped first, then only a still-authorized route is rebuilt. Filters
+   * that no longer name an authorized City/Team are removed before the server read, while independent
+   * type/status filters survive when they remain valid.
+   */
+  const reconcileScopeChange = useCallback((scopes: OperationsScope[]) => {
+    const current = routeRef.current;
+    const activeFilters = current.kind === 'home' ? EMPTY_OPERATIONS_FILTERS : current.filters;
+    const nextFilters = normalizeOperationsFilters({
+      ...activeFilters,
+      cityId: activeFilters.cityId !== null
+        && scopes.some((scope) => scope.cityId === activeFilters.cityId)
+        ? activeFilters.cityId : null,
+      teamId: activeFilters.teamId !== null
+        && scopes.some((scope) => scope.teamId === activeFilters.teamId)
+        ? activeFilters.teamId : null
+    });
+    const hadProtectedWork = current.kind === 'detail'
+      || availabilityDraftRef.current !== null
+      || busyCommand !== null;
+    clearProtectedState('authorization-lost');
+    const next: OperationsRoute = current.kind === 'detail'
+      ? (current.from === 'home' ? { kind: 'home' } : queueRoute(current.from, 1, nextFilters))
+      : current.kind === 'queue'
+        ? queueRoute(current.queue, 1, nextFilters)
+        : { kind: 'home' };
+    applyOperationsRoute(next, { writeHistory: true });
+    void refreshAll();
+    if (hadProtectedWork) {
+      showNotice('Your City or Team access changed. Work tied to the previous scope was cleared and reloaded from your current access.');
+    }
+  }, [applyOperationsRoute, busyCommand, clearProtectedState, refreshAll, showNotice]);
+
+  useLayoutEffect(() => {
+    if (!accessGranted) {
+      if (admittedScopeFingerprint !== null) setAdmittedScopeFingerprint(null);
+      return;
+    }
+    if (admittedScopeFingerprint === null) {
+      setAdmittedScopeFingerprint(effectiveScopeFingerprint);
+      return;
+    }
+    if (admittedScopeFingerprint === effectiveScopeFingerprint) return;
+    setAdmittedScopeFingerprint(effectiveScopeFingerprint);
+    reconcileScopeChange(operationsCapabilityScopes(capabilities));
+  }, [
+    accessGranted,
+    admittedScopeFingerprint,
+    capabilities,
+    effectiveScopeFingerprint,
+    reconcileScopeChange
+  ]);
 
   /**
    * Identity of the visible root, its version and the signed-in account. Revealed lessor contact
@@ -2203,7 +3420,8 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
       ?? snapshot.session?.version
       ?? snapshot.claimable?.expectedVersion
       ?? 'unrecorded';
-    return `${identity}|${detailTarget.source}|${detailTarget.targetType}-${detailTarget.targetId}|v${version}`;
+    return `${identity}|${detailTarget.source}|${detailTarget.targetType}-${detailTarget.targetId}`
+      + `|v${version}|a${authorityRef.current.authorizationGeneration()}`;
   })();
 
   /**
@@ -2217,15 +3435,42 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     onMarkConfirmedUnavailable: () => void markConfirmedUnavailable(),
     onOpenScheduling: () => {
       if (detail.status !== 'ready' || !detail.snapshot.session) return;
-      openScheduleDrawer(detail.snapshot.session.sessionId);
+      void openSchedulingDrawerFresh(detail.snapshot.session.sessionId);
     },
     onReorderItems: (itemIds) => void reorderItems(itemIds),
     onRemoveItem: (itemId, reason) => void removeItem(itemId, reason),
     onAddStop: (input) => void addStop(input),
     revealRequestContact,
     revealItemContact,
+    revealRequestTenantContact,
+    revealSessionTenantContact,
     searchListings,
     loadOwnedCandidates
+  };
+
+  /**
+   * The draft may only reach the detail while its exact Session is the open, editable root and its
+   * item is still active and editable. This render-time guard means a refresh that removed the item
+   * or moved the Session out of DRAFT can never briefly re-open an editor against stale context.
+   */
+  const openSessionForDraft = detail.status === 'ready' ? detail.snapshot.session : undefined;
+  const visibleAvailabilityDraft = availabilityDraft
+    && protectedAccess
+    && openSessionForDraft?.sessionId === availabilityDraft.sessionId
+    && openSessionForDraft.status === 'DRAFT'
+    && openSessionForDraft.items.some(
+      (item) => item.itemId === availabilityDraft.itemId
+        && item.removedAt === null
+        && item.confirmationStatus !== 'UNAVAILABLE'
+    )
+    ? availabilityDraft
+    : null;
+  const availabilityEditing: OperationsAvailabilityEditing = {
+    draft: visibleAvailabilityDraft,
+    begin: beginAvailabilityDraft,
+    change: changeAvailabilityDraft,
+    discard: discardAvailabilityDraft,
+    save: saveAvailability
   };
 
   /**
@@ -2244,6 +3489,28 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
               icon={<Lock size={20} />}
               title="Verifying your Operations access"
               body="Confirming your coordination assignment with the server. Work queues stay hidden until it is confirmed."
+            />
+            <SkeletonRows rows={3} />
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  /**
+   * The authority is granted, but its effective City/Team scope changed. Nothing built for the
+   * previous scope may remain on screen for even one paint; the layout effect clears and reloads it.
+   */
+  if (accessGranted && !scopeCurrent) {
+    return (
+      <section className="oe oe--embedded" aria-label="Operations workspace">
+        <div className="oe-main">
+          <div className="oe-stack" aria-busy="true">
+            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">Updating your team access</h2>
+            <StateMessage
+              icon={<Lock size={20} />}
+              title="Updating your team access"
+              body="Your City or Team assignment changed. Work from the previous scope is hidden while the queues reload from your current access."
             />
             <SkeletonRows rows={3} />
           </div>
@@ -2326,34 +3593,62 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
     && notice.sessionIdentity === (readOperationsSession()?.identity ?? null);
   const navItems: { view: QueueView; label: string; icon: typeof Home; count: number | null; flagged?: boolean }[] = [
     { view: 'home', label: 'Overview', icon: Home, count: null },
-    { view: 'attention', label: 'Needs attention', icon: Flag, count: attention.status === 'ready' ? attention.totalCount : null, flagged: true },
-    { view: 'my-work', label: 'My work', icon: ListChecks, count: myWork.status === 'ready' ? myWork.totalCount : null },
-    { view: 'claimable', label: 'Claimable work', icon: Inbox, count: claimable.status === 'ready' ? claimable.totalCount : null }
+    { view: 'attention', label: 'Needs attention', icon: Flag, count: attention.status === 'ready' ? attention.unfilteredTotalCount : null, flagged: true },
+    { view: 'my-work', label: 'My work', icon: ListChecks, count: myWork.status === 'ready' ? myWork.unfilteredTotalCount : null },
+    { view: 'claimable', label: 'Available work', icon: Inbox, count: claimable.status === 'ready' ? claimable.unfilteredTotalCount : null }
   ];
+  const navButton = (
+    item: (typeof navItems)[number],
+    variant: 'sidebar' | 'tabs'
+  ) => {
+    const Icon = item.icon;
+    const current = detailTarget === null && view === item.view;
+    return (
+      <button
+        key={`${variant}-${item.view}`}
+        type="button"
+        className={`${variant === 'sidebar' ? 'oe-sidebar-btn' : 'oe-tab-btn'}${item.flagged ? ' oe-nav-btn--flag' : ''}`}
+        aria-current={current ? 'page' : undefined}
+        onClick={() => { closeDetail(); navigate(item.view); }}
+      >
+        <Icon size={variant === 'sidebar' ? 18 : 20} aria-hidden="true" />
+        <span className="oe-nav-label">{item.label}</span>
+        {item.count !== null ? <span className="oe-nav-count">{item.count}</span> : null}
+      </button>
+    );
+  };
 
   return (
-    <section className="oe oe--embedded" aria-label="Operations workspace">
-      <div className="oe-main">
-        <div className="oe-stack">
-          <nav className="oe-subnav" aria-label="Operations queues">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const current = detailTarget === null && view === item.view;
-              return (
+    <section className={isPageLayout ? 'oe oe--page' : 'oe oe--embedded'} aria-label="Operations workspace">
+      {isPageLayout ? <a className="oe-skip" href="#oe-main-content">Skip to Operations content</a> : null}
+      <div className={isPageLayout ? 'oe-shell' : undefined}>
+        {isPageLayout ? (
+          <aside className="oe-sidebar" aria-label="Operations navigation">
+            <p className="oe-sidebar-brand">Operations</p>
+            <nav className="oe-sidebar-nav" aria-label="Operations destinations">
+              {navItems.map((item) => navButton(item, 'sidebar'))}
+            </nav>
+          </aside>
+        ) : null}
+        <div className="oe-main" id={isPageLayout ? 'oe-main-content' : undefined} tabIndex={isPageLayout ? -1 : undefined}>
+          <div className="oe-stack">
+          {!isPageLayout ? (
+            <nav className="oe-subnav" aria-label="Operations queues">
+              {navItems.map((item) => (
                 <button
                   key={item.view}
                   type="button"
                   className={`oe-subnav-btn${item.flagged ? ' oe-subnav-btn--flag' : ''}`}
-                  aria-current={current ? 'page' : undefined}
+                  aria-current={detailTarget === null && view === item.view ? 'page' : undefined}
                   onClick={() => { closeDetail(); navigate(item.view); }}
                 >
-                  <Icon size={16} aria-hidden="true" />
+                  {React.createElement(item.icon, { size: 16, 'aria-hidden': true })}
                   {item.label}
                   {item.count !== null ? <span className="oe-subnav-count">{item.count}</span> : null}
                 </button>
-              );
-            })}
-          </nav>
+              ))}
+            </nav>
+          ) : null}
 
           {noticeVisible && notice ? (
             <WorkspaceNotice
@@ -2373,11 +3668,18 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
                 state={detail}
                 busyAction={busyAction}
                 busyCommand={busyCommand}
+                schedulingOpening={schedulingOpening}
+                schedulingOpenError={schedulingOpenError}
                 contactContextKey={contactContextKey}
                 actions={detailActions}
-                onSaveAvailability={(itemId, choice, window) => void saveAvailability(itemId, choice, window)}
-                onBack={closeDetail}
-                onRetry={() => void openDetail(detailTarget)}
+                availability={availabilityEditing}
+                onBack={backToQueue}
+                onRetry={() => void openDetail(detailTarget, undefined, undefined, {
+                  from: view,
+                  page: (view === 'attention' ? attention.page : view === 'my-work' ? myWork.page : view === 'claimable' ? claimable.page : 0) + 1,
+                  filters,
+                  writeHistory: false
+                })}
                 onClaim={() => {
                   if (detail.status === 'ready' && detail.snapshot.claimable) void claimRoot(detail.snapshot.claimable);
                 }}
@@ -2395,9 +3697,15 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
                     onRetryScheduling={() => void reconcileScheduling(true)}
                     loadRanked={loadRankedRecommendations}
                     loadDiscovery={loadGeDiscovery}
+                    loadAvailability={loadGeAvailability}
                     onRefreshSession={() => {
                       if (scheduleOutcome?.kind === 'uncertain' || scheduleOutcome?.kind === 'scheduled') void reconcileScheduling();
-                      else if (detailTarget) void openDetail(detailTarget);
+                      else if (detailTarget) void openDetail(detailTarget, undefined, undefined, {
+                        from: view,
+                        page: (view === 'attention' ? attention.page : view === 'my-work' ? myWork.page : view === 'claimable' ? claimable.page : 0) + 1,
+                        filters,
+                        writeHistory: false
+                      });
                     }}
                   />
                 ) : null}
@@ -2422,28 +3730,39 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority }) => {
               busyClaimKey={busyClaimKey}
               blocked={busyAction !== null}
               onPage={(page) => {
-                if (view === 'attention') void loadAttention(page);
-                else if (view === 'my-work') void loadMyWork(page);
-                else void loadClaimable(page);
+                commitRoute(queueRoute(view, page + 1, filters));
+                if (view === 'attention') void loadAttention(page, undefined, undefined, filters);
+                else if (view === 'my-work') void loadMyWork(page, undefined, undefined, filters);
+                else if (view === 'claimable') void loadClaimable(page, undefined, undefined, filters);
+                focusWorkspaceTitle();
               }}
               onOpen={openDetail}
               onClaim={(item) => void claimRoot(item)}
               onRefresh={() => {
-                if (view === 'attention') void loadAttention(attention.page);
-                else if (view === 'my-work') void loadMyWork(myWork.page);
-                else void loadClaimable(claimable.page);
+                if (view === 'attention') void loadAttention(attention.page, undefined, undefined, filters);
+                else if (view === 'my-work') void loadMyWork(myWork.page, undefined, undefined, filters);
+                else if (view === 'claimable') void loadClaimable(claimable.page, undefined, undefined, filters);
               }}
               onNavigate={navigate}
+              filters={filters}
+              scopes={scopes}
+              onFiltersChange={applyFilters}
             />
           )}
+          </div>
         </div>
+        {isPageLayout ? (
+          <nav className="oe-tabbar" aria-label="Operations destinations">
+            {navItems.map((item) => navButton(item, 'tabs'))}
+          </nav>
+        ) : null}
       </div>
     </section>
   );
 };
 
 const OverviewView: React.FC<{
-  scopes: { teamId: number; cityName: string; teamName: string }[];
+  scopes: OperationsScope[];
   attention: PageState<OperationsMyWorkItem>;
   myWork: PageState<OperationsMyWorkItem>;
   claimable: PageState<ClaimableWorkItem>;
@@ -2455,7 +3774,7 @@ const OverviewView: React.FC<{
   const queues = [
     { view: 'attention' as QueueView, label: 'Needs attention', hint: 'Flagged for your next step', queue: attention },
     { view: 'my-work' as QueueView, label: 'My work', hint: 'Request and session roots you own', queue: myWork },
-    { view: 'claimable' as QueueView, label: 'Claimable work', hint: 'Unclaimed in your teams', queue: claimable }
+    { view: 'claimable' as QueueView, label: 'Available work', hint: 'Unclaimed in your teams', queue: claimable }
   ];
 
   return (
@@ -2560,7 +3879,7 @@ const OverviewView: React.FC<{
               : null}
             state={claimable.status}
             emptyText="No unclaimed work in your teams right now."
-            linkLabel="Claimable work"
+            linkLabel="Available work"
             onLink={() => onNavigate('claimable')}
             onRetry={onRetryClaimable}
           >
@@ -2660,7 +3979,13 @@ const QueueScreen: React.FC<{
   onClaim: (item: ClaimableWorkItem) => void;
   onRefresh: () => void;
   onNavigate: (view: QueueView) => void;
-}> = ({ view, attention, myWork, claimable, busyClaimKey, blocked, onPage, onOpen, onClaim, onRefresh, onNavigate }) => {
+  filters: OperationsQueueFilters;
+  scopes: OperationsScope[];
+  onFiltersChange: (filters: OperationsQueueFilters) => void;
+}> = ({
+  view, attention, myWork, claimable, busyClaimKey, blocked, onPage, onOpen, onClaim, onRefresh, onNavigate,
+  filters, scopes, onFiltersChange
+}) => {
   const copy = QUEUE_COPY[view];
   const queue = view === 'attention' ? attention : view === 'my-work' ? myWork : claimable;
 
@@ -2674,6 +3999,15 @@ const QueueScreen: React.FC<{
             <span className="oe-num">{queue.totalCount}</span> {queue.totalCount === 1 ? 'item' : 'items'}
           </p>
         ) : null}
+      />
+
+      <OperationsFilterBar
+        filters={filters}
+        scopes={scopes}
+        totalCount={queue.totalCount}
+        unfilteredTotalCount={queue.unfilteredTotalCount}
+        loading={queue.status === 'loading'}
+        onChange={onFiltersChange}
       />
 
       {queue.status === 'loading' ? (
@@ -2690,11 +4024,21 @@ const QueueScreen: React.FC<{
             Try again
           </button>
         </StateMessage>
+      ) : queue.totalCount === 0 && hasOperationsFilters(filters) ? (
+        <StateMessage
+          icon={<Filter size={20} />}
+          title="No records match these filters"
+          body={`Your authorized scope has ${queue.unfilteredTotalCount} ${queue.unfilteredTotalCount === 1 ? 'record' : 'records'}, but none match the selected filters. City and Team filters can hide records that are still authorized.`}
+        >
+          <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={() => onFiltersChange(EMPTY_OPERATIONS_FILTERS)}>
+            Clear filters
+          </button>
+        </StateMessage>
       ) : queue.totalCount === 0 ? (
         <StateMessage icon={<Inbox size={20} />} title={copy.emptyTitle} body={copy.emptyBody}>
           {view !== 'claimable' ? (
             <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={() => onNavigate('claimable')}>
-              View claimable work
+              View available work
             </button>
           ) : null}
         </StateMessage>

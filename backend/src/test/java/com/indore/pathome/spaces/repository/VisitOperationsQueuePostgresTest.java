@@ -1,9 +1,12 @@
 package com.indore.pathome.spaces.repository;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.service.NotificationService;
 import com.indore.pathome.spaces.service.OperationalNotificationAuthorizationService;
 import com.indore.pathome.spaces.service.OperationalSecurityGuards;
+import com.indore.pathome.spaces.service.OperationsMyWorkService;
 import com.indore.pathome.spaces.service.VisitNotificationOutboxWorker;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -14,6 +17,7 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -135,6 +139,71 @@ class VisitOperationsQueuePostgresTest {
                 globalAdmin.getId(), null, null, PageRequest.of(0, 10));
         assertEquals(4, nullFilters.getTotalElements());
         assertEquals("Direct city", nullFilters.getContent().get(1).getListingTitle());
+    }
+
+    @Test
+    void myWorkFiltersApplyInsideTheAuthorizedScopeBeforeCountsAndPagination() {
+        SupportedCity cityA = city("mywork-a");
+        SupportedCity cityB = city("mywork-b");
+        OperatingTeam teamA = team(cityA, "mywork-a-one");
+        OperatingTeam sameCityOther = team(cityA, "mywork-a-two");
+        OperatingTeam teamB = team(cityB, "mywork-b-one");
+        User coordinator = staff("mywork-coordinator", Role.ROLE_TENANT);
+        activateStaff(coordinator);
+        grant(coordinator, StaffCapability.OPS_COORDINATE, StaffScopeType.TEAM, null, teamA,
+                Instant.now().minusSeconds(60), null);
+
+        LocalDateTime created = LocalDateTime.of(2026, 3, 1, 10, 0);
+        PropertyVisitRequest request = scopedRequest("mywork-request", VisitRequestStatus.RECEIVED, created,
+                cityA, teamA, coordinator, null, true);
+        VisitSession draftOne = scopedSession("mywork-draft-one", cityA, teamA, coordinator);
+        VisitSession draftTwo = scopedSession("mywork-draft-two", cityA, teamA, coordinator);
+        scopedSession("mywork-other-team", cityA, sameCityOther, coordinator);
+        scopedSession("mywork-other-city", cityB, teamB, coordinator);
+
+        var service = new OperationsMyWorkService(
+                new OperationsMyWorkRepository(new NamedParameterJdbcTemplate(jdbc.getDataSource()), new ObjectMapper()));
+
+        var all = service.list(coordinator.getId(), 0, 20, false);
+        assertEquals(3, all.totalCount());
+        assertEquals(3, all.unfilteredTotalCount());
+
+        var requests = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse("REQUEST", "RECEIVED", String.valueOf(cityA.getId()),
+                        String.valueOf(teamA.getId()), null));
+        assertEquals(1, requests.totalCount());
+        assertEquals(3, requests.unfilteredTotalCount());
+        assertEquals(request.getId(), requests.items().get(0).targetId());
+
+        var drafts = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse("SESSION", "DRAFT", null, null, null));
+        assertEquals(2, drafts.totalCount());
+        assertEquals(2, drafts.items().size());
+
+        var exact = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse("SESSION", null, null, null, String.valueOf(draftTwo.getId())));
+        assertEquals(1, exact.totalCount());
+        assertEquals(draftTwo.getId(), exact.items().get(0).targetId());
+
+        var wrongTypeForId = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse("REQUEST", null, null, null, String.valueOf(draftOne.getId())));
+        assertEquals(0, wrongTypeForId.totalCount());
+        assertEquals(3, wrongTypeForId.unfilteredTotalCount());
+
+        var foreignCity = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse(null, null, String.valueOf(cityB.getId()), null, null));
+        assertEquals(0, foreignCity.totalCount(), "a foreign City filter may never broaden or reveal rows");
+        assertEquals(3, foreignCity.unfilteredTotalCount());
+
+        var foreignTeam = service.list(coordinator.getId(), 0, 20, false,
+                OperationsWorkFilter.parse(null, null, null, String.valueOf(teamB.getId()), null));
+        assertEquals(0, foreignTeam.totalCount());
+
+        var secondPage = service.list(coordinator.getId(), 1, 2, false,
+                OperationsWorkFilter.parse("SESSION", "DRAFT", null, null, null));
+        assertEquals(2, secondPage.totalCount());
+        assertEquals(0, secondPage.items().size(), "the filtered count drives pagination, not the scope total");
+        assertEquals(3, secondPage.unfilteredTotalCount());
     }
 
     @Test

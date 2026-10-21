@@ -5,6 +5,13 @@ import { Property } from '../types';
 import { propertyService } from '../services/propertyService';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import { tenantVisitAcknowledgement } from '../utils/tenantVisitView';
+import {
+  buildTenantAvailabilityWindow,
+  TENANT_VISIT_ZONE,
+  TENANT_VISIT_ZONES,
+  tenantAvailabilityErrorCopy,
+  tenantVisitMinimumDate
+} from '../utils/tenantAvailability';
 
 interface VisitRequestModalProps {
   property: Property | null;
@@ -17,30 +24,25 @@ interface VisitRequestModalProps {
 
 type TimeWindow = 'Morning' | 'Afternoon' | 'Evening';
 
-const TIME_WINDOWS: Array<{ value: TimeWindow; hours: string }> = [
-  { value: 'Morning', hours: '10 AM–1 PM' },
-  { value: 'Afternoon', hours: '1–4 PM' },
-  { value: 'Evening', hours: '4–7 PM' }
+const TIME_WINDOWS: Array<{ value: TimeWindow; hours: string; startTime: string; endTime: string }> = [
+  { value: 'Morning', hours: '10 AM–1 PM', startTime: '10:00', endTime: '13:00' },
+  { value: 'Afternoon', hours: '1–4 PM', startTime: '13:00', endTime: '16:00' },
+  { value: 'Evening', hours: '4–7 PM', startTime: '16:00', endTime: '19:00' }
 ];
-
-const dateInputValue = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
 
 const dateFromInput = (value: string): Date | null => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1
-    && date.getDate() === Number(match[3]) ? date : null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return date.getUTCFullYear() === Number(match[1]) && date.getUTCMonth() === Number(match[2]) - 1
+    && date.getUTCDate() === Number(match[3]) ? date : null;
 };
 
 const formatRequestDate = (value: string): string => {
   const date = dateFromInput(value);
-  return date ? new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(date) : '';
+  return date ? new Intl.DateTimeFormat('en-IN', {
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'
+  }).format(date) : '';
 };
 
 const formatRupees = (value?: number) => value && value > 0 ? `₹${value.toLocaleString('en-IN')}` : 'On request';
@@ -54,6 +56,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
   const [moveInTiming, setMoveInTiming] = useState('');
   const [preferredDate, setPreferredDate] = useState('');
   const [preferredWindow, setPreferredWindow] = useState<TimeWindow | ''>('');
+  const [visitZone, setVisitZone] = useState(TENANT_VISIT_ZONE);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -63,7 +66,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const inFlightRef = useRef(false);
   const reduceMotion = useReducedMotion();
-  const minDate = dateInputValue(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 1));
+  const minDate = tenantVisitMinimumDate(visitZone);
 
   useEffect(() => {
     if (!property || !isOpen) return;
@@ -73,6 +76,7 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     setMoveInTiming('');
     setPreferredDate('');
     setPreferredWindow('');
+    setVisitZone(TENANT_VISIT_ZONE);
     setNote('');
     setError('');
     setAcknowledgement(null);
@@ -105,11 +109,8 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     setError('');
     const selectedWindow = TIME_WINDOWS.find(item => item.value === preferredWindow);
     const selectedDate = formatRequestDate(preferredDate);
-    const tomorrow = new Date();
-    tomorrow.setHours(0, 0, 0, 0);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    if (!selectedDate || preferredDate < dateInputValue(tomorrow) || !selectedWindow) {
-      setError('Choose a preferred date starting tomorrow and a time window to continue.');
+    if (!selectedDate || preferredDate < tenantVisitMinimumDate(visitZone) || !selectedWindow) {
+      setError('Choose a valid visit timezone, a preferred date starting tomorrow in that zone, and a time window to continue.');
       return;
     }
     const minimum = budgetMin.trim() ? Number(budgetMin) : undefined;
@@ -121,6 +122,19 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     }
     if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
       setError('Minimum budget cannot exceed maximum budget.');
+      return;
+    }
+    const availability = buildTenantAvailabilityWindow({
+      startDate: preferredDate,
+      startTime: selectedWindow.startTime,
+      endDate: preferredDate,
+      endTime: selectedWindow.endTime,
+      preferredDate: '',
+      preferredTime: '',
+      zoneId: visitZone
+    }, 0);
+    if (!availability.ok) {
+      setError(tenantAvailabilityErrorCopy(availability.error));
       return;
     }
     const requestSession = readTenantVisitSession(tenantUserId);
@@ -137,7 +151,11 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
         budgetMax: maximum,
         preferredAreas,
         moveInTiming,
-        preferredVisitTiming: `${selectedDate} · ${selectedWindow.value} (${selectedWindow.hours})`,
+        preferredVisitTiming: `${selectedDate} · ${selectedWindow.value} (${selectedWindow.hours}) · ${visitZone}`,
+        availabilityStartAt: availability.command.availabilityStartAt,
+        availabilityEndAt: availability.command.availabilityEndAt,
+        availabilityZoneId: availability.command.availabilityZoneId,
+        preferredAt: availability.command.preferredAt,
         note: note.trim() || undefined
       });
       if (!isCurrentTenantVisitSession(requestSession)) return;
@@ -237,6 +255,22 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
                 </div>
 
                 <p className="text-sm leading-5 text-slate-600">Tell us when you’d prefer to visit. We’ll confirm availability before scheduling.</p>
+
+                <label className="block text-sm font-semibold text-slate-900">Visit timezone
+                  <select
+                    value={visitZone}
+                    onChange={event => {
+                      setVisitZone(event.target.value);
+                      setError('');
+                    }}
+                    className="mt-2 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-base font-normal text-slate-900 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+                  >
+                    {TENANT_VISIT_ZONES.map(zone => <option key={zone} value={zone}>{zone}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs font-normal leading-5 text-slate-600">
+                    The dates and times below are read in this timezone, regardless of your device.
+                  </span>
+                </label>
 
                 <fieldset>
                   <legend className="text-sm font-semibold text-slate-900">Preferred future date <span className="text-rose-700">*</span></legend>

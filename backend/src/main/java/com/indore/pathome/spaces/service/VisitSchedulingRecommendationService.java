@@ -144,7 +144,7 @@ public class VisitSchedulingRecommendationService {
                         .filter(value -> !value.startsWith("GE_")).toList(), List.of(), view.candidates());
     }
 
-    private String normalizeDiscoveryQuery(String q) {
+    static String normalizeDiscoveryQuery(String q) {
         if (q == null) return "";
         String value = q.strip().toLowerCase(Locale.ROOT);
         if (value.isEmpty() || value.length() > 80 || value.codePoints().anyMatch(Character::isISOControl))
@@ -152,7 +152,7 @@ public class VisitSchedulingRecommendationService {
         return value;
     }
 
-    private String discoveryNamePattern(String query) {
+    static String discoveryNamePattern(String query) {
         StringBuilder pattern = new StringBuilder("%");
         for (int offset = 0; offset < query.length(); offset++) {
             char ch = query.charAt(offset);
@@ -162,7 +162,7 @@ public class VisitSchedulingRecommendationService {
         return pattern.append('%').toString();
     }
 
-    private Long exactGeUserId(String query) {
+    static Long exactGeUserId(String query) {
         if (query.isEmpty() || query.chars().anyMatch(ch -> ch < '0' || ch > '9')) return 0L;
         try { return Long.parseLong(query); }
         catch (NumberFormatException ex) { return 0L; }
@@ -170,6 +170,128 @@ public class VisitSchedulingRecommendationService {
 
     boolean isPotentialOwnedGe(Long userId, String city) {
         return userId != null && city != null && profiles.isPotentialActiveStaffInCity(userId, city);
+    }
+
+    /**
+     * Re-evaluates one authorized, paged batch of potential City scheduling candidates and exposes
+     * only coarse per-Ground-Executive outcomes. The full evaluated population is exactly the batch
+     * the caller scanned, so a bounded page is never presented as organization-wide truth.
+     */
+    public AvailabilityAssessment assessOwnedAvailability(VisitSession session,
+            List<GroundExecutiveSchedulingProfile> batch, Instant now) {
+        if (session == null || now == null)
+            throw new IllegalArgumentException("Visit Session and evaluation time are required");
+        List<GroundExecutiveSchedulingProfile> profilesToEvaluate = batch == null ? List.of() : batch;
+        int responseLimit = Math.max(1, profilesToEvaluate.size());
+        Evaluation evaluation = evaluate(session, now, List.of(), false, null, false,
+                responseLimit, true, null, profilesToEvaluate);
+        Map<Long, List<RecommendationRejectionReason>> rejectedByGe = new HashMap<>();
+        for (RecommendationRejection rejection : evaluation.view().rejectedGroundExecutives())
+            rejectedByGe.put(rejection.groundExecutiveUserId(), rejection.reasons());
+        Set<Long> feasibleGeIds = evaluation.feasible().stream()
+                .map(CandidatePlan::geId).collect(Collectors.toSet());
+        return new AvailabilityAssessment(evaluation.view(), describeOwnedPlan(session, now),
+                feasibleGeIds, rejectedByGe);
+    }
+
+    /**
+     * The operator-facing timing facts for one owned plan. The calculated duration is exactly the
+     * configured dwell total plus the between-stop travel allowances the evaluator uses. First-stop
+     * arrival travel and later-commitment protection are separate feasibility checks and are never
+     * folded into this displayed sum.
+     */
+    public OwnedPlanFacts describeOwnedPlan(VisitSession session, Instant now) {
+        if (session == null) throw new IllegalArgumentException("Visit Session is required");
+        Instant evaluationTime = now == null ? Instant.now() : now;
+        List<VisitSessionItem> active = items.findBySessionIdAndRemovedAtIsNullOrderByPositionAsc(session.getId());
+        List<VisitSessionItem> confirmed = active.stream()
+                .filter(item -> item.getConfirmationStatus() == VisitSessionItemConfirmationStatus.CONFIRMED)
+                .toList();
+        List<PropertyVisitRequest> sessionRequests = requests.findBySessionIdOrderByCreatedAtAscIdAsc(session.getId());
+        Set<Long> directRequestIds = confirmed.stream().map(VisitSessionItem::getSourceRequest)
+                .filter(Objects::nonNull).map(PropertyVisitRequest::getId).collect(Collectors.toSet());
+        List<PropertyVisitRequest> directRequests = sessionRequests.stream()
+                .filter(request -> directRequestIds.contains(request.getId())).toList();
+
+        Instant tenantStart = null;
+        Instant tenantEnd = null;
+        String tenantZone = null;
+        List<Instant> preferredTimes = directRequests.stream().map(PropertyVisitRequest::getPreferredAt)
+                .filter(Objects::nonNull).distinct().sorted().toList();
+        if (!directRequests.isEmpty() && directRequests.stream().allMatch(request ->
+                request.getAvailabilityStartAt() != null && request.getAvailabilityEndAt() != null
+                        && request.getAvailabilityZoneId() != null)) {
+            tenantStart = directRequests.stream().map(PropertyVisitRequest::getAvailabilityStartAt)
+                    .max(Comparator.naturalOrder()).orElseThrow();
+            tenantEnd = directRequests.stream().map(PropertyVisitRequest::getAvailabilityEndAt)
+                    .min(Comparator.naturalOrder()).orElseThrow();
+            tenantZone = directRequests.get(0).getAvailabilityZoneId();
+            if (!tenantStart.isBefore(tenantEnd)) {
+                tenantStart = null;
+                tenantEnd = null;
+            }
+        }
+
+        int dwell = policy.getStopDwellMinutes();
+        Integer maximumDuration = visitPolicies.findById(VisitPolicy.SINGLETON_ID)
+                .map(VisitPolicy::getMaxVisitSessionDurationMinutes)
+                .orElse(VisitPolicy.DEFAULT_MAX_SESSION_DURATION_MINUTES);
+        boolean complete = !active.isEmpty()
+                && active.stream().allMatch(item ->
+                        item.getConfirmationStatus() == VisitSessionItemConfirmationStatus.CONFIRMED)
+                && active.stream().allMatch(item -> item.getAvailabilityStartAt() != null
+                        && item.getAvailabilityEndAt() != null && item.getAvailabilityZoneId() != null)
+                && tenantStart != null && tenantEnd != null;
+
+        Map<Long, Integer> offsetByItem = new HashMap<>();
+        List<OwnedPlanTravelLeg> legs = new ArrayList<>();
+        Integer calculatedDuration = null;
+        if (complete) {
+            try {
+                Map<Long, Locality> localityById = loadLocalities(confirmed.stream()
+                        .map(VisitSessionItem::getListing).toList());
+                List<Stop> plannedStops = new ArrayList<>();
+                for (VisitSessionItem item : confirmed) {
+                    Listing listing = item.getListing();
+                    Locality locality = listing.getCanonicalLocalityId() == null ? null
+                            : localityById.get(listing.getCanonicalLocalityId());
+                    plannedStops.add(new Stop(item, point(listing, locality, "PROPERTY")));
+                }
+                int offset = 0;
+                for (int index = 0; index < plannedStops.size(); index++) {
+                    VisitSessionItem item = plannedStops.get(index).item();
+                    offsetByItem.put(item.getId(), offset);
+                    offset = Math.addExact(offset, dwell);
+                    if (index + 1 < plannedStops.size()) {
+                        TravelEstimate leg = estimate(plannedStops.get(index).point(),
+                                plannedStops.get(index + 1).point(), evaluationTime);
+                        legs.add(new OwnedPlanTravelLeg(item.getPosition(),
+                                plannedStops.get(index + 1).item().getPosition(), minutes(leg.duration()),
+                                leg.originSource(), leg.confidence().name()));
+                        offset = Math.addExact(offset, minutes(leg.duration()));
+                    }
+                }
+                calculatedDuration = offset;
+            } catch (ArithmeticException | EntityNotFoundException ex) {
+                calculatedDuration = null;
+                offsetByItem.clear();
+                legs.clear();
+            }
+        }
+
+        List<OwnedPlanStop> stops = new ArrayList<>();
+        for (VisitSessionItem item : active) {
+            stops.add(new OwnedPlanStop(item.getPosition(), item.getId(), item.getListing().getId(),
+                    item.getConfirmationStatus().name(), item.getAvailabilityStartAt(),
+                    item.getAvailabilityEndAt(), item.getAvailabilityZoneId(),
+                    item.getAvailabilitySource() == null ? null : item.getAvailabilitySource().name(),
+                    item.getAvailabilityConfirmedAt(), offsetByItem.get(item.getId())));
+        }
+        boolean planningWindowBounded = tenantStart != null && tenantEnd != null
+                && Duration.between(tenantStart, tenantEnd)
+                .compareTo(Duration.ofDays(policy.getMaximumPlanningWindowDays())) > 0;
+        return new OwnedPlanFacts(tenantStart, tenantEnd, tenantZone, preferredTimes, stops,
+                dwell, maximumDuration, calculatedDuration, List.copyOf(legs), planningWindowBounded);
     }
 
     /**
@@ -994,4 +1116,20 @@ public class VisitSchedulingRecommendationService {
 
     public record LiveRepairCandidate(Long geId, Instant start, Instant end, int durationMinutes,
             String zoneId, String travelConfidence, String locationAssessment) {}
+
+    public record OwnedPlanFacts(Instant tenantStart, Instant tenantEnd, String tenantZoneId,
+            List<Instant> preferredTimes, List<OwnedPlanStop> stops, int configuredStopDwellMinutes,
+            Integer maximumSessionDurationMinutes, Integer calculatedDurationMinutes,
+            List<OwnedPlanTravelLeg> betweenStopTravel, boolean planningWindowBounded) {}
+
+    public record OwnedPlanStop(int position, Long itemId, Long listingId, String confirmationStatus,
+            Instant availabilityStartAt, Instant availabilityEndAt, String availabilityZoneId,
+            String availabilitySource, Instant availabilityConfirmedAt, Integer offsetMinutes) {}
+
+    public record OwnedPlanTravelLeg(int fromPosition, int toPosition, int minutes, String source,
+            String confidence) {}
+
+    public record AvailabilityAssessment(VisitSchedulingRecommendationView view, OwnedPlanFacts planFacts,
+            Set<Long> feasibleGeIds,
+            Map<Long, List<RecommendationRejectionReason>> rejectedByGe) {}
 }

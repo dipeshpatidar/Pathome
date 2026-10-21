@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.service;
 import com.indore.pathome.spaces.dto.ClaimableWorkItem;
 import com.indore.pathome.spaces.dto.ClaimableWorkPage;
 import com.indore.pathome.spaces.dto.ClaimableWorkTargetType;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.repository.ClaimableWorkRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.security.access.AccessDeniedException;
@@ -21,14 +22,20 @@ public class ClaimableWorkService {
 
     @Transactional(readOnly = true)
     public ClaimableWorkPage list(Long userId, int page, int size) {
+        return list(userId, page, size, OperationsWorkFilter.NONE);
+    }
+
+    @Transactional(readOnly = true)
+    public ClaimableWorkPage list(Long userId, int page, int size, OperationsWorkFilter filter) {
         requireUser(userId);
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         if (size < 1 || size > MAX_PAGE_SIZE) throw new IllegalArgumentException("Size must be between 1 and 100");
         long offset = Math.multiplyExact((long) page, (long) size);
-        ClaimableWorkRepository.Snapshot snapshot = repository.page(userId, offset, size);
+        ClaimableWorkRepository.Snapshot snapshot = repository.page(userId, offset, size, filter);
         requireEligible(snapshot.callerEligible());
         long totalPages = snapshot.totalCount() == 0 ? 0 : ((snapshot.totalCount() - 1) / size) + 1;
-        return new ClaimableWorkPage(snapshot.items(), snapshot.totalCount(), page, size, totalPages);
+        return new ClaimableWorkPage(snapshot.items(), snapshot.totalCount(),
+                snapshot.unfilteredTotalCount(), page, size, totalPages);
     }
 
     @Transactional(readOnly = true)

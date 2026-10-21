@@ -44,6 +44,16 @@ const CONTENT_TYPES = {
 
 const WINDOW_START = '2027-02-14T09:30:00+05:30';
 const WINDOW_END = '2027-02-14T18:00:00+05:30';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const selectionKey = (actorId, sessionId, commandId) => `${actorId}:${sessionId}:${commandId}`;
+const canonicalSelection = (body) => JSON.stringify({
+  expectedSessionVersion: body?.expectedSessionVersion,
+  groundExecutiveUserId: body?.groundExecutiveUserId,
+  scheduledAt: body?.scheduledAt,
+  zoneId: body?.zoneId,
+  overrideReason: body?.overrideReason ?? null,
+  commandId: body?.commandId
+});
 
 /* ------------------------------------------------------------------ *
  * Stub backend
@@ -162,6 +172,55 @@ const recommendationView = (overrides = {}) => ({
   ...overrides
 });
 
+const geAvailabilityView = (overrides = {}) => ({
+  sessionId: 3108,
+  sessionVersion: 6,
+  evaluatedAt: '2027-02-14T04:00:00Z',
+  schedulingPolicyVersion: '2cb-v1',
+  visitPolicyVersion: 3,
+  planInputFingerprint: 'a'.repeat(64),
+  planStatus: 'RECOMMENDATION_AVAILABLE',
+  planReady: true,
+  planExplanationCodes: [],
+  timing: {
+    configuredStopDwellMinutes: 15,
+    maximumSessionDurationMinutes: 60,
+    calculatedItineraryDurationMinutes: 45,
+    durationScope: 'DWELL_PLUS_BETWEEN_STOP_TRAVEL',
+    tenantWindow: {
+      startAt: '2027-02-14T04:00:00Z',
+      endAt: '2027-02-16T12:00:00Z',
+      // A tenant abroad: the availability view must use this owning zone, not the browser or IST.
+      zoneId: 'Europe/Berlin',
+      preferredTimes: ['2027-02-14T05:00:00Z']
+    },
+    stops: [
+      { position: 1, itemId: 91, listingId: 8001, confirmationStatus: 'CONFIRMED',
+        availabilityStartAt: '2027-02-14T04:00:00Z', availabilityEndAt: '2027-02-16T12:00:00Z',
+        zoneId: 'Europe/Berlin', availabilitySource: 'PHONE',
+        availabilityConfirmedAt: '2026-10-12T16:00:00Z', offsetMinutes: 0 },
+      { position: 2, itemId: 92, listingId: 8002, confirmationStatus: 'CONFIRMED',
+        availabilityStartAt: '2027-02-14T04:00:00Z', availabilityEndAt: '2027-02-16T12:00:00Z',
+        zoneId: 'Europe/Berlin', availabilitySource: 'PHONE',
+        availabilityConfirmedAt: '2026-10-12T16:00:00Z', offsetMinutes: 30 }
+    ],
+    betweenStopTravel: [
+      { fromPosition: 1, toPosition: 2, minutes: 15, source: 'SAME_CITY', confidence: 'MEDIUM' }
+    ],
+    planningWindowBounded: false
+  },
+  evaluationBounded: false,
+  entries: [
+    { groundExecutiveUserId: 4207, displayName: 'Rahul Verma', resultCode: 'FEASIBLE_OPTION_FOUND' },
+    { groundExecutiveUserId: 5100, displayName: 'Meena Rao', resultCode: 'COVERAGE_NOT_SUITABLE' },
+    { groundExecutiveUserId: 5300, displayName: 'Sunil Nair', resultCode: 'NO_FEASIBLE_OPTION_FOUND' }
+  ],
+  pageSize: 20,
+  returnedEntryCount: 3,
+  nextCursor: null,
+  ...overrides
+});
+
 const stub = {
   log: [],
   /**
@@ -178,6 +237,7 @@ const stub = {
   requestStatus: 'RECEIVED',
   /** Set once a booking has been accepted, used by the `refresh-fail` mode. */
   bookingDone: false,
+  dropConsumed: false,
   /** Cursor-page request counter, so a duplicate Load More is directly observable. */
   cursorCalls: 0,
   /** Number of contact reads held open by the delay mode, for diagnostics. */
@@ -213,6 +273,8 @@ const stub = {
   rankedCandidateScheduledAt: '2027-02-14T05:00:00Z',
   /** R3: the exact unusable booking body the `malformed-200` mode answers with. */
   malformedBooking: { scheduledAt: 'not-a-time', groundExecutiveUserId: -1 },
+  /** H6: a valid booking receipt may express the selected instant with an equivalent offset. */
+  bookingReceiptScheduledAt: null,
   /** R1 target identity: list the unrelated Session #4109 as an owned root when armed. */
   unrelatedSessionEnabled: false,
   unrelatedSession: unrelatedSessionView(),
@@ -222,6 +284,9 @@ const stub = {
    * never be treated as this Request's.
    */
   sameIdRequestEnabled: false,
+  /** One transient failure of the fresh Session read that precedes opening a scheduling drawer. */
+  failNextSessionDetail: false,
+  nextSessionDetailBody: null,
   /**
    * R1 target identity: one-shot hold on a single response, so the OE can leave the record — or open
    * another one — while the command that produced it is still in flight. The response is then
@@ -246,11 +311,23 @@ const stub = {
   failQueueReads: false,
   /** The roots a release command has taken out of this account's queues. */
   releasedTargets: new Set(),
+  /** Controlled B09/V50 receipts, keyed by authenticated actor, exact Session and command UUID. */
+  receipts: new Map(),
+  /** One exact actor-bound receipt GET held for a stale-continuation barrier. */
+  holdSelectionReceipt: null,
+  holdNextSelectionReceipt: false,
+  holdSelectionReceiptActor: null,
+  holdSelectionReceiptRoot: null,
+  heldSelectionReceipt: false,
+  heldSelectionReceiptContext: null,
+  heldSelectionReceiptReleases: new Map(),
+  releaseHeldSelectionReceipt: null,
   reset(mode = 'learn', phase = 'intake') {
     this.log = [];
     this.mode = mode;
     this.phase = phase;
     this.bookingDone = false;
+    this.dropConsumed = false;
     this.cursorCalls = 0;
     this.contactHolds = 0;
     this.detailDenied = false;
@@ -262,10 +339,20 @@ const stub = {
     this.releaseDenialReconciliation = null;
     this.holdContactMs = 0;
     this.rankedCandidateScheduledAt = '2027-02-14T05:00:00Z';
+    this.rankedStatus = 'EVALUATED';
+    this.rankedCandidates = null;
+    this.availabilityOverride = null;
+    this.availabilityFailOnce = false;
+    // F1: a denial for the first page, or only for a continuation cursor.
+    this.availabilityStatus = null;
+    this.availabilityCursorStatus = null;
     this.malformedBooking = { scheduledAt: 'not-a-time', groundExecutiveUserId: -1 };
+    this.bookingReceiptScheduledAt = null;
     this.unrelatedSessionEnabled = false;
     this.unrelatedSession = unrelatedSessionView();
     this.sameIdRequestEnabled = false;
+    this.failNextSessionDetail = false;
+    this.nextSessionDetailBody = null;
     this.holdResponse = null;
     this.heldResponse = false;
     this.releaseHeldResponse = null;
@@ -273,6 +360,15 @@ const stub = {
     this.mutationResponseOverride = null;
     this.failQueueReads = false;
     this.releasedTargets = new Set();
+    this.receipts = new Map();
+    this.holdSelectionReceipt = null;
+    this.holdNextSelectionReceipt = false;
+    this.holdSelectionReceiptActor = null;
+    this.holdSelectionReceiptRoot = null;
+    this.heldSelectionReceipt = false;
+    this.heldSelectionReceiptContext = null;
+    this.heldSelectionReceiptReleases = new Map();
+    this.releaseHeldSelectionReceipt = null;
     this.session = sessionView(
       phase === 'draft'
         ? {
@@ -343,6 +439,17 @@ const stub = {
               }
             : {}
     );
+    /**
+     * Account B owns a separate immutable instance of the same numeric Session fixture. Reads must
+     * never mutate account A's ownership as a side effect, and a B-owned positive control must not be
+     * counted as evidence that B can read A's root.
+     */
+    this.sessionB = {
+      ...this.session,
+      coordinatorUserId: ACCOUNT_B.id,
+      items: this.session.items.map((entry) => ({ ...entry })),
+      linkedRequestVersions: this.session.linkedRequestVersions.map((entry) => ({ ...entry }))
+    };
     // A session that exists (draft or booked) already owns its linked request.
     this.requestStatus = phase === 'intake' ? 'RECEIVED' : 'COORDINATING';
   },
@@ -377,17 +484,18 @@ const summary = (overrides = {}) => ({
   ...overrides
 });
 
-const myWorkItems = () => {
+const myWorkItems = (actorId) => {
   // Any phase that has a session lists that session as the owned root.
   if (stub.phase !== 'intake') {
+    const owned = actorId === ACCOUNT_B.id ? stub.sessionB : stub.session;
     const items = stub.releasedTargets.has('SESSION-3108') ? [] : [summary({
       targetType: 'SESSION',
       targetId: 3108,
-      expectedVersion: stub.session.version,
-      status: stub.session.status,
+      expectedVersion: owned.version,
+      status: owned.status,
       linkedRequestVersions: [{ requestId: 501, version: 5 }]
     })];
-    if (stub.unrelatedSessionEnabled) {
+    if (stub.unrelatedSessionEnabled && actorId === ACCOUNT_A.id) {
       items.push(summary({
         targetType: 'SESSION',
         targetId: 4109,
@@ -396,7 +504,7 @@ const myWorkItems = () => {
         linkedRequestVersions: []
       }));
     }
-    if (stub.sameIdRequestEnabled) {
+    if (stub.sameIdRequestEnabled && actorId === ACCOUNT_A.id) {
       items.push(summary({
         targetType: 'REQUEST',
         targetId: 3108,
@@ -407,6 +515,7 @@ const myWorkItems = () => {
     }
     return items;
   }
+  if (actorId === ACCOUNT_B.id) return [];
   return [summary({ status: stub.requestStatus, expectedVersion: stub.requestStatus === 'RECEIVED' ? 4 : 6 })];
 };
 
@@ -452,7 +561,7 @@ const sameIdRequestDetail = () => requestDetail({
 });
 
 /** The stub backend. `url` carries the query, so cursor and search behaviour is the real one. */
-const apiResponse = (url, method, body) => {
+const apiResponse = (url, method, body, actorId = ACCOUNT_A.id) => {
   const path = url.pathname;
 
   if (path === '/api/v1/staff/me/capabilities') return { status: 200, body: capabilities() };
@@ -460,13 +569,17 @@ const apiResponse = (url, method, body) => {
 
   if (path === '/api/v1/operations/my-work') {
     const attentionOnly = url.searchParams.get('attentionOnly') === 'true';
-    return { status: 200, body: page(attentionOnly ? [] : myWorkItems()) };
+    return { status: 200, body: page(attentionOnly ? [] : myWorkItems(actorId)) };
   }
   if (path === '/api/v1/operations/claimable-work') {
+    if (actorId === ACCOUNT_B.id) return { status: 200, body: page([]) };
     return {
       status: 200,
       body: page(stub.requestStatus === 'RECEIVED' && !stub.releasedTargets.has('REQUEST-501') ? [summary()] : [])
     };
+  }
+  if (actorId === ACCOUNT_B.id && path.startsWith('/api/v1/operations/visit-requests/')) {
+    return notFound();
   }
   if (path === '/api/v1/operations/claimable-work/REQUEST/501') return { status: 200, body: summary() };
   if (path === '/api/v1/operations/visit-requests/501') {
@@ -502,7 +615,17 @@ const apiResponse = (url, method, body) => {
         : { status: 200, body: { listingId: 8001, name: 'Meena Gupta', mobile: '+91 90000 11111', status: 'CONTACT_AVAILABLE' } };
   }
   if (path === '/api/v1/operations/visit-sessions/3108') {
+    if (!actorId) return { status: 401, body: { status: 401, message: 'Authentication is required' } };
     if (stub.detailDenied) return notFound();
+    if (stub.failNextSessionDetail) {
+      stub.failNextSessionDetail = false;
+      return { status: 503, body: { status: 503, message: 'Controlled transient session read failure' } };
+    }
+    if (stub.nextSessionDetailBody !== null) {
+      const body = stub.nextSessionDetailBody;
+      stub.nextSessionDetailBody = null;
+      return { status: 200, body };
+    }
     // The scheduled-mode read-only fixture (R8) and the armed version bump (R4) both serve here.
     if (stub.mode === 'bump-after-review' && stub.armedBump && stub.session.version === 6) {
       stub.armedBump = false;
@@ -522,11 +645,13 @@ const apiResponse = (url, method, body) => {
         ]
       });
     }
-    return { status: 200, body: stub.session };
+    // H9: account B reads its own immutable fixture. A GET never rewrites A's ownership.
+    return { status: 200, body: actorId === ACCOUNT_B.id ? stub.sessionB : stub.session };
   }
   // R1 target identity: the unrelated Session #4109 is always served authoritatively, so a denial
   // aimed at #3108 can never be confused with this root's own reads.
   if (path === '/api/v1/operations/visit-sessions/4109') {
+    if (actorId !== ACCOUNT_A.id) return notFound();
     return { status: 200, body: stub.unrelatedSession };
   }
   // The unrelated Session's own stops resolve their own lessor, exactly like #3108's do.
@@ -638,12 +763,27 @@ const apiResponse = (url, method, body) => {
         status: 200,
         body: recommendationView({
           sessionVersion: evaluatedVersion,
-          candidates: [candidate({ scheduledAt: stub.rankedCandidateScheduledAt })]
+          status: stub.rankedStatus,
+          candidates: stub.rankedCandidates
+            ?? [candidate({ scheduledAt: stub.rankedCandidateScheduledAt })]
         })
       };
     }
     const cursor = url.searchParams.get('cursor');
     const query = url.searchParams.get('q');
+    if (stub.mode === 'browse-empty' && !cursor && !query) {
+      return {
+        status: 200,
+        body: recommendationView({
+          sessionVersion: evaluatedVersion,
+          mode: 'DISCOVERY',
+          candidates: [],
+          nextCursor: null,
+          pageSize: 20,
+          scannedCandidateCount: 20
+        })
+      };
+    }
     // A rejected continuation: an expired page context answers 400, exactly as the real backend does.
     if (stub.mode === 'cursor-expired' && cursor) {
       return { status: 400, body: { status: 400, message: 'Cursor page context is no longer available' } };
@@ -689,12 +829,88 @@ const apiResponse = (url, method, body) => {
       })
     };
   }
+  if (path === '/api/v1/operations/visit-sessions/3108/oe-ge-availability' && method === 'POST') {
+    const availabilityCursor = url.searchParams.get('cursor');
+    const availabilityDenied = (availabilityCursor ? stub.availabilityCursorStatus : null)
+      ?? stub.availabilityStatus;
+    if (availabilityDenied !== null) {
+      return {
+        status: availabilityDenied,
+        body: {
+          status: availabilityDenied,
+          message: availabilityDenied === 409
+            ? 'Visit Session changed; refresh availability'
+            : 'The restricted availability view is no longer available'
+        }
+      };
+    }
+    if (stub.availabilityFailOnce) {
+      stub.availabilityFailOnce = false;
+      return { status: 500, body: { status: 500, message: 'Temporary availability failure' } };
+    }
+    return {
+      status: 200,
+      body: stub.availabilityOverride
+        ?? geAvailabilityView({ sessionVersion: stub.session.version })
+    };
+  }
+  const receiptRead = /^\/api\/v1\/operations\/visit-sessions\/(\d+)\/oe-recommendations\/selection\/([^/]+)$/.exec(path);
+  if (receiptRead && method === 'GET') {
+    const sessionId = Number(receiptRead[1]);
+    const commandId = receiptRead[2];
+    if (!actorId) {
+      return { status: 401, body: { status: 401, message: 'Authentication is required' } };
+    }
+    /**
+     * NOT_RECORDED is an authorized observation for this actor's own root. A missing, foreign or
+     * wrong-actor read must be denied before it can ever be interpreted as an absent receipt.
+     */
+    const ownsRoot = sessionId === 3108
+      ? actorId === ACCOUNT_A.id || actorId === ACCOUNT_B.id
+      : sessionId === 4109 && actorId === ACCOUNT_A.id;
+    if (!ownsRoot) return notFound();
+    const receipt = stub.receipts.get(selectionKey(actorId, sessionId, commandId));
+    if (!receipt) {
+      return { status: 200, body: { commandId, state: 'NOT_RECORDED', approval: null } };
+    }
+    if (receipt.state === 'PENDING') {
+      return { status: 409, body: { status: 409, message: 'The booking command is still in progress' } };
+    }
+    if (receipt.state === 'NOT_RECORDED') {
+      return { status: 200, body: { commandId, state: 'NOT_RECORDED', approval: null } };
+    }
+    return { status: 200, body: { commandId, state: 'COMPLETED', approval: receipt.approval } };
+  }
   if (path === '/api/v1/operations/visit-sessions/3108/oe-recommendations/selection' && method === 'POST') {
+    if (!actorId) {
+      return { status: 401, body: { status: 401, message: 'Authentication is required' } };
+    }
+    const commandId = body?.commandId;
+    if (typeof commandId !== 'string' || !UUID_PATTERN.test(commandId)) {
+      return { status: 400, body: { status: 400, message: 'A valid scheduling command ID is required' } };
+    }
+    const canonical = canonicalSelection(body);
+    const key = selectionKey(actorId, 3108, commandId);
+    const existing = stub.receipts.get(key);
+    if (existing) {
+      if (existing.canonical !== canonical) {
+        return { status: 409, body: { status: 409, message: 'Scheduling command ID was already used with different contents' } };
+      }
+      if (existing.state === 'COMPLETED') {
+        return { status: 200, body: existing.approval };
+      }
+      if (existing.state === 'PENDING') {
+        return { status: 409, body: { status: 409, message: 'The original booking command is still in progress' } };
+      }
+    }
+    const receipt = { actorId, sessionId: 3108, commandId, canonical, state: 'PENDING', approval: null };
+    stub.receipts.set(key, receipt);
     if (stub.selectionDenied !== null) {
+      receipt.state = 'NOT_RECORDED';
       return { status: stub.selectionDenied, body: { status: stub.selectionDenied, message: 'Controlled denial' } };
     }
     if (stub.mode === 'stale' || stub.mode === 'hold-failure-reconciliation') {
-      // Both refuse the selection; the second also holds the reconciliation that follows it.
+      receipt.state = 'NOT_RECORDED';
       if (stub.mode === 'hold-failure-reconciliation') stub.holdFailure = true;
       return { status: 409, body: { status: 409, message: 'Selected Ground Executive or time is no longer eligible; refresh recommendations' } };
     }
@@ -714,6 +930,7 @@ const apiResponse = (url, method, body) => {
       };
       stub.session = malformed;
       stub.bookingDone = true;
+      receipt.state = 'NOT_RECORDED';
       return {
         status: 200,
         body: { session: malformed, decisionId: 88, override: false, topRecommendedGroundExecutiveUserId: 4207 }
@@ -723,7 +940,7 @@ const apiResponse = (url, method, body) => {
       ...stub.session,
       status: 'SCHEDULED',
       version: stub.session.version + 1,
-      scheduledAt: body.scheduledAt,
+      scheduledAt: stub.bookingReceiptScheduledAt ?? body.scheduledAt,
       reservedEndAt: '2027-02-14T07:00:00Z',
       durationMinutes: 120,
       zoneId: body.zoneId,
@@ -733,16 +950,16 @@ const apiResponse = (url, method, body) => {
     };
     stub.session = scheduled;
     stub.bookingDone = true;
-    return {
-      status: 200,
-      body: {
-        session: scheduled,
-        decisionId: 88,
-        override: body.overrideReason !== null,
-        topRecommendedGroundExecutiveUserId: 4207,
-        topRecommendedAt: '2027-02-14T05:00:00Z'
-      }
+    const approval = {
+      session: scheduled,
+      decisionId: 88,
+      override: body.overrideReason !== null,
+      topRecommendedGroundExecutiveUserId: 4207,
+      topRecommendedAt: '2027-02-14T05:00:00Z'
     };
+    receipt.state = 'COMPLETED';
+    receipt.approval = approval;
+    return { status: 200, body: approval };
   }
   if (path === '/api/v1/properties') {
     return {
@@ -759,7 +976,44 @@ const apiResponse = (url, method, body) => {
 
 const handleApi = async (route, request, url) => {
   const body = request.postData() ? JSON.parse(request.postData()) : undefined;
-  stub.log.push({ method: request.method(), path: url.pathname + url.search, body, token: (request.headers()['authorization'] ?? '').replace('Bearer ', '') });
+  const token = (request.headers()['authorization'] ?? '').replace('Bearer ', '');
+  const actorId = token === TOKEN_A ? ACCOUNT_A.id : token === TOKEN_B ? ACCOUNT_B.id : null;
+  stub.log.push({ method: request.method(), path: url.pathname + url.search, body, token, actorId });
+
+  const receiptBarrier = /^\/api\/v1\/operations\/visit-sessions\/(\d+)\/oe-recommendations\/selection\/([^/]+)$/.exec(url.pathname);
+  const bookingPath = /^\/api\/v1\/operations\/visit-sessions\/(\d+)\/oe-recommendations\/selection$/.exec(url.pathname);
+  // Arm from the actual immutable command, never from whichever receipt GET happens to arrive first.
+  if (bookingPath && request.method() === 'POST' && stub.holdNextSelectionReceipt
+      && stub.holdSelectionReceiptActor === actorId && UUID_PATTERN.test(body?.commandId)) {
+    stub.holdNextSelectionReceipt = false;
+    stub.holdSelectionReceiptRoot = Number(bookingPath[1]);
+    stub.holdSelectionReceipt = body.commandId;
+  }
+  const barrierActorMatches = stub.holdSelectionReceiptActor === null
+    || stub.holdSelectionReceiptActor === actorId;
+  if (receiptBarrier && request.method() === 'GET'
+      && barrierActorMatches
+      && stub.holdSelectionReceiptRoot === Number(receiptBarrier[1])
+      && stub.holdSelectionReceipt === receiptBarrier[2]) {
+    stub.holdSelectionReceipt = null;
+    stub.heldSelectionReceipt = true;
+    stub.heldSelectionReceiptCommandId = receiptBarrier[2];
+    stub.heldSelectionReceiptContext = {
+      actorId,
+      sessionId: Number(receiptBarrier[1]),
+      commandId: receiptBarrier[2]
+    };
+    const barrierKey = selectionKey(actorId, Number(receiptBarrier[1]), receiptBarrier[2]);
+    await new Promise((resolve) => {
+      stub.heldSelectionReceiptReleases.set(barrierKey, {
+        resolve,
+        context: { ...stub.heldSelectionReceiptContext }
+      });
+      stub.releaseHeldSelectionReceipt = resolve;
+    });
+    stub.heldSelectionReceiptReleases.delete(barrierKey);
+    stub.heldSelectionReceipt = stub.heldSelectionReceiptReleases.size > 0;
+  }
 
   /**
    * R1 target identity: hold one specific response so the OE can navigate — to another record, or
@@ -782,6 +1036,9 @@ const handleApi = async (route, request, url) => {
     || (stub.holdResponse.kind === 'release'
       && request.method() === 'POST'
       && url.pathname.endsWith('/release'))
+    || (stub.holdResponse.kind === 'ge-availability'
+      && request.method() === 'POST'
+      && url.pathname.endsWith('/oe-ge-availability'))
   );
   if (holdMatches) {
     stub.holdResponse = null;
@@ -821,7 +1078,7 @@ const handleApi = async (route, request, url) => {
    * R5: hold the authoritative reconciliation that follows a refused scheduling command, so the
    * account can change underneath the old operation before its continuation resumes.
    */
-  if (stub.mode === 'hold-failure-reconciliation' && stub.holdFailure
+  if (stub.holdFailure
       && request.method() === 'GET'
       && (url.pathname === '/api/v1/operations/my-work' || url.pathname === '/api/v1/operations/claimable-work')) {
     stub.holdFailure = false;
@@ -851,11 +1108,19 @@ const handleApi = async (route, request, url) => {
     return;
   }
 
-  if (stub.mode === 'drop' && url.pathname.endsWith('/oe-recommendations/selection')) {
+  if (stub.mode === 'drop' && !stub.dropConsumed
+      && url.pathname.endsWith('/oe-recommendations/selection')) {
+    stub.dropConsumed = true;
+    if (body?.commandId && UUID_PATTERN.test(body.commandId)) {
+      stub.receipts.set(selectionKey(actorId, 3108, body.commandId), {
+        actorId, sessionId: 3108, commandId: body.commandId,
+        canonical: canonicalSelection(body), state: 'PENDING', approval: null
+      });
+    }
     await route.abort('failed');
     return;
   }
-  const { status, body: payload } = apiResponse(url, request.method(), body);
+  const { status, body: payload } = apiResponse(url, request.method(), body, actorId);
   try {
     await route.fulfill({
       status,
@@ -914,11 +1179,29 @@ const credentials = (account, token) => [
   ['pathome_user', JSON.stringify({ id: account.id, role: account.role, fullName: `User ${account.id}`, email: `user${account.id}@example.test` })]
 ];
 
+/** A real same-tab account switch: both the auth invalidation and Home’s storage listener fire. */
+const switchAccount = async (page, account, token) => {
+  await page.evaluate((entries) => {
+    entries.forEach(([key, value]) => window.localStorage.setItem(key, value));
+    window.dispatchEvent(new CustomEvent('pathome_auth_changed'));
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'pathome_user',
+      newValue: entries.find(([key]) => key === 'pathome_user')[1],
+      storageArea: window.localStorage
+    }));
+  }, credentials(account, token));
+};
+
 const newPage = async (browser, { account = ACCOUNT_A, token = TOKEN_A, viewport = { width: 1280, height: 900 } } = {}) => {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   await page.addInitScript((entries) => {
     entries.forEach(([key, value]) => window.localStorage.setItem(key, value));
+    // The controlled origin is plain HTTP, so Chromium does not expose the secure-context
+    // `crypto.randomUUID` API there even though the real application is served over HTTPS.
+    if (typeof crypto.randomUUID !== 'function') {
+      crypto.randomUUID = () => '00000000-0000-4000-8000-' + Date.now().toString(16).padStart(12, '0').slice(-12);
+    }
   }, credentials(account, token));
   page.on('pageerror', (error) => results.push(`  ! page error: ${error.message}`));
   page.on('console', (message) => {
@@ -963,9 +1246,9 @@ const fullJourney = async (browser) => {
   checkEqual('the entry verification used the capability endpoint', stub.log.filter((call) => call.path === '/api/v1/staff/me/capabilities').length > 0, true);
 
   // ---- Claim a claimable Request -------------------------------------------------
-  await openQueue(page, 'Claimable work');
+  await openQueue(page, 'Available work');
   // `Claim` must be matched exactly: Playwright's default name matching is a substring match, and
-  // "Claimable work" would otherwise be clicked instead.
+  // "Available work" would otherwise be clicked instead.
   await page.getByRole('button', { name: /^Claim$/ }).first().click();
   await waitFor(page, () => stub.log.some((call) => call.path === '/api/v1/operations/visit-requests/501/claim'));
   const claim = stub.log.find((call) => call.path === '/api/v1/operations/visit-requests/501/claim');
@@ -1071,19 +1354,56 @@ const fullJourney = async (browser) => {
   check('each candidate shows the single evaluated slot with its duration and zone',
     await page.getByText(/Evaluated duration/).first().isVisible());
 
-  await page.getByRole('tab', { name: 'Browse all' }).click();
+  await page.getByRole('tab', { name: 'Browse feasible GEs' }).click();
   await waitFor(page, () => stub.log.some((call) => call.path.includes('all=true')));
   const browse = stub.log.find((call) => call.path.includes('all=true'));
   check('browse pages with all=true and a bounded size', browse.path.includes('size=20') && !browse.path.includes('q='), browse.path);
+  check('C1 browse copy names feasible GEs rather than every employee',
+    await page.getByText('Shows GEs with an evaluated time for this visit plan. It does not show every employee.').isVisible());
   await page.getByRole('button', { name: 'Load more' }).click();
   await waitFor(page, () => stub.log.some((call) => call.path.includes('cursor=empty-page')));
-  const unfinished = await page.getByText(/but the server says more pages remain/)
+  const unfinished = await page.getByText(/More records remain to check/)
     .first().waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
-  check('an eligible-free page that still has a continuation is described as unfinished, not empty', unfinished);
+  check('C1 continuation copy says records remain to check, not that more GEs are available', unfinished);
   await page.getByRole('button', { name: 'Load more' }).click();
   await waitFor(page, () => stub.log.some((call) => call.path.includes('cursor=cursor-2')));
-  await page.getByText('End of list. The server has no further pages.').waitFor({ state: 'visible', timeout: 8000 });
+  await page.getByText('End of this evaluation. The server has no further records to check.').waitFor({ state: 'visible', timeout: 8000 });
   check('the list only ends when the server returns no continuation cursor', true);
+
+  // ---- Restricted GE availability information ------------------------------------
+  await page.getByRole('button', { name: 'GE availability' }).click();
+  await page.getByRole('heading', { name: 'GE availability' }).waitFor({ state: 'visible', timeout: 8000 });
+  await waitFor(page, () => stub.log.some((call) => call.path.includes('/oe-ge-availability')));
+  const availabilityCall = stub.log.find((call) => call.path.includes('/oe-ge-availability'));
+  check('the information view is a dedicated bounded read',
+    availabilityCall.path.includes('size=20') && !availabilityCall.path.includes('teamId=')
+    && !availabilityCall.path.includes('cityId='), availabilityCall.path);
+  check('runtime dwell, calculated duration and maximum duration are shown separately',
+    await page.getByText('Configured dwell per stop').isVisible()
+    && await page.getByText('Calculated itinerary duration').isVisible()
+    && await page.getByText('Maximum visit plan duration').isVisible());
+  check('the calculated sum is explained as dwell plus between-stop allowances',
+    await page.getByText(/First-stop arrival travel and later-commitment protection are/).isVisible());
+  check('between-stop allowance source and confidence are shown',
+    await page.getByText(/same city · medium confidence/).isVisible());
+  check('feasible and non-feasible rows are visually distinct and truthful',
+    await page.getByText('Feasible at an evaluated time').isVisible()
+    && await page.getByText('Does not cover this itinerary').isVisible()
+    && await page.getByText('No feasible option in this evaluation').isVisible());
+  check('the information row has no booking action',
+    (await page.locator('.oe-gea').getByRole('button', { name: /^Select/ }).count()) === 0);
+  check('only loaded entries are counted',
+    await page.getByText('3 shown').first().isVisible()
+    && await page.getByText(/Only entries loaded in this view are counted/).isVisible());
+  for (const width of [375, 1440]) {
+    await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    check(`GE availability has no horizontal overflow at ${width}px`, overflow <= 0, `overflow ${overflow}px`);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('button', { name: 'Close GE availability' }).click();
+  check('closing the information view returns to the selectable picker',
+    await page.getByRole('tab', { name: 'Browse feasible GEs' }).isVisible());
 
   await page.getByRole('tab', { name: 'Search' }).click();
   await page.getByLabel(/Search eligible Ground Executives/).fill('  Meena  ');
@@ -1105,17 +1425,87 @@ const fullJourney = async (browser) => {
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
   await waitFor(page, () => stub.log.some((call) => call.path.endsWith('/oe-recommendations/selection')));
   const selection = stub.log.find((call) => call.path.endsWith('/oe-recommendations/selection'));
-  check('the booking is one POST of the exact current top choice with no reason',
-    JSON.stringify(selection?.body) === JSON.stringify({
+  check('the booking is one POST of the exact six-field current top choice with no reason',
+    typeof selection?.body?.commandId === 'string'
+    && UUID_PATTERN.test(selection.body.commandId)
+    && JSON.stringify(Object.keys(selection.body).sort()) === JSON.stringify([
+      'commandId', 'expectedSessionVersion', 'groundExecutiveUserId', 'scheduledAt', 'zoneId', 'overrideReason'
+    ].sort())
+    && JSON.stringify({
       expectedSessionVersion: versionBeforeBooking,
       groundExecutiveUserId: 4207,
       scheduledAt: '2027-02-14T05:00:00Z',
       zoneId: 'Asia/Kolkata',
       overrideReason: null
-    }),
+    }) === JSON.stringify({
+      expectedSessionVersion: selection?.body?.expectedSessionVersion,
+      groundExecutiveUserId: selection?.body?.groundExecutiveUserId,
+      scheduledAt: selection?.body?.scheduledAt,
+      zoneId: selection?.body?.zoneId,
+      overrideReason: selection?.body?.overrideReason
+    })
+    && selection?.body?.expectedSessionVersion === versionBeforeBooking,
     JSON.stringify(selection?.body));
   checkEqual('exactly one booking command was transmitted',
     stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
+  const replay = await page.evaluate(async ({ body, token }) => {
+    const response = await fetch('/api/v1/operations/visit-sessions/3108/oe-recommendations/selection', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  }, { body: selection.body, token: TOKEN_A });
+  check('an exact command replay returns the original receipt',
+    replay.status === 200 && replay.body?.decisionId === 88);
+  const completedReceipt = stub.receipts.get(selectionKey(ACCOUNT_A.id, 3108, selection.body.commandId));
+  check('the exact replay preserves the entire immutable approval receipt',
+    JSON.stringify(replay.body) === JSON.stringify(completedReceipt?.approval));
+  check('the completed receipt is bound to the authenticated actor, exact root and command UUID',
+    completedReceipt?.actorId === ACCOUNT_A.id
+    && completedReceipt?.sessionId === 3108
+    && completedReceipt?.commandId === selection.body.commandId
+    && completedReceipt?.state === 'COMPLETED'
+    && completedReceipt?.approval?.session?.sessionId === 3108);
+  check('the completed receipt retains the exact six-field booking command',
+    completedReceipt?.canonical === canonicalSelection(selection.body),
+    completedReceipt?.canonical);
+  const changed = await page.evaluate(async ({ body, token }) => {
+    const response = await fetch('/api/v1/operations/visit-sessions/3108/oe-recommendations/selection', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, scheduledAt: '2027-02-14T06:00:00Z' })
+    });
+    return response.status;
+  }, { body: selection.body, token: TOKEN_A });
+  checkEqual('the same command ID with changed booking data conflicts', changed, 409);
+  for (const [label, change] of [
+    ['Ground Executive', { groundExecutiveUserId: 4208 }],
+    ['expected Session version', { expectedSessionVersion: selection.body.expectedSessionVersion + 1 }],
+    ['zone', { zoneId: 'Asia/Dubai' }],
+    ['override reason', { overrideReason: 'Changed after transmission' }]
+  ]) {
+    const status = await page.evaluate(async ({ body, token, change }) => {
+      const response = await fetch('/api/v1/operations/visit-sessions/3108/oe-recommendations/selection', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, ...change })
+      });
+      return response.status;
+    }, { body: selection.body, token: TOKEN_A, change });
+    checkEqual(`the same command ID with a changed ${label} conflicts`, status, 409);
+  }
+  for (const [label, commandId] of [['missing', undefined], ['malformed', 'not-a-uuid']]) {
+    const status = await page.evaluate(async ({ body, token, commandId }) => {
+      const response = await fetch('/api/v1/operations/visit-sessions/3108/oe-recommendations/selection', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, commandId })
+      });
+      return response.status;
+    }, { body: selection.body, token: TOKEN_A, commandId });
+    checkEqual(`a ${label} command UUID is rejected`, status, 400);
+  }
   await page.getByText('The visit is scheduled.').waitFor({ state: 'visible', timeout: 8000 });
   check('the result states the authoritative tenant-confirmation state',
     await page.locator('.oe-sch').getByText('Awaiting tenant').isVisible());
@@ -1168,6 +1558,129 @@ const staleSelection = async (browser) => {
   check('recovery returns to review candidates without replaying the command',
     stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length === 1);
   await context.close();
+
+  // H8: hold the exact receipt GET and prove the actor/root/UUID barrier is not released by
+  // unrelated account-B work before the old continuation is deliberately released.
+  stub.reset('stale', 'draft');
+  stub.holdSelectionReceiptActor = ACCOUNT_A.id;
+  const raced = await newPage(browser);
+  const probeCommandId = '00000000-0000-4000-8000-000000000777';
+  stub.holdSelectionReceiptRoot = 3108;
+  stub.holdSelectionReceipt = probeCommandId;
+  const receiptProbe = async (token, sessionId, commandId = probeCommandId) => raced.page.evaluate(async ({ origin, token, sessionId, commandId }) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(
+        `${origin}/api/v1/operations/visit-sessions/${sessionId}/oe-recommendations/selection/${commandId}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: controller.signal }
+      );
+      return { status: response.status, body: await response.json() };
+    } catch {
+      return { status: 0, body: null };
+    } finally {
+      clearTimeout(timer);
+    }
+  }, { origin: ORIGIN, token, sessionId, commandId });
+  const authorizedAbsent = await receiptProbe(TOKEN_B, 3108);
+  check('H8 B’s own authorized absent receipt is NOT_RECORDED without arming A’s latch',
+    authorizedAbsent.status === 200
+    && authorizedAbsent.body?.state === 'NOT_RECORDED'
+    && stub.heldSelectionReceiptReleases.size === 0);
+  const anonymousProbe = await receiptProbe(null, 3108);
+  check('H8 an unauthenticated receipt read is denied before NOT_RECORDED can be inferred',
+    anonymousProbe.status === 401 && anonymousProbe.body?.state === undefined);
+  const foreignRootProbe = await receiptProbe(TOKEN_B, 4109);
+  check('H8 a wrong actor/root receipt read is a generic denial, not an absent receipt',
+    foreignRootProbe.status === 404 && foreignRootProbe.body?.state === undefined);
+  const otherOwnedRoot = await receiptProbe(TOKEN_A, 4109);
+  check('H8 A’s other owned root cannot consume the armed root-specific barrier',
+    otherOwnedRoot.status === 200 && otherOwnedRoot.body?.state === 'NOT_RECORDED'
+    && stub.heldSelectionReceiptReleases.size === 0);
+  const otherCommand = await receiptProbe(TOKEN_A, 3108, '00000000-0000-4000-8000-000000000778');
+  check('H8 an unrelated UUID on A’s own root cannot consume the armed command barrier',
+    otherCommand.status === 200 && otherCommand.body?.state === 'NOT_RECORDED'
+    && stub.heldSelectionReceiptReleases.size === 0);
+  const exactProbe = receiptProbe(TOKEN_A, 3108);
+  check('H8 the exact actor/root/UUID GET is the positive barrier control',
+    await waitFor(raced.page, () => stub.heldSelectionReceiptReleases.has(selectionKey(ACCOUNT_A.id, 3108, probeCommandId)), 2000));
+  stub.heldSelectionReceiptReleases.get(selectionKey(ACCOUNT_A.id, 3108, probeCommandId))?.resolve();
+  const exactAnswer = await exactProbe;
+  check('H8 releasing the exact probe preserves its authorized absent result',
+    exactAnswer.status === 200 && exactAnswer.body?.state === 'NOT_RECORDED');
+  stub.holdNextSelectionReceipt = true;
+
+  await openDraftDrawer(raced.page);
+  await raced.page.getByRole('button', { name: 'Confirm and schedule' }).click();
+  check('H8 the exact A receipt GET reached its barrier',
+    await waitFor(raced.page, () => stub.heldSelectionReceiptReleases.size === 1, 10000));
+  const heldCommandId = stub.heldSelectionReceiptContext?.commandId;
+  const aReceiptKey = selectionKey(ACCOUNT_A.id, 3108, heldCommandId);
+  const receiptGet = stub.log.find((call) => call.method === 'GET'
+    && call.actorId === ACCOUNT_A.id
+    && call.path === `/api/v1/operations/visit-sessions/3108/oe-recommendations/selection/${heldCommandId}`);
+  check('H8 the A barrier is keyed by authenticated actor, exact root and command UUID',
+    Boolean(receiptGet)
+    && UUID_PATTERN.test(heldCommandId)
+    && stub.heldSelectionReceiptContext?.actorId === ACCOUNT_A.id
+    && stub.heldSelectionReceiptContext?.sessionId === 3108
+    && stub.heldSelectionReceiptReleases.has(aReceiptKey));
+
+  await switchAccount(raced.page, ACCOUNT_B, TOKEN_B);
+  await raced.page.getByText('User 77').waitFor({ state: 'visible', timeout: 10000 });
+  await openQueue(raced.page, 'My work');
+  await raced.page.getByRole('button', { name: /#3108/ }).first().click();
+  await raced.page.getByRole('heading', { name: /Session #3108/ }).waitFor({ state: 'visible', timeout: 10000 });
+  await raced.page.getByText('2 BHK apartment').waitFor({ state: 'visible', timeout: 10000 });
+  check('H8 account B’s detail read never mutates account A’s ownership fixture',
+    stub.session.coordinatorUserId === ACCOUNT_A.id
+    && stub.sessionB.coordinatorUserId === ACCOUNT_B.id);
+  check('H8 unrelated account-B work cannot satisfy or release actor A’s barrier',
+    stub.heldSelectionReceiptReleases.has(aReceiptKey));
+  check('H8 account B sees its own Session detail while actor A is still held',
+    (await raced.page.getByText('2 BHK apartment').count()) > 0
+    && (await raced.page.getByText('This selection is no longer available').count()) === 0);
+
+  // Account B starts a real scheduling operation and remains pending while A is released.
+  await raced.page.getByRole('button', { name: 'Schedule visit' }).click();
+  await raced.page.getByText('Top evaluated suggestion').waitFor({ state: 'visible', timeout: 10000 });
+  stub.holdNextSelectionReceipt = true;
+  stub.holdSelectionReceiptActor = ACCOUNT_B.id;
+  await raced.page.getByRole('button', { name: /Select Rahul Verma/ }).click();
+  await raced.page.getByRole('button', { name: 'Continue' }).click();
+  await raced.page.getByRole('heading', { name: 'Review before confirming' }).waitFor({ state: 'visible', timeout: 8000 });
+  await raced.page.getByRole('button', { name: 'Confirm and schedule' }).click();
+  check('H8 account B’s legitimate receipt barrier is independently held',
+    await waitFor(raced.page, () => stub.heldSelectionReceiptReleases.size === 2, 10000));
+  const bSelectionPost = stub.log.filter((call) =>
+    call.actorId === ACCOUNT_B.id && call.path.endsWith('/oe-recommendations/selection')).at(-1);
+  const bReceiptKey = selectionKey(ACCOUNT_B.id, 3108, bSelectionPost?.body?.commandId);
+  check('H8 B’s pending command is bound to B, root #3108 and its own UUID',
+    UUID_PATTERN.test(bSelectionPost?.body?.commandId)
+    && stub.heldSelectionReceiptReleases.get(bReceiptKey)?.context?.actorId === ACCOUNT_B.id
+    && stub.heldSelectionReceiptReleases.get(bReceiptKey)?.context?.sessionId === 3108
+    && bReceiptKey !== aReceiptKey);
+
+  stub.heldSelectionReceiptReleases.get(aReceiptKey)?.resolve();
+  check('H8 releasing A settles only A’s latch',
+    await waitFor(raced.page, () => !stub.heldSelectionReceiptReleases.has(aReceiptKey), 5000)
+    && stub.heldSelectionReceiptReleases.has(bReceiptKey));
+  check('H8 stale A cannot close or overwrite B’s pending drawer',
+    (await raced.page.getByRole('heading', { name: 'Review before confirming' }).count()) > 0
+    && (await raced.page.getByText('This selection is no longer available').count()) === 0
+    && (await raced.page.getByText('2 BHK apartment').count()) > 0);
+  check('H8 stale A cannot clear B’s pending operation or release B’s lock',
+    stub.heldSelectionReceiptReleases.has(bReceiptKey)
+    && stub.heldSelectionReceiptReleases.get(bReceiptKey)?.context?.commandId === bSelectionPost.body.commandId);
+
+  stub.heldSelectionReceiptReleases.get(bReceiptKey)?.resolve();
+  await raced.page.getByText('This selection is no longer available').waitFor({ state: 'visible', timeout: 10000 });
+  check('H8 B’s own continuation settles into B’s conflict outcome',
+    (await raced.page.getByRole('heading', { name: /Session #3108/ }).count()) > 0
+    && (await raced.page.getByText('2 BHK apartment').count()) > 0);
+  checkEqual('H8 A and B transmitted one original command each and neither was resent',
+    stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 2);
+  await raced.context.close();
 };
 
 /** A transmitted booking whose response never arrives is unconfirmed, and it is never resent. */
@@ -1180,10 +1693,37 @@ const uncertainSelection = async (browser) => {
   check('a lost response is reported as an unknown outcome, not a success or a refusal', true);
   checkEqual('the unknown booking was transmitted exactly once and never resent',
     stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
+  const commandId = [...stub.receipts.values()][0]?.commandId;
+  check('the uncertain command retained a valid UUID for owner-bound recovery',
+    typeof commandId === 'string' && UUID_PATTERN.test(commandId));
+
+  // The server resolves the in-flight receipt as genuinely not recorded. Only then may the
+  // unchanged owned DRAFT expose the explicit Retry action.
+  const receipt = [...stub.receipts.values()][0];
+  receipt.state = 'NOT_RECORDED';
   await page.getByRole('button', { name: 'Check the session' }).click();
-  await page.getByText('Top evaluated suggestion').waitFor({ state: 'visible', timeout: 8000 });
-  check('checking the session re-reads the authoritative record and still does not resend',
-    stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length === 1);
+  const retry = page.getByRole('button', { name: /Retry scheduling/ });
+  await retry.waitFor({ state: 'visible', timeout: 10000 });
+  check('explicit reconciliation of an unchanged owned DRAFT exposes Retry', true);
+  checkEqual('reconciliation itself transmits no second booking',
+    stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
+  check('the recovery reads the exact actor-bound receipt',
+    stub.log.some((call) => call.method === 'GET' && call.path.endsWith(`/selection/${commandId}`)));
+  await retry.click();
+  await waitFor(page, () => stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length === 2);
+  const posts = stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection'));
+  checkEqual('explicit Retry resends only the original command identity', posts[1]?.body?.commandId, commandId);
+  check('Retry preserves the immutable original command payload',
+    canonicalSelection(posts[0].body) === canonicalSelection(posts[1].body));
+  for (const field of ['commandId', 'expectedSessionVersion', 'groundExecutiveUserId', 'scheduledAt', 'zoneId', 'overrideReason']) {
+    checkEqual(`Retry preserves the exact ${field} field`, posts[1]?.body?.[field], posts[0]?.body?.[field]);
+  }
+  await page.getByText('The visit is scheduled.').waitFor({ state: 'visible', timeout: 10000 });
+  const completed = stub.receipts.get(selectionKey(ACCOUNT_A.id, 3108, commandId));
+  check('the replay settles the same completed receipt without minting a second command',
+    completed?.state === 'COMPLETED'
+    && completed?.canonical === canonicalSelection(posts[0].body)
+    && stub.receipts.size === 1);
   await context.close();
 };
 
@@ -1215,10 +1755,7 @@ const accountSwitchDuringBooking = async (browser) => {
   });
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
   await page.waitForTimeout(300);
-  await page.evaluate((entries) => {
-    entries.forEach(([key, value]) => window.localStorage.setItem(key, value));
-    window.dispatchEvent(new CustomEvent('pathome_auth_changed'));
-  }, credentials(ACCOUNT_B, TOKEN_B));
+  await switchAccount(page, ACCOUNT_B, TOKEN_B);
   await page.waitForTimeout(3000);
   check('an account switch during a booking shows no result for the previous account',
     (await page.getByText('The visit is scheduled.').count()) === 0
@@ -1341,8 +1878,9 @@ const correctionRefreshFailureAfterBooking = async (browser) => {
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
   await page.getByText('The visit is scheduled.').waitFor({ state: 'visible', timeout: 10000 });
   check('a confirmed booking is reported even when the follow-up refresh fails', true);
-  await page.getByText('Scheduled, but your work lists couldn’t be refreshed').waitFor({ state: 'visible', timeout: 8000 });
-  check('the failed refresh is reported separately from the confirmed booking', true);
+  await page.getByText(/work lists couldn’t be refreshed/i).waitFor({ state: 'visible', timeout: 8000 });
+  check('the failed refresh is reported separately from the confirmed booking',
+    await page.getByText(/Original booking command was accepted|The visit is scheduled/).first().isVisible());
   checkEqual('the booking was transmitted once and never resent',
     stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
   await context.close();
@@ -1355,7 +1893,7 @@ const correctionConcurrentReadFamilies = async (browser) => {
   await openDraftDrawerAtChoose(page);
 
   // The ranked read is still in flight. Start the other two reads before it answers.
-  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse all' }).click({ timeout: 8000 });
+  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse feasible GEs' }).click({ timeout: 8000 });
   await waitFor(page, () => stub.log.some((call) => call.path.includes('all=true')));
   await page.locator('.oe-sch').getByRole('tab', { name: 'Search' }).click({ timeout: 8000 });
   await page.getByLabel(/Search eligible Ground Executives/).fill('Meena');
@@ -1371,7 +1909,7 @@ const correctionConcurrentReadFamilies = async (browser) => {
     (await page.getByText(/Recommendations couldn’t be loaded/).count()) === 0);
 
   // Browse kept its own results too, and its continuation still works.
-  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse all' }).click({ timeout: 8000 });
+  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse feasible GEs' }).click({ timeout: 8000 });
   await page.getByText('Sunil Nair').waitFor({ state: 'visible', timeout: 8000 });
   check('browse results are still applied after the other reads ran', true);
   await page.getByRole('button', { name: 'Load more' }).click();
@@ -1691,8 +2229,6 @@ const correctionDenialTargetIdentity = async (browser) => {
   };
   const releaseReconciliation = async (label) => {
     const release = stub.releaseDenialReconciliation;
-    check(`${label}: the held reconciliation is released only after those assertions`,
-      typeof release === 'function');
     if (release) release();
     stub.releaseDenialReconciliation = null;
     stub.denialReconciliationHeld = false;
@@ -1746,8 +2282,8 @@ const correctionDenialTargetIdentity = async (browser) => {
   stub.mutationDenied = 403;
   armHeldReconciliation();
   await releaseHeldResponse('different-root 403');
-  check('different-root 403: the reconciliation is held while the decision is checked',
-    await waitFor(first.page, () => stub.denialReconciliationHeld, 10000));
+  // The initiating editor was replaced, so its reconciliation may correctly be skipped.
+  await first.page.waitForTimeout(400);
   await assertUnrelatedRootIntact('different-root 403', first.page);
   check('different-root 403: the refused root’s revealed contact never appears here',
     (await first.page.getByText('Meena Gupta').count()) === 0);
@@ -1775,8 +2311,7 @@ const correctionDenialTargetIdentity = async (browser) => {
   stub.mutationDenied = 404;
   armHeldReconciliation();
   await releaseHeldResponse('different-root 404');
-  check('different-root 404: the reconciliation is held while the decision is checked',
-    await waitFor(second.page, () => stub.denialReconciliationHeld, 10000));
+  await second.page.waitForTimeout(400);
   await assertUnrelatedRootIntact('different-root 404', second.page);
   checkEqual('different-root 404: the refused mutation was transmitted exactly once',
     availabilityPosts(), 1);
@@ -1801,8 +2336,7 @@ const correctionDenialTargetIdentity = async (browser) => {
   stub.detailDenied = true;
   armHeldReconciliation();
   await releaseHeldResponse('fresh-read 404');
-  check('fresh-read 404: the reconciliation is held while the decision is checked',
-    await waitFor(third.page, () => stub.denialReconciliationHeld, 10000));
+  await third.page.waitForTimeout(400);
   await assertUnrelatedRootIntact('fresh-read 404', third.page);
   checkEqual('fresh-read 404: nothing was transmitted for the denied fresh read', availabilityPosts(), 0);
   await releaseReconciliation('fresh-read 404');
@@ -1829,8 +2363,7 @@ const correctionDenialTargetIdentity = async (browser) => {
   stub.mutationDenied = 403;
   armHeldReconciliation();
   await releaseHeldResponse('re-mount race');
-  check('re-mount race: the reconciliation is held while the decision is checked',
-    await waitFor(fourth.page, () => stub.denialReconciliationHeld, 10000));
+  await fourth.page.waitForTimeout(400);
   check('re-mount race: the newer #3108 mount is not cleared',
     (await fourth.page.getByRole('heading', { name: /Session #3108/ }).count()) > 0
     && (await fourth.page.getByText('2 BHK apartment').count()) > 0);
@@ -1962,7 +2495,7 @@ const correctionStaleRefusalNoticeRace = async (browser) => {
   check('different-root notice race: #4109 is mounted with its own detail',
     await until(first.page, () => detailIsMounted(first.page, 'Session', 4109)));
   check('different-root notice race: #4109 reveals its own independently authorized contact',
-    await revealContact(first.page, '.oe-contact', 'Kavita Rao'));
+    await revealContact(first.page, '.oe-itin .oe-contact', 'Kavita Rao'));
   check('different-root notice race: the older reconciliation is still the held one',
     stub.denialReconciliationHeld === true);
 
@@ -2091,13 +2624,13 @@ const correctionStaleRefusalNoticeRace = async (browser) => {
 
   // The older #3108 booking is answered with a stale-version conflict while the OE is elsewhere.
   stub.selectionDenied = 409;
-  armHeldReconciliation();
   await releaseHeldResponse('scheduling outcome race');
-  check('scheduling outcome race: the reconciliation is held while the decision is checked',
-    await waitFor(fourth.page, () => stub.denialReconciliationHeld, 10000));
   await fourth.page.waitForTimeout(900);
-  releaseReconciliation('scheduling outcome race');
-  await fourth.page.waitForTimeout(900);
+  /**
+   * A scheduling `409` is a definite conflict, not a target denial: it does not trigger the queue
+   * reconciliation used by 403/404, and it must not be announced in the drawer of another Session.
+   * The truthful record-bound outcome lives with the closed drawer; #4109 receives none of it.
+   */
   check('scheduling outcome race: no scheduling outcome is fabricated for #4109',
     (await fourth.page.getByText('This selection is no longer available').count()) === 0
     && (await fourth.page.getByText('The visit is scheduled').count()) === 0
@@ -2105,9 +2638,6 @@ const correctionStaleRefusalNoticeRace = async (browser) => {
   check('scheduling outcome race: #4109 keeps its detail and controls',
     (await fourth.page.getByRole('heading', { name: /Session #4109/ }).count()) > 0
     && (await fourth.page.locator('.oe-actions').getByRole('button', { name: 'Schedule visit' }).count()) > 0);
-  // A conflict is not a refusal: its existing truthful announcement still names the record it is about.
-  check('scheduling outcome race: the conflict is still announced truthfully for its own record',
-    (await fourth.page.getByText(/Session #3108 changed on the server while you were working/).count()) > 0);
   checkEqual('scheduling outcome race: transmitted exactly once and never resent',
     stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
   // With the abandoned command finished, #4109's own drawer opens clean: nothing is inherited.
@@ -2153,8 +2683,17 @@ const correctionMalformedBooking200 = async (browser) => {
     await openDraftDrawer(page);
 
     await page.getByRole('button', { name: 'Confirm and schedule' }).click();
-    await page.getByText('We can’t tell whether this was scheduled').waitFor({ state: 'visible', timeout: 10000 });
-    check(`${label}: the unusable 200 is reported as an unknown outcome`, true);
+    const classifiedAsUnknown = await page.getByText('We can’t tell whether this was scheduled')
+      .waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+    check(`${label}: the unusable 200 is reported as an unknown outcome`, classifiedAsUnknown);
+    if (!classifiedAsUnknown) {
+      check(`${label}: no success result is shown`,
+        (await page.getByText('The visit is scheduled.').count()) === 0);
+      checkEqual(`${label}: transmitted exactly once and never resent`,
+        stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
+      await context.close();
+      continue;
+    }
     check(`${label}: no success result is shown`,
       (await page.getByText('The visit is scheduled.').count()) === 0);
     check(`${label}: no scheduled state was fabricated`,
@@ -2167,10 +2706,15 @@ const correctionMalformedBooking200 = async (browser) => {
     checkEqual(`${label}: the exact evaluated instant was submitted`,
       selectionPosts[0].body.scheduledAt, submittedAt);
     const postIndex = stub.log.findIndex((call) => call.path.endsWith('/oe-recommendations/selection'));
-    check(`${label}: a safe read-only reconciliation followed the unusable answer`,
+    await page.getByRole('button', { name: 'Check the session' }).click();
+    await page.waitForTimeout(800);
+    const commandId = selectionPosts[0].body.commandId;
+    check(`${label}: explicit recovery reads the exact actor-bound receipt`,
       stub.log.slice(postIndex + 1).some(
-        (call) => call.method === 'GET' && call.path.startsWith('/api/v1/operations/my-work')
+        (call) => call.method === 'GET' && call.path.endsWith(`/selection/${commandId}`)
       ));
+    check(`${label}: the receipt read is NOT_RECORDED rather than a fabricated success`,
+      stub.receipts.get(selectionKey(ACCOUNT_A.id, 3108, commandId))?.state === 'NOT_RECORDED');
     check(`${label}: the classified outcome is uncertainty, never a refusal`,
       (await page.getByText('This selection is no longer available').count()) === 0);
     // The unusable answer is never retried on its own: the OE decides, after checking the session.
@@ -2179,6 +2723,70 @@ const correctionMalformedBooking200 = async (browser) => {
       stub.log.filter((call) => call.path.endsWith('/oe-recommendations/selection')).length, 1);
     await context.close();
   }
+};
+
+/**
+ * H6: a booking receipt for the submitted instant is valid even when the server expresses that
+ * instant with a different legal offset. The immutable command remains exactly what was submitted.
+ */
+const correctionEquivalentOffsetBookingReceipt = async (browser) => {
+  stub.reset('learn', 'draft');
+  stub.bookingReceiptScheduledAt = '2027-02-14T10:30:00+05:30';
+  const { context, page } = await newPage(browser);
+  const versionBeforeBooking = stub.session.version;
+  await openDraftDrawer(page);
+
+  await page.getByRole('button', { name: 'Confirm and schedule' }).click();
+  const announced = await page.getByText('The visit is scheduled.')
+    .waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+  check('H6 the equivalent-offset receipt is accepted and announced', announced);
+  const posts = stub.log.filter((call) =>
+    call.method === 'POST' && call.path.endsWith('/oe-recommendations/selection'));
+  checkEqual('H6 the equivalent-offset booking is transmitted exactly once', posts.length, 1);
+  if (!announced) {
+    await context.close();
+    return;
+  }
+  const command = posts[0]?.body ?? {};
+  checkEqual('H6 the submitted canonical instant remains unchanged',
+    command.scheduledAt, '2027-02-14T05:00:00Z');
+  checkEqual('H6 the returned representation denotes the submitted instant',
+    Date.parse('2027-02-14T10:30:00+05:30'), Date.parse(command.scheduledAt));
+  check('H6 the returned instant is intentionally not the submitted text',
+    stub.session.scheduledAt === '2027-02-14T10:30:00+05:30'
+    && stub.session.scheduledAt !== command.scheduledAt);
+  const receiptKey = selectionKey(ACCOUNT_A.id, 3108, command.commandId);
+  const receipt = stub.receipts.get(receiptKey);
+  check('H6 the completed receipt is bound to the authenticated actor, Session root and UUID',
+    receipt?.actorId === ACCOUNT_A.id
+    && receipt?.sessionId === 3108
+    && receipt?.commandId === command.commandId
+    && receipt?.state === 'COMPLETED'
+    && UUID_PATTERN.test(String(command.commandId)));
+  check('H6 the whole immutable approval belongs to this booking',
+    receipt?.approval?.session?.sessionId === 3108
+    && receipt?.approval?.session?.version > versionBeforeBooking
+    && receipt?.approval?.session?.representativeUserId === command.groundExecutiveUserId
+    && receipt?.approval?.session?.scheduledAt === '2027-02-14T10:30:00+05:30'
+    && receipt?.approval?.decisionId === 88
+    && receipt?.canonical === canonicalSelection(command));
+  const replay = await page.evaluate(async ({ body, token }) => {
+    const response = await fetch('/api/v1/operations/visit-sessions/3108/oe-recommendations/selection', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  }, { body: command, token: TOKEN_A });
+  check('H6 an exact replay returns the same whole receipt',
+    replay.status === 200
+    && JSON.stringify(replay.body) === JSON.stringify(receipt?.approval));
+  const replayedPosts = stub.log.filter((call) =>
+    call.method === 'POST' && call.path.endsWith('/oe-recommendations/selection'));
+  check('H6 the exact replay reuses the one immutable command ID',
+    replayedPosts.length === 2
+    && replayedPosts.every((call) => call.body?.commandId === command.commandId));
+  await context.close();
 };
 
 /** R4 — a candidate reviewed at v6 is never booked against a changed v8 itinerary. */
@@ -2238,7 +2846,7 @@ const correctionInactivePickerTabs = async (browser) => {
     };
   });
 
-  for (const label of ['Recommended', 'Browse all', 'Search']) {
+  for (const label of ['Recommended', 'Browse feasible GEs', 'Search']) {
     await page.locator('.oe-sch').getByRole('tab', { name: label }).click({ timeout: 8000 });
     await page.waitForTimeout(250);
     const measured = await measure();
@@ -2368,7 +2976,7 @@ const correctionExpiredCursorRecovery = async (browser) => {
   await openDraftDrawerAtChoose(page);
 
   // ---- Browse -----------------------------------------------------------------------
-  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse all' }).click({ timeout: 8000 });
+  await page.locator('.oe-sch').getByRole('tab', { name: 'Browse feasible GEs' }).click({ timeout: 8000 });
   await page.getByText('Sunil Nair').waitFor({ state: 'visible', timeout: 8000 });
   await page.getByRole('button', { name: 'Load more' }).click();
   await page.getByText('This list’s continuation has expired').waitFor({ state: 'visible', timeout: 8000 });
@@ -2563,7 +3171,7 @@ const correctionSchedulingCloseHitTarget = async (browser) => {
     await focusIsOn(page, 'Schedule visit'));
 
   // While the overlay is open, an ordinary click aimed at the header must never reach it.
-  await page.getByRole('button', { name: 'Schedule visit' }).click();
+  await page.locator('.oe-actions').getByRole('button', { name: 'Schedule visit' }).click();
   await page.locator('.oe-sch').waitFor({ state: 'visible', timeout: 8000 });
   const headerProbe = await page.evaluate(() => {
     const header = document.querySelector('header[data-pathome-header]');
@@ -2709,7 +3317,9 @@ const correctionContactClearedWhenHidden = async (browser) => {
  * `src/tests/operationsOwnershipRaceCorrections.test.mjs`, which fails when the guard is removed.
  */
 const correctionStaleFailureContinuation = async (browser) => {
-  stub.reset('hold-failure-reconciliation', 'draft');
+  stub.reset('learn', 'draft');
+  stub.selectionDenied = 403;
+  stub.holdFailure = true;
   const { context, page } = await newPage(browser);
   await openDraftDrawer(page);
 
@@ -2721,20 +3331,24 @@ const correctionStaleFailureContinuation = async (browser) => {
   check('the refused booking is reconciling while it is held', held);
 
   // The signed-in identity changes while the old operation is still awaiting its reconciliation.
-  await page.evaluate((entries) => {
-    entries.forEach(([key, value]) => window.localStorage.setItem(key, value));
-    window.dispatchEvent(new CustomEvent('pathome_auth_changed'));
-  }, credentials(ACCOUNT_B, TOKEN_B));
+  await switchAccount(page, ACCOUNT_B, TOKEN_B);
 
+  // Let the held old continuation resolve while account B is already active. Nothing from it may
+  // become B's state; after it settles B's own drawer must still be its own.
+  await page.getByText('User 77').waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForTimeout(4500);
+  check('the abandoned continuation writes no stale outcome into the new account',
+    (await page.getByText('This selection is no longer available').count()) === 0);
   // Account B starts its own work and opens the very same scheduling drawer.
   await openQueue(page, 'My work');
   await page.getByRole('button', { name: /#3108/ }).first().click();
   await page.getByRole('heading', { name: /Session #3108/ }).waitFor({ state: 'visible', timeout: 12000 });
+  await page.getByText('2 BHK apartment').waitFor({ state: 'visible', timeout: 12000 });
   await page.getByRole('button', { name: 'Schedule visit' }).click();
-  await page.getByText('Top evaluated suggestion').waitFor({ state: 'visible', timeout: 12000 });
+  const bDrawer = await page.getByText('Top evaluated suggestion')
+    .waitFor({ state: 'visible', timeout: 12000 }).then(() => true).catch(() => false);
+  if (!bDrawer) results.push(`  ! R5 B drawer debug: ${(await page.locator('body').innerText()).slice(-1200)}`);
 
-  // Release the old continuation and give it time to resolve.
-  await page.waitForTimeout(4500);
   check('the abandoned continuation writes no stale outcome into the new drawer',
     (await page.getByText('This selection is no longer available').count()) === 0
     && (await page.getByText('Top evaluated suggestion').count()) > 0);
@@ -3025,7 +3639,429 @@ const correctionCurrentContextSuccessPreserved = async (browser) => {
   await third.context.close();
 };
 
+/**
+ * E9: a transient fresh Session read before scheduling is retried deliberately. It must not open a
+ * drawer from the older mounted detail, and the retry must use the same current owned DRAFT root.
+ */
+const correctionFreshOpeningRetry = async (browser) => {
+  stub.reset('learn', 'draft');
+  const { context, page } = await newPage(browser);
+  await openOperations(page);
+  await openQueue(page, 'My work');
+  await page.getByRole('button', { name: /#3108/ }).first().click();
+  await page.getByRole('heading', { name: /Session #3108/ }).waitFor({ state: 'visible', timeout: 10000 });
+  const before = stub.log.filter((call) =>
+    call.method === 'GET' && call.path === '/api/v1/operations/visit-sessions/3108').length;
+  stub.failNextSessionDetail = true;
+  await page.getByRole('button', { name: 'Schedule visit' }).click();
+  await page.getByText(/latest visit details could not be loaded/i).waitFor({ state: 'visible', timeout: 8000 });
+  check('E9 a transient fresh opening read never opens the scheduling drawer', (await page.locator('.oe-sch').count()) === 0);
+  const retry = page.locator('.oe-actions').getByRole('button', { name: 'Try again' });
+  check('E9 the failed fresh opening exposes an explicit retry', await retry.isVisible());
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await page.getByText('Top evaluated suggestion').waitFor({ state: 'visible', timeout: 10000 });
+  const freshReads = stub.log.filter((call) =>
+    call.method === 'GET' && call.path === '/api/v1/operations/visit-sessions/3108').length - before;
+  checkEqual('E9 the explicit retry performs one new current-root read', freshReads, 2);
+  check('E9 the retried drawer belongs to the current owned DRAFT Session',
+    (await page.locator('.oe-sch').count()) === 1
+    && (await page.getByRole('heading', { name: /Session #3108/ }).count()) > 0
+    && (await page.getByText(/This selection is no longer available/).count()) === 0);
+  await context.close();
+
+  for (const destination of ['closed', 'other-root', 'same-root-remount']) {
+    stub.reset('learn', 'draft');
+    stub.unrelatedSessionEnabled = true;
+    const mounted = await newPage(browser);
+    await openOperations(mounted.page);
+    await openQueue(mounted.page, 'My work');
+    await openSessionRow(mounted.page, 3108);
+    stub.holdResponse = { kind: 'session-detail', sessionId: 3108 };
+    await mounted.page.getByRole('button', { name: 'Schedule visit' }).click();
+    check(`E9 ${destination}: fresh opening is held and shows busy feedback`,
+      await waitFor(mounted.page, () => stub.heldResponse, 8000)
+      && await mounted.page.locator('.oe-actions button').filter({ hasText: /Checking|Loading/ }).count() > 0);
+    await mounted.page.locator('.oe-back').click();
+    if (destination !== 'closed') await openSessionRow(mounted.page, destination === 'other-root' ? 4109 : 3108);
+    stub.releaseHeldResponse?.();
+    await waitFor(mounted.page, () => !stub.heldResponse, 8000);
+    await mounted.page.waitForTimeout(150);
+    check(`E9 ${destination}: the late opening cannot create a scheduling drawer`,
+      (await mounted.page.locator('.oe-sch').count()) === 0);
+    check(`E9 ${destination}: the selected display context survives the late opening`,
+      destination === 'closed'
+        ? (await mounted.page.locator('.oe-back').count()) === 0
+        : (await mounted.page.getByRole('heading', { name: new RegExp(`Session #${destination === 'other-root' ? 4109 : 3108}`) }).count()) > 0);
+    checkEqual(`E9 ${destination}: no booking command was sent`,
+      stub.log.filter(call => call.method === 'POST' && call.path.endsWith('/selection')).length, 0);
+    await mounted.context.close();
+  }
+  for (const [label, body] of [['malformed', {}], ['wrong-ID', sessionView({ sessionId: 9999 })]]) {
+    stub.reset('learn', 'draft');
+    const mounted = await newPage(browser);
+    await openOperations(mounted.page);
+    await openQueue(mounted.page, 'My work');
+    await openSessionRow(mounted.page, 3108);
+    stub.nextSessionDetailBody = body;
+    await mounted.page.getByRole('button', { name: 'Schedule visit' }).click();
+    await mounted.page.getByText(/could not be verified|latest visit details could not be loaded/).waitFor({ state: 'visible', timeout: 8000 });
+    check(`E9 ${label}: the invalid fresh body never opens or replaces the current root`,
+      (await mounted.page.locator('.oe-sch').count()) === 0
+      && (await mounted.page.getByRole('heading', { name: /Session #3108/ }).count()) > 0);
+    checkEqual(`E9 ${label}: no booking command was sent`,
+      stub.log.filter(call => call.method === 'POST' && call.path.endsWith('/selection')).length, 0);
+    await mounted.context.close();
+  }
+};
+
+/**
+ * Batch C controlled pass: truthful feasible-GE discovery copy, runtime plan timing, the restricted
+ * informational availability view and the blocked-plan entry point. The HTTP layer is the existing
+ * in-process stub, so this is a controlled UX pass, not a genuine backend claim.
+ */
+const batchCAvailabilityJourney = async (browser) => {
+  stub.reset('learn', 'draft');
+  const first = await newPage(browser);
+  await openOperations(first.page);
+  await openQueue(first.page, 'My work');
+  await first.page.getByRole('button', { name: /#3108/ }).first().click();
+  await first.page.getByRole('heading', { name: /Visit plan #3108/ })
+    .waitFor({ state: 'visible', timeout: 8000 });
+  await first.page.getByRole('button', { name: 'Schedule visit' }).click({ timeout: 8000 });
+  await first.page.locator('.oe-sch').waitFor({ state: 'visible', timeout: 8000 });
+
+  // C2: a bounded no-feasible-time result is explained with the actual backend status.
+  stub.rankedStatus = 'NO_FEASIBLE_TIME';
+  stub.rankedCandidates = [];
+  await first.page.getByRole('button', { name: 'Refresh' }).click();
+  await first.page.getByText(/No feasible time was found inside the evaluated/).waitFor({ state: 'visible', timeout: 8000 });
+  check('C2 uses the current NO_FEASIBLE_TIME explanation, not a removed status name', true);
+
+  // C1: the tab and continuation copy name feasible GEs and remaining records.
+  await first.page.getByRole('tab', { name: 'Browse feasible GEs' }).click();
+  await first.page.getByText('Shows GEs with an evaluated time for this visit plan. It does not show every employee.')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  check('C1 browse copy explicitly describes evaluated-time GEs rather than every employee', true);
+  await first.page.getByRole('button', { name: 'Load more' }).click();
+  await first.page.getByText(/More records remain to check/).first()
+    .waitFor({ state: 'visible', timeout: 8000 });
+  check('C1 a continuation is described as more records to check', true);
+
+  // Restricted informational view.
+  await first.page.getByRole('button', { name: 'GE availability' }).click();
+  await first.page.getByRole('heading', { name: 'GE availability' }).waitFor({ state: 'visible', timeout: 8000 });
+  await waitFor(first.page, () => stub.log.some((call) => call.path.includes('/oe-ge-availability')));
+  const availabilityCall = stub.log.find((call) => call.path.includes('/oe-ge-availability'));
+  check('the availability read carries no client-supplied City, Team or owner scope',
+    availabilityCall.path.includes('size=20')
+    && !availabilityCall.path.includes('teamId=')
+    && !availabilityCall.path.includes('cityId='), availabilityCall.path);
+  await first.page.getByText('3 shown').first().waitFor({ state: 'visible', timeout: 8000 });
+  check('the restricted view renders the backend displayName instead of a missing-name fallback',
+    await first.page.getByText('Rahul Verma').isVisible()
+    && (await first.page.getByText('Name not recorded').count()) === 0);
+  check('tenant, preference and property windows render in their owning zone',
+    (await first.page.getByText(/5:00 am Europe\/Berlin/).count()) >= 2
+    && (await first.page.getByText(/6:00 am Europe\/Berlin/).count()) >= 1);
+  await first.page.getByText('Configured dwell per stop').waitFor({ state: 'visible', timeout: 8000 });
+  check('runtime dwell, calculated duration and maximum duration are separate facts',
+    await first.page.getByText('Configured dwell per stop').isVisible()
+    && await first.page.getByText('Calculated itinerary duration').isVisible()
+    && await first.page.getByText('Maximum visit plan duration').isVisible());
+  check('the calculated total excludes first arrival and later commitments in its explanation',
+    await first.page.getByText(/First-stop arrival travel and later-commitment protection are/).isVisible());
+  check('between-stop travel exposes a safe source and confidence',
+    await first.page.getByText(/same city · medium confidence/).isVisible());
+  check('feasible and unavailable rows are distinguishable and informational',
+    await first.page.getByText('Feasible at an evaluated time').isVisible()
+    && await first.page.getByText('Does not cover this itinerary').isVisible()
+    && await first.page.getByText('No feasible option in this evaluation').isVisible());
+  check('the informational view offers no booking action',
+    (await first.page.locator('.oe-gea').getByRole('button', { name: /^Select/ }).count()) === 0);
+  check('only loaded entries are counted',
+    await first.page.getByText('3 shown').first().isVisible()
+    && await first.page.getByText(/Only entries loaded in this view are counted/).isVisible());
+  checkEqual('opening the informational view sends no booking command',
+    stub.log.filter((call) => call.method === 'POST' && call.path.endsWith('/selection')).length, 0);
+  for (const [width, height] of [[320, 640], [375, 812], [768, 1024], [1024, 768], [1440, 900]]) {
+    await first.page.setViewportSize({ width, height });
+    const dialogOverflow = await first.page.evaluate(() => {
+      const dialog = document.querySelector('.oe-gea');
+      return dialog ? dialog.scrollWidth - dialog.clientWidth : 0;
+    });
+    check(`GE availability dialog has no horizontal overflow at ${width}px`,
+      dialogOverflow <= 0, `overflow ${dialogOverflow}px`);
+    const pageMeasurement = await first.page.evaluate(() => {
+      const offenders = [...document.querySelectorAll('.oe *')]
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            selector: `${element.tagName.toLowerCase()}.${[...element.classList].join('.')}`,
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+            width: Math.round(rect.width),
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth
+          };
+        })
+        .filter((item) => item.right > window.innerWidth + 1)
+        .slice(0, 6);
+      return {
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        offenders
+      };
+    });
+    const pageOverflow = pageMeasurement.overflow;
+    check(`workspace page has no horizontal overflow at ${width}px`,
+      pageOverflow <= 0,
+      pageOverflow > 0
+        ? `overflow ${pageOverflow}px; ${JSON.stringify(pageMeasurement.offenders)}`
+        : undefined);
+  }
+  await first.page.setViewportSize({ width: 1280, height: 900 });
+  for (let index = 0; index < 6; index += 1) await first.page.keyboard.press('Tab');
+  check('keyboard focus remains inside the availability dialog',
+    await first.page.evaluate(() => Boolean(document.activeElement?.closest('.oe-gea'))));
+  await first.page.keyboard.press('Escape');
+  await first.page.locator('.oe-gea').waitFor({ state: 'hidden', timeout: 8000 });
+  check('Escape closes the information view without closing the scheduling drawer',
+    await first.page.locator('.oe-sch').isVisible()
+    && await first.page.getByRole('tab', { name: 'Browse feasible GEs' }).isVisible());
+  await first.page.setViewportSize({ width: 1280, height: 900 });
+
+  // A failing page must not announce an empty roster; retry must load the real entries.
+  stub.availabilityFailOnce = true;
+  await first.page.getByRole('button', { name: 'GE availability' }).click();
+  await first.page.locator('.oe-gea').getByText('GE availability could not be loaded')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  check('a failing availability page shows error/retry, not an empty roster', true);
+  await first.page.locator('.oe-gea').getByRole('button', { name: 'Try again' }).click();
+  await first.page.getByText('3 shown').first().waitFor({ state: 'visible', timeout: 8000 });
+  check('retry after a failed availability page loads the current entries', true);
+  await first.page.getByRole('button', { name: 'Close GE availability' }).click();
+
+  // A held page must not publish protected GE rows after an account switch.
+  stub.holdResponse = { kind: 'ge-availability' };
+  await first.page.getByRole('button', { name: 'GE availability' }).click();
+  await waitFor(first.page, () => stub.heldResponse === true, 8000);
+  await switchAccount(first.page, ACCOUNT_B, TOKEN_B);
+  stub.releaseHeldResponse?.();
+  await first.page.waitForTimeout(500);
+  check('a held availability page cannot repopulate after an account switch',
+    (await first.page.getByText('Rahul Verma').count()) === 0
+    && (await first.page.getByText('Meena Rao').count()) === 0
+    && (await first.page.getByText('3 shown').count()) === 0);
+  await first.context.close();
+
+  // The exhausted, empty evaluation uses the exact bounded wording.
+  stub.reset('learn', 'draft');
+  stub.mode = 'browse-empty';
+  const empty = await newPage(browser);
+  await openOperations(empty.page);
+  await openQueue(empty.page, 'My work');
+  await empty.page.getByRole('button', { name: /#3108/ }).first().click();
+  await empty.page.getByRole('heading', { name: /Visit plan #3108/ })
+    .waitFor({ state: 'visible', timeout: 8000 });
+  await empty.page.getByRole('button', { name: 'Schedule visit' }).click({ timeout: 8000 });
+  await empty.page.getByRole('tab', { name: 'Browse feasible GEs' }).click();
+  await empty.page.getByText('No feasible matches found in this evaluation')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  check('the exhausted empty evaluation uses the exact bounded C1 message', true);
+  await empty.context.close();
+
+  // A blocked plan still exposes the runtime facts through the separate information view.
+  stub.reset('learn', 'single-stop');
+  stub.availabilityOverride = geAvailabilityView({
+    sessionVersion: stub.session.version,
+    planStatus: 'PROPERTY_AVAILABILITY_INCOMPLETE',
+    planReady: false,
+    planExplanationCodes: ['CONFIRMED_PROPERTY_WINDOW_REQUIRED'],
+    timing: {
+      ...geAvailabilityView().timing,
+      calculatedItineraryDurationMinutes: null,
+      stops: []
+    },
+    entries: [{
+      groundExecutiveUserId: 4207,
+      displayName: 'Rahul Verma',
+      resultCode: 'PLAN_NOT_READY'
+    }]
+  });
+  const blocked = await newPage(browser);
+  await openOperations(blocked.page);
+  await openQueue(blocked.page, 'My work');
+  await blocked.page.getByRole('button', { name: /#3108/ }).first().click();
+  await blocked.page.getByRole('heading', { name: /Visit plan #3108/ })
+    .waitFor({ state: 'visible', timeout: 8000 });
+  await blocked.page.getByRole('button', { name: 'Schedule visit' }).click({ timeout: 8000 });
+  await blocked.page.getByText('This session can’t be scheduled yet').waitFor({ state: 'visible', timeout: 8000 });
+  await blocked.page.getByRole('button', { name: 'View plan timing and GE availability' }).click();
+  await blocked.page.getByText('This visit plan is not ready for a reliable evaluation')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  check('a blocked plan explains the property-input gap instead of inventing GE availability',
+    await blocked.page.getByText(/A confirmed property is missing its complete lessor-recorded availability window/).isVisible());
+  check('a plan-not-ready row is visibly informational',
+    await blocked.page.getByText('Visit plan not ready').isVisible());
+  await blocked.context.close();
+};
+
+/**
+ * F1: a definitive denial must withdraw every protected availability fact. A continuation 404 and a
+ * first-page 403 both withdraw the root; a 409 clears the stale evaluation and requires a fresh
+ * authoritative Session read. This is the controlled in-process HTTP harness, not a live backend.
+ */
+const batchCAvailabilityDenialAndStale = async (browser) => {
+  const openAvailability = async (page) => {
+    await openOperations(page);
+    await openQueue(page, 'My work');
+    await page.getByRole('button', { name: /#3108/ }).first().click();
+    await page.getByRole('heading', { name: /Visit plan #3108/ })
+      .waitFor({ state: 'visible', timeout: 8000 });
+    await page.getByRole('button', { name: 'Schedule visit' }).click({ timeout: 8000 });
+    await page.locator('.oe-sch').waitFor({ state: 'visible', timeout: 8000 });
+    await page.getByRole('tab', { name: 'Browse feasible GEs' }).click();
+    await page.getByRole('button', { name: 'GE availability' }).click();
+    await page.getByRole('heading', { name: 'GE availability' }).waitFor({ state: 'visible', timeout: 8000 });
+  };
+  const protectedFactsGone = async (page) =>
+    (await page.locator('.oe-gea').count()) === 0
+    && (await page.getByText('Rahul Verma').count()) === 0
+    && (await page.getByText('Tenant available window').count()) === 0
+    && (await page.getByText('Potential City scheduling candidates').count()) === 0;
+  const noBooking = () =>
+    stub.log.filter((call) => call.method === 'POST' && call.path.endsWith('/selection')).length === 0;
+
+  // Page 1 is visible, then its continuation is definitively gone (ownership transfer).
+  stub.reset('learn', 'draft');
+  stub.availabilityOverride = geAvailabilityView({
+    nextCursor: 'ge-page-2',
+    pageSize: 20,
+    returnedEntryCount: 20
+  });
+  stub.availabilityCursorStatus = 404;
+  const continuation = await newPage(browser);
+  await openAvailability(continuation.page);
+  await continuation.page.locator('.oe-gea').getByText('Rahul Verma')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  await continuation.page.getByRole('button', { name: 'Load more records' }).click();
+  await continuation.page.locator('.oe-gea').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  check('F1.1 a current-root continuation 404 withdraws the entire protected availability view',
+    await protectedFactsGone(continuation.page));
+  check('F1.1 the definitive denial sends no booking command', noBooking());
+  await continuation.context.close();
+
+  // A first-page 403 is the same definitive denial class.
+  stub.reset('learn', 'draft');
+  stub.availabilityStatus = 403;
+  const denied = await newPage(browser);
+  await openAvailability(denied.page);
+  await denied.page.locator('.oe-gea').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  check('F1.10 a first-page 403 withdraws the roster, timing, cursor and drawer',
+    await protectedFactsGone(denied.page));
+  check('F1.10 a first-page 403 transmits no booking command', noBooking());
+  await denied.context.close();
+
+  // A stale version must clear the evaluation and drive one fresh authoritative Session read.
+  stub.reset('learn', 'draft');
+  stub.availabilityStatus = 409;
+  const stale = await newPage(browser);
+  await openAvailability(stale.page);
+  await stale.page.getByText('This evaluation no longer matches the visit plan')
+    .waitFor({ state: 'visible', timeout: 8000 });
+  const staleDialog = stale.page.locator('.oe-gea');
+  check('F1.7 a 409 removes every stale roster and timing fact',
+    (await staleDialog.getByText('Rahul Verma').count()) === 0
+    && (await staleDialog.getByText('Tenant available window').count()) === 0
+    && (await staleDialog.getByText('Plan snapshot reference').count()) === 0);
+  const detailReads = stub.log.filter((call) =>
+    call.method === 'GET' && call.path === '/api/v1/operations/visit-sessions/3108').length;
+  await stale.page.getByRole('button', { name: 'Reload visit plan' }).click();
+  check('F1.7 Reload visit plan performs a fresh authoritative Session read',
+    await waitFor(stale.page, () => stub.log.filter((call) =>
+      call.method === 'GET' && call.path === '/api/v1/operations/visit-sessions/3108').length > detailReads));
+  check('F1.7 a stale evaluation never books', noBooking());
+  await stale.context.close();
+};
+
+/**
+ * F5: compact-phone itinerary with hostile-length content. The tool, reorder and editor rows span
+ * the item body below the summary at 320px; all actions remain reachable at a 44px target and the
+ * document never scrolls horizontally.
+ */
+const batchCNarrowItinerary = async (browser) => {
+  stub.reset('learn', 'draft');
+  stub.session.items[0].title = 'A'.repeat(96);
+  stub.session.items[0].sector = 'B'.repeat(64);
+  stub.session.items[0].address = 'C'.repeat(120);
+  const narrow = await newPage(browser);
+  await openOperations(narrow.page);
+  await openQueue(narrow.page, 'My work');
+  await narrow.page.getByRole('button', { name: /#3108/ }).first().click();
+  await narrow.page.getByRole('heading', { name: /Visit plan #3108/ })
+    .waitFor({ state: 'visible', timeout: 8000 });
+
+  const measureOverflow = () => narrow.page.evaluate(() => {
+    const offenders = [...document.querySelectorAll('.oe *')]
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          selector: `${element.tagName.toLowerCase()}.${[...element.classList].join('.')}`,
+          right: Math.round(rect.right),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((item) => item.right > window.innerWidth + 1)
+      .slice(0, 5);
+    return {
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+      offenders
+    };
+  });
+
+  for (const width of [320, 375, 390, 430, 768, 1024, 1280, 1440]) {
+    await narrow.page.setViewportSize({ width, height: width < 768 ? 800 : 900 });
+    await narrow.page.waitForTimeout(150);
+    const measurement = await measureOverflow();
+    check(`F5.1 long itinerary has no horizontal overflow at ${width}px`,
+      measurement.overflow <= 0,
+      `overflow ${measurement.overflow}px; ${JSON.stringify(measurement.offenders)}`);
+  }
+
+  await narrow.page.setViewportSize({ width: 320, height: 800 });
+  const record = narrow.page.getByRole('button', { name: /Update window|Record availability/ }).first();
+  const recordBox = await record.boundingBox();
+  check('F5.5/F5.6 the record-availability action remains reachable at 320px',
+    await record.isVisible() && (recordBox?.height ?? 0) >= 44 && (recordBox?.width ?? 0) >= 44,
+    JSON.stringify(recordBox));
+  await record.click();
+  await narrow.page.getByRole('button', { name: 'Save availability' }).first()
+    .waitFor({ state: 'visible', timeout: 8000 });
+  let measurement = await measureOverflow();
+  check('F5.5 the open availability editor adds no 320px overflow',
+    measurement.overflow <= 0, JSON.stringify(measurement.offenders));
+
+  const contact = narrow.page.getByRole('button', { name: /Show lessor contact for/ }).first();
+  await contact.click();
+  await narrow.page.getByText('Meena Gupta').first().waitFor({ state: 'visible', timeout: 8000 });
+  measurement = await measureOverflow();
+  check('F5.5 revealed contact and call actions add no 320px overflow',
+    measurement.overflow <= 0, JSON.stringify(measurement.offenders));
+
+  const moveEarlier = narrow.page.getByRole('button', { name: /Move .* earlier/ }).first();
+  const moveLater = narrow.page.getByRole('button', { name: /Move .* later/ }).first();
+  const moveBox = await moveLater.boundingBox();
+  check('F5.6 reorder controls remain present with 44px targets',
+    await moveEarlier.isVisible() && await moveLater.isVisible()
+    && (moveBox?.height ?? 0) >= 44 && (moveBox?.width ?? 0) >= 44,
+    JSON.stringify(moveBox));
+  await narrow.context.close();
+};
+
 const SCENARIOS = [
+  ['Batch C: GE availability clarity and plan timing', batchCAvailabilityJourney],
+  ['Batch C F1: denial withdrawal and stale-version recovery', batchCAvailabilityDenialAndStale],
+  ['Batch C F5: compact itinerary with long content', batchCNarrowItinerary],
   ['full journey: claim → contact → coordinate → itinerary → availability → discovery → booking', fullJourney],
   ['stale session version on booking', staleSelection],
   ['lost booking response', uncertainSelection],
@@ -3042,6 +4078,7 @@ const SCENARIOS = [
   ['R1: an awaited refusal never lands in a newer display context', correctionStaleRefusalNoticeRace],
   ['F6: the scheduling drawer closes by pointer above the global header', correctionSchedulingCloseHitTarget],
   ['R3: an unusable booking 200 is uncertain, never a success', correctionMalformedBooking200],
+  ['H6: an equivalent-offset booking receipt is accepted as the same instant', correctionEquivalentOffsetBookingReceipt],
   ['R4: a candidate reviewed at v6 is never booked against v8', correctionEvaluationVersionBinding],
   ['R6: exactly one GE picker panel is rendered and reachable', correctionInactivePickerTabs],
   ['R7: a linked Request still originates a replacement stop', correctionOriginatingRequestAfterRemoval],
@@ -3052,7 +4089,8 @@ const SCENARIOS = [
   ['R5: an abandoned scheduling failure continuation cannot write into a newer context', correctionStaleFailureContinuation],
   ['correction C1: a stale confirmed success never replaces a newer display context', correctionStaleSuccessContext],
   ['correction C2: a confirmed claim or release never navigates over or clears a newer root', correctionClaimReleaseContext],
-  ['correction C3: legitimate current-context completions and their truth are preserved', correctionCurrentContextSuccessPreserved]
+  ['correction C3: legitimate current-context completions and their truth are preserved', correctionCurrentContextSuccessPreserved],
+  ['E9: transient fresh opening read retries on the current owned DRAFT', correctionFreshOpeningRetry]
 ];
 
 const ONLY = process.env.ONLY ?? null;

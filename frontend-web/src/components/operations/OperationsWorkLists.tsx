@@ -1,17 +1,258 @@
-import React from 'react';
-import { ChevronRight, LoaderCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronRight, Filter, LoaderCircle, RotateCcw, X } from 'lucide-react';
 import {
   attentionCategory,
   formatOperationsDateTime,
   linkedRequestsLabel,
   needsCoordinatorAttention,
   operationsRecordReference,
+  operationsStatusMeta,
   type ClaimableWorkItem,
-  type OperationsMyWorkItem
+  type OperationsMyWorkItem,
+  type OperationsScope
 } from '../../utils/operationsWorkspacePresentation';
+import {
+  EMPTY_OPERATIONS_FILTERS,
+  hasOperationsFilters,
+  normalizeOperationsFilters,
+  operationsStatusCodes,
+  type OperationsQueueFilters
+} from '../../utils/operationsWorkspaceRoute';
 import { ScopeLine, StatusBadge, TenantConfirmationLabel, TypeTag } from './OperationsWorkspacePrimitives';
 
 const MAX_LINKED_IDS = 3;
+
+export const OperationsFilterBar: React.FC<{
+  filters: OperationsQueueFilters;
+  scopes: OperationsScope[];
+  totalCount: number;
+  unfilteredTotalCount: number;
+  loading: boolean;
+  onChange: (filters: OperationsQueueFilters) => void;
+}> = ({ filters, scopes, totalCount, unfilteredTotalCount, loading, onChange }) => {
+  const [type, setType] = useState<'' | 'REQUEST' | 'SESSION'>(filters.targetType ?? '');
+  const [status, setStatus] = useState(filters.status ?? '');
+  const [city, setCity] = useState(filters.cityId === null ? '' : String(filters.cityId));
+  const [team, setTeam] = useState(filters.teamId === null ? '' : String(filters.teamId));
+  const [recordRef, setRecordRef] = useState(filters.targetId === null ? '' : String(filters.targetId));
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setType(filters.targetType ?? '');
+    setStatus(filters.status ?? '');
+    setCity(filters.cityId === null ? '' : String(filters.cityId));
+    setTeam(filters.teamId === null ? '' : String(filters.teamId));
+    setRecordRef(filters.targetId === null ? '' : String(filters.targetId));
+    setError(null);
+  }, [filters.targetType, filters.status, filters.cityId, filters.teamId, filters.targetId]);
+
+  const cities = useMemo(() => {
+    const seen = new Set<number>();
+    return scopes.filter((scope) => {
+      if (scope.cityId === null || seen.has(scope.cityId)) return false;
+      seen.add(scope.cityId);
+      return true;
+    });
+  }, [scopes]);
+  const selectedCityId = city === '' ? null : Number(city);
+  const teams = useMemo(
+    () => scopes.filter((scope) => selectedCityId === null || scope.cityId === selectedCityId),
+    [scopes, selectedCityId]
+  );
+  const statuses = operationsStatusCodes(type === '' ? null : type);
+  const active = hasOperationsFilters(filters);
+
+  const apply = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (type === '' && recordRef.trim() !== '') {
+      setError('Select Visit requests or Visit plans before entering a record number.');
+      return;
+    }
+    const parsedRef = recordRef.trim() === '' ? null : Number(recordRef.trim());
+    if (parsedRef !== null && (!/^\d+$/.test(recordRef.trim()) || !Number.isSafeInteger(parsedRef) || parsedRef <= 0)) {
+      setError('Record number must be a positive whole number.');
+      return;
+    }
+    setError(null);
+    onChange(normalizeOperationsFilters({
+      targetType: type === '' ? null : type,
+      status: type === '' || status === '' ? null : status,
+      cityId: city === '' ? null : Number(city),
+      teamId: team === '' ? null : Number(team),
+      targetId: parsedRef
+    }));
+  };
+
+  const removeFilter = (key: keyof OperationsQueueFilters) => {
+    const next: OperationsQueueFilters = { ...filters, [key]: null };
+    if (key === 'targetType') {
+      next.status = null;
+      next.targetId = null;
+    }
+    onChange(normalizeOperationsFilters(next));
+  };
+
+  const cityName = cities.find((scope) => scope.cityId === filters.cityId)?.cityName;
+  const teamName = scopes.find((scope) => scope.teamId === filters.teamId)?.teamName;
+  const statusLabel = filters.status && filters.targetType
+    ? operationsStatusMeta(filters.targetType, filters.status).label
+    : filters.status;
+
+  return (
+    <section className="oe-filters" aria-label="Filter this queue">
+      <form className="oe-filter-form" onSubmit={apply}>
+        <div className="oe-filter-head">
+          <p className="oe-filter-title">
+            <Filter size={14} aria-hidden="true" />
+            Filters
+          </p>
+          <p className="oe-filter-count" aria-live="polite">
+            {loading ? 'Updating…' : active
+              ? <>Showing <span className="oe-num">{totalCount}</span> of <span className="oe-num">{unfilteredTotalCount}</span></>
+              : <><span className="oe-num">{unfilteredTotalCount}</span> {unfilteredTotalCount === 1 ? 'record' : 'records'}</>}
+          </p>
+        </div>
+        <div className="oe-filter-grid">
+          <label className="oe-filter-field">
+            <span>Record type</span>
+            <select
+              value={type}
+              onChange={(event) => {
+                const next = event.target.value as '' | 'REQUEST' | 'SESSION';
+                setType(next);
+                if (next === '' || !(operationsStatusCodes(next) as readonly string[]).includes(status)) setStatus('');
+              }}
+            >
+              <option value="">All records</option>
+              <option value="REQUEST">Visit requests</option>
+              <option value="SESSION">Visit plans</option>
+            </select>
+          </label>
+          <label className="oe-filter-field">
+            <span>Status</span>
+            <select
+              value={status}
+              onChange={(event) => setStatus(event.target.value)}
+              disabled={type === ''}
+            >
+              <option value="">Any status</option>
+              {statuses.map((code) => (
+                <option key={code} value={code}>
+                  {operationsStatusMeta(type as 'REQUEST' | 'SESSION', code).label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="oe-filter-field">
+            <span>City</span>
+            <select
+              value={city}
+              onChange={(event) => {
+                const nextCity = event.target.value;
+                setCity(nextCity);
+                if (nextCity !== '') {
+                  const stillValid = scopes.some(
+                    (scope) => String(scope.teamId) === team && String(scope.cityId) === nextCity
+                  );
+                  if (!stillValid) setTeam('');
+                }
+              }}
+            >
+              <option value="">All your cities</option>
+              {cities.map((scope) => (
+                <option key={scope.cityId} value={scope.cityId ?? ''}>{scope.cityName}</option>
+              ))}
+            </select>
+          </label>
+          <label className="oe-filter-field">
+            <span>Team</span>
+            <select value={team} onChange={(event) => setTeam(event.target.value)}>
+              <option value="">All your teams</option>
+              {teams.map((scope) => (
+                <option key={scope.teamId} value={scope.teamId}>{scope.teamName}</option>
+              ))}
+            </select>
+          </label>
+          <label className="oe-filter-field">
+            <span>Exact record</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder={type === '' ? 'Choose a type first' : 'e.g. 501'}
+              value={recordRef}
+              onChange={(event) => setRecordRef(event.target.value)}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'oe-filter-error' : undefined}
+            />
+          </label>
+          <div className="oe-filter-actions">
+            <button type="submit" className="oe-btn oe-btn--primary oe-btn--md" disabled={loading}>
+              Apply filters
+            </button>
+            {active ? (
+              <button
+                type="button"
+                className="oe-btn oe-btn--secondary oe-btn--md"
+                onClick={() => onChange(EMPTY_OPERATIONS_FILTERS)}
+                disabled={loading}
+              >
+                <RotateCcw size={14} aria-hidden="true" />
+                Clear all
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {scopes.length > 1 ? (
+          <p className="oe-filter-hint">
+            A Team filter hides records that are still authorized in your other teams.
+          </p>
+        ) : null}
+        {error ? <p id="oe-filter-error" className="oe-filter-error" role="alert">{error}</p> : null}
+        {active ? (
+          <ul className="oe-filter-chips" aria-label="Active filters">
+            {filters.targetType ? (
+              <li>
+                <button type="button" onClick={() => removeFilter('targetType')} aria-label="Remove record type filter">
+                  {filters.targetType === 'REQUEST' ? 'Visit requests' : 'Visit plans'}
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </li>
+            ) : null}
+            {filters.status ? (
+              <li>
+                <button type="button" onClick={() => removeFilter('status')} aria-label="Remove status filter">
+                  {statusLabel}<X size={12} aria-hidden="true" />
+                </button>
+              </li>
+            ) : null}
+            {filters.cityId !== null ? (
+              <li>
+                <button type="button" onClick={() => removeFilter('cityId')} aria-label="Remove city filter">
+                  {cityName ?? `City ${filters.cityId}`}<X size={12} aria-hidden="true" />
+                </button>
+              </li>
+            ) : null}
+            {filters.teamId !== null ? (
+              <li>
+                <button type="button" onClick={() => removeFilter('teamId')} aria-label="Remove team filter">
+                  {teamName ?? `Team ${filters.teamId}`}<X size={12} aria-hidden="true" />
+                </button>
+              </li>
+            ) : null}
+            {filters.targetId !== null ? (
+              <li>
+                <button type="button" onClick={() => removeFilter('targetId')} aria-label="Remove exact record filter">
+                  {operationsRecordReference(filters.targetId)}<X size={12} aria-hidden="true" />
+                </button>
+              </li>
+            ) : null}
+          </ul>
+        ) : null}
+      </form>
+    </section>
+  );
+};
 
 export const workItemKey = (item: { targetType: string; targetId: number }): string =>
   `${item.targetType}-${item.targetId}`;

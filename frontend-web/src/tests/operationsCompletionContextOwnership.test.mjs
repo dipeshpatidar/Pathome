@@ -26,6 +26,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { resolve as resolveOperationsModule } from './support/operationsServiceLoader.mjs';
+import {
+  compileCallback,
+  extractSchedulingCallbacks
+} from './support/operationsSchedulingCallbacksHarness.mjs';
 
 registerHooks({ resolve: resolveOperationsModule });
 
@@ -480,7 +484,7 @@ test('the shared runner publishes the returned result under a verdict taken afte
   assert.equal(/if \(!?\s*published\b/.test(runner), false, 'publication never alters the outcome');
   assert.match(
     runner,
-    /return \{ status: 'applied', applied, reconciliation, failure: null, operation, published \};/
+    /return \{\s*status: 'applied',\s*applied,\s*reconciliation,\s*failure: null,\s*preflight: null,\s*operation,\s*published\s*\};/
   );
   // Exactly one transmission site, and nothing after it may retransmit a confirmed command.
   assert.equal((runner.match(/await transmit\(/g) ?? []).length, 1, 'one transmission per command');
@@ -567,70 +571,104 @@ test('the claim, the release and the record-named notices are each bound to thei
   );
 });
 
-test('the scheduling drawer publishes under one verdict, and every drawer state change moves its identity', () => {
-  const workspaceSource = read('../components/operations/OperationsWorkspace.tsx');
+test('the real scheduling callbacks publish only into their own drawer and display generation', async () => {
+  const callbacks = extractSchedulingCallbacks();
+  assert.equal(callbacks.drawerCapturedBeforeCommand, true,
+    'the drawer instance is captured before the booking callback runs');
 
-  // The drawer identity is captured before the command begins, from the same ref a command is bound to.
-  const drawerCaptureAt = workspaceSource.indexOf('const drawer: ScheduleDrawerIdentity = { ...scheduleDrawerRef.current };');
-  const commandAt = workspaceSource.indexOf('const outcome = await runGuardedCommand<OperationsSessionDetail, OperationsSchedulingApproval>');
-  assert.ok(drawerCaptureAt > -1 && commandAt > drawerCaptureAt,
-    'the drawer instance is captured before the booking starts');
+  /**
+   * AST extraction resolves the actual callback properties of the real `runGuardedCommand` options.
+   * A comment, an additional callback property or an additive intersection/generic signature cannot
+   * move these assertions onto different code.
+   */
+  const appliedGate = callbacks.applyResultSource.indexOf('scheduleOutcomeContextHolds(operation, drawer)');
+  const appliedWrite = callbacks.applyResultSource.indexOf("setScheduleOutcome({ kind: 'scheduled'");
+  assert.ok(appliedGate > -1 && appliedWrite > appliedGate, 'the applied drawer write follows its verdict');
+  const missingGate = callbacks.onMissingVersionSource.indexOf('scheduleOutcomeContextHolds(operation, drawer)');
+  const missingWrite = callbacks.onMissingVersionSource.indexOf('setScheduleOutcome(');
+  assert.ok(missingGate > -1 && missingWrite > missingGate, 'the stopped-command write follows its verdict');
+  const failureGate = callbacks.onFailureSource.lastIndexOf('scheduleOutcomeContextHolds(operation, drawer)');
+  const failureWrite = callbacks.onFailureSource.indexOf('setScheduleOutcome(schedulingFailureOutcome(failure))');
+  assert.ok(failureGate > -1 && failureWrite > failureGate, 'the classified failure write follows its verdict');
+  assert.ok(callbacks.onFailureSource.indexOf('reportCommandFailure') < failureGate,
+    'the verdict is re-taken after the awaited failure report');
 
-  // All three drawer publications — the applied result, the stopped command and the classified failure,
-  // plus the caller's post-reconciliation outcome — go through the one drawer verdict.
-  const confirmFrom = workspaceSource.indexOf('const confirmSelection = useCallback(async');
-  const confirmTo = workspaceSource.indexOf('const navigate = useCallback(');
-  const confirm = workspaceSource.slice(confirmFrom, confirmTo);
-  assert.equal(
-    (confirm.match(/scheduleOutcomeContextHolds\(operation, drawer\)/g) ?? []).length,
-    3,
-    'the command-side drawer writes are gated'
-  );
-  assert.equal(
-    (confirm.match(/scheduleOutcomeContextHolds\(outcome\.operation, drawer\)/g) ?? []).length,
-    1,
-    'and the caller re-takes the verdict after the awaited reconciliation'
-  );
-  const holderAt = confirm.indexOf('const scheduleOutcomeContextHolds');
-  assert.equal(holderAt, -1, 'the drawer verdict lives in one shared helper');
-  const outcomeWrites = confirm.indexOf('setScheduleOutcome({ kind: \'scheduled\', approval, refreshFailed: false })');
-  const appliedGate = confirm.indexOf('if (applied && scheduleOutcomeContextHolds(operation, drawer)) {');
-  assert.ok(appliedGate > -1 && outcomeWrites > appliedGate, 'the applied drawer outcome is gated');
-  assert.equal(
-    confirm.slice(0, confirm.indexOf('scheduleOutcomeContextHolds')).includes('setScheduleOutcome({'),
-    false,
-    'the preamble clears the outcome before any verdict is needed'
-  );
-
-  // The drawer verdict itself: the display context, the Session and the instance generation.
-  assert.match(
-    workspaceSource,
-    /const scheduleOutcomeContextHolds = useCallback\(\(\s*\n\s*operation: OwnershipOperation \| null,\s*\n\s*drawer: ScheduleDrawerIdentity\s*\n\s*\): boolean =>\s*\n\s*operation !== null\s*\n\s*&& ownership\.displayContextIsOwned\(operation\)\s*\n\s*&& scheduleDrawerRef\.current\.sessionId === drawer\.sessionId\s*\n\s*&& scheduleDrawerRef\.current\.generation === drawer\.generation,/
-  );
-
-  // The Session state has exactly two writers, and both move the identity: a closed drawer and a
-  // re-opened one are different instances.
-  assert.equal((workspaceSource.match(/setScheduleSessionId\(/g) ?? []).length, 2,
-    'the drawer Session is opened and closed through the identity-aware helpers');
-  assert.match(
-    workspaceSource,
-    /const openScheduleDrawer = useCallback\(\(sessionId: number\) => \{\s*\n\s*scheduleDrawerRef\.current = \{\s*\n\s*sessionId,\s*\n\s*generation: scheduleDrawerRef\.current\.generation \+ 1\s*\n\s*\};/
-  );
-  assert.match(
-    workspaceSource,
-    /const closeScheduleDrawer = useCallback\(\(\) => \{\s*\n\s*scheduleDrawerRef\.current = \{\s*\n\s*sessionId: null,\s*\n\s*generation: scheduleDrawerRef\.current\.generation \+ 1\s*\n\s*\};/
-  );
-  // The three paths that drop the drawer without pressing Close retire its instance as well.
-  for (const [label, callSite] of [
-    ['leaving the detail', 'const closeDetail = useCallback(() => {'],
-    ['withdrawing a denied root', 'const withdrawDeniedRoot = useCallback((operation: OwnershipOperation) => {'],
-    ['an account change', 'const clearProtectedState = useCallback(']
-  ]) {
-    const at = workspaceSource.indexOf(callSite);
-    assert.ok(at > -1, `${label} exists`);
-    const body = workspaceSource.slice(at, at + 2200);
-    assert.ok(body.includes('closeScheduleDrawer();'), `${label} retires the drawer instance`);
+  let drawerCurrent = true;
+  let noticeCurrent = true;
+  const outcomes = [];
+  let releaseReport;
+  const reportGate = new Promise(resolve => { releaseReport = resolve; });
+  class ApiRequestError extends Error {
+    constructor(status) {
+      super(`status ${status}`);
+      this.status = status;
+    }
   }
+  const onFailure = compileCallback(callbacks.onFailureSource, [
+    'ApiRequestError', 'readSchedulingIntent', 'operationsWorkspaceService', 'forgetSchedulingIntent',
+    'ownership', 'authorityRef', 'scheduleOutcomeContextHolds', 'drawer', 'setScheduleOutcome',
+    'reportCommandFailure', 'noticeContextHolds', 'schedulingFailureOutcome', 'name', 'sessionId'
+  ], [
+    ApiRequestError,
+    () => null,
+    {},
+    () => {},
+    { canCommit: () => true },
+    { current: {} },
+    () => drawerCurrent,
+    { sessionId: 500, generation: 7 },
+    value => outcomes.push(value),
+    async () => { await reportGate; return { published: true, kind: 'denied' }; },
+    () => noticeCurrent,
+    failure => ({ kind: 'failed', failure }),
+    'Visit Session · 500',
+    500
+  ]);
+
+  const pending = onFailure(new ApiRequestError(403), { dispatched: true, session: {}, controller: {} });
+  await Promise.resolve();
+  assert.deepEqual(outcomes, [], 'nothing is published while failure reporting is pending');
+  drawerCurrent = false;
+  releaseReport();
+  await pending;
+  assert.deepEqual(outcomes, [], 'navigation to another drawer cannot inherit the old outcome');
+
+  drawerCurrent = true;
+  noticeCurrent = false;
+  await onFailure(new ApiRequestError(404), { dispatched: true, session: {}, controller: {} });
+  assert.deepEqual(outcomes, [], 'a withheld refusal is never converted into drawer state');
+
+  noticeCurrent = true;
+  await onFailure(new ApiRequestError(403), { dispatched: true, session: {}, controller: {} });
+  assert.equal(outcomes.length, 1, 'the current drawer receives the real classified outcome once');
+  assert.equal(outcomes[0].kind, 'failed');
+  await onFailure(new ApiRequestError(409), { dispatched: true, session: {}, controller: {} });
+  assert.equal(outcomes.length, 2, 'a definite conflict remains distinct from a denial');
+  assert.equal(outcomes[1].kind, 'uncertain');
+
+  let applied = true;
+  let appliedOutcomes = 0;
+  const applyResult = compileCallback(callbacks.applyResultSource, [
+    'readSchedulingIntent', 'forgetSchedulingIntent', 'applyAuthoritativeSession',
+    'scheduleOutcomeContextHolds', 'drawer', 'setScheduleOutcome', 'sessionId'
+  ], [
+    () => null,
+    () => {},
+    () => applied,
+    () => drawerCurrent,
+    { sessionId: 500, generation: 8 },
+    () => { appliedOutcomes += 1; },
+    500
+  ]);
+  drawerCurrent = false;
+  assert.equal(applyResult({}, { currentSession: {} }, {}), true);
+  assert.equal(appliedOutcomes, 0, 'a late current snapshot is not written into a replacement drawer');
+  drawerCurrent = true;
+  assert.equal(applyResult({}, { currentSession: {} }, {}), true);
+  assert.equal(appliedOutcomes, 1);
+  applied = false;
+  applyResult({}, { currentSession: {} }, {});
+  assert.equal(appliedOutcomes, 1, 'an authoritative apply that could not publish writes no drawer outcome');
 });
 
 test('the security and recovery paths keep their own lives: account switch, authority loss, invalidation', () => {

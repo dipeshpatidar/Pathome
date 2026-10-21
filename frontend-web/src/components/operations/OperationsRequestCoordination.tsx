@@ -127,7 +127,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
           disabled={blocked}
         >
           <FilePlus2 size={16} aria-hidden="true" />
-          Coordinate into a new session
+          Create visit plan
         </button>
         <button
           type="button"
@@ -136,7 +136,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
           disabled={blocked}
         >
           <Link2 size={16} aria-hidden="true" />
-          Add to an existing draft
+          Add to an existing visit plan
         </button>
         <button
           type="button"
@@ -167,14 +167,14 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
       <div className="oe-coord">
         {back}
         <h4 ref={headingRef} tabIndex={-1} className="oe-coord-title">
-          Coordinate into a new session
+          Create visit plan
         </h4>
         <ul className="oe-coord-points">
           <li>
-            Creates a DRAFT visit session you own, with{' '}
-            <span className="oe-mono">{operationsRecordReference(requestId)}</span> as its first stop.
+            Creates a planning-stage visit plan you own, with{' '}
+            <span className="oe-mono">{operationsRecordReference(requestId)}</span> as its first property.
           </li>
-          <li>The request moves to Coordinating and is managed from the session afterwards.</li>
+          <li>The request moves to in coordination and is managed from the visit plan afterwards.</li>
           <li>Nothing is booked. You record property availability and choose a Ground Executive next.</li>
         </ul>
         <button
@@ -183,7 +183,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
           onClick={onCoordinateNewSession}
           disabled={blocked}
         >
-          {busyCommand === 'coordinate' ? 'Creating draft session…' : 'Create draft session'}
+          {busyCommand === 'coordinate' ? 'Creating visit plan…' : 'Create visit plan'}
         </button>
       </div>
     );
@@ -203,7 +203,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
         </p>
         {draftError ? (
           <div className="oe-notice oe-notice--warn" role="alert">
-            <p className="oe-notice-title">Draft sessions couldn’t be loaded</p>
+            <p className="oe-notice-title">Visit plans in planning couldn’t be loaded</p>
             <p className="oe-notice-body">Nothing was changed. Try again, or coordinate into a new session.</p>
             <div className="oe-notice-actions">
               <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={() => void loadPage(0, false)}>
@@ -212,15 +212,15 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
             </div>
           </div>
         ) : drafts === null ? (
-          <p className="oe-ppanel-note" role="status">Checking your owned draft sessions…</p>
+          <p className="oe-ppanel-note" role="status">Checking your visit plans in planning…</p>
         ) : drafts.length === 0 ? (
           <p className="oe-inline-note" role="status">
-            No DRAFT session is on the pages loaded from your My Work queue. Coordinate into a new
-            session instead, or load more.
+            No visit plan in planning is on the pages loaded from My work. Create a visit plan
+            instead, or load more.
           </p>
         ) : (
           <fieldset className="oe-choice-list" aria-describedby={invalid ? 'oe-attach-err' : undefined}>
-            <legend className="oe-field-label">Your draft sessions</legend>
+            <legend className="oe-field-label">Your visit plans in planning</legend>
             {drafts.map((draft) => (
               <label key={draft.targetId} className="oe-choice">
                 <input
@@ -242,7 +242,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
           </fieldset>
         )}
         {invalid ? (
-          <p id="oe-attach-err" className="oe-reason-error" role="alert">Choose a draft session.</p>
+            <p id="oe-attach-err" className="oe-reason-error" role="alert">Choose a visit plan in planning.</p>
         ) : null}
         {drafts !== null && !draftError && draftPage < draftPages - 1 ? (
           <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={() => void loadPage(draftPage + 1, true)}>

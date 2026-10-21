@@ -4,6 +4,29 @@ import { ArrowRight, BedDouble, Building2, CalendarDays, ChevronRight, Clock3, H
 import { motion, useReducedMotion } from 'framer-motion';
 import { Property, UserProfile } from '../types';
 import { tenantVisitService, TenantVisitRequest } from '../services/tenantVisitService';
+import type { TenantAvailabilityView } from '../services/tenantVisitService';
+import { TenantAvailabilityEditor } from './TenantAvailabilityEditor';
+import {
+  buildTenantAvailabilityDraftCommand,
+  changeTenantAvailabilityDraftZone,
+  clearTenantAvailability,
+  createTenantAvailabilityDraft,
+  editTenantAvailabilityDraft,
+  formatTenantAvailability,
+  observeAuthoritativeTenantAvailability,
+  rebaseTenantAvailabilityDraft,
+  reconcileTenantAvailabilityDraft,
+  settleTenantAvailabilitySaveAcknowledgement,
+  tenantAvailabilityReviewedVersion,
+  tenantAvailabilityErrorCopy,
+  tenantAvailabilityFactsFromRequest,
+  tenantAvailabilityFactsFromView,
+  tenantRequestForDraft,
+  type TenantAvailabilityDraft,
+  type TenantAvailabilityFieldName,
+  type TenantAvailabilityFields
+} from '../utils/tenantAvailability';
+import { ApiRequestError } from '../services/apiError';
 import { tenantVisitEntitlementService, type TenantVisitEntitlement } from '../services/tenantVisitEntitlementService';
 import { createVisitOperationId, TenantVisitOutcome, TenantVisitStartCode, VisitExecutionView, visitExecutionService } from '../services/visitExecutionService';
 import { secondsUntilVisitCodeTime } from '../utils/visitExecutionPresentation';
@@ -82,6 +105,15 @@ const emptyHistory: HistoryState = {
   identityKey: null, status: 'loading', requests: [], totalCount: 0, page: 0, hasMore: false
 };
 
+/** A delayed page must never move a Request's version or availability facts backwards. */
+const mergeTenantHistoryRequests = (
+  current: TenantVisitRequest[],
+  incoming: TenantVisitRequest[]
+): TenantVisitRequest[] => incoming.map(request => {
+  const existing = current.find(candidate => candidate.requestId === request.requestId);
+  return existing && existing.version > request.version ? existing : request;
+});
+
 type TenantSessionHistory = { identityKey: string | null; status: 'loading' | 'ready' | 'error'; sessions: VisitExecutionView[]; totalPages: number };
 const emptyTenantSessions: TenantSessionHistory = { identityKey: null, status: 'loading', sessions: [], totalPages: 0 };
 type TenantOutcomeHistory = { identityKey: string | null; status: 'loading' | 'ready' | 'error'; sessions: TenantVisitOutcome[] };
@@ -120,7 +152,10 @@ const formatVisitTime = (value: string | null | undefined, zoneId?: string | nul
 
 const focusClass = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700';
 
-const TenantVisitRequestCard: React.FC<{ request: TenantVisitRequest }> = ({ request }) => {
+const TenantVisitRequestCard: React.FC<{
+  request: TenantVisitRequest;
+  availabilityEditor: React.ReactNode;
+}> = ({ request, availabilityEditor }) => {
   const [imageFailed, setImageFailed] = useState(false);
   const date = formatRequestedDate(request.requestedAt);
   const location = [readText(request.sector), readText(request.city)].filter(Boolean).join(', ');
@@ -128,6 +163,7 @@ const TenantVisitRequestCard: React.FC<{ request: TenantVisitRequest }> = ({ req
   const bhk = readText(request.bhk);
   const propertyType = readText(request.propertyType);
   const preferredTiming = readText(request.preferredVisitTiming);
+  const currentAvailability = formatTenantAvailability(request);
   const awaiting = request.status === 'RECEIVED' || request.status === 'COORDINATING';
   return <article className="tenant-v0-request-card min-w-0">
     <div className="tenant-v0-request-image">
@@ -142,10 +178,13 @@ const TenantVisitRequestCard: React.FC<{ request: TenantVisitRequest }> = ({ req
       {location && <p className="tenant-v0-request-location"><MapPin size={14} aria-hidden="true" />{location}</p>}
       {(bhk || propertyType) && <p className="tenant-v0-request-facts">{[bhk, propertyType?.replace(/_/g, ' ').toLowerCase()].filter(Boolean).join(' · ')}</p>}
       {(date || preferredTiming) && <p className="tenant-v0-request-timing"><CalendarDays size={15} aria-hidden="true" />{date ? `Requested ${date}` : 'Timing requested'}{preferredTiming ? ` · Preferred: ${preferredTiming}` : ''}</p>}
+      {preferredTiming ? <p className="mt-1 text-xs leading-5 text-slate-600"><span className="font-semibold text-slate-700">Originally requested:</span> {preferredTiming}</p> : null}
+      {currentAvailability ? <p className="mt-1 text-xs leading-5 text-slate-600"><span className="font-semibold text-slate-700">Current availability:</span> {currentAvailability}</p> : null}
       {awaiting && <p className="tenant-v0-request-awaiting"><span aria-hidden="true" />Not a confirmed appointment</p>}
       {request.propertyAvailable && Number.isSafeInteger(request.propertyId) && request.propertyId > 0
         ? <Link to={`/property/${request.propertyId}`} className={`tenant-v0-request-link ${focusClass}`}>View property <ArrowRight size={14} aria-hidden="true" /></Link>
         : <p className="tenant-v0-request-unavailable">This property is no longer available to view.</p>}
+      {availabilityEditor}
     </div>
     <div className="tenant-v0-request-aside"><span>{tenantVisitStatusLabel(request.status)}</span></div>
   </article>;
@@ -562,6 +601,16 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const [loadMorePending, setLoadMorePending] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const [reload, setReload] = useState(0);
+  /**
+   * Exactly one availability draft is retained here, above every request card and history refresh.
+   * It is owned by the authenticated browser session and is never persisted to browser storage.
+   */
+  const [availabilityDraft, setAvailabilityDraft] = useState<TenantAvailabilityDraft | null>(null);
+  const availabilityDraftRef = useRef<TenantAvailabilityDraft | null>(null);
+  const [blockedAvailabilityRequest, setBlockedAvailabilityRequest] = useState<TenantVisitRequest | null>(null);
+  const availabilityGenerationRef = useRef(0);
+  const availabilityControllersRef = useRef<Map<number, AbortController>>(new Map());
+  const availabilityReconcileRef = useRef<Set<string>>(new Set());
   const pageRequestRef = useRef<AbortController | null>(null);
   const pagePendingRef = useRef(false);
   const location = useLocation();
@@ -570,6 +619,37 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
     : location.hash === '#visit-history' || location.hash.startsWith('#visit-session-') ? 'visits'
       : location.hash === '#account' ? 'account'
         : location.hash === '#notifications' ? 'notifications' : 'home';
+  /**
+   * One synchronous owner for the retained draft. The ref is updated in the same tick as the
+   * decision, so a callback can never observe a half-committed "reading" marker and skip its read.
+   */
+  const commitAvailabilityDraft = useCallback((
+    update: (current: TenantAvailabilityDraft | null) => TenantAvailabilityDraft | null
+  ) => {
+    const next = update(availabilityDraftRef.current);
+    availabilityDraftRef.current = next;
+    setAvailabilityDraft(next);
+  }, []);
+  useEffect(() => {
+    const clear = () => {
+      availabilityControllersRef.current.forEach(controller => controller.abort());
+      availabilityControllersRef.current.clear();
+      availabilityReconcileRef.current.clear();
+      availabilityDraftRef.current = null;
+      setAvailabilityDraft(null);
+      setBlockedAvailabilityRequest(null);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'pathome_auth_token' || event.key === 'pathome_user' || event.key === null) clear();
+    };
+    window.addEventListener('pathome_auth_changed', clear);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('pathome_auth_changed', clear);
+      window.removeEventListener('storage', onStorage);
+      clear();
+    };
+  }, [user.id]);
   useEffect(() => {
     if (tenantView !== 'account') return;
     const identity = readTenantVisitSession(user.id);
@@ -896,8 +976,17 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
         setHistory({ ...emptyHistory, identityKey: session.key, status: 'error' });
         return;
       }
-      setHistory({ identityKey: session.key, status: 'ready', requests: page.requests,
-        totalCount: page.totalCount, page: 0, hasMore: page.hasMore });
+      setHistory(current => ({
+        identityKey: session.key,
+        status: 'ready',
+        requests: mergeTenantHistoryRequests(
+          current.identityKey === session.key ? current.requests : [],
+          page.requests
+        ),
+        totalCount: page.totalCount,
+        page: 0,
+        hasMore: page.hasMore
+      }));
     }).catch(() => {
       if (controller.signal.aborted || !isCurrentTenantVisitSession(session)) return;
       setHistory({ ...emptyHistory, identityKey: session.key, status: 'error' });
@@ -1062,6 +1151,75 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
   const coordinatingRequests = visibleHistory.requests.filter(request => request.status === 'RECEIVED' || request.status === 'COORDINATING');
   const sessionRequests = visibleHistory.requests.filter(request => request.status === 'SCHEDULED');
   const pastRequests = visibleHistory.requests.filter(request => request.status === 'UNAVAILABLE' || request.status === 'CANCELLED');
+  const visibleAvailabilityDraft = (requestId: number): TenantAvailabilityDraft | null => {
+    const draft = availabilityDraft;
+    return draft && draft.requestId === requestId && session && draft.identityKey === session.key ? draft : null;
+  };
+  const availabilityEditorFor = (request: TenantVisitRequest) => {
+    const draft = visibleAvailabilityDraft(request.requestId);
+    return (
+      <TenantAvailabilityEditor
+        request={request}
+        draft={draft}
+        busy={draft?.status === 'saving' || draft?.reconciliation === 'reading'}
+        onToggle={open => {
+          ensureAvailabilityDraft(request, open);
+        }}
+        onEdit={(field: TenantAvailabilityFieldName, key: keyof TenantAvailabilityFields, value: string) => {
+          updateAvailabilityDraft(request.requestId, current => editTenantAvailabilityDraft(current, field, key, value));
+        }}
+        onZoneChange={zoneId => {
+          updateAvailabilityDraft(request.requestId, current => changeTenantAvailabilityDraftZone(current, zoneId));
+        }}
+        onSave={() => {
+          const current = visibleAvailabilityDraft(request.requestId);
+          if (current) void saveAvailabilityDraft(current, false);
+        }}
+        onClear={() => {
+          const current = visibleAvailabilityDraft(request.requestId);
+          if (current) void saveAvailabilityDraft(current, true);
+        }}
+        onReconcile={() => {
+          const current = visibleAvailabilityDraft(request.requestId);
+          if (current) void reconcileAvailability(current);
+        }}
+        onRebase={() => {
+          const current = visibleAvailabilityDraft(request.requestId);
+          if (current) rebaseAvailabilityDraft(current);
+        }}
+        onDiscard={() => discardAvailabilityDraft(request.requestId)}
+      />
+    );
+  };
+  const orphanAvailabilityDraft = session
+    && availabilityDraft
+    && availabilityDraft.identityKey === session.key
+    && !visibleHistory.requests.some(request => request.requestId === availabilityDraft.requestId)
+    ? availabilityDraft
+    : null;
+  const availabilityBlockedNotice = blockedAvailabilityRequest && availabilityDraft
+    && availabilityDraft.requestId !== blockedAvailabilityRequest.requestId
+    ? <section role="alert" aria-labelledby="availability-draft-conflict-title"
+        className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950">
+        <h3 id="availability-draft-conflict-title" className="text-sm font-semibold">
+          Keep your earlier availability edits?
+        </h3>
+        <p className="mt-1 text-xs leading-5">
+          You have unsaved changes for Request #{availabilityDraft.requestId}. They stay protected
+          until you keep them or deliberately discard them before editing Request #{blockedAvailabilityRequest.requestId}.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" onClick={() => setBlockedAvailabilityRequest(null)}
+            className={`min-h-11 rounded-lg border border-amber-400 bg-white px-3 text-sm font-semibold text-amber-950 hover:bg-amber-100 ${focusClass}`}>
+            Keep my earlier edits
+          </button>
+          <button type="button" onClick={discardAndOpenBlockedAvailability}
+            className={`min-h-11 rounded-lg bg-amber-900 px-3 text-sm font-semibold text-white hover:bg-amber-950 ${focusClass}`}>
+            Discard earlier edits and edit this visit
+          </button>
+        </div>
+      </section>
+    : null;
   const requestStatusForProperty = (propertyId: number): string | null => {
     if (view === 'loading' || view === 'error') return 'UNKNOWN';
     // The POST is tenant/listing-idempotent. An older request outside the loaded page returns its existing state.
@@ -1199,6 +1357,317 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
       }
     }
   };
+
+  /**
+   * Applies one authoritative availability result only to the request and signed-in browser
+   * session it belongs to. A late response from a previous account is dropped.
+   */
+  const applyAvailabilityUpdate = (requestId: number, view: TenantAvailabilityView) => {
+    const currentSession = readTenantVisitSession(user.id);
+    if (!currentSession) return;
+    setHistory(current => {
+      if (current.identityKey !== currentSession.key || current.status !== 'ready') return current;
+      return {
+        ...current,
+        requests: current.requests.map(request => request.requestId === requestId && view.version >= request.version
+          ? {
+              ...request,
+              version: view.version,
+              availabilityStartAt: view.availabilityStartAt,
+              availabilityEndAt: view.availabilityEndAt,
+              availabilityZoneId: view.availabilityZoneId,
+              preferredAt: view.preferredAt
+            }
+          : request)
+      };
+    });
+  };
+
+  const mergeAuthoritativeRequest = (request: TenantVisitRequest) => {
+    const currentSession = readTenantVisitSession(user.id);
+    if (!currentSession) return;
+    setHistory(current => {
+      if (current.identityKey !== currentSession.key || current.status !== 'ready') return current;
+      const index = current.requests.findIndex(item => item.requestId === request.requestId);
+      if (index < 0) {
+        return { ...current, requests: [...current.requests, request] };
+      }
+      const existing = current.requests[index];
+      if (request.version < existing.version) return current;
+      const requests = current.requests.slice();
+      requests[index] = request;
+      return { ...current, requests };
+    });
+  };
+
+  const ensureAvailabilityDraft = (request: TenantVisitRequest, open: boolean): TenantAvailabilityDraft | null => {
+    const requestSession = readTenantVisitSession(user.id);
+    if (!requestSession) return null;
+    const existing = availabilityDraftRef.current;
+    if (existing && existing.identityKey === requestSession.key) {
+      if (existing.requestId === request.requestId) {
+        if (existing.editorOpen !== open) {
+          commitAvailabilityDraft(() => ({ ...existing, editorOpen: open }));
+        }
+        return { ...existing, editorOpen: open };
+      }
+      if (open) {
+        const pristineInactive = !existing.editorOpen
+          && existing.editRevision === 0
+          && existing.attempt === null
+          && existing.status === 'editing'
+          && existing.reconciliation === 'idle'
+          && !existing.reviewRequired;
+        if (pristineInactive) {
+          availabilityControllersRef.current.get(existing.requestId)?.abort();
+          availabilityControllersRef.current.delete(existing.requestId);
+        } else {
+          // Ownership never moves silently while another visit has unsaved or unresolved work.
+          setBlockedAvailabilityRequest(request);
+          return null;
+        }
+      }
+      if (!open) return existing;
+    }
+    if (!open) return null;
+    const draft = createTenantAvailabilityDraft({
+      request,
+      identityKey: requestSession.key,
+      generation: ++availabilityGenerationRef.current,
+      editorOpen: open
+    });
+    commitAvailabilityDraft(() => draft);
+    setBlockedAvailabilityRequest(null);
+    return draft;
+  };
+
+  const draftIsCurrent = (draft: TenantAvailabilityDraft): boolean => {
+    const current = availabilityDraftRef.current;
+    return current !== null
+      && current.requestId === draft.requestId
+      && current.identityKey === draft.identityKey
+      && current.generation === draft.generation
+      && readTenantVisitSession(user.id)?.key === draft.identityKey;
+  };
+
+  const updateAvailabilityDraft = (
+    requestId: number,
+    update: (draft: TenantAvailabilityDraft) => TenantAvailabilityDraft
+  ) => {
+    commitAvailabilityDraft(current => {
+      if (!current || current.requestId !== requestId) return current;
+      return update(current);
+    });
+  };
+
+  /**
+   * One synchronous reconciliation owner. It acquires the flight, publishes `reading`, and starts
+   * the guarded read exactly once before any await. An immediate or deferred React state commit can
+   * therefore never turn this into a marker with no read behind it.
+   */
+  const startAvailabilityReconciliation = (draft: TenantAvailabilityDraft, notice: string) => {
+    const current = availabilityDraftRef.current;
+    if (!current || !draftIsCurrent(draft)) return;
+    const flightKey = `${current.identityKey}:${current.requestId}:${current.generation}`;
+    if (current.reconciliation === 'reading' || availabilityReconcileRef.current.has(flightKey)) return;
+    availabilityReconcileRef.current.add(flightKey);
+    availabilityControllersRef.current.get(current.requestId)?.abort();
+    const controller = new AbortController();
+    availabilityControllersRef.current.set(current.requestId, controller);
+    const sequence = current.reconcileSequence + 1;
+    commitAvailabilityDraft(latest => latest ? {
+      ...latest,
+      status: 'uncertain',
+      reconciliation: 'reading',
+      error: '',
+      notice,
+      reconcileSequence: sequence
+    } : latest);
+    const operation = { ...current, generation: current.generation, reconcileSequence: sequence };
+    void (async () => {
+      try {
+        let found: TenantVisitRequest | null = null;
+        const MAX_RECONCILE_PAGES = 20;
+        for (let page = 0; page < MAX_RECONCILE_PAGES; page += 1) {
+          const result = await tenantVisitService.list(page, controller.signal);
+          if (controller.signal.aborted || !draftIsCurrent(operation)) return;
+          if (!belongsToTenantVisitSession({ key: operation.identityKey, userId: user.id }, result.userId)) return;
+          found = result.requests.find(request => request.requestId === operation.requestId) ?? null;
+          if (found || !result.hasMore) break;
+        }
+        if (controller.signal.aborted) return;
+        const latest = availabilityDraftRef.current;
+        if (!latest || latest.generation !== operation.generation
+            || latest.reconcileSequence !== sequence || !draftIsCurrent(operation)) return;
+        if (found) {
+          mergeAuthoritativeRequest(found);
+          updateAvailabilityDraft(operation.requestId, currentDraft => reconcileTenantAvailabilityDraft(
+            currentDraft,
+            tenantAvailabilityFactsFromRequest(found as TenantVisitRequest),
+            'matched'
+          ));
+        } else {
+          updateAvailabilityDraft(operation.requestId, currentDraft =>
+            reconcileTenantAvailabilityDraft(currentDraft, null, 'unresolved'));
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+        const latest = availabilityDraftRef.current;
+        if (!latest || latest.generation !== operation.generation
+            || latest.reconcileSequence !== sequence || !draftIsCurrent(operation)) return;
+        updateAvailabilityDraft(operation.requestId, currentDraft =>
+          reconcileTenantAvailabilityDraft(currentDraft, null, 'failed'));
+      } finally {
+        availabilityReconcileRef.current.delete(flightKey);
+        if (availabilityControllersRef.current.get(operation.requestId) === controller) {
+          availabilityControllersRef.current.delete(operation.requestId);
+        }
+      }
+    })();
+  };
+
+  const reconcileAvailability = (draft: TenantAvailabilityDraft) => {
+    startAvailabilityReconciliation(draft,
+      'Checking the latest saved times. Your edits are kept and nothing has been resent.');
+  };
+
+  const saveAvailabilityDraft = async (draft: TenantAvailabilityDraft, clear: boolean) => {
+    const requestSession = readTenantVisitSession(user.id);
+    if (!requestSession || requestSession.key !== draft.identityKey || !draftIsCurrent(draft)) return;
+    const current = availabilityDraftRef.current;
+    if (!current || current.requestId !== draft.requestId) return;
+    if (current.status === 'saving' || current.reconciliation === 'reading') return;
+    if (current.reviewRequired) {
+      updateAvailabilityDraft(current.requestId, latest => ({
+        ...latest,
+        error: 'Review the current saved times and use them as your starting point before saving or clearing anything.'
+      }));
+      return;
+    }
+    const expectedVersion = tenantAvailabilityReviewedVersion(current);
+    const built = clear
+      ? { ok: true as const, command: clearTenantAvailability(expectedVersion) }
+      : buildTenantAvailabilityDraftCommand(current.form, expectedVersion, current.opening, current.provenance);
+    if (!built.ok) {
+      updateAvailabilityDraft(current.requestId, latest => ({
+        ...latest,
+        error: tenantAvailabilityErrorCopy(built.error)
+      }));
+      return;
+    }
+    const dispatchDraft: TenantAvailabilityDraft = {
+      ...current,
+      attempt: built.command,
+      dispatchRevision: current.editRevision,
+      dispatchFieldRevisions: { ...current.fieldRevisions },
+      dispatchZoneRevision: current.zoneRevision,
+      status: 'saving',
+      error: '',
+      notice: '',
+      reconciliation: 'idle',
+      reviewRequired: false,
+      reconcileSequence: current.reconcileSequence + 1
+    };
+    commitAvailabilityDraft(() => dispatchDraft);
+    availabilityControllersRef.current.get(current.requestId)?.abort();
+    const controller = new AbortController();
+    availabilityControllersRef.current.set(current.requestId, controller);
+    try {
+      const view = await tenantVisitService.updateAvailability(current.requestId, built.command, controller.signal);
+      if (controller.signal.aborted || !draftIsCurrent(dispatchDraft)) return;
+      const facts = tenantAvailabilityFactsFromView(view);
+      applyAvailabilityUpdate(current.requestId, view);
+      updateAvailabilityDraft(current.requestId, latest =>
+        settleTenantAvailabilitySaveAcknowledgement({
+          ...latest,
+          attempt: latest.attempt,
+          dispatchRevision: latest.dispatchRevision,
+          dispatchFieldRevisions: latest.dispatchFieldRevisions,
+          dispatchZoneRevision: latest.dispatchZoneRevision
+        }, facts)
+      );
+    } catch (cause) {
+      if (controller.signal.aborted || !draftIsCurrent(dispatchDraft)) return;
+      const statusCode = cause instanceof ApiRequestError ? cause.status : undefined;
+      if (statusCode === 400) {
+        updateAvailabilityDraft(current.requestId, latest => ({
+          ...latest,
+          status: 'error',
+          error: cause instanceof Error && cause.message
+            ? cause.message
+            : 'Check the available times and try again.'
+        }));
+      } else if (statusCode === 401 || statusCode === 403) {
+        updateAvailabilityDraft(current.requestId, latest => ({
+          ...latest,
+          status: 'error',
+          error: 'Your sign-in changed or you no longer have access to this request. Your edits remain here.'
+        }));
+      } else if (statusCode === 404) {
+        updateAvailabilityDraft(current.requestId, latest => ({
+          ...latest,
+          status: 'error',
+          error: 'This request is no longer available to update. Reload your visits to see its current state.'
+        }));
+      } else {
+        // The operation owns both the uncertainty marker and the read. Nothing is pre-marked here.
+        startAvailabilityReconciliation(dispatchDraft, statusCode === 409
+          ? 'This request changed before the update was accepted. Checking the latest saved times.'
+          : 'The update could not be confirmed. Your edits are kept; checking the latest saved times.');
+      }
+    } finally {
+      if (availabilityControllersRef.current.get(current.requestId) === controller) {
+        availabilityControllersRef.current.delete(current.requestId);
+      }
+    }
+  };
+
+  const discardAvailabilityDraft = (requestId: number) => {
+    const current = availabilityDraftRef.current;
+    if (current && current.requestId !== requestId) return;
+    availabilityControllersRef.current.forEach(controller => controller.abort());
+    availabilityControllersRef.current.clear();
+    availabilityReconcileRef.current.clear();
+    commitAvailabilityDraft(() => null);
+    setBlockedAvailabilityRequest(null);
+  };
+
+  function discardAndOpenBlockedAvailability() {
+    const request = blockedAvailabilityRequest;
+    const requestSession = readTenantVisitSession(user.id);
+    if (!request || !requestSession) return;
+    availabilityControllersRef.current.forEach(controller => controller.abort());
+    availabilityControllersRef.current.clear();
+    availabilityReconcileRef.current.clear();
+    const draft = createTenantAvailabilityDraft({
+      request,
+      identityKey: requestSession.key,
+      generation: ++availabilityGenerationRef.current,
+      editorOpen: true
+    });
+    commitAvailabilityDraft(() => draft);
+    setBlockedAvailabilityRequest(null);
+  }
+
+  const rebaseAvailabilityDraft = (draft: TenantAvailabilityDraft) => {
+    if (!draft.currentFacts) return;
+    updateAvailabilityDraft(draft.requestId, current => rebaseTenantAvailabilityDraft(current));
+  };
+
+  /**
+   * A normal history refresh may carry a newer authoritative version. A pristine editor follows it;
+   * an editor with typed or unresolved work keeps every field and latches the explicit review gate.
+   */
+  useEffect(() => {
+    const currentSession = readTenantVisitSession(user.id);
+    const current = availabilityDraftRef.current;
+    if (!currentSession || !current || current.identityKey !== currentSession.key) return;
+    if (history.identityKey !== currentSession.key || history.status !== 'ready') return;
+    const freshRequest = history.requests.find(request => request.requestId === current.requestId);
+    if (!freshRequest) return;
+    const next = observeAuthoritativeTenantAvailability(current, freshRequest);
+    if (next !== current) commitAvailabilityDraft(() => next);
+  }, [history, user.id, commitAvailabilityDraft]);
 
   return (
     <div className="tenant-shell-main relative min-w-0">
@@ -1480,6 +1949,8 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               <button type="button" onClick={() => setReload(value => value + 1)} className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 font-semibold underline ${focusClass}`}><RefreshCw size={14} aria-hidden="true" /> Retry</button>
             </div>}
 
+            {availabilityBlockedNotice}
+
             {view === 'empty' && visibleTenantSessions.status === 'ready' && visibleTenantSessions.sessions.length === 0 && visibleTenantOutcomeHistory.status === 'ready' && visibleTenantOutcomeHistory.sessions.length === 0 && <div className="py-1" role="status" aria-live="polite">
               <div className="relative min-w-0"><h3 className="font-['Outfit'] text-sm font-semibold tracking-tight">No visits yet</h3>
                 <p className="mt-1 text-xs leading-5 text-slate-600">Request a visit from a property to track it here.</p>
@@ -1487,23 +1958,38 @@ export const TenantDashboard: React.FC<TenantDashboardProps> = ({
               </div>
             </div>}
 
+            {orphanAvailabilityDraft && <section aria-labelledby="availability-recovery-title" className="space-y-2">
+              <div>
+                <h3 id="availability-recovery-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Availability updates in progress</h3>
+                <p className="mt-0.5 text-[11px] leading-4 text-slate-600">These edits are kept in this browser session even though the request is no longer on the loaded page.</p>
+              </div>
+              {(() => {
+                const request = tenantRequestForDraft(orphanAvailabilityDraft);
+                return <TenantVisitRequestCard key={`draft-${orphanAvailabilityDraft.requestId}`} request={request}
+                  availabilityEditor={availabilityEditorFor(request)} />;
+              })()}
+            </section>}
+
             {coordinatingRequests.length > 0 && <section aria-labelledby="coordinating-requests-title" className="space-y-3">
               <div><h3 id="coordinating-requests-title" className="font-['Outfit'] text-sm font-semibold text-slate-950">Being coordinated</h3><p className="mt-0.5 text-[11px] leading-4 text-slate-600">Your preferred timing is a request. Pathome confirms availability before scheduling.</p></div>
-              <div className="space-y-2">{coordinatingRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+              <div className="space-y-2">{coordinatingRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request}
+                availabilityEditor={availabilityEditorFor(request)} />)}</div>
             </section>}
 
             {sessionRequests.length > 0 && <details className="rounded-lg border-t border-slate-200 pt-1">
               <summary className={`flex min-h-11 cursor-pointer items-center justify-between gap-2 py-1 text-sm font-semibold text-slate-900 ${focusClass}`}>
                 <span id="session-requests-title">Added to a Visit Session</span><span className="text-xs font-medium text-slate-600">{sessionRequests.length}</span>
               </summary>
-              <div className="space-y-2 pb-2">{sessionRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+              <div className="space-y-2 pb-2">{sessionRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request}
+                availabilityEditor={availabilityEditorFor(request)} />)}</div>
             </details>}
 
             {pastRequests.length > 0 && <details className="rounded-lg border-t border-slate-200 pt-1">
               <summary className={`flex min-h-11 cursor-pointer items-center justify-between gap-2 py-1 text-sm font-semibold text-slate-900 ${focusClass}`}>
                 <span id="past-requests-title">Past requests</span><span className="text-xs font-medium text-slate-600">{pastRequests.length}</span>
               </summary>
-              <div className="space-y-2 pb-2">{pastRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request} />)}</div>
+              <div className="space-y-2 pb-2">{pastRequests.map(request => <TenantVisitRequestCard key={request.requestId} request={request}
+                availabilityEditor={availabilityEditorFor(request)} />)}</div>
             </details>}
 
             {view === 'populated' && visibleHistory.hasMore && <div className="text-center"><button type="button" onClick={loadMore} disabled={loadMorePending} className={`min-h-11 rounded-xl border border-slate-300 bg-white px-6 text-sm font-semibold text-slate-800 transition-colors hover:border-emerald-700 hover:bg-emerald-50 disabled:opacity-60 ${focusClass}`}>{loadMorePending ? <><RefreshCw size={15} className="mr-2 inline motion-safe:animate-spin" aria-hidden="true" />Loading more…</> : 'Load more requests'}</button>

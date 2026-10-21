@@ -19,6 +19,7 @@ public record OperationsVisitSessionView(
         Instant assignedAt,
         List<VisitSessionItemView> items,
         List<LinkedRequestVersion> linkedRequestVersions,
+        List<OperationsLinkedRequestTimingView> linkedRequestTimingFacts,
         Long teamId,
         String teamDisplayName,
         Long coordinatorUserId,

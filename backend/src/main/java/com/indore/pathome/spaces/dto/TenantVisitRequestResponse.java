@@ -6,6 +6,7 @@ import java.time.Instant;
 /** Only tenant-facing facts already recorded by the visit-request domain. */
 public record TenantVisitRequestResponse(
         Long requestId,
+        Long version,
         Long propertyId,
         String propertyTitle,
         String propertyType,

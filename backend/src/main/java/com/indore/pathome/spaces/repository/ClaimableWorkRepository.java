@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.dto.ClaimableWorkItem;
 import com.indore.pathome.spaces.dto.ClaimableWorkTargetType;
 import com.indore.pathome.spaces.dto.LinkedRequestVersion;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -80,9 +81,18 @@ public class ClaimableWorkRepository {
     private static final String PAGE_SQL =
             "WITH request_clock AS MATERIALIZED (SELECT clock_timestamp() AS db_now),\n"
                     + AUTHORIZED_TEAM_GRANTS + ",\n" + ELIGIBLE_TEAMS + ",\n" + TARGETS + ",\n" + """
-            totals AS (SELECT count(*)::bigint AS total_count FROM targets),
-            page_roots AS MATERIALIZED (
+            filtered_targets AS MATERIALIZED (
                 SELECT * FROM targets
+                WHERE (CAST(:targetType AS text) IS NULL OR target_type = CAST(:targetType AS text))
+                  AND (CAST(:status AS text) IS NULL OR status = CAST(:status AS text))
+                  AND (CAST(:cityId AS bigint) IS NULL OR city_id = CAST(:cityId AS bigint))
+                  AND (CAST(:teamId AS bigint) IS NULL OR team_id = CAST(:teamId AS bigint))
+                  AND (CAST(:targetId AS bigint) IS NULL OR target_id = CAST(:targetId AS bigint))
+            ),
+            totals AS (SELECT count(*)::bigint AS total_count FROM filtered_targets),
+            unfiltered_total AS (SELECT count(*)::bigint AS total_count FROM targets),
+            page_roots AS MATERIALIZED (
+                SELECT * FROM filtered_targets
                 ORDER BY CASE target_type WHEN 'REQUEST' THEN 0 ELSE 1 END, target_id ASC
                 OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY
             ),
@@ -95,10 +105,12 @@ public class ClaimableWorkRepository {
                 GROUP BY r.session_id
             )
             SELECT EXISTS (SELECT 1 FROM eligible_teams) AS caller_eligible,
-                   totals.total_count, p.target_type, p.target_id, p.expected_version,
+                   totals.total_count, unfiltered_total.total_count AS unfiltered_total_count,
+                   p.target_type, p.target_id, p.expected_version,
                    p.city_id, p.city_display_name, p.team_id, p.team_display_name, p.status,
                    COALESCE(lt.versions, '[]') AS linked_request_versions
             FROM totals
+            CROSS JOIN unfiltered_total
             LEFT JOIN page_roots p ON TRUE
             LEFT JOIN linked_tokens lt ON lt.target_id = p.target_id AND p.target_type = 'SESSION'
             ORDER BY CASE p.target_type WHEN 'REQUEST' THEN 0 WHEN 'SESSION' THEN 1 ELSE 2 END,
@@ -137,13 +149,20 @@ public class ClaimableWorkRepository {
         this.objectMapper = objectMapper;
     }
 
-    public Snapshot page(long userId, long offset, int size) {
+    public Snapshot page(long userId, long offset, int size, OperationsWorkFilter filter) {
+        OperationsWorkFilter applied = filter == null ? OperationsWorkFilter.NONE : filter;
         MapSqlParameterSource parameters = new MapSqlParameterSource()
                 .addValue("userId", userId)
                 .addValue("offset", offset)
-                .addValue("size", size);
+                .addValue("size", size)
+                .addValue("targetType", applied.targetType() == null ? null : applied.targetType().name())
+                .addValue("status", applied.status())
+                .addValue("cityId", applied.cityId())
+                .addValue("teamId", applied.teamId())
+                .addValue("targetId", applied.targetId());
         List<SnapshotRow> rows = jdbc.query(PAGE_SQL, parameters, (rs, rowNum) -> new SnapshotRow(
                 rs.getBoolean("caller_eligible"), rs.getLong("total_count"),
+                rs.getLong("unfiltered_total_count"),
                 rs.getString("target_type"), nullableLong(rs, "target_id"),
                 nullableLong(rs, "expected_version"), nullableLong(rs, "city_id"),
                 rs.getString("city_display_name"), nullableLong(rs, "team_id"),
@@ -155,7 +174,8 @@ public class ClaimableWorkRepository {
         for (SnapshotRow row : rows) {
             if (row.targetType() != null) items.add(toItem(row));
         }
-        return new Snapshot(first.callerEligible(), first.totalCount(), List.copyOf(items));
+        return new Snapshot(first.callerEligible(), first.totalCount(), first.unfilteredTotalCount(),
+                List.copyOf(items));
     }
 
     public MetadataSnapshot metadata(long userId, ClaimableWorkTargetType targetType, long targetId) {
@@ -165,7 +185,7 @@ public class ClaimableWorkRepository {
                 .addValue("targetId", targetId);
         return jdbc.queryForObject(METADATA_SQL, parameters, (rs, rowNum) -> {
             String type = rs.getString("target_type");
-            SnapshotRow row = type == null ? null : new SnapshotRow(true, 0L, type,
+            SnapshotRow row = type == null ? null : new SnapshotRow(true, 0L, 0L, type,
                     nullableLong(rs, "target_id"), nullableLong(rs, "expected_version"),
                     nullableLong(rs, "city_id"), rs.getString("city_display_name"),
                     nullableLong(rs, "team_id"), rs.getString("team_display_name"),
@@ -190,10 +210,12 @@ public class ClaimableWorkRepository {
         return rs.wasNull() ? null : value;
     }
 
-    private record SnapshotRow(boolean callerEligible, long totalCount, String targetType, Long targetId,
+    private record SnapshotRow(boolean callerEligible, long totalCount, long unfilteredTotalCount,
+            String targetType, Long targetId,
             Long expectedVersion, Long cityId, String cityDisplayName, Long teamId,
             String teamDisplayName, String status, String linkedRequestVersions) {}
 
-    public record Snapshot(boolean callerEligible, long totalCount, List<ClaimableWorkItem> items) {}
+    public record Snapshot(boolean callerEligible, long totalCount, long unfilteredTotalCount,
+            List<ClaimableWorkItem> items) {}
     public record MetadataSnapshot(boolean callerEligible, ClaimableWorkItem item) {}
 }

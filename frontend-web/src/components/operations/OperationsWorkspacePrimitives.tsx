@@ -46,7 +46,7 @@ export const TypeTag: React.FC<{ targetType: OperationsTargetType }> = ({ target
   return (
     <span className={`oe-type oe-type--${isSession ? 'session' : 'request'}`}>
       <Icon size={12} strokeWidth={2.25} aria-hidden="true" />
-      {isSession ? 'Session' : 'Request'}
+      {isSession ? 'Visit plan' : 'Visit request'}
     </span>
   );
 };

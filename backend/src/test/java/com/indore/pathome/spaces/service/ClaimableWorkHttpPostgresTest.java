@@ -115,8 +115,18 @@ class ClaimableWorkHttpPostgresTest {
 
     @Test
     void realHttpDiscoveryClaimRaceAndAuthorizedReadActionsUseReturnedTokens() throws Exception {
-        assertEquals(49, jdbc.queryForObject(
+        assertEquals(51, jdbc.queryForObject(
                 "SELECT max(version::integer) FROM flyway_schema_history WHERE type='SQL' AND success", Integer.class));
+        Set<String> filterIndexes = new HashSet<>(jdbc.queryForList(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() "
+                        + "AND indexname IN ('idx_pvr_coordinator_work_filter', 'idx_pvr_claimable_work_filter', "
+                        + "'idx_vs_coordinator_work_filter', 'idx_vs_claimable_work_filter', "
+                        + "'idx_media_listing_cover_order')",
+                String.class));
+        assertEquals(Set.of("idx_pvr_coordinator_work_filter", "idx_pvr_claimable_work_filter",
+                        "idx_vs_coordinator_work_filter", "idx_vs_claimable_work_filter",
+                        "idx_media_listing_cover_order"), filterIndexes,
+                "V51 must be additive and applied inside the isolated schema");
         assertEquals(401, send("GET", "/api/v1/operations/claimable-work", null, null).statusCode());
 
         SupportedCity city = cities.saveAndFlush(new SupportedCity(code("claim-city"), "Claim City", true));
@@ -198,6 +208,15 @@ class ClaimableWorkHttpPostgresTest {
         assertFalse(collection.toString().toLowerCase().contains("private address"));
         assertFalse(collection.toString().toLowerCase().contains("tenantnote"));
         assertFalse(collection.toString().toLowerCase().contains("lessor"));
+        assertEquals(4, collection.path("unfilteredTotalCount").asInt(),
+                "the unfiltered total is the authorized population before optional filters");
+
+        JsonNode requestOnly = read("GET",
+                "/api/v1/operations/claimable-work?page=0&size=20&targetType=REQUEST", coordinatorA.token(), 200);
+        assertEquals(2, requestOnly.path("totalCount").asInt());
+        assertEquals(4, requestOnly.path("unfilteredTotalCount").asInt());
+        assertTrue(requestOnly.path("items").findValues("targetType").stream()
+                .allMatch(node -> "REQUEST".equals(node.asText())));
 
         assertEquals(403, send("GET", "/api/v1/operations/claimable-work", superviseOnly.token(), null).statusCode());
         assertEquals(403, send("GET", "/api/v1/operations/claimable-work", globalAdmin.token(), null).statusCode());
@@ -205,6 +224,12 @@ class ClaimableWorkHttpPostgresTest {
         assertEquals(400, send("GET", "/api/v1/operations/claimable-work?size=101", coordinatorA.token(), null).statusCode());
         assertEquals(400, send("GET", "/api/v1/operations/claimable-work?size=0", coordinatorA.token(), null).statusCode());
         assertEquals(400, send("GET", "/api/v1/operations/claimable-work?page=not-a-number",
+                coordinatorA.token(), null).statusCode());
+        assertEquals(400, send("GET", "/api/v1/operations/claimable-work?status=RECEIVED",
+                coordinatorA.token(), null).statusCode());
+        assertEquals(400, send("GET", "/api/v1/operations/claimable-work?targetType=REQUEST&status=DRAFT",
+                coordinatorA.token(), null).statusCode());
+        assertEquals(400, send("GET", "/api/v1/operations/claimable-work?teamId=not-a-number",
                 coordinatorA.token(), null).statusCode());
         JsonNode emptyPage = read("GET", "/api/v1/operations/claimable-work?page=20&size=1",
                 coordinatorA.token(), 200);

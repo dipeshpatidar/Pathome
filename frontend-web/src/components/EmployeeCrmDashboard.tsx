@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CalendarDays, Inbox, MapPin, ShieldAlert } from 'lucide-react';
 import { UserProfile } from '../types';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
@@ -17,12 +17,51 @@ interface EmployeeCrmDashboardProps {
 
 type EmployeeWorkspaceTab = 'visits' | 'visit-repairs' | 'visit-outcomes' | 'operations';
 
+const EMPLOYEE_WORKSPACE_TABS: readonly EmployeeWorkspaceTab[] = [
+  'visits',
+  'visit-repairs',
+  'visit-outcomes',
+  'operations'
+];
+
+const employeeWorkspaceTabKey = (userId: number | undefined): string =>
+  `pathome_employee_workspace_tab:${userId ?? 'anonymous'}`;
+
+/**
+ * The host console owns its tab, so a refresh of `/crm` must restore the Operations tab the operator
+ * was on rather than silently dropping them back to Visits. The key is per signed-in User so one
+ * account's console tab can never become another account's initial surface.
+ */
+const readEmployeeWorkspaceTab = (userId: number | undefined): EmployeeWorkspaceTab => {
+  try {
+    const saved = sessionStorage.getItem(employeeWorkspaceTabKey(userId));
+    if (saved && (EMPLOYEE_WORKSPACE_TABS as readonly string[]).includes(saved)) {
+      return saved as EmployeeWorkspaceTab;
+    }
+  } catch (_) {}
+  return 'visits';
+};
+
 export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({
   user, operationsAuthority: authority, onOperationsWorkspaceOpenChange
 }) => {
   const canReviewVisitRepairs = user?.employeeRoleType?.toUpperCase() === 'WFH_ADMIN';
   const canReviewVisitOutcomes = user?.role === 'ADMIN' || canReviewVisitRepairs;
-  const [activeTab, setActiveTab] = useState<EmployeeWorkspaceTab>('visits');
+  const [activeTab, setActiveTab] = useState<EmployeeWorkspaceTab>(() => readEmployeeWorkspaceTab(user?.id));
+  const tabOwnerRef = useRef<number | undefined>(user?.id);
+
+  useEffect(() => {
+    if (tabOwnerRef.current === user?.id) return;
+    tabOwnerRef.current = user?.id;
+    setActiveTab(readEmployeeWorkspaceTab(user?.id));
+  }, [user?.id]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(employeeWorkspaceTabKey(user?.id), activeTab);
+    } catch (_) {}
+  }, [activeTab, user?.id]);
+
   // An explicit denial withdraws the destination; a transient failure keeps it with a retry state.
   useEffect(() => {
     if (activeTab === 'operations' && authority.state === 'restricted') setActiveTab('visits');
@@ -98,7 +137,7 @@ export const EmployeeCrmDashboard: React.FC<EmployeeCrmDashboardProps> = ({
         {activeTab === 'visits' && <GroundVisitOperationsPanel user={user} />}
         {activeTab === 'visit-repairs' && canReviewVisitRepairs && <OperationsVisitRepairPanel />}
         {activeTab === 'visit-outcomes' && canReviewVisitOutcomes && <OperationsVisitOutcomePanel />}
-        {activeTab === 'operations' && <OperationsWorkspace authority={authority} />}
+        {activeTab === 'operations' && <OperationsWorkspace authority={authority} layout="embedded" />}
       </div>
     </main>
   );

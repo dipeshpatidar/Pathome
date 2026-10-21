@@ -50,6 +50,7 @@ public class VisitOperationsService {
     private final OperationalSecurityGuards operationalGuards;
     private final OperationalAuditService operationalAudit;
     private final VisitSchedulingCommandStore schedulingCommands;
+    private final OperationsPropertyCoverResolver propertyCovers;
 
     public VisitOperationsService(PropertyVisitRequestRepository requests,
                                   VisitSessionRepository sessions,
@@ -66,7 +67,8 @@ public class VisitOperationsService {
                                   VisitSchedulingDecisionRepository decisions,
                                   OperationalSecurityGuards operationalGuards,
                                   OperationalAuditService operationalAudit,
-                                  VisitSchedulingCommandStore schedulingCommands) {
+                                  VisitSchedulingCommandStore schedulingCommands,
+                                  OperationsPropertyCoverResolver propertyCovers) {
         this.requests = requests;
         this.sessions = sessions;
         this.users = users;
@@ -83,6 +85,7 @@ public class VisitOperationsService {
         this.operationalGuards = operationalGuards;
         this.operationalAudit = operationalAudit;
         this.schedulingCommands = schedulingCommands;
+        this.propertyCovers = propertyCovers;
     }
 
     @Transactional(readOnly = true)
@@ -117,7 +120,7 @@ public class VisitOperationsService {
         VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
         ownedAuthorization.requireOwnedSession(actor, session);
         VisitSchedulingApprovalView replay = schedulingCommands.begin(actor.id(), sessionId, command);
-        if (replay != null) return replay;
+        if (replay != null) return withCurrentMedia(replay);
         if (session.getStatus() != VisitSessionStatus.DRAFT)
             throw new VisitOperationsConflictException("Only draft sessions can be changed");
         requireVersion(session.getVersion(), command.expectedSessionVersion(), "Visit Session");
@@ -134,7 +137,7 @@ public class VisitOperationsService {
         OperationsVisitSessionView scheduled = scheduleLocked(session, booking);
         VisitSchedulingApprovalView result = recordSelection(session, actor.user(), command, assessment, reason, scheduled);
         schedulingCommands.complete(actor.id(), command.commandId(), result);
-        return result;
+        return withCurrentMedia(result);
     }
 
     @Transactional
@@ -145,7 +148,8 @@ public class VisitOperationsService {
         VisitSession session = ownedAuthorization.lockTargetSession(sessionId);
         ownedAuthorization.requireOwnedSession(actor, session);
         var approval = schedulingCommands.find(actor.id(), sessionId, commandId);
-        return new VisitSchedulingCommandView(commandId, approval == null ? "NOT_RECORDED" : "COMPLETED", approval);
+        return new VisitSchedulingCommandView(commandId, approval == null ? "NOT_RECORDED" : "COMPLETED",
+                withCurrentMedia(approval));
     }
 
     @Transactional
@@ -180,7 +184,7 @@ public class VisitOperationsService {
                 command.scheduledAt(), command.zoneId(), command.groundExecutiveUserId(), assessment.durationMinutes());
         OperationsVisitSessionView scheduled = schedule(actorId, sessionId, booking);
 
-        return recordSelection(session, actor, command, assessment, reason, scheduled);
+        return withCurrentMedia(recordSelection(session, actor, command, assessment, reason, scheduled));
     }
 
     private VisitSchedulingApprovalView recordSelection(VisitSession session, User actor,
@@ -1030,13 +1034,18 @@ public class VisitOperationsService {
         List<VisitSessionItem> sessionItems = items.findBySessionIdOrderByPositionAsc(session.getId());
         Map<Long, Locality> localityById = localitiesFor(sessionItems.stream()
                 .map(VisitSessionItem::getListing).toList());
+        Map<Long, OperationsPropertyCoverResolver.PropertyCover> covers = propertyCovers.resolve(
+                sessionItems.stream().map(VisitSessionItem::getListing).toList());
         List<VisitSessionItemView> itemViews = sessionItems.stream()
-                .map(item -> itemView(item, resolveLocation(item.getListing(), localityById).city())).toList();
+                .map(item -> itemView(item, resolveLocation(item.getListing(), localityById).city(),
+                        covers.getOrDefault(item.getListing().getId(),
+                                OperationsPropertyCoverResolver.PropertyCover.NONE))).toList();
         return new OperationsVisitSessionView(session.getId(), session.getStatus(), ownershipSnapshot.getVersion(),
                 session.getCity(), session.getAreaName(), session.getScheduledAt(), session.getReservedEndAt(),
                 session.getDurationSnapshotMinutes(), session.getZoneId(),
                 session.getRepresentative() == null ? null : session.getRepresentative().getId(),
                 session.getAssignedAt(), itemViews, linkedRequestVersions(ownershipSnapshot.getLinkedRequestVersions()),
+                sessions.findLinkedRequestTimingFactsBySessionId(session.getId()),
                 session.getOperatingTeam() == null ? null : session.getOperatingTeam().getId(),
                 session.getOperatingTeam() == null ? null : session.getOperatingTeam().getDisplayName(),
                 session.getCoordinator() == null ? null : session.getCoordinator().getId(),
@@ -1052,7 +1061,8 @@ public class VisitOperationsService {
         }
     }
 
-    private VisitSessionItemView itemView(VisitSessionItem item, String authoritativeCity) {
+    private VisitSessionItemView itemView(VisitSessionItem item, String authoritativeCity,
+            OperationsPropertyCoverResolver.PropertyCover cover) {
         Listing listing = item.getListing();
         return new VisitSessionItemView(item.getId(), listing.getId(), listing.getTitle(), listing.getAddress(),
                 authoritativeCity, listing.getSector(), item.getPosition(),
@@ -1062,7 +1072,64 @@ public class VisitOperationsService {
                 item.getRemovedAt(), item.getRemovedBy() == null ? null : item.getRemovedBy().getId(),
                 item.getRemovalReason(), item.getAvailabilityStartAt(), item.getAvailabilityEndAt(),
                 item.getAvailabilityZoneId(), item.getAvailabilitySource(),
-                item.getConfirmedBy() == null ? null : item.getConfirmedBy().getId());
+                item.getConfirmedBy() == null ? null : item.getConfirmedBy().getId(),
+                cover.coverImageUrl(), cover.listingStatus());
+    }
+
+    /**
+     * Projects the *current* public media visibility onto a receipt or replay response.
+     *
+     * The persisted receipt remains the immutable historical booking decision. Only the copy returned
+     * to its authorized owner is rewritten: each referenced listing is re-read in one batch and the
+     * existing ACTIVE-only cover resolver decides whether a cover and public status may be exposed.
+     * A listing that no longer exists, or that is no longer ACTIVE, yields no cover.
+     */
+    private VisitSchedulingApprovalView withCurrentMedia(VisitSchedulingApprovalView approval) {
+        if (approval == null) return null;
+        return new VisitSchedulingApprovalView(withCurrentMedia(approval.session()), approval.decisionId(),
+                approval.override(), approval.topRecommendedGroundExecutiveUserId(), approval.topRecommendedAt());
+    }
+
+    private OperationsVisitSessionView withCurrentMedia(OperationsVisitSessionView session) {
+        if (session == null || session.items() == null || session.items().isEmpty()) return session;
+        List<Long> listingIds = session.items().stream()
+                .map(VisitSessionItemView::listingId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<Long, Listing> currentListings = listingIds.isEmpty()
+                ? Map.of()
+                : listings.findAllById(listingIds).stream()
+                        .filter(listing -> listing != null && listing.getId() != null)
+                        .collect(Collectors.toMap(Listing::getId, Function.identity(), (first, duplicate) -> first));
+        Map<Long, OperationsPropertyCoverResolver.PropertyCover> covers = propertyCovers.resolve(
+                currentListings.values());
+        List<VisitSessionItemView> projected = session.items().stream()
+                .map(item -> {
+                    OperationsPropertyCoverResolver.PropertyCover cover = item.listingId() == null
+                            ? OperationsPropertyCoverResolver.PropertyCover.NONE
+                            : covers.getOrDefault(item.listingId(),
+                                    OperationsPropertyCoverResolver.PropertyCover.NONE);
+                    return withCurrentMedia(item, cover);
+                })
+                .toList();
+        return new OperationsVisitSessionView(session.sessionId(), session.status(), session.version(),
+                session.city(), session.areaName(), session.scheduledAt(), session.reservedEndAt(),
+                session.durationMinutes(), session.zoneId(), session.representativeUserId(), session.assignedAt(),
+                projected, session.linkedRequestVersions(), session.linkedRequestTimingFacts(), session.teamId(),
+                session.teamDisplayName(), session.coordinatorUserId(), session.updatedAt(),
+                session.tenantConfirmationState(), session.startedAt(), session.expiresAt(),
+                session.executionStateChangedAt());
+    }
+
+    private static VisitSessionItemView withCurrentMedia(VisitSessionItemView item,
+            OperationsPropertyCoverResolver.PropertyCover cover) {
+        return new VisitSessionItemView(item.itemId(), item.listingId(), item.title(), item.address(),
+                item.city(), item.sector(), item.position(), item.sourceRequestId(), item.derivedFromRequestId(),
+                item.origin(), item.confirmationStatus(), item.availabilityConfirmedAt(), item.removedAt(),
+                item.removedByUserId(), item.removalReason(), item.propertyAvailabilityStartAt(),
+                item.propertyAvailabilityEndAt(), item.propertyAvailabilityZoneId(), item.propertyAvailabilitySource(),
+                item.availabilityConfirmedByUserId(), cover.coverImageUrl(), cover.listingStatus());
     }
 
     private GroundVisitSessionView groundView(VisitSession session, List<VisitSessionItem> sessionItems) {

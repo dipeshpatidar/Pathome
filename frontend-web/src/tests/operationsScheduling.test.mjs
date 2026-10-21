@@ -876,9 +876,13 @@ test('a response that schedules a different session is refused, never re-labelle
 test('recommendation statuses are explained truthfully, and a truncated search says so', () => {
   assert.match(presentation.recommendationStatusHint('SESSION_NOT_SCHEDULABLE'), /active stop/);
   assert.match(presentation.recommendationStatusHint('INSUFFICIENT_TENANT_AVAILABILITY'), /tenant/);
-  assert.match(presentation.recommendationStatusHint('NO_FEASIBLE_CANDIDATE'), /No eligible/);
+  assert.match(presentation.recommendationStatusHint('PROPERTY_AVAILABILITY_INCOMPLETE'), /property-input gap/);
+  assert.match(presentation.recommendationStatusHint('NO_ELIGIBLE_GE'), /No active Ground Executive/);
+  assert.match(presentation.recommendationStatusHint('NO_FEASIBLE_TIME'), /bounded evaluation/);
   assert.equal(presentation.recommendationStatusHint('EVALUATED'), null);
-  assert.match(presentation.recommendationStatusHint('SOMETHING_ELSE'), /something else/);
+  const unknown = presentation.recommendationStatusHint('SOMETHING_ELSE');
+  assert.match(unknown, /does not recognise/);
+  assert.doesNotMatch(unknown, /SOMETHING_ELSE/);
   assert.equal(presentation.RANKED_RECOMMENDATION_BOUND, 3);
   assert.equal(presentation.operationsZoneLabel('Asia/Kolkata'), 'IST (Asia/Kolkata)');
   assert.equal(presentation.operationsZoneLabel('Europe/London'), 'Europe/London');

@@ -48,6 +48,8 @@ export type ClaimableWorkItem = OperationsWorkSummary;
 export interface OperationsWorkPage<T> {
   items: T[];
   totalCount: number;
+  /** The same authorized queue population before optional filters. */
+  unfilteredTotalCount: number;
   page: number;
   size: number;
   totalPages: number;
@@ -91,12 +93,16 @@ export interface OperationsSessionItem {
   availabilityZoneId: string | null;
   /** Channel the window was recorded from. `WHATSAPP` is a manually recorded channel, not an integration. */
   availabilitySource: string | null;
+  /** Public cover for an ACTIVE listing only; null when no authorized image exists. */
+  coverImageUrl: string | null;
+  listingStatus: string | null;
 }
 
 export interface OperationsRequestDetail {
   requestId: number;
   status: string;
   version: number | null;
+  preferredVisitTiming: string | null;
   createdAt: string | null;
   cityId: number | null;
   cityDisplayName: string | null;
@@ -129,6 +135,7 @@ export interface OperationsSessionDetail {
   assignedAt: string | null;
   items: OperationsSessionItem[];
   linkedRequestVersions: LinkedRequestVersion[];
+  linkedRequestTimingFacts: OperationsLinkedRequestTiming[];
   teamId: number | null;
   teamDisplayName: string | null;
   coordinatorUserId: number | null;
@@ -139,8 +146,19 @@ export interface OperationsSessionDetail {
   executionStateChangedAt: string | null;
 }
 
+export interface OperationsLinkedRequestTiming {
+  requestId: number;
+  version: number;
+  preferredVisitTiming: string | null;
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  availabilityZoneId: string | null;
+  preferredAt: string | null;
+}
+
 export interface OperationsScope {
   teamId: number;
+  cityId: number | null;
   cityName: string;
   teamName: string;
 }
@@ -192,11 +210,31 @@ export const operationsCapabilityScopes = (
     seenTeamIds.add(teamId);
     scopes.push({
       teamId,
+      cityId: capability.cityId,
       cityName: capability.cityDisplayName ?? 'City not recorded',
       teamName: capability.teamDisplayName ?? 'Team not recorded'
     });
   }
   return scopes;
+};
+
+/**
+ * Normalized identity of the effective Operations City/Team authority.
+ *
+ * Only effective OPS_COORDINATE Team grants participate. Duplicates and grant order are ignored, so
+ * an unchanged background refresh never looks like a scope change, while adding, removing or moving
+ * a City/Team grant always produces a different value.
+ */
+export const operationsAuthorityScopeFingerprint = (
+  capabilities: StaffCapabilities | null | undefined
+): string => {
+  if (!capabilities || !Array.isArray(capabilities.capabilities)) return '';
+  const scopes = new Set<string>();
+  for (const capability of capabilities.capabilities) {
+    if (!coordinatesOperationalWork(capability) || capability.teamId === null) continue;
+    scopes.add(`${capability.cityId ?? '-'}:${capability.teamId}`);
+  }
+  return [...scopes].sort().join('|');
 };
 
 /* ------------------------------------------------------------------ *
@@ -236,9 +274,31 @@ export const toLinkedRequestVersions = (value: unknown): LinkedRequestVersion[] 
   return versions;
 };
 
+export const toLinkedRequestTimingFacts = (value: unknown): OperationsLinkedRequestTiming[] => {
+  if (!Array.isArray(value)) return [];
+  const facts: OperationsLinkedRequestTiming[] = [];
+  for (const entry of value) {
+    const record = asRecord(entry);
+    const requestId = readInteger(record?.requestId);
+    const version = readInteger(record?.version);
+    if (!record || requestId === null || version === null) continue;
+    facts.push({
+      requestId,
+      version,
+      preferredVisitTiming: readText(record.preferredVisitTiming),
+      availabilityStartAt: readText(record.availabilityStartAt),
+      availabilityEndAt: readText(record.availabilityEndAt),
+      availabilityZoneId: readText(record.availabilityZoneId),
+      preferredAt: readText(record.preferredAt)
+    });
+  }
+  return facts;
+};
+
 export interface ParsedWorkPage {
   items: unknown[];
   totalCount: number;
+  unfilteredTotalCount: number;
   page: number;
   size: number;
   totalPages: number;
@@ -259,9 +319,12 @@ export const parseWorkPage = (
   const size = readInteger(record.size) ?? fallback.size;
   const page = readInteger(record.page) ?? fallback.page;
   const totalCount = readInteger(record.totalCount) ?? record.items.length;
+  // Older fixtures and callers predate the additive field; the filtered total is then the only
+  // truthful total available.
+  const unfilteredTotalCount = readInteger(record.unfilteredTotalCount) ?? totalCount;
   const totalPages = readInteger(record.totalPages)
     ?? (size > 0 && totalCount > 0 ? Math.ceil(totalCount / size) : 0);
-  return { items: record.items, totalCount, page, size, totalPages };
+  return { items: record.items, totalCount, unfilteredTotalCount, page, size, totalPages };
 };
 
 export const toWorkSummary = (raw: unknown): OperationsWorkSummary | null => {
@@ -335,6 +398,7 @@ export const toRequestDetail = (raw: unknown): OperationsRequestDetail | null =>
     requestId,
     status: readText(record.status) ?? '',
     version: readInteger(record.version),
+    preferredVisitTiming: readText(record.preferredVisitTiming),
     // created_at is stored without a time zone, so it is surfaced as stored local time.
     createdAt: readText(record.createdAt),
     cityId: readInteger(record.cityId),
@@ -379,7 +443,9 @@ const toSessionItem = (raw: unknown): OperationsSessionItem | null => {
     availabilityStartAt: readText(record.propertyAvailabilityStartAt),
     availabilityEndAt: readText(record.propertyAvailabilityEndAt),
     availabilityZoneId: readText(record.propertyAvailabilityZoneId),
-    availabilitySource: readText(record.propertyAvailabilitySource)
+    availabilitySource: readText(record.propertyAvailabilitySource),
+    coverImageUrl: readText(record.coverImageUrl),
+    listingStatus: readText(record.listingStatus)
   };
 };
 
@@ -402,6 +468,7 @@ export const toSessionDetail = (raw: unknown): OperationsSessionDetail | null =>
     assignedAt: readText(record.assignedAt),
     items: items.map(toSessionItem).filter((entry): entry is OperationsSessionItem => entry !== null),
     linkedRequestVersions: toLinkedRequestVersions(record.linkedRequestVersions),
+    linkedRequestTimingFacts: toLinkedRequestTimingFacts(record.linkedRequestTimingFacts),
     teamId: readInteger(record.teamId),
     teamDisplayName: readText(record.teamDisplayName),
     coordinatorUserId: readInteger(record.coordinatorUserId),
@@ -563,6 +630,17 @@ export interface OperationsLessorContact {
   status: 'CONTACT_AVAILABLE' | 'CONTACT_UNAVAILABLE';
 }
 
+export interface OperationsContact {
+  name: string | null;
+  mobile: string | null;
+  status: 'CONTACT_AVAILABLE' | 'CONTACT_UNAVAILABLE';
+}
+
+export interface OperationsTenantContact extends OperationsContact {
+  requestId: number | null;
+  sessionId: number | null;
+}
+
 export const toLessorContact = (raw: unknown): OperationsLessorContact | null => {
   const record = asRecord(raw);
   if (!record) return null;
@@ -576,6 +654,23 @@ export const toLessorContact = (raw: unknown): OperationsLessorContact | null =>
     return { listingId, name: null, mobile: null, status: 'CONTACT_UNAVAILABLE' };
   }
   return { listingId, name, mobile, status: 'CONTACT_AVAILABLE' };
+};
+
+export const toTenantContact = (raw: unknown): OperationsTenantContact | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const requestId = readInteger(record.requestId);
+  const sessionId = readInteger(record.sessionId);
+  const status = record.status === 'CONTACT_AVAILABLE' ? 'CONTACT_AVAILABLE' : 'CONTACT_UNAVAILABLE';
+  if (status !== 'CONTACT_AVAILABLE') {
+    return { requestId, sessionId, name: null, mobile: null, status: 'CONTACT_UNAVAILABLE' };
+  }
+  const name = readText(record.name);
+  const mobile = readText(record.mobile);
+  if (name === null || mobile === null) {
+    return { requestId, sessionId, name: null, mobile: null, status: 'CONTACT_UNAVAILABLE' };
+  }
+  return { requestId, sessionId, name, mobile, status: 'CONTACT_AVAILABLE' };
 };
 
 /* ---------------- Request coordination ---------------- */
@@ -906,6 +1001,21 @@ export const unavailableActiveStopCount = (detail: OperationsSessionDetail): num
     .filter((item) => operationsAvailabilityMeta(item).view === 'unavailable')
     .length;
 
+/**
+ * A fresh Session read may open the scheduling drawer only while it still describes the same DRAFT
+ * visit owned by the captured coordinator. Eligibility is never inferred from the pre-open snapshot.
+ */
+export const freshSchedulingSessionIsEligible = (
+  fresh: OperationsSessionDetail | null | undefined,
+  sessionId: number,
+  coordinatorUserId: number
+): boolean => Boolean(
+  fresh
+  && fresh.sessionId === sessionId
+  && fresh.status === 'DRAFT'
+  && fresh.coordinatorUserId === coordinatorUserId
+);
+
 export type OperationsAvailabilityChoice = 'window' | 'confirm-only' | 'unavailable';
 
 /**
@@ -938,6 +1048,20 @@ export const isOperationsZone = (zoneId: string | null | undefined): boolean => 
     return false;
   }
 };
+
+/**
+ * Exact mounted-instance identity for a protected root. Type separates a Request from a Session with
+ * the same numeric id; the mount generation separates a re-opened instance from the one a read or
+ * command captured. A null on either side never matches.
+ */
+export const sameOperationsRootInstance = (
+  left: { targetType: string; targetId: number; mountGeneration: number } | null | undefined,
+  right: { targetType: string; targetId: number; mountGeneration: number } | null | undefined
+): boolean => left !== null && left !== undefined
+  && right !== null && right !== undefined
+  && left.targetType === right.targetType
+  && left.targetId === right.targetId
+  && left.mountGeneration === right.mountGeneration;
 
 /**
  * Zone select options: the supported list, plus the item's own recorded zone when it is a real IANA
@@ -997,7 +1121,10 @@ const zoneOffsetMinutesAt = (utcMs: number, zoneId: string): number | null => {
     Number(parts.hour) % 24,
     Number(parts.minute)
   );
-  return Math.round((asUtc - utcMs) / 60_000);
+  // The wall clock is read to the minute, so the instant is reduced to its own minute before the two
+  // are compared: an offset is always a whole number of minutes, and an instant's seconds must never
+  // leak into the difference and pull the reading onto the previous minute (05:29 instead of 05:30).
+  return Math.round((asUtc - Math.floor(utcMs / 60_000) * 60_000) / 60_000);
 };
 
 const offsetText = (offsetMinutes: number): string => {
@@ -1092,8 +1219,8 @@ export const serverInstantToZoneInput = (
  *  - a time that occurs twice (the repeated hour when the clocks go back) is refused rather than
  *    silently given one of its two offsets.
  *
- * An unchanged field does not go through this conversion at all — see
- * {@link resolveAvailabilityFieldInstant}, which returns the recorded server instant verbatim.
+ * A field the OE did not edit is not re-derived from its wall clock at all — see
+ * {@link resolveAvailabilityFieldInstant} and {@link instantToZoneInstant}.
  */
 export const zoneInputToServerInstant = (
   value: string | null | undefined,
@@ -1112,8 +1239,87 @@ export const zoneInputToServerInstant = (
   return `${year}-${month}-${day}T${hour}:${minute}:00${offsetText(offset)}`;
 };
 
+interface CivilTime {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+const padded = (value: number, width: number): string => String(value).padStart(width, '0');
+
+/**
+ * The calendar date and clock reading of one whole-second epoch, read as UTC.
+ *
+ * `Date`'s UTC getters are used rather than `Intl` so midnight is always `00` and the parts can never
+ * roll over into another day.
+ */
+const civilTimeOfEpochSeconds = (epochSeconds: number): CivilTime | null => {
+  const date = new Date(epochSeconds * 1000);
+  if (!Number.isFinite(date.getTime())) return null;
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    hour: date.getUTCHours(),
+    minute: date.getUTCMinutes(),
+    second: date.getUTCSeconds()
+  };
+};
+
+/**
+ * Re-expresses one recorded instant with the offset its zone actually used at that instant.
+ *
+ * This is the representation the backend contract requires: `SchedulingWindowValidator` refuses an
+ * offset the declared zone was not using at the supplied local time, so an instant a response
+ * delivered as UTC `Z` cannot be sent back beside `Asia/Kolkata`. The instant itself is untouched —
+ * whole seconds and every fractional digit survive — and across a repeated hour the correct
+ * occurrence is kept, because the offset is read at the instant rather than guessed from a wall
+ * clock that cannot tell the two apart.
+ *
+ * Returns null when the value is not a real instant or the zone is not a real IANA zone.
+ */
+export const instantToZoneInstant = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  const parsed = parseOperationsInstant(value);
+  if (!parsed || !isOperationsZone(zoneId)) return null;
+  const zone = zoneId as string;
+  // The offset is read at the instant itself, milliseconds included, so an instant that sits just
+  // after a transition is never labelled with the offset its neighbour used.
+  const offset = zoneOffsetMinutesAt(
+    parsed.epochSeconds * 1000 + Number(parsed.fraction.slice(0, 3)),
+    zone
+  );
+  if (offset === null) return null;
+  const local = civilTimeOfEpochSeconds(parsed.epochSeconds + offset * 60);
+  if (!local) return null;
+  // Trailing zeros carry no meaning, so `.120000000` is written `.12` and an exact second is written
+  // without a fraction. The instant is identical either way.
+  const fraction = parsed.fraction.replace(/0+$/, '');
+  const seconds = `${padded(local.hour, 2)}:${padded(local.minute, 2)}:${padded(local.second, 2)}`;
+  return `${padded(local.year, 4)}-${padded(local.month, 2)}-${padded(local.day, 2)}T${seconds}`
+    + `${fraction.length > 0 ? `.${fraction}` : ''}${offsetText(offset)}`;
+};
+
 /** Why an entered availability wall clock could not be turned into exactly one instant. */
 export type AvailabilityFieldInstantError = 'invalid' | 'gap' | 'ambiguous';
+
+/**
+ * Where one availability field's text came from.
+ *
+ * `RECORDED` — the field still holds the instant the server recorded, so a save must preserve that
+ * exact instant and a zone change only re-states it. `EDITED` — the OE typed the text, so the text,
+ * not the recorded instant, is what the field means.
+ *
+ * This is stated explicitly rather than inferred from the text. An edit can coincide with what the
+ * recorded instant looks like in another zone, and inferring from text equality would then silently
+ * discard that edit.
+ */
+export type AvailabilityFieldProvenance = 'RECORDED' | 'EDITED';
 
 export interface AvailabilityFieldResolution {
   /** The exact instant to transmit, or null while the field is blank or cannot be resolved. */
@@ -1126,32 +1332,41 @@ export interface AvailabilityFieldResolution {
  * Resolves one availability field for the command body, preserving the recorded instant exactly.
  *
  * The editor shows the property zone's wall clock, which loses seconds, fractional seconds and the
- * identity of a repeated hour. Re-converting an untouched field would therefore change the persisted
- * instant — silently moving a window by an hour across a DST transition, or truncating seconds off
- * every save. So an untouched field (same text, same zone) returns the recorded server instant
- * verbatim; only a genuine edit is converted, and an edit that cannot be resolved to exactly one
- * instant is refused with its own reason instead of being shifted onto an offset the OE never chose.
+ * identity of a repeated hour. Re-deriving an untouched field from that wall clock would therefore
+ * change the persisted instant — silently moving a window by an hour across a DST transition, or
+ * truncating seconds off every save. So a field that still displays the recorded instant is sent back
+ * as that same instant written in the selected zone's own offset ({@link instantToZoneInstant}):
+ * the instant and its precision survive, the offset satisfies the backend contract, and changing only
+ * the zone re-labels the instant instead of moving it. A genuine edit is converted in the zone, and an
+ * edit that cannot be resolved to exactly one instant is refused with its own reason instead of being
+ * shifted onto an offset the OE never chose.
+ *
+ * Which of those two applies comes from the caller's explicit `provenance`, never from comparing the
+ * text with the recorded instant's display. Every provenance other than `RECORDED` is resolved as an
+ * edit, so a caller that omits or mistypes it can never silently resurrect a recorded instant over
+ * what the OE typed.
  */
 export const resolveAvailabilityFieldInstant = (input: {
   /** What the editor currently holds for this field. */
   value: string | null | undefined;
-  /** What the recorded instant displayed when the editor opened. */
-  initialValue: string | null | undefined;
+  /** Whether the OE edited this field, or it still holds the recorded instant. */
+  provenance: AvailabilityFieldProvenance;
   /** The zone currently selected in the editor. */
   zoneId: string | null | undefined;
-  /** The zone the recorded instant was displayed in. */
-  initialZoneId: string | null | undefined;
-  /** The exact server instant behind `initialValue`, returned unchanged while nothing was edited. */
+  /** The exact server instant behind the field's opening text. */
   initialInstant: string | null | undefined;
 }): AvailabilityFieldResolution => {
   const raw = typeof input.value === 'string' ? input.value.trim() : '';
   if (raw.length === 0) return { value: null, error: null };
   if (!isOperationsZone(input.zoneId)) return { value: null, error: 'invalid' };
   const zone = input.zoneId as string;
-  const untouched = zone === input.initialZoneId
-    && raw === (input.initialValue ?? '')
-    && isOperationsInstant(input.initialInstant);
-  if (untouched) return { value: input.initialInstant as string, error: null };
+  if (input.provenance === 'RECORDED') {
+    const rezoned = instantToZoneInstant(input.initialInstant, zone);
+    // The recorded instant is re-labelled, never reinterpreted from its wall clock. A field still
+    // marked as holding a recorded instant but left without a readable one is reported as such rather
+    // than guessed from whatever text it happens to be showing.
+    return rezoned !== null ? { value: rezoned, error: null } : { value: null, error: 'invalid' };
+  }
 
   const match = WALL_CLOCK_PATTERN.exec(raw);
   const localMs = wallClockMsOfInput(raw);
@@ -1168,6 +1383,32 @@ export const resolveAvailabilityFieldInstant = (input: {
   };
 };
 
+/**
+ * Re-expresses one availability field's text after the time-zone selector changes.
+ *
+ * A field still holding the recorded instant keeps that instant: its text is rewritten into the newly
+ * selected zone, so the OE reads the same moment stated in the new zone and the save preserves the
+ * exact recorded instant. Text the OE typed is returned exactly as typed, whatever it looks like in
+ * either zone — choosing a zone states which zone that wall clock belongs to, and the edit is what
+ * decides the instant.
+ */
+export const rezoneAvailabilityFieldInput = (input: {
+  /** What the editor currently holds for this field. */
+  value: string | null | undefined;
+  /** Whether the OE edited this field, or it still holds the recorded instant. */
+  provenance: AvailabilityFieldProvenance;
+  /** The exact server instant behind the field's opening text. */
+  initialInstant: string | null | undefined;
+  /** The zone the OE just selected. */
+  nextZoneId: string;
+}): string | null => {
+  const raw = typeof input.value === 'string' ? input.value : '';
+  if (raw.trim().length === 0) return raw;
+  if (input.provenance !== 'RECORDED') return raw;
+  const rezoned = serverInstantToZoneInput(input.initialInstant, input.nextZoneId);
+  return rezoned.length > 0 ? rezoned : raw;
+};
+
 export interface AvailabilityWindowInput {
   /** ISO-8601 instant including its offset, exactly as the OE entered it. */
   availabilityStartAt: string | null;
@@ -1175,6 +1416,264 @@ export interface AvailabilityWindowInput {
   availabilityZoneId: string | null;
   availabilitySource: OperationsAvailabilitySource | null;
 }
+
+/** Which field still carries the recorded instant and which one the OE typed. */
+export interface AvailabilityFieldProvenanceState {
+  start: AvailabilityFieldProvenance;
+  end: AvailabilityFieldProvenance;
+}
+
+/**
+ * The one immutable command payload this editor actually transmitted.
+ *
+ * It is captured at the dispatch boundary, not from the mutable editor fields: while an outcome is
+ * unknown the OE may keep editing, and reconciliation still has to answer the question about the
+ * original command rather than about what they have typed since.
+ */
+export interface OperationsAvailabilityAttempt {
+  choice: OperationsAvailabilityChoice;
+  itemId: number;
+  expectedSessionVersion: number;
+  window: AvailabilityWindowInput;
+}
+
+/**
+ * The one in-memory availability draft the Operations workspace can hold.
+ *
+ * It sits above the refresh-sensitive detail rendering boundary because a detail refresh, a queue
+ * reconciliation or a failed save must never destroy what the OE typed. The record is deliberately
+ * self-contained: it keeps the recorded values the editor opened with, so an authoritative refresh
+ * can never silently rebase a `RECORDED` field against a newer server value, and it carries the
+ * identity/context it belongs to so no completion can restore it into another editing session.
+ */
+export interface OperationsAvailabilityDraft {
+  /** Non-secret fingerprint of the authenticated identity that opened the editor. */
+  identity: string;
+  /** Authorization generation in force when the editor opened. */
+  authorizationGeneration: number;
+  sessionId: number;
+  itemId: number;
+  /** Unique generation of this editor instance; asynchronous completions are matched against it. */
+  editorGeneration: number;
+  /** Session version the draft was opened against, for truthful stale-context reporting. */
+  openingSessionVersion: number | null;
+  /** The recorded availability exactly as the editor opened with it. */
+  openingStartAt: string | null;
+  openingEndAt: string | null;
+  openingZoneId: string | null;
+  openingSource: string | null;
+  /** The user's own selections and raw field text. */
+  choice: OperationsAvailabilityChoice;
+  window: AvailabilityWindowInput;
+  fieldProvenance: AvailabilityFieldProvenanceState;
+  /** The original transmitted intent; only dispatch writes it, and edits never rewrite it. */
+  attempt: OperationsAvailabilityAttempt | null;
+  /**
+   * `editing` — ordinary, save enabled.
+   * `saving` — the guarded command owns the submission lock.
+   * `reconciling` — a read is establishing whether an unconfirmed command was applied.
+   * `refused` — a definitive refusal or pre-dispatch failure kept the draft recoverable.
+   * `uncertain` — transmitted without a confirmed outcome; the draft is kept, never auto-resent.
+   */
+  status: 'editing' | 'saving' | 'reconciling' | 'refused' | 'uncertain';
+  /** Truthful inline explanation of the last save outcome, or null. */
+  failureMessage: string | null;
+}
+
+/** The user-editable portion of a draft; context fields are owned by the workspace. */
+export interface OperationsAvailabilityDraftValues {
+  choice: OperationsAvailabilityChoice;
+  window: AvailabilityWindowInput;
+  fieldProvenance: AvailabilityFieldProvenanceState;
+}
+
+/**
+ * The meaningful completion of one availability save, carried from the workspace through the detail
+ * and itinerary so the editor is only closed when the server's outcome is actually known.
+ */
+export type OperationsAvailabilitySaveOutcome =
+  | { status: 'saved'; message: string | null }
+  | { status: 'not-saved'; message: string }
+  | { status: 'unconfirmed'; message: string }
+  | { status: 'superseded'; message?: string };
+
+/** Builds the one bounded draft for an editor that is being opened. */
+export const createAvailabilityDraft = (input: {
+  sessionId: number;
+  sessionVersion: number | null;
+  item: OperationsSessionItem;
+  identity: string;
+  authorizationGeneration: number;
+  editorGeneration: number;
+}): OperationsAvailabilityDraft => {
+  const zoneId = input.item.availabilityZoneId ?? OPERATIONS_AVAILABILITY_ZONES[0];
+  return {
+    identity: input.identity,
+    authorizationGeneration: input.authorizationGeneration,
+    sessionId: input.sessionId,
+    itemId: input.item.itemId,
+    editorGeneration: input.editorGeneration,
+    openingSessionVersion: input.sessionVersion,
+    openingStartAt: input.item.availabilityStartAt,
+    openingEndAt: input.item.availabilityEndAt,
+    openingZoneId: input.item.availabilityZoneId,
+    openingSource: input.item.availabilitySource,
+    choice: availabilityChoicesFor(input.item)[0] ?? 'window',
+    window: {
+      availabilityStartAt: serverInstantToZoneInput(input.item.availabilityStartAt, zoneId),
+      availabilityEndAt: serverInstantToZoneInput(input.item.availabilityEndAt, zoneId),
+      availabilityZoneId: zoneId,
+      availabilitySource: (input.item.availabilitySource as OperationsAvailabilitySource | null) ?? null
+    },
+    fieldProvenance: { start: 'RECORDED', end: 'RECORDED' },
+    attempt: null,
+    status: 'editing',
+    failureMessage: null
+  };
+};
+
+/**
+ * True when the fields the editor opened with still describe the authoritative item. A changed
+ * recorded instant, zone or source is surfaced to the OE; it is never silently folded into a
+ * `RECORDED` field, which would reinterpret the old value against new server props.
+ */
+export const availabilityRecordedConflict = (
+  draft: OperationsAvailabilityDraft,
+  item: OperationsSessionItem
+): boolean => {
+  const instantChanged = (opening: string | null, current: string | null): boolean => {
+    if (opening === null && current === null) return false;
+    if (opening === null || current === null) return true;
+    const compared = compareOperationsInstants(opening, current);
+    return compared === null ? opening !== current : compared !== 0;
+  };
+  return instantChanged(draft.openingStartAt, item.availabilityStartAt)
+    || instantChanged(draft.openingEndAt, item.availabilityEndAt)
+    || (draft.openingZoneId ?? null) !== (item.availabilityZoneId ?? null)
+    || (draft.openingSource ?? null) !== (item.availabilitySource ?? null);
+};
+
+/**
+ * PostgreSQL stores `TIMESTAMP WITH TIME ZONE` at microsecond precision. A nine-digit input may be
+ * returned exactly by a Java response, or rounded by the JDBC/PostgreSQL persistence path. This
+ * computes only that defined rounded representation; it is not a tolerance and never conflates two
+ * distinguishable microseconds.
+ */
+export const roundOperationsInstantToPostgresMicroseconds = (
+  value: string | null | undefined
+): OperationsInstant | null => {
+  const parsed = parseOperationsInstant(value);
+  if (!parsed) return null;
+  let epochSeconds = parsed.epochSeconds;
+  let microseconds = Number(parsed.fraction.slice(0, 6));
+  // The seventh digit decides a half-up rounding to the persisted microsecond.
+  if (parsed.fraction[6] >= '5') {
+    microseconds += 1;
+    if (microseconds === 1_000_000) {
+      microseconds = 0;
+      epochSeconds += 1;
+    }
+  }
+  return {
+    epochSeconds,
+    fraction: String(microseconds).padStart(6, '0').padEnd(FRACTION_DIGITS, '0')
+  };
+};
+
+/** True for the exact submitted instant or its defined PostgreSQL-microsecond representation. */
+export const availabilityInstantMatchesPersisted = (
+  actual: string | null | undefined,
+  intended: string | null | undefined
+): boolean => {
+  const parsedActual = parseOperationsInstant(actual);
+  const parsedIntended = parseOperationsInstant(intended);
+  if (!parsedActual || !parsedIntended) return false;
+  if (compareInstants(parsedActual, parsedIntended) === 0) return true;
+  const persisted = roundOperationsInstantToPostgresMicroseconds(intended);
+  return persisted !== null && compareInstants(parsedActual, persisted) === 0;
+};
+
+/**
+ * Whether the authoritative item already shows exactly what one save intended. This is evidence that
+ * the current desired state is satisfied; it is not proof of which actor created it.
+ */
+export const availabilityItemSatisfiesDraft = (
+  item: OperationsSessionItem,
+  choice: OperationsAvailabilityChoice,
+  window: AvailabilityWindowInput
+): boolean => {
+  if (choice === 'unavailable') return item.confirmationStatus === 'UNAVAILABLE';
+  if (choice === 'confirm-only') {
+    return item.confirmationStatus === 'CONFIRMED'
+      && item.availabilityStartAt === null
+      && item.availabilityEndAt === null
+      && item.availabilityZoneId === null
+      && item.availabilitySource === null;
+  }
+  return item.confirmationStatus === 'CONFIRMED'
+    && availabilityInstantMatchesPersisted(item.availabilityStartAt, window.availabilityStartAt)
+    && availabilityInstantMatchesPersisted(item.availabilityEndAt, window.availabilityEndAt)
+    && item.availabilityZoneId === window.availabilityZoneId
+    && item.availabilitySource === window.availabilitySource;
+};
+
+/** True when the mutable editor still asks for exactly the intent captured at dispatch. */
+export const availabilityIntentEqualsAttempt = (
+  choice: OperationsAvailabilityChoice,
+  window: AvailabilityWindowInput,
+  attempt: OperationsAvailabilityAttempt
+): boolean => {
+  if (choice !== attempt.choice) return false;
+  if (choice !== 'window') return true;
+  return operationsInstantsEqual(window.availabilityStartAt, attempt.window.availabilityStartAt)
+    && operationsInstantsEqual(window.availabilityEndAt, attempt.window.availabilityEndAt)
+    && window.availabilityZoneId === attempt.window.availabilityZoneId
+    && window.availabilitySource === attempt.window.availabilitySource;
+};
+
+/** The authoritative availability facts a preflight must present before an overwrite is allowed. */
+export interface AvailabilityEvidenceSnapshot {
+  confirmationStatus: string | null;
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  availabilityZoneId: string | null;
+  availabilitySource: string | null;
+}
+
+export const availabilityEvidenceSnapshot = (
+  item: OperationsSessionItem
+): AvailabilityEvidenceSnapshot => ({
+  confirmationStatus: item.confirmationStatus,
+  availabilityStartAt: item.availabilityStartAt,
+  availabilityEndAt: item.availabilityEndAt,
+  availabilityZoneId: item.availabilityZoneId,
+  availabilitySource: item.availabilitySource
+});
+
+const availabilityEvidenceInstantsDiffer = (
+  left: string | null,
+  right: string | null
+): boolean => {
+  if (left === right) return false;
+  const compared = compareOperationsInstants(left, right);
+  return compared === null ? true : compared !== 0;
+};
+
+/**
+ * Whether the availability facts the OE was looking at differ from the authoritative preflight read.
+ * An unrelated Session version change alone is deliberately not a conflict.
+ */
+export const availabilityEvidenceChanged = (
+  presented: AvailabilityEvidenceSnapshot,
+  fresh: OperationsSessionItem
+): boolean => {
+  const current = availabilityEvidenceSnapshot(fresh);
+  return presented.confirmationStatus !== current.confirmationStatus
+    || availabilityEvidenceInstantsDiffer(presented.availabilityStartAt, current.availabilityStartAt)
+    || availabilityEvidenceInstantsDiffer(presented.availabilityEndAt, current.availabilityEndAt)
+    || presented.availabilityZoneId !== current.availabilityZoneId
+    || presented.availabilitySource !== current.availabilitySource;
+};
 
 export interface SetAvailabilityCommand {
   targetType: 'SESSION';
@@ -1351,7 +1850,12 @@ export const setAvailabilityCommand = (
   now: Date = new Date()
 ): SetAvailabilityValidation => {
   const errors: SetAvailabilityValidation['errors'] = {};
-  if (detail.version === null || detail.status !== 'DRAFT') return { errors, command: null };
+  if (detail.version === null
+    || !Number.isSafeInteger(detail.version)
+    || detail.version < 0
+    || detail.status !== 'DRAFT') {
+    return { errors, command: null };
+  }
   const base = detail.version;
   const none = {
     availabilityStartAt: null,
@@ -1602,15 +2106,257 @@ export const toSchedulingApproval = (
 export const recommendationStatusHint = (status: string | null | undefined): string | null => {
   switch (status) {
     case 'SESSION_NOT_SCHEDULABLE':
-      return 'This session cannot be evaluated for scheduling yet. Every active stop needs a complete confirmed window, and the session must be a draft.';
+      return 'This visit plan cannot be evaluated yet. Every active stop needs a complete confirmed window, and the plan must still be a draft.';
     case 'INSUFFICIENT_TENANT_AVAILABILITY':
-      return 'The tenant’s stated window is missing or does not overlap the recorded property windows.';
-    case 'NO_FEASIBLE_CANDIDATE':
-      return 'No eligible Ground Executive was feasible for this itinerary just now.';
+      return 'The tenant’s available window is missing, incomplete or invalid. Scheduling cannot be evaluated until the tenant timing is recorded.';
+    case 'PROPERTY_AVAILABILITY_INCOMPLETE':
+      return 'A confirmed property is missing its complete lessor-recorded availability window. This is a property-input gap, not a tenant-window gap.';
+    case 'NO_ELIGIBLE_GE':
+      return 'No active Ground Executive in the potential City scheduling population was returned. This does not prove that no employee exists outside that population.';
+    case 'NO_FEASIBLE_TIME':
+      return 'No feasible time was found inside the evaluated tenant and property windows. A bounded evaluation is not proof that no Ground Executive is available at every time.';
+    case 'LOCATION_UNAVAILABLE_FALLBACK_USED':
+      return 'A conservative travel fallback was used because a usable live location was unavailable. Location is advisory and never makes an otherwise valid Ground Executive ineligible.';
+    case 'TRAVEL_ESTIMATE_UNCERTAIN':
+      return 'The travel allowance is uncertain, so the evaluated time is a conservative planning estimate rather than a live ETA.';
+    case 'RECOMMENDATION_AVAILABLE':
     case 'EVALUATED':
       return null;
+    case 'RECOMMENDATION_STALE':
+      return 'This evaluation is stale. Refresh the visit plan before choosing a Ground Executive.';
+    case 'CONFLICT':
+      return 'The server reported a scheduling conflict. Refresh the visit plan before choosing again.';
     default:
-      return status ? `The server reported: ${humanizeOperationsCode(status)}.` : null;
+      return status
+        ? 'The server returned a scheduling status this screen does not recognise. Refresh the visit plan before choosing; no availability conclusion is implied.'
+        : null;
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * Restricted GE availability information
+ * ------------------------------------------------------------------ */
+
+export type GeAvailabilityResultCode =
+  | 'FEASIBLE_OPTION_FOUND'
+  | 'COVERAGE_NOT_SUITABLE'
+  | 'NO_FEASIBLE_OPTION_FOUND'
+  | 'PLAN_NOT_READY'
+  | 'EVALUATION_INCOMPLETE';
+
+export interface OperationsGeAvailabilityEntry {
+  groundExecutiveUserId: number;
+  groundExecutiveName: string | null;
+  /** Allow-listed backend code, or an unrecognised code rendered with a neutral fallback. */
+  resultCode: string | null;
+}
+
+export interface OperationsGeAvailabilityStop {
+  position: number;
+  itemId: number | null;
+  listingId: number | null;
+  confirmationStatus: string | null;
+  availabilityStartAt: string | null;
+  availabilityEndAt: string | null;
+  zoneId: string | null;
+  availabilitySource: string | null;
+  availabilityConfirmedAt: string | null;
+  offsetMinutes: number | null;
+}
+
+export interface OperationsGeAvailabilityTravelAllowance {
+  fromPosition: number;
+  toPosition: number;
+  minutes: number;
+  source: string | null;
+  confidence: string | null;
+}
+
+export interface OperationsGeAvailabilityTiming {
+  configuredStopDwellMinutes: number | null;
+  maximumSessionDurationMinutes: number | null;
+  calculatedItineraryDurationMinutes: number | null;
+  durationScope: string | null;
+  tenantWindow: {
+    startAt: string | null;
+    endAt: string | null;
+    zoneId: string | null;
+    preferredTimes: string[];
+  } | null;
+  stops: OperationsGeAvailabilityStop[];
+  betweenStopTravel: OperationsGeAvailabilityTravelAllowance[];
+  planningWindowBounded: boolean;
+}
+
+export interface OperationsGeAvailabilityView {
+  sessionId: number | null;
+  sessionVersion: number | null;
+  evaluatedAt: string | null;
+  schedulingPolicyVersion: string | null;
+  visitPolicyVersion: number | null;
+  planInputFingerprint: string | null;
+  planStatus: string | null;
+  planReady: boolean;
+  planExplanationCodes: string[];
+  timing: OperationsGeAvailabilityTiming | null;
+  evaluationBounded: boolean;
+  entries: OperationsGeAvailabilityEntry[];
+  pageSize: number | null;
+  returnedEntryCount: number | null;
+  nextCursor: string | null;
+}
+
+const toGeAvailabilityStop = (raw: unknown): OperationsGeAvailabilityStop | null => {
+  const record = asRecord(raw);
+  const position = readInteger(record?.position);
+  if (!record || position === null) return null;
+  return {
+    position,
+    itemId: readInteger(record.itemId),
+    listingId: readInteger(record.listingId),
+    confirmationStatus: readText(record.confirmationStatus),
+    availabilityStartAt: readText(record.availabilityStartAt),
+    availabilityEndAt: readText(record.availabilityEndAt),
+    zoneId: readText(record.zoneId),
+    availabilitySource: readText(record.availabilitySource),
+    availabilityConfirmedAt: readText(record.availabilityConfirmedAt),
+    offsetMinutes: readInteger(record.offsetMinutes)
+  };
+};
+
+const toGeAvailabilityTravelAllowance = (
+  raw: unknown
+): OperationsGeAvailabilityTravelAllowance | null => {
+  const record = asRecord(raw);
+  const fromPosition = readInteger(record?.fromPosition);
+  const toPosition = readInteger(record?.toPosition);
+  const minutes = readInteger(record?.minutes);
+  if (!record || fromPosition === null || toPosition === null || minutes === null) return null;
+  return {
+    fromPosition,
+    toPosition,
+    minutes,
+    source: readText(record.source),
+    confidence: readText(record.confidence)
+  };
+};
+
+const toGeAvailabilityTiming = (raw: unknown): OperationsGeAvailabilityTiming | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const tenant = asRecord(record.tenantWindow);
+  return {
+    configuredStopDwellMinutes: readInteger(record.configuredStopDwellMinutes),
+    maximumSessionDurationMinutes: readInteger(record.maximumSessionDurationMinutes),
+    calculatedItineraryDurationMinutes: readInteger(record.calculatedItineraryDurationMinutes),
+    durationScope: readText(record.durationScope),
+    tenantWindow: tenant
+      ? {
+          startAt: readText(tenant.startAt),
+          endAt: readText(tenant.endAt),
+          zoneId: readText(tenant.zoneId),
+          preferredTimes: Array.isArray(tenant.preferredTimes)
+            ? tenant.preferredTimes.filter((value): value is string => typeof value === 'string')
+            : []
+        }
+      : null,
+    stops: (Array.isArray(record.stops) ? record.stops : [])
+      .map(toGeAvailabilityStop)
+      .filter((value): value is OperationsGeAvailabilityStop => value !== null)
+      .sort((left, right) => left.position - right.position),
+    betweenStopTravel: (Array.isArray(record.betweenStopTravel) ? record.betweenStopTravel : [])
+      .map(toGeAvailabilityTravelAllowance)
+      .filter((value): value is OperationsGeAvailabilityTravelAllowance => value !== null),
+    planningWindowBounded: record.planningWindowBounded === true
+  };
+};
+
+/**
+ * Maps the dedicated availability projection. Only the fields the backend contract defines are
+ * retained; any unexpected field (for example contact data) is ignored rather than rendered.
+ */
+export const toGeAvailabilityView = (raw: unknown): OperationsGeAvailabilityView | null => {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const entries = (Array.isArray(record.entries) ? record.entries : [])
+    .map((value) => {
+      const entry = asRecord(value);
+      const groundExecutiveUserId = readInteger(entry?.groundExecutiveUserId);
+      if (!entry || groundExecutiveUserId === null || groundExecutiveUserId <= 0) return null;
+      return {
+        groundExecutiveUserId,
+        // The restricted availability DTO carries `displayName`; the selectable recommendation
+        // contract separately uses `groundExecutiveName`. Only this mapper crosses that boundary.
+        groundExecutiveName: readText(entry.displayName),
+        resultCode: readText(entry.resultCode)
+      } satisfies OperationsGeAvailabilityEntry;
+    })
+    .filter((value): value is OperationsGeAvailabilityEntry => value !== null)
+    .filter((entry, index, all) =>
+      all.findIndex((candidate) => candidate.groundExecutiveUserId === entry.groundExecutiveUserId) === index
+    );
+  return {
+    sessionId: readInteger(record.sessionId),
+    sessionVersion: readInteger(record.sessionVersion),
+    evaluatedAt: readText(record.evaluatedAt),
+    schedulingPolicyVersion: readText(record.schedulingPolicyVersion),
+    visitPolicyVersion: readInteger(record.visitPolicyVersion),
+    planInputFingerprint: readText(record.planInputFingerprint),
+    planStatus: readText(record.planStatus),
+    planReady: record.planReady === true,
+    planExplanationCodes: Array.isArray(record.planExplanationCodes)
+      ? record.planExplanationCodes.filter((value): value is string => typeof value === 'string')
+      : [],
+    timing: toGeAvailabilityTiming(record.timing),
+    evaluationBounded: record.evaluationBounded === true,
+    entries,
+    pageSize: readInteger(record.pageSize),
+    returnedEntryCount: readInteger(record.returnedEntryCount),
+    nextCursor: readText(record.nextCursor)
+  };
+};
+
+/** The five public outcome codes; anything else is rendered as a neutral, non-committal result. */
+export const geAvailabilityResultCopy = (
+  code: string | null | undefined
+): { label: string; detail: string; feasible: boolean } => {
+  switch (code) {
+    case 'FEASIBLE_OPTION_FOUND':
+      return {
+        label: 'Feasible at an evaluated time',
+        detail: 'The server evaluated at least one feasible time for this visit plan. This is information only: it is not a booking and does not promise the same time later.',
+        feasible: true
+      };
+    case 'COVERAGE_NOT_SUITABLE':
+      return {
+        label: 'Does not cover this itinerary',
+        detail: 'This City candidate does not cover every required stop in this visit plan.',
+        feasible: false
+      };
+    case 'NO_FEASIBLE_OPTION_FOUND':
+      return {
+        label: 'No feasible option in this evaluation',
+        detail: 'No feasible time was found for this Ground Executive in this evaluation. Private scheduling reasons are not shown.',
+        feasible: false
+      };
+    case 'PLAN_NOT_READY':
+      return {
+        label: 'Visit plan not ready',
+        detail: 'The visit plan inputs are incomplete or unsuitable for evaluation. Correct the plan before treating this as a Ground Executive availability result.',
+        feasible: false
+      };
+    case 'EVALUATION_INCOMPLETE':
+      return {
+        label: 'Evaluation incomplete',
+        detail: 'The bounded search or missing evaluation data prevents a reliable conclusion for this Ground Executive.',
+        feasible: false
+      };
+    default:
+      return {
+        label: 'Availability not confirmed',
+        detail: 'The server returned an outcome this screen does not recognise. Treat it as informational only and refresh before deciding.',
+        feasible: false
+      };
   }
 };
 
@@ -1830,18 +2576,18 @@ export const humanizeOperationsCode = (code: string): string =>
 
 // Request and Session statuses are separate enums and are never folded together.
 const REQUEST_STATUS: Record<string, OperationsStatusMeta> = {
-  RECEIVED: { label: 'Received', tone: 'open', hint: 'Waiting to be coordinated' },
-  COORDINATING: { label: 'Coordinating', tone: 'active', hint: 'Coordination is in progress' },
-  SCHEDULED: { label: 'Scheduled', tone: 'scheduled', hint: 'Part of a scheduled visit' },
+  RECEIVED: { label: 'Awaiting coordination', tone: 'open', hint: 'Waiting to be coordinated' },
+  COORDINATING: { label: 'In coordination', tone: 'active', hint: 'Coordination is in progress' },
+  SCHEDULED: { label: 'In booked visit', tone: 'scheduled', hint: 'Part of a booked visit' },
   UNAVAILABLE: { label: 'Unavailable', tone: 'closed', hint: 'Property confirmed unavailable' },
   CANCELLED: { label: 'Cancelled', tone: 'closed', hint: 'Cancelled' }
 };
 
 const SESSION_STATUS: Record<string, OperationsStatusMeta> = {
-  DRAFT: { label: 'Draft', tone: 'open', hint: 'No visit time is booked yet' },
-  SCHEDULED: { label: 'Scheduled', tone: 'scheduled', hint: 'A visit time is booked' },
-  STARTED: { label: 'In progress', tone: 'active', hint: 'The visit has started' },
-  COMPLETED: { label: 'Completed', tone: 'closed', hint: 'The visit finished' },
+  DRAFT: { label: 'Planning', tone: 'open', hint: 'No visit time is booked yet' },
+  SCHEDULED: { label: 'Visit booked', tone: 'scheduled', hint: 'A visit time is booked' },
+  STARTED: { label: 'Visit in progress', tone: 'active', hint: 'The visit has started' },
+  COMPLETED: { label: 'Visit completed', tone: 'closed', hint: 'The visit finished' },
   EXPIRED: { label: 'Expired', tone: 'closed', hint: 'Expired without a visit' },
   CANCELLED: { label: 'Cancelled', tone: 'closed', hint: 'Cancelled' },
   NO_SHOW: { label: 'No-show', tone: 'closed', hint: 'A no-show was recorded' },
@@ -1945,7 +2691,7 @@ export const attentionCategory = (facts: AttentionFacts): string => {
  * ------------------------------------------------------------------ */
 
 export const operationsRecordTag = (targetType: OperationsTargetType): string =>
-  targetType === 'SESSION' ? 'Session' : 'Request';
+  targetType === 'SESSION' ? 'Visit plan' : 'Visit request';
 
 /**
  * The API exposes numeric roots only, so the workspace shows the real identifier and never a
@@ -1957,10 +2703,10 @@ export const operationsRecordTitle = (targetType: OperationsTargetType, targetId
   `${operationsRecordTag(targetType)} ${operationsRecordReference(targetId)}`;
 
 export const linkedRequestsLabel = (count: number): string =>
-  `${count} linked ${count === 1 ? 'request' : 'requests'}`;
+  `${count} tenant visit ${count === 1 ? 'request' : 'requests'}`;
 
 export const operationsNoun = (targetType: OperationsTargetType): string =>
-  targetType === 'SESSION' ? 'session' : 'request';
+  targetType === 'SESSION' ? 'visit plan' : 'visit request';
 
 /* ------------------------------------------------------------------ *
  * HTTP outcome classification
@@ -2121,7 +2867,7 @@ export const ownershipOutcomeCopy = (name: string, input: OwnershipOutcomeInput)
       message: status === 409
         ? `${name} changed on the server while you were working, so nothing was changed by you. ${recovered}`
         : status === 404
-          ? `${name} is no longer claimable or owned by you. ${recovered}`
+          ? `${name} is no longer available to claim or owned by you. ${recovered}`
           : status === 403
             ? `Your coordination authority for this team is not currently active, so ${name} was left unchanged. ${recovered}`
             : input.message
@@ -2214,6 +2960,114 @@ export const formatOperationsDetailDateTime = (value: string | null | undefined)
   const parts = shiftToIst(value);
   if (!parts) return null;
   return `${parts.weekday}, ${parts.day} ${parts.month} ${parts.year} · ${parts.hour12}:${parts.minutes} ${parts.meridiem} IST`;
+};
+
+/**
+ * Availability detail values in the zone that actually owns them. The legacy IST formatter above is
+ * left unchanged for accepted Session and timeline rendering; tenant availability is not an IST fact
+ * once a request carries another IANA zone.
+ */
+export const formatOperationsZonedDateTime = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  if (!isOperationsZone(zoneId)) return null;
+  const zoned = instantToZoneInstant(value, zoneId);
+  if (!zoned) return null;
+  const date = zoned.slice(0, 10);
+  const time = zoned.slice(11, 16);
+  const [year, month, day] = date.split('-').map(Number);
+  const hour = Number(time.slice(0, 2));
+  const dateLabel = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  }).format(new Date(Date.UTC(year, month - 1, day)));
+  return `${dateLabel} · ${hour % 12 || 12}:${time.slice(3, 5)} ${hour >= 12 ? 'pm' : 'am'} ${zoneId}`;
+};
+
+/** Both endpoints in their owning zone, so an overnight window never hides its second date. */
+export const formatOperationsZonedWindow = (
+  startAt: string | null | undefined,
+  endAt: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  const start = formatOperationsZonedDateTime(startAt, zoneId);
+  const end = formatOperationsZonedDateTime(endAt, zoneId);
+  if (!start || !end) return null;
+  return `${start} → ${end}`;
+};
+
+const zoneOffsetAt = (value: string | null, zoneId: string | null): string | null => {
+  const zoned = instantToZoneInstant(value, zoneId);
+  return zoned ? zoned.slice(-6) : null;
+};
+
+const localWallClockAt = (epochMs: number, zoneId: string): string | null => {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: zoneId,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    }).format(new Date(epochMs));
+  } catch {
+    return null;
+  }
+};
+
+/** True when the same local wall clock occurs twice around this instant (a DST fold). */
+export const isRepeatedOperationsLocalTime = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): boolean => {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(parsed) || !isOperationsZone(zoneId)) return false;
+  const key = localWallClockAt(parsed, zoneId as string);
+  if (!key) return false;
+  // A 30-minute transition is probed as well, because not every zone changes by a whole hour.
+  return [30 * 60_000, 60 * 60_000].some((delta) =>
+    localWallClockAt(parsed - delta, zoneId as string) === key
+    || localWallClockAt(parsed + delta, zoneId as string) === key
+  );
+};
+
+/**
+ * Availability time in the zone that owns it. A repeated local time (DST fold) also carries its
+ * actual offset, so the two occurrences remain distinguishable; every other instant keeps the
+ * accepted compact zone-labelled form.
+ */
+export const formatOperationsAvailabilityDateTime = (
+  value: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  const label = formatOperationsZonedDateTime(value, zoneId);
+  if (!label) return null;
+  const offset = isRepeatedOperationsLocalTime(value, zoneId)
+    ? zoneOffsetAt(value ?? null, zoneId ?? null)
+    : null;
+  return offset ? `${label} (${offset})` : label;
+};
+
+/** Both endpoints in their owning zone, with repeated local times disambiguated by offset. */
+export const formatOperationsAvailabilityWindow = (
+  startAt: string | null | undefined,
+  endAt: string | null | undefined,
+  zoneId: string | null | undefined
+): string | null => {
+  const label = formatOperationsZonedWindow(startAt, endAt, zoneId);
+  if (!label) return null;
+  if (!isRepeatedOperationsLocalTime(startAt, zoneId)
+    && !isRepeatedOperationsLocalTime(endAt, zoneId)) return label;
+  const start = formatOperationsAvailabilityDateTime(startAt, zoneId);
+  const end = formatOperationsAvailabilityDateTime(endAt, zoneId);
+  return start && end ? `${start} → ${end}` : label;
 };
 
 export const formatOperationsTimeRange = (

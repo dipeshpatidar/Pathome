@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.dto.ClaimableWorkItem;
 import com.indore.pathome.spaces.dto.ClaimableWorkTargetType;
+import com.indore.pathome.spaces.dto.OperationsWorkFilter;
 import com.indore.pathome.spaces.entity.*;
 import com.indore.pathome.spaces.service.ClaimableWorkService;
 import jakarta.persistence.EntityNotFoundException;
@@ -71,6 +72,64 @@ class ClaimableWorkRepositoryPostgresTest {
     @Autowired private PropertyVisitRequestRepository requests;
     @Autowired private VisitSessionRepository sessions;
     @Autowired private JdbcTemplate jdbc;
+
+    @Test
+    void additiveFiltersStayInsideScopeAndReportFilteredAndUnfilteredTotals() {
+        var service = service();
+        User coordinator = user("filter-coordinator", Role.ROLE_TENANT);
+        activate(coordinator);
+        SupportedCity cityA = city("filter-a");
+        SupportedCity cityB = city("filter-b");
+        OperatingTeam teamA = team(cityA, "filter-a-one");
+        OperatingTeam sameCityOther = team(cityA, "filter-a-two");
+        OperatingTeam teamB = team(cityB, "filter-b-one");
+        grant(coordinator, StaffCapability.OPS_COORDINATE, StaffScopeType.TEAM, null, teamA,
+                Instant.now().minusSeconds(120), null);
+
+        PropertyVisitRequest receivedOne = scopedRequest("received-one", cityA, teamA, null, null,
+                VisitRequestStatus.RECEIVED, true);
+        scopedRequest("received-two", cityA, teamA, null, null, VisitRequestStatus.RECEIVED, true);
+        scopedRequest("coordinating", cityA, teamA, null, null, VisitRequestStatus.COORDINATING, true);
+        VisitSession draft = session("filter-draft", cityA, teamA);
+        scopedRequest("same-city-team", cityA, sameCityOther, null, null,
+                VisitRequestStatus.RECEIVED, true);
+        scopedRequest("other-city", cityB, teamB, null, null, VisitRequestStatus.RECEIVED, true);
+
+        var requestPage = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse("REQUEST", "RECEIVED", String.valueOf(cityA.getId()),
+                        String.valueOf(teamA.getId()), null));
+        assertEquals(2, requestPage.totalCount());
+        assertEquals(4, requestPage.unfilteredTotalCount(),
+                "the unfiltered total is the same authorized population before optional filters");
+        assertEquals(2, requestPage.items().size());
+        assertTrue(requestPage.items().stream().allMatch(item -> item.targetType() == ClaimableWorkTargetType.REQUEST));
+        assertTrue(requestPage.items().stream().allMatch(item -> "RECEIVED".equals(item.status())));
+
+        var exact = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse("REQUEST", null, null, null, String.valueOf(receivedOne.getId())));
+        assertEquals(1, exact.totalCount());
+        assertEquals(receivedOne.getId(), exact.items().get(0).targetId());
+
+        var sessions = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse("SESSION", "DRAFT", null, null, null));
+        assertEquals(1, sessions.totalCount());
+        assertEquals(draft.getId(), sessions.items().get(0).targetId());
+
+        var foreignCity = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse(null, null, String.valueOf(cityB.getId()), null, null));
+        assertEquals(0, foreignCity.totalCount());
+        assertEquals(4, foreignCity.unfilteredTotalCount());
+
+        var foreignTeam = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse(null, null, null, String.valueOf(teamB.getId()), null));
+        assertEquals(0, foreignTeam.totalCount());
+
+        var mismatchedCityTeam = service.list(coordinator.getId(), 0, 20,
+                OperationsWorkFilter.parse(null, null, String.valueOf(cityA.getId()),
+                        String.valueOf(teamB.getId()), null));
+        assertEquals(0, mismatchedCityTeam.totalCount());
+        assertEquals(4, mismatchedCityTeam.unfilteredTotalCount());
+    }
 
     @Test
     void singleSnapshotScopesAndPagesCanonicalTargetsWithPrivacySafeCompleteVersions() throws Exception {

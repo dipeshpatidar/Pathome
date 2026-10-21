@@ -21,6 +21,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { resolve as resolveOperationsModule } from './support/operationsServiceLoader.mjs';
+import {
+  compileCallback,
+  extractReportCommandFailure,
+  extractSchedulingCallbacks,
+  extractWithdrawDeniedRoot
+} from './support/operationsSchedulingCallbacksHarness.mjs';
 
 registerHooks({ resolve: resolveOperationsModule });
 
@@ -447,7 +453,7 @@ test('confirmed rejections keep their copy but only claim a reload after a real 
   assert.equal(missing.kind, 'rejected');
   assert.equal(
     missing.message,
-    `${RECORD} is no longer claimable or owned by you. The queues were refreshed from the server — review the latest state before deciding again.`
+    `${RECORD} is no longer available to claim or owned by you. The queues were refreshed from the server — review the latest state before deciding again.`
   );
 
   const denied = ownershipOutcomeCopy(RECORD, { dispatched: true, status: 403, reconciliation: 'loaded' });
@@ -660,7 +666,12 @@ test('a denial withdraws the refused root before the reconciliation it triggers 
   ]) {
     const withdrawAt = slice.indexOf('withdrawDeniedRoot(');
     const reconcileAt = slice.indexOf('await refreshAll(operation.session)');
-    const guardAt = slice.indexOf('if (!ownership.canCommit(operation, authorityRef.current))');
+    const legacyGuardAt = slice.indexOf(
+      'if (!ownership.canCommit(operation, authorityRef.current))',
+      reconcileAt
+    );
+    const contextualGuardAt = slice.indexOf('if (!publicationContextCurrent())', reconcileAt);
+    const guardAt = contextualGuardAt > -1 ? contextualGuardAt : legacyGuardAt;
     const noticeAt = slice.indexOf('showNotice(copy.message, operation.session);');
     assert.ok(withdrawAt > -1, `${label}: withdraws the denied root`);
     assert.ok(withdrawAt < reconcileAt, `${label}: the withdrawal precedes the reconciliation`);
@@ -676,21 +687,25 @@ test('a denial withdraws the refused root before the reconciliation it triggers 
   }
 
   // The withdrawal is refused outright once the operation may no longer commit.
-  assert.match(
-    workspaceSource,
-    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(/
+  assert.equal(
+    (workspaceSource.match(
+      /if \(disposition\.withdrawRoot && (?:ownership\.canCommit\(operation, authorityRef\.current\)|failureContextCurrent\(\))\) \{/g
+    ) ?? []).length,
+    2
   );
   // Both failure paths withdraw the operation's *own captured target* — never the root that happens
   // to be on screen when the failure lands.
-  assert.match(
-    workspaceSource,
-    /if \(disposition\.withdrawRoot && ownership\.canCommit\(operation, authorityRef\.current\)\) \{\s*\n\s*withdrawDeniedRoot\(operation\);/
+  assert.equal(
+    (workspaceSource.match(
+      /withdrewRoot = withdrawDeniedRoot\(operation\);|withdrawDeniedRoot\(operation\);/g
+    ) ?? []).length,
+    2
   );
   // A denial only drops the exact instance the operation was started against, never whatever is on
   // screen when it lands — a later record, or a newer mount of the same one.
   assert.match(
     workspaceSource,
-    /const withdrawDeniedRoot = useCallback\(\(operation: OwnershipOperation\) => \{\s*\n\s*if \(!operationTargetIsMounted\(operation, openRootRef\.current\)\) return;/
+    /const withdrawDeniedRoot = useCallback\(\(\s*source: OwnershipOperation \| MountedRootIdentity\s*\): boolean => \{[\s\S]{0,1200}?mounted\.mountGeneration !== target\.mountGeneration\) return false;/
   );
   /**
    * The outcome verdict is not taken before the reconciliation any more: the display context that a
@@ -712,7 +727,7 @@ test('a denial withdraws the refused root before the reconciliation it triggers 
     assert.ok(reconcileAt < verdictAt, `${label}: the verdict is re-taken after the awaited reconciliation`);
     assert.equal(region.includes('const publishable = '), false, `${label}: no pre-await publish verdict`);
     assert.equal(
-      region.slice(0, reconcileAt).includes('noticeContextHolds('),
+      region.slice(0, reconcileAt).includes('if (disposition.targetDenied && !noticeContextHolds(operation))'),
       false,
       `${label}: no display-context verdict is taken before the reconciliation`
     );
@@ -721,12 +736,18 @@ test('a denial withdraws the refused root before the reconciliation it triggers 
    * The scheduling drawer's outcome is withheld under the same verdict: a withheld refusal must never
    * be published into a drawer that now belongs to another record — or to a newer mount of this one.
    */
-  const scheduleFrom = workspaceSource.indexOf('onFailure: async (cause, operation) => {');
-  assert.ok(scheduleFrom > -1, 'the scheduling failure continuation');
-  const scheduleFailure = workspaceSource.slice(scheduleFrom, scheduleFrom + 2600);
+  /**
+   * The scheduling failure continuation is located through the TypeScript AST as the actual
+   * `onFailure` property of the real `runGuardedCommand` options object. No fixed character window
+   * and no first textual occurrence is used, so comments or additive branches cannot redirect it.
+   */
+  const schedulingCallbacks = extractSchedulingCallbacks();
+  const scheduleFailure = schedulingCallbacks.onFailureSource;
   const reportAt = scheduleFailure.indexOf('await reportCommandFailure(cause, operation, name);');
-  const withheldAt = scheduleFailure.indexOf('if (!failure.published) return;');
-  const contextAt = scheduleFailure.indexOf('if (!noticeContextHolds(operation)) return;');
+  const withheldMatch = /if \(!failure\.published\)\s*return;/.exec(scheduleFailure);
+  const contextMatch = /if \(!noticeContextHolds\(operation\)\)\s*return;/.exec(scheduleFailure);
+  const withheldAt = withheldMatch?.index ?? -1;
+  const contextAt = contextMatch?.index ?? -1;
   const outcomeAt = scheduleFailure.indexOf('setScheduleOutcome(schedulingFailureOutcome(failure));');
   assert.ok(reportAt > -1 && withheldAt > -1 && contextAt > -1 && outcomeAt > -1);
   assert.ok(reportAt < withheldAt && withheldAt < contextAt && contextAt < outcomeAt,
@@ -736,9 +757,7 @@ test('a denial withdraws the refused root before the reconciliation it triggers 
    * version must not write `review-required`/`not-sent` into a drawer that now belongs to another
    * record, because the OE left the session while that read was in flight.
    */
-  const missingFrom = workspaceSource.indexOf('onMissingVersion: (fresh, _reconciliation, operation) => {');
-  assert.ok(missingFrom > -1, 'the scheduling stopped-command outcome');
-  const missing = workspaceSource.slice(missingFrom, missingFrom + 1200);
+  const missing = schedulingCallbacks.onMissingVersionSource;
   assert.ok(
     missing.indexOf('if (!noticeContextHolds(operation)) return;') < missing.indexOf('setScheduleOutcome('),
     'a stopped command publishes no drawer outcome outside its own display context'
@@ -1150,4 +1169,100 @@ test('an abandoned failure report would otherwise be published, so the guard is 
     message: 'refused',
     detail: 'why'
   });
+});
+
+test('the real failure reporter withdraws only its exact root, before the held reconciliation resolves', async () => {
+  const withdrawSource = extractWithdrawDeniedRoot();
+  const mounted = { targetType: 'SESSION', targetId: 500, mountGeneration: 3 };
+  const openRootRef = { current: mounted };
+  const displayChanges = [];
+  const withdraw = compileCallback(withdrawSource, [
+    'openRootRef', 'detailController', 'abortGuardedReads', 'writeAvailabilityDraft',
+    'setDisplayContext', 'ownership', 'closeScheduleDrawer'
+  ], [
+    openRootRef,
+    { current: { abort: () => displayChanges.push('abort-detail') } },
+    () => displayChanges.push('abort-reads'),
+    () => displayChanges.push('clear-draft'),
+    () => displayChanges.push('clear-detail'),
+    { markWithdrewOwnDisplayContext: () => displayChanges.push('mark-operation') },
+    () => displayChanges.push('close-drawer')
+  ]);
+  const captured = { ...mounted };
+  assert.equal(withdraw(captured), true, 'the exact mounted instance is withdrawn');
+  assert.deepEqual(displayChanges, [
+    'abort-detail', 'abort-reads', 'clear-draft', 'clear-detail', 'close-drawer'
+  ]);
+
+  displayChanges.length = 0;
+  openRootRef.current = mounted;
+  assert.equal(withdraw({ target: captured }), true, 'an operation denial withdraws its own root');
+  assert.ok(displayChanges.includes('mark-operation'),
+    'the operation records the withdrawal as its own display transition');
+
+  displayChanges.length = 0;
+  openRootRef.current = { ...mounted, mountGeneration: 4 };
+  assert.equal(withdraw(captured), false, 'a remount of the same Session is not the old mount');
+  openRootRef.current = { targetType: 'SESSION', targetId: 501, mountGeneration: 4 };
+  assert.equal(withdraw(captured), false, 'the denial of old A cannot withdraw B');
+  assert.deepEqual(displayChanges, [], 'neither a newer mount nor another root is touched');
+
+  /**
+   * The shared reporter is the actual production callback. A definitive denial must withdraw
+   * synchronously and only then begin the awaited read; if the read is held, the refusal has already
+   * left the screen. The reporter call is also the only place the caller can obtain `published`.
+   */
+  const reportSource = extractReportCommandFailure();
+  const order = [];
+  let releaseRefresh;
+  const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
+  class ApiRequestError extends Error {
+    constructor(status) {
+      super(`status ${status}`);
+      this.status = status;
+    }
+  }
+  const report = compileCallback(reportSource, [
+    'ApiRequestError', 'ownership', 'authorityRef', 'commandFailureDisposition', 'withdrawDeniedRoot',
+    'noticeContextHolds', 'refreshAll', 'ownershipOutcomeCopy', 'showNotice'
+  ], [
+    ApiRequestError,
+    { canCommit: () => true },
+    { current: {} },
+    presentation.commandFailureDisposition,
+    () => { order.push('withdraw'); return true; },
+    () => true,
+    async () => { order.push('refresh-start'); await refreshGate; order.push('refresh-end'); return 'loaded'; },
+    presentation.ownershipOutcomeCopy,
+    () => order.push('notice')
+  ]);
+  const operation = { dispatched: true, session: {}, target: captured };
+  const pending = report(new ApiRequestError(403), operation, 'Visit Session · 500');
+  await Promise.resolve();
+  assert.deepEqual(order, ['withdraw', 'refresh-start'],
+    'the protected root is gone before the held queue reconciliation');
+  releaseRefresh();
+  const result = await pending;
+  assert.equal(result.published, true, 'the current display context receives the truthful outcome');
+  assert.deepEqual(order, ['withdraw', 'refresh-start', 'refresh-end', 'notice']);
+
+  // An account/navigation change before or during the reporter makes it a no-op.
+  order.length = 0;
+  const blocked = compileCallback(reportSource, [
+    'ApiRequestError', 'ownership', 'authorityRef', 'commandFailureDisposition', 'withdrawDeniedRoot',
+    'noticeContextHolds', 'refreshAll', 'ownershipOutcomeCopy', 'showNotice'
+  ], [
+    ApiRequestError,
+    { canCommit: () => false },
+    { current: {} },
+    presentation.commandFailureDisposition,
+    () => { order.push('withdraw'); return true; },
+    () => true,
+    async () => { order.push('refresh'); return 'loaded'; },
+    presentation.ownershipOutcomeCopy,
+    () => order.push('notice')
+  ]);
+  const blockedResult = await blocked(new ApiRequestError(404), operation, 'Visit Session · 500');
+  assert.equal(blockedResult.published, false);
+  assert.deepEqual(order, [], 'an abandoned account cannot withdraw, reconcile or publish');
 });

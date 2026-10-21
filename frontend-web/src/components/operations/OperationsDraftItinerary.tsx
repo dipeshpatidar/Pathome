@@ -14,6 +14,7 @@ import {
   operationsAvailabilityMeta,
   operationsRecordReference,
   operationsZoneOptions,
+  rezoneAvailabilityFieldInput,
   removedSessionItems,
   resolveAvailabilityFieldInstant,
   serverInstantToZoneInput,
@@ -23,12 +24,17 @@ import {
   setAvailabilityCommand,
   type AvailabilityWindowInput,
   type OperationsAvailabilityChoice,
+  type OperationsAvailabilityDraft,
+  type OperationsAvailabilityDraftValues,
+  type OperationsAvailabilitySaveOutcome,
   type OperationsAvailabilitySource,
   type OperationsDerivedItemOrigin,
   type OperationsLessorContact,
   type OperationsSessionDetail,
-  type OperationsSessionItem
+  type OperationsSessionItem,
+  availabilityRecordedConflict
 } from '../../utils/operationsWorkspacePresentation';
+import { OperationsPropertyThumb } from './OperationsPropertyThumb';
 import { OperationsLessorContactPanel } from './OperationsLessorContactPanel';
 
 /**
@@ -53,6 +59,24 @@ export interface AddStopInput {
   origin: OperationsDerivedItemOrigin;
 }
 
+/**
+ * The workspace-owned availability editor state and its only permitted transitions.
+ *
+ * The draft lives above this component so an authoritative detail refresh cannot unmount the editor
+ * and discard raw input. Every operation is generation-scoped: a completion, keystroke or discard
+ * that belongs to an earlier editor can never write into a newer one.
+ */
+export interface OperationsAvailabilityEditing {
+  draft: OperationsAvailabilityDraft | null;
+  begin: (itemId: number) => void;
+  change: (editorGeneration: number, values: OperationsAvailabilityDraftValues) => void;
+  discard: (editorGeneration: number) => void;
+  save: (
+    editorGeneration: number,
+    window: AvailabilityWindowInput
+  ) => Promise<OperationsAvailabilitySaveOutcome>;
+}
+
 interface Props {
   session: OperationsSessionDetail;
   /** Itinerary editing exists only for an owned DRAFT session. */
@@ -61,7 +85,7 @@ interface Props {
   busyCommand: string | null;
   onReorder: (itemIds: number[]) => void;
   onRemove: (itemId: number, reason: string | null) => void;
-  onSaveAvailability: (itemId: number, choice: OperationsAvailabilityChoice, window: AvailabilityWindowInput) => void;
+  availability: OperationsAvailabilityEditing;
   onAddStop: (input: AddStopInput) => void;
   /** Reveals the canonical contact for one item; the signal cancels it when the context changes. */
   revealItemContact: (itemId: number, signal: AbortSignal) => Promise<OperationsLessorContact>;
@@ -107,65 +131,112 @@ export const OperationsAvailabilitySummary: React.FC<{ item: OperationsSessionIt
 const AvailabilityEditor: React.FC<{
   session: OperationsSessionDetail;
   item: OperationsSessionItem;
+  draft: OperationsAvailabilityDraft;
   blocked: boolean;
   busyCommand: string | null;
-  onSave: (choice: OperationsAvailabilityChoice, window: AvailabilityWindowInput) => void;
+  onChange: (values: OperationsAvailabilityDraftValues) => void;
+  onSave: (window: AvailabilityWindowInput) => Promise<OperationsAvailabilitySaveOutcome>;
   onCancel: () => void;
-}> = ({ session, item, blocked, busyCommand, onSave, onCancel }) => {
+}> = ({ session, item, draft, blocked, busyCommand, onChange, onSave, onCancel }) => {
   const choices = availabilityChoicesFor(item);
-  const [choice, setChoice] = useState<OperationsAvailabilityChoice>(choices[0] ?? 'window');
   /**
-   * The window is edited as a wall clock in the property's own zone, so the server instant is
-   * converted for display and the edited value is converted back to the intended instant. The device
-   * time zone is never used.
+   * The editor is controlled by the workspace-owned draft. That is what lets an authoritative
+   * refresh re-render the record without unmounting the editor or losing what the OE typed: the raw
+   * text, the selected zone/source, the choice and the field provenance all live in the draft, above
+   * the refresh-sensitive detail boundary.
+   *
+   * A field still marked `RECORDED` is resolved from the instant the draft opened with — never from
+   * refreshed server props — so a later authoritative value can be surfaced as a conflict but can
+   * never silently rewrite the meaning of an untouched field.
    */
-  const initialZoneId = item.availabilityZoneId ?? OPERATIONS_AVAILABILITY_ZONES[0];
-  /** What the recorded instants displayed when this editor opened; the untouched baseline. */
-  const initialStartField = serverInstantToZoneInput(item.availabilityStartAt, initialZoneId);
-  const initialEndField = serverInstantToZoneInput(item.availabilityEndAt, initialZoneId);
-  const zoneOptions = useMemo(() => operationsZoneOptions(item.availabilityZoneId), [item.availabilityZoneId]);
-  const [window, setWindow] = useState<AvailabilityWindowInput>({
-    availabilityStartAt: initialStartField,
-    availabilityEndAt: initialEndField,
-    availabilityZoneId: initialZoneId,
-    availabilitySource: (item.availabilitySource as OperationsAvailabilitySource | null) ?? null
-  });
+  const draftWindow = draft.window;
+  const fieldProvenance = draft.fieldProvenance;
+  const choice = draft.choice;
+  const zoneOptions = useMemo(
+    () => operationsZoneOptions(draft.openingZoneId),
+    [draft.openingZoneId]
+  );
   const [touched, setTouched] = useState(false);
   /** Set when an entered wall clock cannot be resolved in the selected zone (a gap or a repeated hour). */
   const [zoneConversionError, setZoneConversionError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const failureRef = useRef<HTMLParagraphElement | null>(null);
+  const saving = draft.status === 'saving' || draft.status === 'reconciling';
+  const locked = blocked || saving;
+  const choiceStillOffered = choices.includes(choice);
 
   useEffect(() => formRef.current?.querySelector<HTMLElement>('input, select')?.focus(), []);
 
-  const selectedZoneId = window.availabilityZoneId ?? '';
+  const selectedZoneId = draftWindow.availabilityZoneId ?? '';
   /**
-   * Each field is resolved on its own. A field the OE did not touch (same text, same zone) returns the
-   * recorded server instant verbatim, so seconds, fractional seconds and the identity of a repeated
-   * DST hour survive an unchanged save; only a real edit is converted.
+   * Choosing a zone states which zone the two field texts belong to. A field still holding the
+   * recorded instant is re-expressed in the newly selected zone, so that exact instant — seconds,
+   * fractional seconds and the correct occurrence of a repeated hour included — is what gets saved;
+   * a field the OE typed keeps its text and is resolved in the zone they chose.
+   */
+  const changeZone = (nextZoneId: string): void => {
+    onChange({
+      choice,
+      fieldProvenance,
+      window: {
+        ...draftWindow,
+        availabilityZoneId: nextZoneId,
+        availabilityStartAt: rezoneAvailabilityFieldInput({
+          value: draftWindow.availabilityStartAt,
+          provenance: fieldProvenance.start,
+          initialInstant: draft.openingStartAt,
+          nextZoneId
+        }),
+        availabilityEndAt: rezoneAvailabilityFieldInput({
+          value: draftWindow.availabilityEndAt,
+          provenance: fieldProvenance.end,
+          initialInstant: draft.openingEndAt,
+          nextZoneId
+        })
+      }
+    });
+  };
+  /**
+   * The only thing that stops a field being the recorded instant: the OE changing that field's text.
+   * The raw text and the explicit per-field provenance move in the same draft write, so no render or
+   * refresh can observe one without the other.
+   */
+  const markEdited = (field: 'start' | 'end', value: string): void => {
+    onChange({
+      choice,
+      window: {
+        ...draftWindow,
+        [field === 'start' ? 'availabilityStartAt' : 'availabilityEndAt']: value
+      },
+      fieldProvenance: { ...fieldProvenance, [field]: 'EDITED' }
+    });
+  };
+  /**
+   * Each field is resolved on its own, from its own provenance and the instant the draft opened
+   * with. A field that still holds the recorded instant is sent back as that same instant with the
+   * selected zone's own offset; a field the OE edited is converted from what they typed.
    */
   const startResolution = useMemo(() => resolveAvailabilityFieldInstant({
-    value: window.availabilityStartAt,
-    initialValue: initialStartField,
+    value: draftWindow.availabilityStartAt,
+    provenance: fieldProvenance.start,
     zoneId: selectedZoneId,
-    initialZoneId,
-    initialInstant: item.availabilityStartAt
-  }), [initialStartField, initialZoneId, item.availabilityStartAt, selectedZoneId, window.availabilityStartAt]);
+    initialInstant: draft.openingStartAt
+  }), [draft.openingStartAt, fieldProvenance.start, selectedZoneId, draftWindow.availabilityStartAt]);
   const endResolution = useMemo(() => resolveAvailabilityFieldInstant({
-    value: window.availabilityEndAt,
-    initialValue: initialEndField,
+    value: draftWindow.availabilityEndAt,
+    provenance: fieldProvenance.end,
     zoneId: selectedZoneId,
-    initialZoneId,
-    initialInstant: item.availabilityEndAt
-  }), [initialEndField, initialZoneId, item.availabilityEndAt, selectedZoneId, window.availabilityEndAt]);
+    initialInstant: draft.openingEndAt
+  }), [draft.openingEndAt, fieldProvenance.end, selectedZoneId, draftWindow.availabilityEndAt]);
   const windowInput: AvailabilityWindowInput = useMemo(() => {
-    if (choice !== 'window') return window;
+    if (choice !== 'window') return draftWindow;
     return {
       availabilityStartAt: startResolution.value,
       availabilityEndAt: endResolution.value,
-      availabilityZoneId: window.availabilityZoneId,
-      availabilitySource: window.availabilitySource
+      availabilityZoneId: draftWindow.availabilityZoneId,
+      availabilitySource: draftWindow.availabilitySource
     };
-  }, [choice, endResolution.value, startResolution.value, window]);
+  }, [choice, draftWindow, endResolution.value, startResolution.value]);
 
   const validation = setAvailabilityCommand(session, item.itemId, choice, windowInput);
   const errors = validation.errors;
@@ -194,6 +265,12 @@ const AvailabilityEditor: React.FC<{
     touched && errors[key] ? `oe-avail-${item.itemId}-${key}-err` : undefined;
 
   const showWindowFields = choice === 'window';
+  /**
+   * The authoritative item changed while this draft was open. The draft keeps its own opening
+   * snapshot and text; the conflict is stated so the OE reviews it instead of a stale field being
+   * silently rebased onto the newer server value.
+   */
+  const recordedConflict = !saving && availabilityRecordedConflict(draft, item);
 
   return (
     <form
@@ -203,12 +280,16 @@ const AvailabilityEditor: React.FC<{
       onSubmit={(event) => {
         event.preventDefault();
         setTouched(true);
-        if (blocked || validation.command === null || unrepresentable) {
+        if (locked || !choiceStillOffered || validation.command === null || unrepresentable) {
           setZoneConversionError(unrepresentable ? unrepresentableMessage() : null);
           return;
         }
         setZoneConversionError(null);
-        onSave(choice, windowInput);
+        void onSave(windowInput).then((outcome) => {
+          if (outcome.status !== 'saved') {
+            window.setTimeout(() => failureRef.current?.focus(), 0);
+          }
+        });
       }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -217,8 +298,31 @@ const AvailabilityEditor: React.FC<{
         }
       }}
     >
+      {draft.failureMessage ? (
+        <p
+          ref={failureRef}
+          tabIndex={-1}
+          className="oe-reason-error"
+          role="alert"
+          data-availability-failure
+        >
+          {draft.failureMessage}
+        </p>
+      ) : null}
+      {!choiceStillOffered ? (
+        <p className="oe-inline-note oe-inline-note--warn" role="status">
+          The recorded state changed on the server, so this choice is no longer available. Your
+          unsaved changes are kept; cancel and reopen the editor to review the current recorded state.
+        </p>
+      ) : null}
+      {recordedConflict ? (
+        <p className="oe-inline-note oe-inline-note--warn" role="status">
+          The recorded availability changed on the server while you were editing. Your unsaved text is
+          kept and has not been rewritten; review the current recorded window shown above before saving.
+        </p>
+      ) : null}
       {choices.length > 1 ? (
-        <fieldset className="oe-seg-field">
+        <fieldset className="oe-seg-field" disabled={saving}>
           <legend className="oe-field-label">What did the lessor confirm?</legend>
           <div className="oe-seg-radios oe-seg-radios--stack">
             {choices.map((option) => (
@@ -228,7 +332,7 @@ const AvailabilityEditor: React.FC<{
                   name={`oe-avail-choice-${item.itemId}`}
                   value={option}
                   checked={choice === option}
-                  onChange={() => setChoice(option)}
+                  onChange={() => onChange({ choice: option, window: draftWindow, fieldProvenance })}
                 />
                 <span>{availabilityChoiceLabel(option)}</span>
               </label>
@@ -251,8 +355,9 @@ const AvailabilityEditor: React.FC<{
                 id={`oe-avail-${item.itemId}-start`}
                 className="oe-input"
                 type="datetime-local"
-                value={window.availabilityStartAt ?? ''}
-                onChange={(event) => setWindow((current) => ({ ...current, availabilityStartAt: event.target.value }))}
+                value={draftWindow.availabilityStartAt ?? ''}
+                onChange={(event) => markEdited('start', event.target.value)}
+                disabled={saving}
                 aria-invalid={Boolean(touched && errors.start)}
                 aria-describedby={describedBy('start')}
               />
@@ -264,8 +369,9 @@ const AvailabilityEditor: React.FC<{
                 id={`oe-avail-${item.itemId}-end`}
                 className="oe-input"
                 type="datetime-local"
-                value={window.availabilityEndAt ?? ''}
-                onChange={(event) => setWindow((current) => ({ ...current, availabilityEndAt: event.target.value }))}
+                value={draftWindow.availabilityEndAt ?? ''}
+                onChange={(event) => markEdited('end', event.target.value)}
+                disabled={saving}
                 aria-invalid={Boolean(touched && errors.end)}
                 aria-describedby={describedBy('end')}
               />
@@ -276,8 +382,9 @@ const AvailabilityEditor: React.FC<{
               <select
                 id={`oe-avail-${item.itemId}-zone`}
                 className="oe-input"
-                value={window.availabilityZoneId ?? ''}
-                onChange={(event) => setWindow((current) => ({ ...current, availabilityZoneId: event.target.value }))}
+                value={draftWindow.availabilityZoneId ?? ''}
+                onChange={(event) => changeZone(event.target.value)}
+                disabled={saving}
                 aria-invalid={Boolean(touched && errors.zone)}
                 aria-describedby={describedBy('zone')}
               >
@@ -292,13 +399,16 @@ const AvailabilityEditor: React.FC<{
               <select
                 id={`oe-avail-${item.itemId}-source`}
                 className="oe-input"
-                value={window.availabilitySource ?? ''}
-                onChange={(event) =>
-                  setWindow((current) => ({
-                    ...current,
+                value={draftWindow.availabilitySource ?? ''}
+                onChange={(event) => onChange({
+                  choice,
+                  window: {
+                    ...draftWindow,
                     availabilitySource: (event.target.value || null) as OperationsAvailabilitySource | null
-                  }))
-                }
+                  },
+                  fieldProvenance
+                })}
+                disabled={saving}
                 aria-invalid={Boolean(touched && errors.source)}
                 aria-describedby={describedBy('source')}
               >
@@ -337,9 +447,9 @@ const AvailabilityEditor: React.FC<{
         <button
           type="submit"
           className={`oe-btn oe-btn--md ${choice === 'unavailable' ? 'oe-btn--danger' : 'oe-btn--primary'}`}
-          disabled={blocked}
+          disabled={locked || !choiceStillOffered}
         >
-          {busyCommand === 'availability' ? 'Saving…' : choice === 'unavailable' ? 'Record unavailable' : 'Save availability'}
+          {saving ? 'Saving…' : choice === 'unavailable' ? 'Record unavailable' : 'Save availability'}
         </button>
       </div>
     </form>
@@ -426,8 +536,8 @@ const AddStop: React.FC<{
 
       {missingOrigin ? (
         <p className="oe-inline-note oe-inline-note--warn" role="alert">
-          A derived property must name one of this session’s linked requests as its origin, and this
-          session has no linked request on record yet.
+          A derived property must name one of this visit plan’s tenant visit requests as its origin,
+          and this visit plan has no tenant visit request on record yet.
         </p>
       ) : (
         <>
@@ -548,7 +658,7 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
   busyCommand,
   onReorder,
   onRemove,
-  onSaveAvailability,
+  availability,
   onAddStop,
   revealItemContact,
   contactContextKey,
@@ -557,7 +667,6 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
   const active = useMemo(() => activeSessionItems(session.items), [session.items]);
   const removed = useMemo(() => removedSessionItems(session.items), [session.items]);
   const [order, setOrder] = useState<number[]>(() => active.map((item) => item.itemId));
-  const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<number | null>(null);
   const [removalReason, setRemovalReason] = useState('');
   const [adding, setAdding] = useState(false);
@@ -571,9 +680,11 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
   const contactPermitted = sessionPermitsItemContact(session.status);
 
   // The authoritative item set changed (added, removed, refreshed, version moved): rebuild the order.
+  // The availability draft deliberately lives above this component, so this refresh cannot close the
+  // editor or discard what the OE typed; only its own explicit cancel/success/context invalidation
+  // may do that.
   useEffect(() => {
     setOrder(active.map((item) => item.itemId));
-    setEditingItemId(null);
     setConfirmRemoveId(null);
     setRemovalReason('');
   }, [active]);
@@ -630,7 +741,7 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
   return (
     <div className="oe-itin">
       <h3 id="oe-itin-title" ref={headingRef} tabIndex={-1} className="oe-h3">
-        {editable ? 'Manage the draft itinerary' : 'Itinerary'}
+        {editable ? 'Manage properties to visit' : 'Properties to visit'}
       </h3>
       <ol className="oe-items">
         {orderedItems.map((item, index) => {
@@ -643,11 +754,18 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
            */
           const canRevealContact = contactPermitted && item.removedAt === null;
           const canOpenAvailabilityEditor = editable && availabilityView !== 'unavailable';
+          const activeDraft = availability.draft?.itemId === item.itemId ? availability.draft : null;
           const showItemTools = canRevealContact || canOpenAvailabilityEditor;
           return (
             <li key={item.itemId} className="oe-item oe-item--rich">
               <span className="oe-item-order oe-num" aria-hidden="true">{index + 1}</span>
               <div className="oe-item-body">
+                <OperationsPropertyThumb
+                  imageUrl={item.coverImageUrl}
+                  title={item.title}
+                  listingId={item.listingId}
+                  listingStatus={item.listingStatus}
+                />
                 <div className="oe-item-top">
                   <p className="oe-item-title">
                     <span className="oe-sr">Stop {index + 1}: </span>
@@ -678,18 +796,18 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
 
                 <OperationsAvailabilitySummary item={item} />
 
-                {editable && editingItemId === item.itemId ? (
+                {editable && canOpenAvailabilityEditor && activeDraft ? (
                   <AvailabilityEditor
+                    key={activeDraft.editorGeneration}
                     session={session}
                     item={item}
+                    draft={activeDraft}
                     blocked={blocked}
                     busyCommand={busyCommand}
-                    onSave={(choice, window) => {
-                      setEditingItemId(null);
-                      onSaveAvailability(item.itemId, choice, window);
-                    }}
+                    onChange={(values) => availability.change(activeDraft.editorGeneration, values)}
+                    onSave={(window) => availability.save(activeDraft.editorGeneration, window)}
                     onCancel={() => {
-                      setEditingItemId(null);
+                      availability.discard(activeDraft.editorGeneration);
                       window.setTimeout(() => document.getElementById(`oe-avail-btn-${item.itemId}`)?.focus(), 0);
                     }}
                   />
@@ -697,12 +815,12 @@ export const OperationsDraftItinerary: React.FC<Props> = ({
 
                 {showItemTools ? (
                   <div className="oe-item-tools">
-                    {canOpenAvailabilityEditor && editingItemId !== item.itemId ? (
+                    {canOpenAvailabilityEditor && availability.draft?.itemId !== item.itemId ? (
                       <button
                         id={`oe-avail-btn-${item.itemId}`}
                         type="button"
                         className="oe-btn oe-btn--secondary oe-btn--sm"
-                        onClick={() => setEditingItemId(item.itemId)}
+                        onClick={() => availability.begin(item.itemId)}
                         disabled={blocked}
                       >
                         {availabilityView === 'confirmed-window'

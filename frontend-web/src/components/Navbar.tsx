@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   motion,
@@ -24,6 +24,7 @@ import { useNotification } from '../context/NotificationContext';
 import { shouldShowMyProperties, shouldShowListYourProperty } from '../utils/navigationPolicy';
 import { DraftAccessButton, DraftAccessState } from './DraftAccessButton';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
+import { isOperationsPath } from '../utils/operationsWorkspaceRoute';
 
 interface NavbarProps {
   user: UserProfile | null;
@@ -171,6 +172,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isScrolled, setIsScrolled] = useState(() => (typeof window !== 'undefined' ? window.scrollY > 40 : false));
   const { unreadCount, isDrawerOpen, setIsDrawerOpen } = useNotification();
   const prefersReducedMotion = useReducedMotion();
+  const profileAccountMenuId = `profile-account-menu-${useId().replace(/:/g, '')}`;
   const navigate = useNavigate();
   const location = useLocation();
   const isTenantLanding = role === 'TENANT' && location.pathname.replace(/\/+$/, '') === '/tenant';
@@ -182,6 +184,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isDraftHub = isLessorSurface && new URLSearchParams(location.search).get('view') === 'drafts';
   const isPropertySurface = role === 'TENANT' && /^\/property(?:\/|$)/.test(location.pathname);
   const isConsumerHeader = isTenantLanding || isLessorSurface || isPropertySurface;
+  const accountDisplayName = user?.fullName?.trim();
+  const accountMenuLabel = accountDisplayName ? `Profile menu for ${accountDisplayName}` : 'Account menu';
 
   // Keep one mounted header across identity changes and drop account overlays immediately.
   useEffect(() => {
@@ -202,7 +206,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     setMobileMenuOpen(false);
     onOpenOperations();
   };
-  const isOperationsSurface = location.pathname.replace(/\/+$/, '') === '/operations';
+  const isOperationsSurface = isOperationsPath(location.pathname);
   const workspaceContext = resolveWorkspaceContext(location.pathname, role);
   const logoDestination = resolveLogoDestination(workspaceContext);
 
@@ -463,8 +467,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                   whileHover={{ scale: 1.04 }}
                   whileTap={{ scale: 0.96 }}
                   onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
-                  aria-label={isConsumerHeader ? `Profile menu for ${user?.fullName || role}` : undefined}
-                  aria-expanded={isConsumerHeader ? profileDropdownOpen : undefined}
+                  aria-label={accountMenuLabel}
+                  aria-expanded={profileDropdownOpen}
+                  aria-controls={profileDropdownOpen ? profileAccountMenuId : undefined}
                   className={`flex min-h-11 min-w-11 items-center justify-center gap-2 ${isConsumerHeader ? 'rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300' : 'rounded-2xl'} border p-1.5 transition-all shadow-md ${
                     isConsumerHeader
                       ? 'border-0 bg-transparent text-[#61715d] shadow-none hover:bg-[#edf2ed]'
@@ -488,6 +493,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
                   {profileDropdownOpen && (
                     <motion.div
+                      id={profileAccountMenuId}
                       initial={{ opacity: 0, scale: 0.95, y: 8 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       transition={{ type: 'spring', stiffness: 450, damping: 28 }}

@@ -50,12 +50,17 @@ export const isOperationsSessionChangedError = (cause: unknown): boolean =>
 const TOKEN_KEY = 'pathome_auth_token';
 const USER_KEY = 'pathome_user';
 const ROLE_KEY = 'pathome_role';
-const INVALIDATING_EVENTS = ['pathome_auth_changed', 'pathome_session_expired'] as const;
+export type OperationsSessionInvalidationReason = 'auth-changed' | 'session-expired' | 'session-changed';
+
+const INVALIDATING_EVENTS: ReadonlyArray<[string, OperationsSessionInvalidationReason]> = [
+  ['pathome_auth_changed', 'auth-changed'],
+  ['pathome_session_expired', 'session-expired']
+];
 const INVALIDATING_STORAGE_KEYS = new Set([TOKEN_KEY, USER_KEY, ROLE_KEY]);
 
 let generation = 0;
 let domBound = false;
-const listeners = new Set<() => void>();
+const listeners = new Set<(reason: OperationsSessionInvalidationReason) => void>();
 
 const readItem = (key: string): string | null => {
   try {
@@ -78,12 +83,14 @@ const fingerprint = (value: string): string => {
 const bindDomEvents = (): void => {
   if (domBound || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
   domBound = true;
-  INVALIDATING_EVENTS.forEach((eventName) => {
-    window.addEventListener(eventName, () => invalidateOperationsSession());
+  INVALIDATING_EVENTS.forEach(([eventName, reason]) => {
+    window.addEventListener(eventName, () => invalidateOperationsSession(reason));
   });
   window.addEventListener('storage', (event: StorageEvent) => {
     // A cleared storage area means the session is gone; a session key change means it was replaced.
-    if (event.key === null || INVALIDATING_STORAGE_KEYS.has(event.key)) invalidateOperationsSession();
+    if (event.key === null || INVALIDATING_STORAGE_KEYS.has(event.key)) {
+      invalidateOperationsSession('session-changed');
+    }
   });
 };
 
@@ -141,11 +148,13 @@ export const isOperationsSessionActive = (session: OperationsSession | null | un
  * Invalidate every captured session. Pending work is cancelled and its responses are dropped, so a
  * revoked or replaced session can never re-populate the workspace.
  */
-export const invalidateOperationsSession = (): void => {
+export const invalidateOperationsSession = (
+  reason: OperationsSessionInvalidationReason = 'session-changed'
+): void => {
   generation += 1;
   listeners.forEach((listener) => {
     try {
-      listener();
+      listener(reason);
     } catch {
       // One faulty listener must not stop invalidation of the rest.
     }
@@ -156,7 +165,9 @@ export const invalidateOperationsSession = (): void => {
  * Notifies the caller whenever the signed-in identity changes or the session is invalidated, so it
  * can abort pending requests, clear protected data and re-verify authority from scratch.
  */
-export const subscribeOperationsSession = (listener: () => void): (() => void) => {
+export const subscribeOperationsSession = (
+  listener: (reason: OperationsSessionInvalidationReason) => void
+): (() => void) => {
   bindDomEvents();
   listeners.add(listener);
   return () => {

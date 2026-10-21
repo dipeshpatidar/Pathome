@@ -25,10 +25,10 @@ app:
 
 meta:
   webhook:
-    verify-token: ${META_VERIFY_TOKEN:PATHOME_META_VERIFY_TOKEN_2026}
-  graph:
-    api:
-      token: ${META_GRAPH_TOKEN:MOCK_META_GRAPH_API_TOKEN}
+    app-secret: ${META_APP_SECRET:}
+    verify-token: ${META_VERIFY_TOKEN:}
+    page-id: ${META_PAGE_ID:}
+    form-id: ${META_FORM_ID:}
 
 server:
   port: 8080
