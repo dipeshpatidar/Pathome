@@ -20,6 +20,26 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("select u from User u where u.id = :id")
     Optional<User> findLockedById(@Param("id") Long id);
 
+    /**
+     * Holds the actor row without blocking another guarded reader. This conflicts with the existing
+     * governance writers that take {@code FOR UPDATE} on the User row after their profile and grant
+     * guards, while preserving that established profile -> grant -> User lock order.
+     */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("select u from User u where u.id = :id")
+    Optional<User> findSharedById(@Param("id") Long id);
+
+    /**
+     * Fresh scalar capability read, deliberately independent of any managed User already present in
+     * the request persistence context. Availability eligibility follows persisted truth at the
+     * transactional checkpoint, not a possibly stale entity snapshot.
+     */
+    @Query(value = "select role from users where id = :id", nativeQuery = true)
+    Optional<String> findRoleValueById(@Param("id") Long id);
+
+    @Query(value = "select email from users where id = :id", nativeQuery = true)
+    Optional<String> findEmailValueById(@Param("id") Long id);
+
     @Modifying(flushAutomatically = true)
     @Query(value = "UPDATE users SET landlord_activated_at = :activatedAt, landlord_activated_by_user_id = :userId " +
             "WHERE id = :userId AND landlord_activated_at IS NULL " +

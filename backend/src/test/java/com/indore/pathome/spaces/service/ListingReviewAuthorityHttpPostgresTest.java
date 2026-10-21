@@ -328,7 +328,7 @@ class ListingReviewAuthorityHttpPostgresTest {
 
     @Test
     void theLegacyAdminAuthorityKeepsEveryOperationIncludingTheNonApprovedOnes() throws Exception {
-        Actor admin = actor("legacy", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("legacy");
         Locality locality = canonicalLocality("Indore");
         RentalDetails listing = submittedListing("legacy", admin.user(), locality);
         long listingId = listing.getId();
@@ -375,11 +375,11 @@ class ListingReviewAuthorityHttpPostgresTest {
         PropertyUploadDraft draft = reviewDraft("staff", reviewer.actor().user(), listingId, 0L);
 
         assertEquals(200, send("GET", QUEUE, reviewer.actor().token(), null).statusCode());
-        assertEquals(200, send("GET", REVISIONS, reviewer.actor().token(), null).statusCode());
+        assertEquals(403, send("GET", REVISIONS, reviewer.actor().token(), null).statusCode());
         JsonNode detail = body(send("GET", "/api/v1/admin/lessor-review/listings/" + listingId,
                 reviewer.actor().token(), null));
         assertEquals(listingId, detail.path("listingId").asLong());
-        assertEquals(200, send("GET", "/api/v1/admin/lessor-review/revisions/" + draft.getDraftId(),
+        assertEquals(403, send("GET", "/api/v1/admin/lessor-review/revisions/" + draft.getDraftId(),
                 reviewer.actor().token(), null).statusCode());
 
         JsonNode started = body(send("POST", startPath(listingId), reviewer.actor().token(), null));
@@ -568,6 +568,7 @@ class ListingReviewAuthorityHttpPostgresTest {
         Actor provisioner = globalStaffAdmin("forged-provisioner");
         StaffReviewer reviewer = grantedStaffReviewer(provisioner, "forged");
         Actor tenant = actor("forged-caller", Role.ROLE_TENANT, null, null);
+        Actor admin = legacyAdmin("forged-borrowed");
         Locality locality = canonicalLocality("Indore");
         RentalDetails listing = submittedListing("forged", reviewer.actor().user(), locality);
         long listingId = listing.getId();
@@ -580,9 +581,9 @@ class ListingReviewAuthorityHttpPostgresTest {
         // it would rather be holding: one it wrote itself, and one naming a real staff administrator whose
         // grant is live. What is actually authenticated for this call is an ordinary tenant.
         Reviewer borrowedAdministrator;
-        Authentication selfBuiltAdministrator = credential("ROLE_ADMIN", null);
+        Authentication selfBuiltAdministrator = actorCredential(admin);
         Authentication borrowedLiveStaff = credential("ROLE_TENANT", reviewer.actor().user().getId());
-        installPrincipal(credential("ROLE_ADMIN", null));
+        installPrincipal(actorCredential(admin));
         borrowedAdministrator = reviewAuthority.require(SecurityContextHolder.getContext().getAuthentication());
         assertTrue(borrowedAdministrator.legacyAdmin());
         installPrincipal(credential("ROLE_TENANT", tenant.user().getId()));
@@ -683,7 +684,7 @@ class ListingReviewAuthorityHttpPostgresTest {
     void aReviewVerdictIsRefusedInAnotherRequestForTheSameStaffUserAndBetweenTwoAdministrators() throws Exception {
         Actor provisioner = globalStaffAdmin("replay-provisioner");
         StaffReviewer reviewer = grantedStaffReviewer(provisioner, "replay");
-        Actor admin = actor("replay-admin", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("replay-admin");
         Locality locality = canonicalLocality("Indore");
 
         RentalDetails staffListing = submittedListing("replay-staff", reviewer.actor().user(), locality);
@@ -703,7 +704,7 @@ class ListingReviewAuthorityHttpPostgresTest {
         // The staff administrator's verdict, and the first administrator's, each taken in its own request.
         RequestVerdict staffRequest = decidedInEarlierRequest(
                 credential("ROLE_TENANT", reviewer.actor().user().getId()));
-        RequestVerdict administratorRequest = decidedInEarlierRequest(credential("ROLE_ADMIN", null));
+        RequestVerdict administratorRequest = decidedInEarlierRequest(actorCredential(admin));
         assertFalse(staffRequest.verdict().legacyAdmin());
         assertTrue(administratorRequest.verdict().legacyAdmin());
 
@@ -723,7 +724,8 @@ class ListingReviewAuthorityHttpPostgresTest {
 
         // 2. A second administrator, whose credential carries exactly the legacy ROLE_ADMIN authority the
         //    legacy rule consults - and still not the request the verdict was decided for.
-        Authentication secondAdminRequest = credential("ROLE_ADMIN", null);
+        Actor secondAdmin = legacyAdmin("replay-second-admin");
+        Authentication secondAdminRequest = actorCredential(secondAdmin);
         installPrincipal(secondAdminRequest);
         try {
             assertNotSame(administratorRequest.credential(), secondAdminRequest);
@@ -756,7 +758,7 @@ class ListingReviewAuthorityHttpPostgresTest {
      */
     @Test
     void everyReviewServiceEntryPointRefusesAVerdictFromAnEarlierRequest() throws Exception {
-        Actor admin = actor("entrypoint-admin", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("entrypoint-admin");
         Actor owner = actor("entrypoint-owner", Role.ROLE_TENANT, null, null);
         Locality locality = canonicalLocality("Indore");
         RentalDetails listing = submittedListing("entrypoint", owner.user(), locality);
@@ -764,12 +766,12 @@ class ListingReviewAuthorityHttpPostgresTest {
         long listingVersionBefore = listingVersion(listingId);
         PropertyUploadDraft draft = reviewDraft("entrypoint", owner.user(), listingId, listingVersionBefore);
 
-        Reviewer staleVerdict = decidedInEarlierRequest(credential("ROLE_ADMIN", null)).verdict();
+        Reviewer staleVerdict = decidedInEarlierRequest(actorCredential(admin)).verdict();
         assertTrue(staleVerdict.legacyAdmin());
 
         // An administrator is authenticated for this call too - the verdict is refused for belonging to
         // another request, not for the authority behind it having lapsed.
-        installPrincipal(credential("ROLE_ADMIN", null));
+        installPrincipal(actorCredential(admin));
         try {
             assertThrows(AccessDeniedException.class, () -> reviews.listings(0, staleVerdict));
             assertThrows(AccessDeniedException.class, () -> reviews.revisions(0, staleVerdict));
@@ -1087,7 +1089,7 @@ class ListingReviewAuthorityHttpPostgresTest {
     void everyReviewMutationWritesOneAttributableImmutableAuditEvent() throws Exception {
         Actor provisioner = globalStaffAdmin("audit-provisioner");
         StaffReviewer reviewer = grantedStaffReviewer(provisioner, "audit");
-        Actor admin = actor("audit-admin", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("audit-admin");
         Locality locality = canonicalLocality("Indore");
         Instant windowStart = Instant.now().minusSeconds(5);
 
@@ -1226,7 +1228,7 @@ class ListingReviewAuthorityHttpPostgresTest {
     void aRefusedOrConflictedReviewActionWritesNoAuditRow() throws Exception {
         Actor provisioner = globalStaffAdmin("noaudit-provisioner");
         StaffReviewer reviewer = grantedStaffReviewer(provisioner, "noaudit");
-        Actor admin = actor("noaudit-admin", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("noaudit-admin");
         Locality locality = canonicalLocality("Indore");
         RentalDetails listing = submittedListing("noaudit", reviewer.actor().user(), locality);
         long listingId = listing.getId();
@@ -1442,7 +1444,7 @@ class ListingReviewAuthorityHttpPostgresTest {
     @Test
     void heldReviewLocksReturnSanitized503AndRollBackEveryMutationFamily() throws Exception {
         Actor reviewer = globalStaffAdmin("review-timeout");
-        Actor admin = actor("legacy-timeout", Role.ROLE_ADMIN, null, null);
+        Actor admin = legacyAdmin("legacy-timeout");
         Locality locality = canonicalLocality("Indore");
         RentalDetails listing = submittedListing("review-timeout", reviewer.user(), locality);
         long id = listing.getId();
@@ -1683,6 +1685,26 @@ class ListingReviewAuthorityHttpPostgresTest {
                 StaffScopeType.GLOBAL, null, null, Instant.now().minusSeconds(60), null, null, Instant.now(),
                 "TEST_P4", StaffGrantProvisioningSource.ADMIN_API));
         return admin;
+    }
+
+    /** A genuine legacy uploader/reviewer: current ADMIN role, active profile and global grant. */
+    private Actor legacyAdmin(String label) {
+        Actor admin = actor(label, Role.ROLE_ADMIN, "LEGACY_ADMIN", true);
+        grantRows.saveAndFlush(new StaffAccessGrant(admin.user(), StaffCapability.STAFF_ADMIN,
+                StaffScopeType.GLOBAL, null, null, Instant.now().minusSeconds(60), null, null, Instant.now(),
+                "TEST_P1", StaffGrantProvisioningSource.ADMIN_API));
+        return admin;
+    }
+
+    private static Authentication actorCredential(Actor actor) {
+        return credential(actor.user().getEmail(), "ROLE_ADMIN", actor.user().getId());
+    }
+
+    private static Authentication credential(String username, String authority, Long userId) {
+        UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(
+                username, null, List.of(new SimpleGrantedAuthority(authority)));
+        token.setDetails(new PathomeAuthenticationDetails(new MockHttpServletRequest(), userId));
+        return token;
     }
 
     /** A global Staff Admin granted through the genuine staff-administration API. */

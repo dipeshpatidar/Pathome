@@ -4,6 +4,12 @@ import { ApiRequestError, createApiRequestError, notifySessionExpired } from './
 import { prepareMediaForUpload } from '../utils/imageOptimizer';
 import { parseSecurityDeposit } from '../utils/discoveryCardData';
 import { mapRentalSuggestion, RentalSearchFilters, RentalSuggestion, SuggestionRequestError } from '../utils/rentalSearch';
+import {
+  UploaderSession,
+  assertUploaderSessionActive,
+  isUploaderSessionActive,
+  resolveUploaderSession
+} from '../utils/uploaderSession';
 
 const API_BASE_URL = `${API_ROOT_URL}/properties`;
 const MEDIA_UPLOAD_ATTEMPTS = 3;
@@ -55,13 +61,8 @@ export const getSearchSessionId = (): string => {
   }
 };
 
-const getAdminAuthorizationHeader = (): Record<string, string> => {
-  const token = localStorage.getItem('pathome_auth_token');
-  if (!token) {
-    notifySessionExpired();
-    throw new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
-  }
-  return { Authorization: `Bearer ${token}` };
+const getAdminAuthorizationHeader = (session: UploaderSession): Record<string, string> => {
+  return { Authorization: `Bearer ${session.token}` };
 };
 
 const wait = (durationMs: number): Promise<void> =>
@@ -187,7 +188,11 @@ export const createStableUploadRequestId = (
   return `media-${propertyId}-${Date.now()}`;
 };
 
-const parseXhrError = (xhr: XMLHttpRequest, fallback: string): ApiRequestError => {
+const parseXhrError = (
+  xhr: XMLHttpRequest,
+  fallback: string,
+  requestToken: string
+): ApiRequestError => {
   let serverMessage = '';
   try {
     const payload = JSON.parse(xhr.responseText || '{}') as { message?: string };
@@ -197,7 +202,7 @@ const parseXhrError = (xhr: XMLHttpRequest, fallback: string): ApiRequestError =
   }
 
   if (xhr.status === 401) {
-    notifySessionExpired();
+    notifySessionExpired(requestToken);
     return new ApiRequestError('Your session has ended. Please sign in again to continue.', 401);
   }
   if (xhr.status === 403) return new ApiRequestError('You do not have permission to upload property media.', 403);
@@ -218,10 +223,15 @@ const uploadFormData = <T>(
   formData: FormData,
   attempt: number,
   options: MediaUploadOptions,
-  fallbackMessage: string
+  fallbackMessage: string,
+  session: UploaderSession
 ): Promise<T> => new Promise((resolve, reject) => {
   if (options.signal?.aborted) {
     reject(new ApiRequestError('Upload was cancelled because the network disconnected.', 0));
+    return;
+  }
+  if (!isUploaderSessionActive(session)) {
+    reject(new ApiRequestError('The signed-in session changed before this media upload started.', 401));
     return;
   }
 
@@ -248,7 +258,7 @@ const uploadFormData = <T>(
 
   xhr.open('POST', url);
   xhr.timeout = 10 * 60 * 1000;
-  Object.entries(getAdminAuthorizationHeader()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+  Object.entries(getAdminAuthorizationHeader(session)).forEach(([name, value]) => xhr.setRequestHeader(name, value));
 
   xhr.upload.onprogress = (event) => {
     if (!event.lengthComputable || settled) return;
@@ -263,13 +273,19 @@ const uploadFormData = <T>(
     cleanup();
     if (xhr.status >= 200 && xhr.status < 300) {
       try {
-        resolve(JSON.parse(xhr.responseText) as T);
+        const result = JSON.parse(xhr.responseText) as T;
+        assertUploaderSessionActive(session);
+        resolve(result);
       } catch {
-        reject(new ApiRequestError('The media was uploaded, but the server response could not be read.', xhr.status));
+        if (!isUploaderSessionActive(session)) {
+          reject(new ApiRequestError('The signed-in session changed while media was uploading.', 401));
+        } else {
+          reject(new ApiRequestError('The media was uploaded, but the server response could not be read.', xhr.status));
+        }
       }
       return;
     }
-    reject(parseXhrError(xhr, fallbackMessage));
+    reject(parseXhrError(xhr, fallbackMessage, session.token));
   };
   xhr.onerror = () => {
     cleanup();
@@ -286,15 +302,20 @@ const uploadWithRetry = async <T>(
   url: string,
   createFormData: () => FormData,
   options: MediaUploadOptions,
-  fallbackMessage: string
+  fallbackMessage: string,
+  session: UploaderSession
 ): Promise<T> => {
   let lastError: ApiRequestError | null = null;
   for (let attempt = 1; attempt <= MEDIA_UPLOAD_ATTEMPTS; attempt += 1) {
     if (options.signal?.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
       throw new ApiRequestError('Upload was interrupted because the network disconnected.', 0);
     }
+    if (!isUploaderSessionActive(session)) {
+      throw new ApiRequestError('The signed-in session changed while the media upload was pending.', 401);
+    }
     try {
-      const result = await uploadFormData<T>(url, createFormData(), attempt, options, fallbackMessage);
+      const result = await uploadFormData<T>(
+        url, createFormData(), attempt, options, fallbackMessage, session);
       options.onProgress?.({ stage: 'complete', percent: 100, attempt, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
       return result;
     } catch (error) {
@@ -302,7 +323,8 @@ const uploadWithRetry = async <T>(
       if (options.signal?.aborted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
         break;
       }
-      if (attempt === MEDIA_UPLOAD_ATTEMPTS || !shouldRetryUpload(lastError)) break;
+      if (!isUploaderSessionActive(session)
+          || attempt === MEDIA_UPLOAD_ATTEMPTS || !shouldRetryUpload(lastError)) break;
       options.onProgress?.({
         stage: 'retrying',
         percent: 0,
@@ -444,6 +466,10 @@ export const propertyService = {
     preferredAreas?: string;
     moveInTiming?: string;
     preferredVisitTiming: string;
+    availabilityStartAt?: string | null;
+    availabilityEndAt?: string | null;
+    availabilityZoneId?: string | null;
+    preferredAt?: string | null;
     note?: string;
   }): Promise<{ requestId: number; propertyId: number; status: string; message: string; receivedAt: string; created: boolean }> {
     const token = localStorage.getItem('pathome_auth_token');
@@ -465,22 +491,26 @@ export const propertyService = {
   /**
    * Admin Creates Property Directly in PostgreSQL Database
    */
-  async createProperty(payload: any): Promise<any> {
+  async createProperty(payload: any, capturedSession?: UploaderSession | null): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(API_BASE_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       },
       body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to create this property. Please try again.');
+      throw await createApiRequestError(
+        response, 'Unable to create this property. Please try again.', false, session.token);
     }
 
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
   /**
@@ -499,10 +529,13 @@ export const propertyService = {
       vastuFacing?: string;
       draftMediaId?: string;
     },
-    options: MediaUploadOptions = {}
+    options: MediaUploadOptions = {},
+    capturedSession?: UploaderSession | null
   ): Promise<PropertyMediaAsset> {
+    const session = resolveUploaderSession(capturedSession);
     options.onProgress?.({ stage: 'preparing', percent: 0, attempt: 1, maxAttempts: MEDIA_UPLOAD_ATTEMPTS });
     const preparedFile = await prepareMediaForUpload(file);
+    assertUploaderSessionActive(session);
     const draftMediaId = metadata.draftMediaId || (file as any)?.draftMediaId || (preparedFile as any)?.draftMediaId;
     const uploadRequestId = createStableUploadRequestId(propertyId, preparedFile, draftMediaId);
 
@@ -524,20 +557,30 @@ export const propertyService = {
       `${API_BASE_URL}/${propertyId}/tagged-media`,
       createFormData,
       options,
-      'Unable to upload this media file. Please try again.'
+      'Unable to upload this media file. Please try again.',
+      session
     );
   },
 
   /**
    * Fetch Rich Tagged Media Assets for a Property
    */
-  async fetchTaggedMedia(propertyId: number): Promise<PropertyMediaAsset[]> {
+  async fetchTaggedMedia(
+    propertyId: number,
+    capturedSession?: UploaderSession | null
+  ): Promise<PropertyMediaAsset[]> {
+    const session = resolveUploaderSession(capturedSession);
     try {
       const response = await fetch(`${API_BASE_URL}/${propertyId}/tagged-media`, {
-        headers: { 'Accept': 'application/json', ...getAdminAuthorizationHeader() }
+        headers: { 'Accept': 'application/json', ...getAdminAuthorizationHeader(session) }
       });
-      if (!response.ok) throw await createApiRequestError(response, 'Unable to load saved property media.');
-      return await response.json();
+      if (!response.ok) {
+        throw await createApiRequestError(
+          response, 'Unable to load saved property media.', false, session.token);
+      }
+      const result = await response.json();
+      assertUploaderSessionActive(session);
+      return result;
     } catch (err) {
       console.warn('Failed to fetch tagged media:', err);
       throw err;
@@ -550,8 +593,10 @@ export const propertyService = {
   async uploadPhotosToCloudinary(
     propertyId: number,
     files: File[],
-    options: MediaUploadOptions = {}
+    options: MediaUploadOptions = {},
+    capturedSession?: UploaderSession | null
   ): Promise<string[]> {
+    const session = resolveUploaderSession(capturedSession);
     const urls: string[] = [];
     for (let index = 0; index < files.length; index += 1) {
       const asset = await this.uploadTaggedMedia(propertyId, files[index], {
@@ -562,8 +607,10 @@ export const propertyService = {
         onProgress: (progress) => options.onProgress?.({
           ...progress,
           percent: Math.round(((index + (progress.percent / 100)) / files.length) * 100)
-        })
-      });
+        }),
+        signal: options.signal
+      }, session);
+      assertUploaderSessionActive(session);
       urls.push(asset.mediaUrl);
     }
     return urls;
@@ -575,146 +622,201 @@ export const propertyService = {
   async uploadVideoToCloudinary(
     propertyId: number,
     videoFile: File,
-    options: MediaUploadOptions = {}
+    options: MediaUploadOptions = {},
+    capturedSession?: UploaderSession | null
   ): Promise<string> {
+    const session = resolveUploaderSession(capturedSession);
     const asset = await this.uploadTaggedMedia(propertyId, videoFile, {
       roomTag: 'GENERAL',
       mediaType: 'VIDEO_WALKTHROUGH'
-    }, options);
+    }, options, session);
+    assertUploaderSessionActive(session);
     return asset.mediaUrl;
   },
 
   /**
    * Calls Spring Boot backend REST API to produce a read-only, reviewable parsing result.
    */
-  async parsePropertyPrompt(prompt: string, source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED'): Promise<any> {
+  async parsePropertyPrompt(
+    prompt: string,
+    source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED',
+    capturedSession?: UploaderSession | null
+  ): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(`${API_BASE_URL}/parse-prompt`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       },
       body: JSON.stringify({ prompt, source })
     });
 
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to read the property details. Please try again.');
+      throw await createApiRequestError(
+        response, 'Unable to read the property details. Please try again.', false, session.token);
     }
 
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
   /**
    * Persists verified ParsedPropertyDTO to PostgreSQL database listings & rental_details tables
    */
-  async createPropertyFromParsed(dto: any): Promise<any> {
+  async createPropertyFromParsed(dto: any, capturedSession?: UploaderSession | null): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(`${API_BASE_URL}/create-from-parsed`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       },
       body: JSON.stringify(dto)
     });
 
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to publish this property. Please try again.');
+      throw await createApiRequestError(
+        response, 'Unable to publish this property. Please try again.', false, session.token);
     }
 
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
   /**
    * High-Performance Multi-Prompt & Voice Batch Parser API
    */
-  async parseBatchPrompts(prompts: string, source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED'): Promise<any[]> {
+  async parseBatchPrompts(
+    prompts: string,
+    source: 'TYPED' | 'DICTATED' | 'MIXED' = 'TYPED',
+    capturedSession?: UploaderSession | null
+  ): Promise<any[]> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(`${API_BASE_URL}/parse-batch`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       },
       body: JSON.stringify({ prompts, source })
     });
 
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to read the property details. Please try again.');
+      throw await createApiRequestError(
+        response, 'Unable to read the property details. Please try again.', false, session.token);
     }
 
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
   /**
    * Batch Persist Verified Property Listings to PostgreSQL
    */
-  async createBatchProperties(listings: any[], draftId?: string): Promise<any> {
+  async createBatchProperties(
+    listings: any[],
+    draftId?: string,
+    capturedSession?: UploaderSession | null
+  ): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(`${API_BASE_URL}/create-batch`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       },
       body: JSON.stringify(draftId ? { draftId, listings } : { listings })
     });
 
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to publish the selected properties. Please try again.');
+      throw await createApiRequestError(
+        response, 'Unable to publish the selected properties. Please try again.', false, session.token);
     }
 
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
-  async getParserLearningStats(): Promise<any> {
+  async getParserLearningStats(capturedSession?: UploaderSession | null): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(`${API_ROOT_URL}/parser-learning/stats`, {
       headers: {
         'Accept': 'application/json',
-        ...getAdminAuthorizationHeader()
+        ...getAdminAuthorizationHeader(session)
       }
     });
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to load the learning review summary.');
+      throw await createApiRequestError(
+        response, 'Unable to load the learning review summary.', false, session.token);
     }
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
-  async getPendingParserLearningExamples(page = 0, size = 50): Promise<any> {
+  async getPendingParserLearningExamples(
+    page = 0,
+    size = 50,
+    capturedSession?: UploaderSession | null
+  ): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(
       `${API_ROOT_URL}/parser-learning/examples/pending?page=${page}&size=${size}`,
       {
         headers: {
           'Accept': 'application/json',
-          ...getAdminAuthorizationHeader()
+          ...getAdminAuthorizationHeader(session)
         }
       }
     );
     if (!response.ok) {
-      throw await createApiRequestError(response, 'Unable to load examples awaiting learning review.');
+      throw await createApiRequestError(
+        response, 'Unable to load examples awaiting learning review.', false, session.token);
     }
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
-  async approveParserLearningExample(id: string): Promise<any> {
+  async approveParserLearningExample(
+    id: string,
+    capturedSession?: UploaderSession | null
+  ): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(
       `${API_ROOT_URL}/parser-learning/examples/${encodeURIComponent(id)}/approve`,
       {
         method: 'POST',
         headers: {
           'Accept': 'application/json',
-          ...getAdminAuthorizationHeader()
+          ...getAdminAuthorizationHeader(session)
         }
       }
     );
     if (!response.ok) {
-      throw await createApiRequestError(response, 'This example could not be approved for learning.');
+      throw await createApiRequestError(
+        response, 'This example could not be approved for learning.', false, session.token);
     }
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   },
 
-  async rejectParserLearningExample(id: string, reason: string): Promise<any> {
+  async rejectParserLearningExample(
+    id: string,
+    reason: string,
+    capturedSession?: UploaderSession | null
+  ): Promise<any> {
+    const session = resolveUploaderSession(capturedSession);
     const response = await fetch(
       `${API_ROOT_URL}/parser-learning/examples/${encodeURIComponent(id)}/reject`,
       {
@@ -722,14 +824,17 @@ export const propertyService = {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          ...getAdminAuthorizationHeader()
+          ...getAdminAuthorizationHeader(session)
         },
         body: JSON.stringify({ reason })
       }
     );
     if (!response.ok) {
-      throw await createApiRequestError(response, 'This example could not be excluded from learning.');
+      throw await createApiRequestError(
+        response, 'This example could not be excluded from learning.', false, session.token);
     }
-    return await response.json();
+    const result = await response.json();
+    assertUploaderSessionActive(session);
+    return result;
   }
 };

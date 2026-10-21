@@ -22,6 +22,7 @@ import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
@@ -37,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -124,6 +126,7 @@ public class PropertyController {
     private final MediaStagingService mediaStagingService;
     private final UserRepository userRepository;
     private final PropertyVisitRequestRepository propertyVisitRequestRepository;
+    private final BackOfficePropertyAuthority backOfficePropertyAuthority;
 
     @Autowired
     private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
@@ -160,7 +163,8 @@ public class PropertyController {
             BatchPropertyPublishingService batchPropertyPublishingService,
             @Qualifier("mediaStagingService") MediaStagingService mediaStagingService,
             UserRepository userRepository,
-            PropertyVisitRequestRepository propertyVisitRequestRepository) {
+            PropertyVisitRequestRepository propertyVisitRequestRepository,
+            BackOfficePropertyAuthority backOfficePropertyAuthority) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
         this.rentalLocationResolver = new RentalLocationResolver(listingRepository);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
@@ -176,23 +180,8 @@ public class PropertyController {
         this.userRepository = Objects.requireNonNull(userRepository, "UserRepository must not be null");
         this.propertyVisitRequestRepository = Objects.requireNonNull(
                 propertyVisitRequestRepository, "PropertyVisitRequestRepository must not be null");
-    }
-
-    public PropertyController(
-            ListingRepository listingRepository,
-            PropertyMediaAssetRepository mediaAssetRepository,
-            CloudinaryService cloudinaryService,
-            FailedUploadService failedUploadService,
-            PropertyParserService propertyParserService,
-            ParserLearningService parserLearningService,
-            ParserLearningCaptureService parserLearningCaptureService,
-            BatchPropertyPublishingService batchPropertyPublishingService,
-            UserRepository userRepository,
-            PropertyVisitRequestRepository propertyVisitRequestRepository) {
-        this(listingRepository, mediaAssetRepository, cloudinaryService, failedUploadService,
-                propertyParserService, parserLearningService, parserLearningCaptureService,
-                batchPropertyPublishingService, failedUploadService.getMediaStagingService(), userRepository,
-                propertyVisitRequestRepository);
+        this.backOfficePropertyAuthority = Objects.requireNonNull(
+                backOfficePropertyAuthority, "BackOfficePropertyAuthority must not be null");
     }
 
     private RentalLocationResolver getRentalLocationResolver() {
@@ -690,7 +679,12 @@ public class PropertyController {
      */
     @GetMapping("/{id}/tagged-media")
     public ResponseEntity<List<PropertyMediaAsset>> getTaggedMediaAssets(@PathVariable Long id) {
-        return ResponseEntity.ok(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(id));
+        Listing listing = listingRepository.findById(id)
+                .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("Property not found"));
+        backOfficePropertyAuthority.requireUploaderMedia(listing);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(id));
     }
 
     /**
@@ -722,6 +716,7 @@ public class PropertyController {
         if (listing == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Property listing not found");
         }
+        backOfficePropertyAuthority.requireUploaderMedia(listing);
         RoomTag roomTag = parseRoomTag(roomTagStr);
         MediaType mediaType = parseMediaType(mediaTypeStr);
         String normalizedUploadRequestId = normalizeUploadRequestId(uploadRequestId);
@@ -731,6 +726,7 @@ public class PropertyController {
             Optional<PropertyMediaAsset> existingAsset = mediaAssetRepository
                     .findByListingIdAndUploadRequestId(id, normalizedUploadRequestId);
             if (existingAsset.isPresent()) {
+                backOfficePropertyAuthority.requireUploaderMedia(listing);
                 // Also resolve any lingering failure record for this idempotency key
                 failedUploadService.findFailureIdByUploadRequestId(normalizedUploadRequestId)
                         .ifPresent(fid -> failedUploadService.recordResolution(fid, existingAsset.get().getMediaUrl()));
@@ -742,6 +738,9 @@ public class PropertyController {
         if (normalizedUploadRequestId != null && mediaUploadClaimService != null) {
             com.indore.pathome.spaces.service.MediaUploadClaimService.ClaimResult claimResult =
                     mediaUploadClaimService.acquireOrWait(id, normalizedUploadRequestId);
+            listing = listingRepository.findById(id)
+                    .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("Property not found"));
+            backOfficePropertyAuthority.requireUploaderMedia(listing);
             if (claimResult.isAlreadyComplete()) {
                 PropertyMediaAsset asset = claimResult.getExistingAsset();
                 failedUploadService.findFailureIdByUploadRequestId(normalizedUploadRequestId)
@@ -841,18 +840,28 @@ public class PropertyController {
         String publicId = uploadResult.publicId();
 
         try {
+            // The provider transfer is outside a database transaction. Recheck current authority at
+            // the actual attachment boundary, inside the terminal handler that closes the claim.
+            backOfficePropertyAuthority.requireUploaderMedia(listing);
             PropertyMediaAsset savedAsset;
             try {
-                savedAsset = saveMediaAsset(
-                        id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
-                        sector, priceTag, vastuFacing, listing, normalizedUploadRequestId);
-                updateListingGallery(listing, cdnUrl);
+                savedAsset = backOfficePropertyAuthority.withListingMutation(
+                        BackOfficePropertyAuthority.Action.UPLOADER_MEDIA, id, lockedListing -> {
+                            PropertyMediaAsset asset = saveMediaAsset(
+                                    id, cdnUrl, mediaType, roomTag, caption, isPrimaryCover,
+                                    sector, priceTag, vastuFacing, lockedListing, normalizedUploadRequestId);
+                            updateListingGallery(lockedListing, cdnUrl);
+                            return asset;
+                        });
+            } catch (AccessDeniedException denied) {
+                throw denied;
             } catch (Exception dbEx) {
                 // Check if asset was already saved by concurrent request race
                 Optional<PropertyMediaAsset> raceAsset = (normalizedUploadRequestId != null)
                         ? mediaAssetRepository.findByListingIdAndUploadRequestId(id, normalizedUploadRequestId)
                         : Optional.empty();
                 if (raceAsset.isPresent()) {
+                    backOfficePropertyAuthority.requireUploaderMedia(listing);
                     savedAsset = raceAsset.get();
                 } else {
                     throw dbEx;
@@ -869,6 +878,11 @@ public class PropertyController {
                         .ifPresent(fid -> failedUploadService.recordResolution(fid, cdnUrl));
             }
             return ResponseEntity.status(HttpStatus.CREATED).body(savedAsset);
+        } catch (AccessDeniedException denied) {
+            if (claimContext != null && mediaUploadClaimService != null) {
+                mediaUploadClaimService.markFailed(claimContext, "Authorization denied");
+            }
+            throw denied;
         } catch (Exception dbEx) {
             if (claimContext != null && mediaUploadClaimService != null) {
                 mediaUploadClaimService.markFailed(claimContext, "Database persistence failed");
@@ -909,6 +923,8 @@ public class PropertyController {
     @PostMapping
     @Transactional
     public ResponseEntity<Listing> createProperty(@RequestBody Map<String, Object> body) {
+        backOfficePropertyAuthority.requireForMutation(
+                BackOfficePropertyAuthority.Action.MANUAL_PROPERTY, null);
         Objects.requireNonNull(body, "Property payload must not be null");
 
         String ownerPhone = readString(body, "ownerPhoneNumber");
@@ -1027,8 +1043,8 @@ public class PropertyController {
         }
 
         Listing listing = listingOpt.get();
+        backOfficePropertyAuthority.requireUploaderMedia(listing);
         List<String> uploadedUrls = processPhotoUploads(id, files, listing);
-        updateListingGalleryList(listing, uploadedUrls);
 
         return ResponseEntity.ok(Map.of(
                 "message", "Photos uploaded to Cloudinary successfully",
@@ -1051,16 +1067,20 @@ public class PropertyController {
         }
 
         Listing listing = listingOpt.get();
+        backOfficePropertyAuthority.requireUploaderMedia(listing);
         String videoUrl = cloudinaryService.uploadVideo(file);
-
-        PropertyMediaAsset asset = new PropertyMediaAsset(id, videoUrl, MediaType.VIDEO_WALKTHROUGH, RoomTag.GENERAL, "Video walkthrough");
-        asset.setSector(listing.getSector());
-        asset.setCity(listing.getCity());
-        asset.setPriceTag(monthlyRentPriceTag(listing));
-        asset.setVastuFacing(listing.getVastuFacing());
-        mediaAssetRepository.save(asset);
-
-        updateListingGallery(listing, videoUrl);
+        backOfficePropertyAuthority.withListingMutation(
+                BackOfficePropertyAuthority.Action.UPLOADER_MEDIA, id, lockedListing -> {
+                    PropertyMediaAsset asset = new PropertyMediaAsset(id, videoUrl,
+                            MediaType.VIDEO_WALKTHROUGH, RoomTag.GENERAL, "Video walkthrough");
+                    asset.setSector(lockedListing.getSector());
+                    asset.setCity(lockedListing.getCity());
+                    asset.setPriceTag(monthlyRentPriceTag(lockedListing));
+                    asset.setVastuFacing(lockedListing.getVastuFacing());
+                    mediaAssetRepository.save(asset);
+                    updateListingGallery(lockedListing, videoUrl);
+                    return asset;
+                });
 
         return ResponseEntity.ok(Map.of(
                 "message", "Video walkthrough uploaded to Cloudinary successfully",
@@ -1074,11 +1094,16 @@ public class PropertyController {
      */
     @PostMapping("/parse-prompt")
     public ResponseEntity<ParsedPropertyDTO> parseNaturalLanguagePrompt(@RequestBody Map<String, String> request) {
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.SINGLE_PARSE);
         if (request == null || !request.containsKey("prompt")) {
             return ResponseEntity.badRequest().build();
         }
         ParsedPropertyDTO result = propertyParserService.parse(request.get("prompt"));
-        quarantineParserResults(List.of(result), ParserInputSource.from(request.get("source")));
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.SINGLE_PARSE);
+        backOfficePropertyAuthority.withMutationEvidence(
+                BackOfficePropertyAuthority.Action.SINGLE_PARSE,
+                () -> quarantineParserResults(List.of(result), ParserInputSource.from(request.get("source"))));
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.SINGLE_PARSE);
         return ResponseEntity.ok(result);
     }
 
@@ -1091,46 +1116,44 @@ public class PropertyController {
         Objects.requireNonNull(dto, "ParsedPropertyDTO must not be null");
 
         String draftId = dto.getDraftId() != null && !dto.getDraftId().isBlank() ? dto.getDraftId().trim() : null;
+        BackOfficePropertyAuthority.Actor actor = backOfficePropertyAuthority.requireForMutation(
+                BackOfficePropertyAuthority.Action.SINGLE_CREATE, null);
 
-        // 1. Authoritative DB Idempotency Check: if a listing already exists for this origin draft, return it immediately
+        // 1. Resolve and lock the caller's draft before any replay lookup. A foreign/missing draft
+        // returns the same private 404 shape and never discloses listing metadata.
+        if (draftId != null) {
+            if (draftRepository == null) {
+                throw new jakarta.persistence.EntityNotFoundException("Draft not found");
+            }
+            Optional<PropertyUploadDraft> draftOpt = draftRepository.findByDraftIdForUpdate(draftId);
+            PropertyUploadDraft draft = draftOpt
+                    .filter(row -> actor.adminKey().equals(normalizeOwnerKey(row.getAdminId())))
+                    .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("Draft not found"));
+            backOfficePropertyAuthority.revalidate(
+                    actor, BackOfficePropertyAuthority.Action.SINGLE_CREATE, draftId);
+            if (draft.getPublishedPropertyId() != null) {
+                log.info("Durable draft idempotency: draft [{}] already linked to its authorized listing.", draftId);
+                return ResponseEntity.ok(Map.of(
+                        "status", "SUCCESS",
+                        "message", "Property was already successfully published from this draft",
+                        "propertyId", draft.getPublishedPropertyId(),
+                        "parsedDto", dto
+                ));
+            }
+        }
+
+        // 2. Ownership is established, so an existing origin listing can now be replayed safely.
         if (draftId != null) {
             Optional<Listing> existingListing = listingRepository.findByOriginDraftId(draftId);
             if (existingListing.isPresent()) {
                 Listing l = existingListing.get();
-                log.info("Durable DB idempotency match: listing #{} already exists for origin draft [{}]. Replaying existing record.",
-                        l.getId(), draftId);
+                log.info("Durable DB idempotency match for authorized origin draft. Replaying listing #{}.", l.getId());
                 return ResponseEntity.ok(Map.of(
                         "status", "SUCCESS",
                         "message", "Property was already successfully published from this draft",
                         "propertyId", l.getId(),
                         "parsedDto", dto
                 ));
-            }
-        }
-
-        // 2. Transactional Pessimistic Row Lock & Replay Check on Draft
-        if (draftId != null && draftRepository != null) {
-            Optional<PropertyUploadDraft> draftOpt = draftRepository.findByDraftIdForUpdate(draftId);
-            if (draftOpt.isPresent()) {
-                PropertyUploadDraft draft = draftOpt.get();
-                if (draft.getPublishedPropertyId() != null) {
-                    log.info("Durable draft idempotency: draft [{}] already linked to listing #{}. Returning existing record.",
-                            draftId, draft.getPublishedPropertyId());
-                    return ResponseEntity.ok(Map.of(
-                            "status", "SUCCESS",
-                            "message", "Property was already successfully published from this draft",
-                            "propertyId", draft.getPublishedPropertyId(),
-                            "parsedDto", dto
-                    ));
-                }
-
-                // IDOR ownership check: ensure authenticated admin owns this draft
-                Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-                if (auth != null && auth.getName() != null && !auth.getName().isBlank() && !"anonymousUser".equalsIgnoreCase(auth.getName())) {
-                    if (draft.getAdminId() != null && !draft.getAdminId().equalsIgnoreCase(auth.getName().trim())) {
-                        throw new AccessDeniedException("You do not have permission to publish another administrator's draft.");
-                    }
-                }
             }
         }
 
@@ -1171,6 +1194,8 @@ public class PropertyController {
             }
 
             propertyParserService.confirmLocality(listing.getCity(), listing.getSector(), listing.getMonthlyRent().doubleValue());
+            backOfficePropertyAuthority.revalidate(
+                    actor, BackOfficePropertyAuthority.Action.SINGLE_CREATE, draftId);
             recordPublishedParserReview(dto, saved.getId());
 
             // 4. Link draft to the newly created listing with PUBLISHING status, retaining payload and staged media until media transfer completes safely
@@ -1204,6 +1229,7 @@ public class PropertyController {
      */
     @PostMapping("/parse-batch")
     public ResponseEntity<List<ParsedPropertyDTO>> parseBatchPrompts(@RequestBody Map<String, String> request) {
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.BATCH_PARSE);
         if (request == null) {
             return ResponseEntity.badRequest().build();
         }
@@ -1212,7 +1238,11 @@ public class PropertyController {
             return ResponseEntity.ok(Collections.emptyList());
         }
         List<ParsedPropertyDTO> results = propertyParserService.parseBatch(prompt);
-        quarantineParserResults(results, ParserInputSource.from(request.get("source")));
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.BATCH_PARSE);
+        backOfficePropertyAuthority.withMutationEvidence(
+                BackOfficePropertyAuthority.Action.BATCH_PARSE,
+                () -> quarantineParserResults(results, ParserInputSource.from(request.get("source"))));
+        backOfficePropertyAuthority.require(BackOfficePropertyAuthority.Action.BATCH_PARSE);
         return ResponseEntity.ok(results);
     }
 
@@ -1222,24 +1252,58 @@ public class PropertyController {
     @PostMapping("/create-batch")
     public ResponseEntity<Map<String, Object>> createBatchProperties(@RequestBody Map<String, Object> request) {
         Objects.requireNonNull(request, "Batch request must not be null");
+        BackOfficePropertyAuthority.Actor actor = backOfficePropertyAuthority.require(
+                BackOfficePropertyAuthority.Action.BATCH_CREATE);
 
         String topDraftId = readString(request, "draftId");
+        if (topDraftId != null && topDraftId.isBlank()) topDraftId = null;
         List<?> rawListings = (List<?>) request.getOrDefault("listings", Collections.emptyList());
+        List<ParsedPropertyDTO> parsedListings = new ArrayList<>(rawListings.size());
+        Set<String> referencedDraftIds = new LinkedHashSet<>();
+        if (topDraftId != null) referencedDraftIds.add(topDraftId.trim());
+
+        for (Object item : rawListings) {
+            ParsedPropertyDTO dto = null;
+            if (item instanceof ParsedPropertyDTO p) {
+                dto = p;
+            } else if (item instanceof Map<?, ?> m) {
+                dto = convertMapToParsedDTO((Map<String, Object>) m);
+            }
+            parsedListings.add(dto);
+            if (dto == null) continue;
+            String cardDraftId = dto.getDraftId() != null && !dto.getDraftId().isBlank()
+                    ? dto.getDraftId().trim() : null;
+            if (topDraftId != null && cardDraftId != null && !topDraftId.equals(cardDraftId)) {
+                throw new IllegalArgumentException("Every property card must reference the batch draft it belongs to.");
+            }
+            String effectiveDraftId = cardDraftId != null ? cardDraftId : topDraftId;
+            if (effectiveDraftId != null) referencedDraftIds.add(effectiveDraftId);
+        }
+
+        // Preflight every supplied draft reference before the first REQUIRES_NEW card write. This prevents
+        // a later foreign reference from leaving earlier private cards committed or leaking replay metadata.
+        if (draftRepository == null && !referencedDraftIds.isEmpty()) {
+            throw new jakarta.persistence.EntityNotFoundException("Batch draft not found");
+        }
+        for (String referencedDraftId : referencedDraftIds) {
+            PropertyUploadDraft draft = draftRepository.findByDraftId(referencedDraftId)
+                    .filter(row -> actor.adminKey().equals(normalizeOwnerKey(row.getAdminId())))
+                    .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("Batch draft not found"));
+            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus()) && draft.getPublishedPropertyId() == null) {
+                throw new jakarta.persistence.EntityNotFoundException("Batch draft not found");
+            }
+        }
+
         List<Long> createdIds = new ArrayList<>();
         List<Map<String, Object>> createdListings = new ArrayList<>();
         List<Map<String, Object>> failedListings = new ArrayList<>();
+        boolean authorizationLost = false;
 
         for (int i = 0; i < rawListings.size(); i++) {
-            Object item = rawListings.get(i);
+            boolean cardCommitted = false;
             try {
-                ParsedPropertyDTO dto;
-                if (item instanceof ParsedPropertyDTO p) {
-                    dto = p;
-                } else if (item instanceof Map<?, ?> m) {
-                    dto = convertMapToParsedDTO((Map<String, Object>) m);
-                } else {
-                    continue;
-                }
+                ParsedPropertyDTO dto = parsedListings.get(i);
+                if (dto == null) continue;
 
                 String draftId = (dto.getDraftId() != null && !dto.getDraftId().isBlank())
                         ? dto.getDraftId().trim()
@@ -1248,6 +1312,13 @@ public class PropertyController {
                     dto.setDraftId(draftId);
                 }
                 String cardId = dto.getCardId();
+
+                BackOfficePropertyAuthority.Actor cardActor = backOfficePropertyAuthority.requireDraft(
+                        BackOfficePropertyAuthority.Action.BATCH_CREATE, actor.adminKey());
+                if (draftId != null) {
+                    draftRepository.findByDraftIdAndAdminId(draftId, cardActor.adminKey())
+                            .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("Batch draft not found"));
+                }
 
                 // Compute durable composite origin draft ID (e.g. draft_xxx:card_yyy)
                 String compositeOriginDraftId = null;
@@ -1271,6 +1342,8 @@ public class PropertyController {
                     Optional<Listing> existing = listingRepository.findByOriginDraftId(compositeOriginDraftId);
                     if (existing.isPresent()) {
                         Listing replayed = existing.get();
+                        backOfficePropertyAuthority.requireDraft(
+                                BackOfficePropertyAuthority.Action.BATCH_CREATE, actor.adminKey());
                         log.info("Durable batch idempotency: card [{}] in draft [{}] already linked to listing #{}. Replaying existing record.",
                                 cardId, draftId, replayed.getId());
                         createdIds.add(replayed.getId());
@@ -1300,6 +1373,8 @@ public class PropertyController {
                         Optional<Listing> concurrentWinning = listingRepository.findByOriginDraftId(compositeOriginDraftId);
                         if (concurrentWinning.isPresent()) {
                             Listing winning = concurrentWinning.get();
+                            backOfficePropertyAuthority.requireDraft(
+                                    BackOfficePropertyAuthority.Action.BATCH_CREATE, actor.adminKey());
                             log.info("Concurrent batch race resolved via DB unique constraint for [{}]. Returning listing #{}.",
                                     compositeOriginDraftId, winning.getId());
                             createdIds.add(winning.getId());
@@ -1317,8 +1392,6 @@ public class PropertyController {
                     throw e;
                 }
 
-                recordPublishedParserReview(dto, saved.getId());
-
                 createdIds.add(saved.getId());
                 createdListings.add(Map.of(
                         "id", saved.getId(),
@@ -1328,6 +1401,24 @@ public class PropertyController {
                         "sector", saved.getSector() != null ? saved.getSector() : "",
                         "status", "CREATED"
                 ));
+                cardCommitted = true;
+                // The per-card listing transaction has committed. A later revocation may prevent learning
+                // capture, reconciliation and subsequent cards, but cannot undo this truthful success.
+                backOfficePropertyAuthority.requireDraft(
+                        BackOfficePropertyAuthority.Action.BATCH_CREATE, actor.adminKey());
+                backOfficePropertyAuthority.withMutationEvidence(
+                        BackOfficePropertyAuthority.Action.BATCH_CREATE,
+                        () -> recordPublishedParserReview(dto, saved.getId()));
+            } catch (AccessDeniedException denied) {
+                authorizationLost = true;
+                int firstRemaining = cardCommitted ? i + 1 : i;
+                for (int remaining = firstRemaining; remaining < rawListings.size(); remaining++) {
+                    failedListings.add(Map.of(
+                            "index", remaining + 1,
+                            "error", "Current authorization is required to publish the remaining properties."
+                    ));
+                }
+                break;
             } catch (Exception e) {
                 log.error("Batch property {} could not be published", i + 1, e);
                 failedListings.add(Map.of(
@@ -1345,17 +1436,9 @@ public class PropertyController {
                 effectiveBatchDraftId = readString((Map<String, Object>) m, "draftId");
             }
         }
-        if (effectiveBatchDraftId != null && draftRepository != null && !createdIds.isEmpty()) {
-            final String bDraftId = effectiveBatchDraftId;
-            draftRepository.findByDraftId(bDraftId).ifPresent(draft -> {
-                if (!"PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
-                    draft.setStatus("PUBLISHING");
-                    draft.setUpdatedAt(LocalDateTime.now());
-                    draftRepository.save(draft);
-                    log.info("Transitioned batch draft [{}] to PUBLISHING after publishing/replaying {} listings",
-                            bDraftId, createdIds.size());
-                }
-            });
+        if (!authorizationLost && effectiveBatchDraftId != null && propertyDraftService != null
+                && !createdIds.isEmpty()) {
+            propertyDraftService.markBatchDraftPublishing(actor.adminKey(), effectiveBatchDraftId);
         }
 
         return ResponseEntity.ok(Map.of(
@@ -1462,6 +1545,9 @@ public class PropertyController {
         try {
             parserLearningService.quarantinePredictions(results, inputSource);
         } catch (RuntimeException exception) {
+            if (exception instanceof AccessDeniedException) {
+                throw exception;
+            }
             log.warn("Parser learning capture unavailable; parsing will continue safely: {}", exception.getMessage());
         }
     }
@@ -1693,6 +1779,10 @@ public class PropertyController {
                 || "Unspecified".equalsIgnoreCase(value) || "UNSPECIFIED".equalsIgnoreCase(value);
     }
 
+    private static String normalizeOwnerKey(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
     private record DepositTerms(BigDecimal amount, Integer months) {
     }
 
@@ -1808,13 +1898,18 @@ public class PropertyController {
         for (MultipartFile file : files) {
             String cdnUrl = cloudinaryService.uploadImage(file);
             uploadedUrls.add(cdnUrl);
-
-            PropertyMediaAsset asset = new PropertyMediaAsset(id, cdnUrl, MediaType.IMAGE, RoomTag.GENERAL, "Property photo");
-            asset.setSector(listing.getSector());
-            asset.setCity(listing.getCity());
-            asset.setPriceTag(monthlyRentPriceTag(listing));
-            asset.setVastuFacing(listing.getVastuFacing());
-            mediaAssetRepository.save(asset);
+            backOfficePropertyAuthority.withListingMutation(
+                    BackOfficePropertyAuthority.Action.UPLOADER_MEDIA, id, lockedListing -> {
+                        PropertyMediaAsset asset = new PropertyMediaAsset(
+                                id, cdnUrl, MediaType.IMAGE, RoomTag.GENERAL, "Property photo");
+                        asset.setSector(lockedListing.getSector());
+                        asset.setCity(lockedListing.getCity());
+                        asset.setPriceTag(monthlyRentPriceTag(lockedListing));
+                        asset.setVastuFacing(lockedListing.getVastuFacing());
+                        mediaAssetRepository.save(asset);
+                        updateListingGallery(lockedListing, cdnUrl);
+                        return asset;
+                    });
         }
         return uploadedUrls;
     }

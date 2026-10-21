@@ -8,6 +8,9 @@ import com.indore.pathome.spaces.service.ListingReviewAuthority;
 import com.indore.pathome.spaces.service.ListingReviewAuthority.Reviewer;
 import com.indore.pathome.spaces.service.LandlordReviewService;
 import com.indore.pathome.spaces.service.StaffAccessService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
+import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,14 +55,26 @@ class LandlordReviewSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockBean private LandlordReviewService reviews;
     @MockBean private StaffAccessService staffAccess;
+    @MockBean private BackOfficePropertyAuthority propertyAuthority;
     @MockBean private OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
     @MockBean private JwtUtils jwtUtils;
 
     private static final Long STAFF_USER_ID = 42L;
+    private static final Long ADMIN_USER_ID = 4242L;
     private static final String APPROVED_QUEUE = "/api/v1/admin/lessor-review/listings";
     private static final String APPROVED_START = "/api/v1/admin/lessor-review/listings/1/start-review";
     private static final String NON_APPROVED_CHANGES = "/api/v1/admin/lessor-review/listings/1/request-changes";
     private static final String NON_APPROVED_REVISION = "/api/v1/admin/lessor-review/revisions/draft-1/approve";
+
+    @BeforeEach
+    void admitProvisionedLegacyAdministrator() {
+        when(propertyAuthority.require(eq(BackOfficePropertyAuthority.Action.LEGACY_REVIEW),
+                any(Authentication.class))).thenAnswer(call -> {
+            Authentication credential = call.getArgument(1);
+            return new BackOfficePropertyAuthority.Actor(
+                    credential, ADMIN_USER_ID, "admin@pathome.test", "ROLE_ADMIN");
+        });
+    }
 
     // ================================================================= anonymous
 
@@ -86,10 +101,14 @@ class LandlordReviewSecurityTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void adminMayOpenBothReviewQueuesAndTheirDetails() throws Exception {
-        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions")).andExpect(status().isOk());
-        mockMvc.perform(get(APPROVED_QUEUE)).andExpect(status().isOk());
-        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions/draft-1")).andExpect(status().isOk());
-        mockMvc.perform(get("/api/v1/admin/lessor-review/listings/1")).andExpect(status().isOk());
+        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions")
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
+        mockMvc.perform(get(APPROVED_QUEUE)
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
+        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions/draft-1")
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
+        mockMvc.perform(get("/api/v1/admin/lessor-review/listings/1")
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
 
         ArgumentCaptor<Reviewer> verdicts = ArgumentCaptor.forClass(Reviewer.class);
         verify(reviews).revisions(eq(0), verdicts.capture());
@@ -97,18 +116,21 @@ class LandlordReviewSecurityTest {
         verify(reviews).revisionDetail(eq("draft-1"), verdicts.capture());
         verify(reviews).listingDetail(eq(1L), verdicts.capture());
         assertTrue(verdicts.getAllValues().stream().allMatch(Reviewer::legacyAdmin));
-        assertTrue(verdicts.getAllValues().stream().allMatch(verdict -> verdict.userId() == null));
+        assertTrue(verdicts.getAllValues().stream().allMatch(verdict -> ADMIN_USER_ID.equals(verdict.userId())));
         verifyNoInteractions(staffAccess);
     }
 
     @Test
     @WithMockUser(roles = "ADMIN")
     void adminMayStillStartReviewLinkALocalityAndApprove() throws Exception {
-        mockMvc.perform(post(APPROVED_START)).andExpect(status().isOk());
+        mockMvc.perform(post(APPROVED_START)
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
         mockMvc.perform(post("/api/v1/admin/lessor-review/listings/1/link-locality")
+                .with(authentication(adminAuthentication()))
                 .contentType("application/json").content("{\"canonicalLocalityId\":9}"))
                 .andExpect(status().isOk());
-        mockMvc.perform(post("/api/v1/admin/lessor-review/listings/1/approve")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/admin/lessor-review/listings/1/approve")
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
 
         ArgumentCaptor<Reviewer> verdicts = ArgumentCaptor.forClass(Reviewer.class);
         verify(reviews, times(2)).decideListing(eq(1L), any(ListingWorkflowStatus.class), isNull(),
@@ -121,8 +143,10 @@ class LandlordReviewSecurityTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void adminKeepsTheNonApprovedOperations() throws Exception {
-        mockMvc.perform(post(NON_APPROVED_REVISION)).andExpect(status().isOk());
+        mockMvc.perform(post(NON_APPROVED_REVISION)
+                .with(authentication(adminAuthentication()))).andExpect(status().isOk());
         mockMvc.perform(post("/api/v1/admin/lessor-review/revisions/draft-1/request-changes")
+                .with(authentication(adminAuthentication()))
                 .contentType("application/json").content("{\"note\":\"Please clarify the available date.\"}"))
                 .andExpect(status().isOk());
         ArgumentCaptor<Reviewer> verdicts = ArgumentCaptor.forClass(Reviewer.class);
@@ -173,16 +197,12 @@ class LandlordReviewSecurityTest {
     // ================================================================= global staff admin
 
     @Test
-    void aGlobalStaffAdminIsAdmittedToTheSevenApprovedOperations() throws Exception {
+    void aGlobalStaffAdminIsAdmittedToExactlyTheFiveApprovedHttpRoutes() throws Exception {
         when(staffAccess.requireGlobalAdmin(STAFF_USER_ID)).thenReturn(new User());
 
         mockMvc.perform(get(APPROVED_QUEUE).with(authentication(staffAuthentication(STAFF_USER_ID))))
                 .andExpect(status().isOk());
-        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions").with(
-                authentication(staffAuthentication(STAFF_USER_ID)))).andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/admin/lessor-review/listings/1").with(
-                authentication(staffAuthentication(STAFF_USER_ID)))).andExpect(status().isOk());
-        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions/draft-1").with(
                 authentication(staffAuthentication(STAFF_USER_ID)))).andExpect(status().isOk());
         mockMvc.perform(post(APPROVED_START).with(authentication(staffAuthentication(STAFF_USER_ID))))
                 .andExpect(status().isOk());
@@ -195,16 +215,18 @@ class LandlordReviewSecurityTest {
 
         ArgumentCaptor<Reviewer> verdicts = ArgumentCaptor.forClass(Reviewer.class);
         verify(reviews).listings(eq(0), verdicts.capture());
-        verify(reviews).revisions(eq(0), verdicts.capture());
         verify(reviews).listingDetail(eq(1L), verdicts.capture());
-        verify(reviews).revisionDetail(eq("draft-1"), verdicts.capture());
         verify(reviews, times(2)).decideListing(eq(1L), any(ListingWorkflowStatus.class), isNull(),
                 verdicts.capture());
         verify(reviews).linkLocality(eq(1L), eq(9L), verdicts.capture());
         assertTrue(verdicts.getAllValues().stream().allMatch(verdict -> !verdict.legacyAdmin()));
         assertTrue(verdicts.getAllValues().stream()
                 .allMatch(verdict -> STAFF_USER_ID.equals(verdict.userId())));
-        verify(staffAccess, times(7)).requireGlobalAdmin(STAFF_USER_ID);
+        verify(staffAccess, times(5)).requireGlobalAdmin(STAFF_USER_ID);
+        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions").with(
+                authentication(staffAuthentication(STAFF_USER_ID)))).andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/admin/lessor-review/revisions/draft-1").with(
+                authentication(staffAuthentication(STAFF_USER_ID)))).andExpect(status().isForbidden());
     }
 
     @Test
@@ -249,7 +271,8 @@ class LandlordReviewSecurityTest {
                     "/api/v1/admin/lessor-review/listings/1/approve",
                     "/api/v1/admin/lessor-review/listings/1/link-locality", NON_APPROVED_CHANGES,
                     NON_APPROVED_REVISION, "/api/v1/admin/lessor-review/revisions/draft-1/request-changes")) {
-                mockMvc.perform(post(path).contentType("application/json")
+                mockMvc.perform(post(path).with(authentication(adminAuthentication()))
+                                .contentType("application/json")
                                 .content("{\"canonicalLocalityId\":9,\"note\":\"Please clarify the available date.\"}"))
                         .andExpect(status().isServiceUnavailable())
                         .andExpect(header().string("Cache-Control", "no-store"))
@@ -275,13 +298,16 @@ class LandlordReviewSecurityTest {
             // This wrapper also represents user cancellation in Hibernate's PostgreSQL dialect.
             doThrow(new org.springframework.dao.QueryTimeoutException("wrapper", cause))
                     .when(reviews).decideListing(any(), any(), any(), any());
-            mockMvc.perform(post(APPROVED_START)).andExpect(status().isInternalServerError())
+            mockMvc.perform(post(APPROVED_START)
+                            .with(authentication(adminAuthentication())))
+                    .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.message").value(
                             "We could not complete this request right now. Please try again shortly."));
         }
         doThrow(new IllegalArgumentException("Invalid review input"))
                 .when(reviews).decideListing(any(), any(), any(), any());
-        mockMvc.perform(post(APPROVED_START)).andExpect(status().isBadRequest());
+        mockMvc.perform(post(APPROVED_START)
+                .with(authentication(adminAuthentication()))).andExpect(status().isBadRequest());
     }
 
     @Test
@@ -290,7 +316,8 @@ class LandlordReviewSecurityTest {
         RuntimeException failure = new org.springframework.dao.CannotAcquireLockException("wrapper",
                 new SQLException("canceling statement due to lock timeout", "55P03"));
         when(reviews.listings(anyInt(), any())).thenThrow(failure);
-        mockMvc.perform(get(APPROVED_QUEUE)).andExpect(status().isInternalServerError());
+        mockMvc.perform(get(APPROVED_QUEUE)
+                .with(authentication(adminAuthentication()))).andExpect(status().isInternalServerError());
         var request = new MockHttpServletRequest("POST", "/api/v1/properties/1/photos");
         var handler = new com.indore.pathome.spaces.exception.GlobalExceptionHandler();
         org.junit.jupiter.api.Assertions.assertEquals(500,
@@ -302,6 +329,14 @@ class LandlordReviewSecurityTest {
                 "codex.lessor.review.staff@pathome.test", null,
                 List.of(new SimpleGrantedAuthority("ROLE_TENANT")));
         token.setDetails(new PathomeAuthenticationDetails(new MockHttpServletRequest(), userId));
+        return token;
+    }
+
+    private static Authentication adminAuthentication() {
+        UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(
+                "admin@pathome.test", null,
+                List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        token.setDetails(new PathomeAuthenticationDetails(new MockHttpServletRequest(), ADMIN_USER_ID));
         return token;
     }
 }

@@ -17,9 +17,8 @@ import java.util.Objects;
  * <p>Exactly two principals are admitted:
  *
  * <ul>
- *   <li>the existing legacy {@code ROLE_ADMIN} authority, consulted from the authenticated principal's own
- *       granted authorities exactly as the previous {@code hasRole('ADMIN')} rule did, so an existing
- *       administrator's access is unchanged; and</li>
+ *   <li>a caller presenting both the legacy {@code ROLE_ADMIN} credential and the same live current
+ *       persisted role/profile/global-grant facts required by the Phase 1 cutover; and</li>
  *   <li>a caller holding a <em>live</em>, effective {@code STAFF_ADMIN@GLOBAL} grant on an active staff
  *       profile.</li>
  * </ul>
@@ -30,7 +29,7 @@ import java.util.Objects;
  * refused: no narrower capability substitutes for the global one, so the extension cannot be reached by
  * escalating a City or Team scope.
  *
- * <p>The staff decision is never taken from a token claim. It is resolved from live database facts on
+ * <p>Neither decision is taken from a token role claim as current authority. It is resolved from live database facts on
  * every call, and {@link #revalidate(Reviewer)} re-decides it again so a grant revoked between the
  * entry decision and the guarded mutation is honoured under the same transaction.
  *
@@ -62,9 +61,11 @@ public class ListingReviewAuthority {
     private static final String LEGACY_ADMIN_AUTHORITY = "ROLE_ADMIN";
 
     private final StaffAccessService access;
+    private final BackOfficePropertyAuthority propertyAuthority;
 
-    public ListingReviewAuthority(StaffAccessService access) {
+    public ListingReviewAuthority(StaffAccessService access, BackOfficePropertyAuthority propertyAuthority) {
         this.access = Objects.requireNonNull(access, "access must not be null");
+        this.propertyAuthority = Objects.requireNonNull(propertyAuthority, "propertyAuthority must not be null");
     }
 
     /**
@@ -81,9 +82,13 @@ public class ListingReviewAuthority {
             throw new AccessDeniedException("Authenticated staff or administrator authority is required");
         }
         if (hasLegacyAdminAuthority(request)) {
-            // Unchanged legacy path: the administrator's authority is the principal's own granted
-            // authority, so no staff profile or grant is required of an existing administrator.
-            return Reviewer.legacyAdministrator(request);
+            Long userId = authenticatedUserId(request);
+            if (userId == null) {
+                throw new AccessDeniedException("Administrator User identity is required");
+            }
+            BackOfficePropertyAuthority.Actor actor = propertyAuthority.require(
+                    BackOfficePropertyAuthority.Action.LEGACY_REVIEW, request);
+            return Reviewer.legacyAdministrator(request, actor.userId());
         }
         Long userId = authenticatedUserId(request);
         if (userId == null) {
@@ -105,10 +110,13 @@ public class ListingReviewAuthority {
      */
     public Reviewer requireLegacyAdministrator(Authentication authentication) {
         Authentication request = currentAuthenticatedRequest();
-        if (request == null || authentication != request || !hasLegacyAdminAuthority(request)) {
+        if (request == null || authentication != request || !hasLegacyAdminAuthority(request)
+                || authenticatedUserId(request) == null) {
             throw new AccessDeniedException("Administrator authority is required");
         }
-        return Reviewer.legacyAdministrator(request);
+        BackOfficePropertyAuthority.Actor actor = propertyAuthority.require(
+                BackOfficePropertyAuthority.Action.LEGACY_REVIEW, request);
+        return Reviewer.legacyAdministrator(request, actor.userId());
     }
 
     /**
@@ -128,9 +136,12 @@ public class ListingReviewAuthority {
             throw new AccessDeniedException("Current global Staff Admin authority is required");
         }
         if (reviewer.legacyAdmin()) {
-            // Re-decided, not remembered: the legacy authority is consulted from the live principal's own
-            // granted authorities, exactly as the entry decision consulted them.
             if (!hasLegacyAdminAuthority(request)) {
+                throw new AccessDeniedException("Administrator authority is required");
+            }
+            BackOfficePropertyAuthority.Actor actor = propertyAuthority.require(
+                    BackOfficePropertyAuthority.Action.LEGACY_REVIEW, request);
+            if (!reviewer.userId().equals(actor.userId())) {
                 throw new AccessDeniedException("Administrator authority is required");
             }
             return;
@@ -155,6 +166,11 @@ public class ListingReviewAuthority {
                 || !hasLegacyAdminAuthority(request)) {
             throw new AccessDeniedException("Administrator authority is required");
         }
+        BackOfficePropertyAuthority.Actor actor = propertyAuthority.require(
+                BackOfficePropertyAuthority.Action.LEGACY_REVIEW, request);
+        if (!reviewer.userId().equals(actor.userId())) {
+            throw new AccessDeniedException("Administrator authority is required");
+        }
     }
 
     /**
@@ -168,15 +184,21 @@ public class ListingReviewAuthority {
      * waits for this transaction to commit - there is no window in which an observer can read a
      * revocation and still see the publication land.
      *
-     * <p>A legacy administrator has no database evidence behind the decision - their authority is the
-     * credential's own granted authority - so nothing is held for them, exactly as nothing is consulted
-     * for them at the re-decision.
+     * <p>A legacy administrator's decision is now backed by the same current role/profile/global-grant
+     * evidence as the uploader. Holding those rows before the listing lock is what makes a concurrent
+     * demotion, deactivation or grant revocation ordered against the mutation.
      */
     public void holdAuthorityEvidence(Reviewer reviewer) {
         if (reviewer == null) {
             throw new AccessDeniedException("Current global Staff Admin authority is required");
         }
         if (reviewer.legacyAdmin) {
+            Authentication request = currentAuthenticatedRequest();
+            if (request == null || reviewer.credential != request) {
+                throw new AccessDeniedException("Administrator authority is required");
+            }
+            propertyAuthority.holdEvidenceForCurrentMutation(
+                    BackOfficePropertyAuthority.Action.LEGACY_REVIEW);
             return;
         }
         access.holdGlobalAdminEvidence(reviewer.userId);
@@ -243,8 +265,8 @@ public class ListingReviewAuthority {
      * only way to hold a {@code Reviewer} is to have presented an authenticated principal to
      * {@link #require(Authentication)} or {@link #requireLegacyAdministrator(Authentication)}.
      *
-     * <p>{@code userId} is present only for the staff path, because that is the only path whose authority
-     * belongs to a staff identity and is re-decided from the database.
+     * <p>{@code userId} is always present. Both legacy and grant-backed review paths are now bound to
+     * the stable authenticated User whose current facts are re-decided.
      */
     public static final class Reviewer {
         private final Authentication credential;
@@ -254,15 +276,15 @@ public class ListingReviewAuthority {
         private Reviewer(Authentication credential, Long userId, boolean legacyAdmin) {
             this.credential = Objects.requireNonNull(credential,
                     "A verdict must name the credential it was decided for");
-            if (!legacyAdmin && (userId == null || userId <= 0)) {
-                throw new IllegalArgumentException("A staff reviewer requires a stable User identity");
+            if (userId == null || userId <= 0) {
+                throw new IllegalArgumentException("A reviewer requires a stable User identity");
             }
             this.userId = userId;
             this.legacyAdmin = legacyAdmin;
         }
 
-        private static Reviewer legacyAdministrator(Authentication credential) {
-            return new Reviewer(credential, null, true);
+        private static Reviewer legacyAdministrator(Authentication credential, Long userId) {
+            return new Reviewer(credential, userId, true);
         }
 
         private static Reviewer globalStaffAdministrator(Authentication credential, Long userId) {

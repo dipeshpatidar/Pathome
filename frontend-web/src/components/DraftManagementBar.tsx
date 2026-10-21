@@ -18,8 +18,19 @@ import {
   ShieldAlert
 } from 'lucide-react';
 import { DraftSummary } from '../services/draftService';
+import type {
+  BulkDiscardResult,
+  DiscardDraftResult,
+  DiscardOutcome
+} from '../hooks/usePropertyDraft';
+import {
+  captureUploaderSession,
+  isUploaderSessionActive,
+  subscribeUploaderSession,
+  type UploaderSession
+} from '../utils/uploaderSession';
 
-export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'conflict';
+export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'conflict' | 'denied';
 
 interface DraftManagementBarProps {
   currentDraftId: string | null;
@@ -31,8 +42,8 @@ interface DraftManagementBarProps {
   isLoadingDrafts?: boolean;
   onSelectDraft: (draftId: string) => void;
   onStartNewDraft: () => void;
-  onDiscardDraft: (draftId: string) => Promise<void> | void;
-  onDiscardDrafts?: (draftIds: string[]) => Promise<{ succeeded: string[]; failed: string[]; isAuthError?: boolean }>;
+  onDiscardDraft: (draftId: string) => Promise<DiscardDraftResult | void> | void;
+  onDiscardDrafts?: (draftIds: string[]) => Promise<BulkDiscardResult>;
   onResolveConflictKeepLocal?: () => void;
   onResolveConflictReloadServer?: () => void;
   compact?: boolean;
@@ -97,6 +108,24 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
   const popoverRef = useRef<HTMLDivElement>(null);
   const keepDraftBtnRef = useRef<HTMLButtonElement>(null);
   const [tappedTooltipId, setTappedTooltipId] = useState<string | null>(null);
+  const discardActionRef = useRef<{ id: symbol; session: UploaderSession | null } | null>(null);
+  const bulkDiscardActionRef = useRef<{ id: symbol; session: UploaderSession | null } | null>(null);
+  const ownsCurrentDiscardAction = useCallback((actionId: symbol): boolean => {
+    const action = discardActionRef.current;
+    return Boolean(
+      action?.id === actionId
+      && action.session
+      && isUploaderSessionActive(action.session)
+    );
+  }, []);
+  const ownsCurrentBulkDiscardAction = useCallback((actionId: symbol): boolean => {
+    const action = bulkDiscardActionRef.current;
+    return Boolean(
+      action?.id === actionId
+      && action.session
+      && isUploaderSessionActive(action.session)
+    );
+  }, []);
 
   // Responsive breakpoint tracking: <640px is mobile bottom sheet, >=640px is desktop/tablet popover
   const [isMobile, setIsMobile] = useState<boolean>(() => {
@@ -111,6 +140,16 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => subscribeUploaderSession(() => {
+    discardActionRef.current = null;
+    bulkDiscardActionRef.current = null;
+    setIsDiscarding(false);
+    setIsBulkDiscarding(false);
+    setDraftToDiscard(null);
+    setBulkDiscardDialogOpen(false);
+    setBulkDiscardFeedback(null);
+  }), []);
 
   // Position popover anchored to Drafts button in viewport coordinates (desktop only)
   const updateDropdownPosition = useCallback(() => {
@@ -156,6 +195,9 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
     };
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
+      if (target instanceof Element && target.closest('[role="dialog"]')) {
+        return;
+      }
       if (dropdownButtonRef.current && dropdownButtonRef.current.contains(target)) {
         return;
       }
@@ -240,16 +282,32 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
 
   const handleConfirmDiscard = async () => {
     if (!draftToDiscard) return;
+    const actionId = Symbol('single-discard');
+    const ownerSession = captureUploaderSession();
+    if (!ownerSession) return;
+    discardActionRef.current = { id: actionId, session: ownerSession };
     setIsDiscarding(true);
     try {
-      await onDiscardDraft(draftToDiscard.draftId);
+      const result = await onDiscardDraft(draftToDiscard.draftId);
+      if (!ownsCurrentDiscardAction(actionId)) return;
+      if (result && !result.canFinalize) return;
+      if (result && result.outcome !== 'succeeded') {
+        if (result.outcome === 'permission-denied' || result.outcome === 'session-expired') {
+          setDraftToDiscard(null);
+          setIsDropdownOpen(false);
+        }
+        return;
+      }
       setSelectedDraftIds((prev) => prev.filter((id) => id !== draftToDiscard.draftId));
       setDraftToDiscard(null);
       setIsDropdownOpen(false);
     } catch {
       // Handled in parent
     } finally {
-      setIsDiscarding(false);
+      if (ownsCurrentDiscardAction(actionId)) {
+        discardActionRef.current = null;
+        setIsDiscarding(false);
+      }
     }
   };
 
@@ -350,51 +408,75 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
 
   const handleExecuteBulkDiscard = async () => {
     if (selectedDraftIds.length === 0 || isBulkDiscarding) return;
+    const actionId = Symbol('bulk-discard');
+    const ownerSession = captureUploaderSession();
+    if (!ownerSession) return;
+    bulkDiscardActionRef.current = { id: actionId, session: ownerSession };
     setIsBulkDiscarding(true);
     setBulkDiscardFeedback(null);
 
     try {
-      let result: { succeeded: string[]; failed: string[]; isAuthError?: boolean };
+      let result: BulkDiscardResult;
       if (onDiscardDrafts) {
         result = await onDiscardDrafts(selectedDraftIds);
       } else {
         const succeeded: string[] = [];
         const failed: string[] = [];
-        let authErr = false;
+        const notAttempted: string[] = [];
+        let outcome: DiscardOutcome = 'succeeded';
         for (const id of selectedDraftIds) {
           try {
-            await onDiscardDraft(id);
+            const completion = await onDiscardDraft(id);
+            if (completion && !completion.canFinalize) {
+              outcome = 'cancelled';
+              break;
+            }
+            if (completion && completion.outcome !== 'succeeded') {
+              outcome = completion.outcome;
+              failed.push(id);
+              break;
+            }
             succeeded.push(id);
           } catch (err: any) {
-            if (err?.status === 401 || err?.message === 'Your session has ended. Please sign in again to continue.') {
-              authErr = true;
-            }
             failed.push(id);
-            if (authErr) break;
           }
         }
-        result = { succeeded, failed, isAuthError: authErr };
+        const attemptedCount = succeeded.length + failed.length;
+        notAttempted.push(...selectedDraftIds.slice(attemptedCount));
+        result = {
+          succeeded,
+          failed,
+          notAttempted,
+          outcome,
+          operationId: Symbol('draft-management-fallback'),
+          isOwnerActive: outcome === 'succeeded',
+          canFinalize: outcome !== 'cancelled',
+          isAuthError: outcome === 'session-expired'
+        };
       }
 
-      if (result.isAuthError) {
-        setBulkDiscardFeedback({
-          type: 'error',
-          message: 'Your session has ended. Please sign in again to continue.'
-        });
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('pathome_session_expired'));
-        }
+      if (!ownsCurrentBulkDiscardAction(actionId)) return;
+      if (!result.canFinalize) return;
+      if (result.outcome === 'permission-denied') {
+        setBulkDiscardFeedback(null);
+        setBulkDiscardDialogOpen(false);
         return;
       }
+      if (result.outcome === 'session-expired') {
+        setBulkDiscardDialogOpen(false);
+        return;
+      }
+      if (result.outcome === 'cancelled') return;
 
-      if (result.failed.length === 0) {
+      const unsuccessfulCount = result.failed.length + result.notAttempted.length;
+      if (result.failed.length === 0 && result.notAttempted.length === 0) {
         setSelectedDraftIds([]);
         setBulkDiscardDialogOpen(false);
       } else if (result.succeeded.length > 0) {
-        setSelectedDraftIds(result.failed);
+        setSelectedDraftIds([...result.failed, ...result.notAttempted]);
         setBulkDiscardFeedback({
           type: 'partial',
-          message: `${result.succeeded.length} discarded, ${result.failed.length} failed to discard.`
+          message: `${result.succeeded.length} discarded, ${unsuccessfulCount} not discarded.`
         });
       } else {
         setBulkDiscardFeedback({
@@ -403,12 +485,17 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
         });
       }
     } catch (err: any) {
-      setBulkDiscardFeedback({
-        type: 'error',
-        message: err?.message || 'Failed to discard drafts.'
-      });
+      if (ownsCurrentBulkDiscardAction(actionId)) {
+        setBulkDiscardFeedback({
+          type: 'error',
+          message: err?.message || 'Failed to discard drafts.'
+        });
+      }
     } finally {
-      setIsBulkDiscarding(false);
+      if (ownsCurrentBulkDiscardAction(actionId)) {
+        bulkDiscardActionRef.current = null;
+        setIsBulkDiscarding(false);
+      }
     }
   };
 
@@ -760,6 +847,15 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
                     <X className="w-5 h-5" />
                   </button>
                 </div>
+                {autosaveStatus === 'denied' && (
+                  <div
+                    role="alert"
+                    className="mt-2.5 flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 px-3 py-2 text-xs font-mono text-rose-200"
+                  >
+                    <ShieldAlert className="h-4 w-4 shrink-0" />
+                    <span>Access denied • protected draft withdrawn</span>
+                  </div>
+                )}
               </div>
 
               {/* SELECT ALL / BULK ACTION BAR */}
@@ -1120,6 +1216,11 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
               <Clock className="w-3 h-3" />
               <span className="text-[11px]">Offline</span>
             </span>
+          ) : autosaveStatus === 'denied' ? (
+            <span className="flex items-center gap-1.5 text-rose-300" title="Access denied">
+              <ShieldAlert className="w-3 h-3" />
+              <span className="text-[11px]">Access denied</span>
+            </span>
           ) : (
             <span className="flex items-center gap-1.5 text-slate-500" title="Autosave active">
               <Sparkles className="w-3 h-3" />
@@ -1221,6 +1322,12 @@ export const DraftManagementBar: React.FC<DraftManagementBarProps> = ({
               <span className="flex items-center gap-1.5 text-xs text-amber-400 font-mono">
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span>Offline • saved locally</span>
+              </span>
+            )}
+            {autosaveStatus === 'denied' && (
+              <span className="flex items-center gap-1.5 text-xs text-rose-300 font-mono" role="alert">
+                <ShieldAlert className="w-3.5 h-3.5 text-rose-300" />
+                <span>Access denied • protected draft withdrawn</span>
               </span>
             )}
             {autosaveStatus === 'idle' && (

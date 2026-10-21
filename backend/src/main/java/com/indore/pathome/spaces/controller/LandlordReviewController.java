@@ -20,12 +20,12 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * The landlord listing-review surface.
  *
- * <p>Seven operations are part of the approved listing-review authority extension and are additionally
- * reachable by a caller holding a live effective {@code STAFF_ADMIN@GLOBAL} grant: the listing and
- * revision review queues with their details, start-review, canonical-locality linking and publication
- * approval. Each of those passes the caller through {@link ListingReviewAuthority}, which resolves the
- * authority from live database facts on every request and throws for everyone else; the service re-decides
- * it again under the listing row lock before any mutation is flushed.
+ * <p>Four logical operations, exposed as five HTTP routes, are part of the approved listing-review
+ * authority extension and are additionally reachable by a caller holding a live effective
+ * {@code STAFF_ADMIN@GLOBAL} grant: the submitted listing queue/detail, start-review,
+ * canonical-locality linking and publication approval. Each passes through
+ * {@link ListingReviewAuthority}, which resolves the authority from live database facts on every request.
+ * The two revision reads remain live legacy-Administrator-only.
  *
  * <p>The remaining three operations - requesting listing changes, and approving or rejecting a landlord
  * revision - are deliberately <em>not</em> part of the extension and keep their existing
@@ -54,7 +54,7 @@ public class LandlordReviewController {
 
     @GetMapping("/revisions")
     public LandlordReviewPage revisions(@RequestParam(defaultValue = "0") int page, Authentication authentication) {
-        return reviews.revisions(page, reviewAuthority.require(authentication));
+        return reviews.revisions(page, reviewAuthority.requireLegacyAdministrator(authentication));
     }
 
     @GetMapping("/listings/{listingId}")
@@ -64,7 +64,7 @@ public class LandlordReviewController {
 
     @GetMapping("/revisions/{draftId}")
     public LandlordReviewDetail revision(@PathVariable String draftId, Authentication authentication) {
-        return reviews.revisionDetail(draftId, reviewAuthority.require(authentication));
+        return reviews.revisionDetail(draftId, reviewAuthority.requireLegacyAdministrator(authentication));
     }
 
     @PostMapping("/listings/{listingId}/start-review")

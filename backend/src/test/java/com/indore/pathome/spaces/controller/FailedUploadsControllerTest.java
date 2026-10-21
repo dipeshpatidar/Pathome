@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +20,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -30,6 +32,7 @@ class FailedUploadsControllerTest {
     private PropertyMediaAssetRepository mediaAssetRepository;
     private ListingRepository listingRepository;
     private MediaStagingService mediaStagingService;
+    private BackOfficePropertyAuthority propertyAuthority;
     private FailedUploadsController controller;
 
     @BeforeEach
@@ -39,8 +42,15 @@ class FailedUploadsControllerTest {
         mediaAssetRepository = mock(PropertyMediaAssetRepository.class);
         listingRepository = mock(ListingRepository.class);
         mediaStagingService = mock(MediaStagingService.class);
+        propertyAuthority = mock(BackOfficePropertyAuthority.class);
         controller = new FailedUploadsController(
-                failedUploadService, cloudinaryService, mediaAssetRepository, listingRepository, mediaStagingService);
+                failedUploadService, cloudinaryService, mediaAssetRepository, listingRepository, mediaStagingService,
+                propertyAuthority);
+        lenient().when(propertyAuthority.withListingMutation(any(), anyLong(), any(Function.class)))
+                .thenAnswer(invocation -> {
+                    Function<RentalDetails, Object> mutation = invocation.getArgument(2);
+                    return mutation.apply(new RentalDetails());
+                });
     }
 
     private void setId(MediaUploadFailure failure, Long id) {
@@ -402,10 +412,10 @@ class FailedUploadsControllerTest {
     }
 
     @Test
-    void controller_isAnnotatedWithPreAuthorizeAdminAndSubAdmin() {
+    void controller_isAnnotatedForLiveLegacyAdministratorsOnly() {
         org.springframework.security.access.prepost.PreAuthorize annotation =
                 FailedUploadsController.class.getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class);
         assertNotNull(annotation, "FailedUploadsController must be protected by @PreAuthorize");
-        assertEquals("hasAnyRole('ADMIN', 'SUB_ADMIN')", annotation.value());
+        assertEquals("hasRole('ADMIN')", annotation.value());
     }
 }

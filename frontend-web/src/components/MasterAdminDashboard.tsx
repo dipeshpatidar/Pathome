@@ -49,8 +49,18 @@ import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
 import { OperationsWorkspace } from './operations/OperationsWorkspace';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
 import { DraftManagementBar } from './DraftManagementBar';
-import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
+import {
+  usePropertyDraft,
+  CompletedListingSummary,
+  UploaderOperationGuard
+} from '../hooks/usePropertyDraft';
 import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
+import {
+  UploaderSession,
+  captureUploaderSession,
+  isUploaderSessionActive,
+  subscribeUploaderSession
+} from '../utils/uploaderSession';
 
 interface MasterAdminDashboardProps {
   activeTab: string;
@@ -64,11 +74,13 @@ interface MasterAdminDashboardProps {
 }
 
 /**
- * Tabs the console is allowed to remember. The Operations workspace is deliberately excluded:
- * a persisted selection must never restore a destination whose authority has to be verified against
- * the server first, and it must never survive an account switch.
+ * Tabs the console is allowed to remember.
+ *
+ * Restoring the Operations tab never restores protected data: the shared authority re-verifies the
+ * exact signed-in account on entry and the workspace fails closed until that succeeds. Persisting the
+ * host tab is what keeps `/admin` on the same console surface after a refresh.
  */
-const PERSISTED_ADMIN_TABS = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes']);
+const PERSISTED_ADMIN_TABS = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes', 'operations']);
 
 const PRESET_PROMPTS = [
   {
@@ -228,6 +240,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [coverPhotoIndex, setCoverPhotoIndex] = useState<number>(0);
   const [mediaRestorationProgress, setMediaRestorationProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const mediaRestorationOwnerRef = useRef<symbol | null>(null);
   const [isDragOverMedia, setIsDragOverMedia] = useState<boolean>(false);
   const [isMediaUploadModalOpen, setIsMediaUploadModalOpen] = useState<boolean>(false);
   const [previewLightboxIndex, setPreviewLightboxIndex] = useState<number | null>(null);
@@ -381,8 +394,14 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   };
 
   // Admin Draft & Recovery System for Single Property
-  const handleRestoreSingleDraft = useCallback(async (payload: any, media: DraftMedia[]) => {
+  const handleRestoreSingleDraft = useCallback(async (
+    payload: any,
+    media: DraftMedia[],
+    session: UploaderSession,
+    operation: UploaderOperationGuard
+  ) => {
     if (!payload) return;
+    if (!operation.isActive()) return;
     if (typeof payload.newBhkLabel === 'string') {
       setNewBhkLabel(payload.newBhkLabel);
     }
@@ -403,11 +422,21 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
 
     if (media && media.length > 0 && attachedMediaFiles.length === 0) {
-      setMediaRestorationProgress({ loaded: 0, total: media.length });
+      const restorationOwnerId = operation.operationId;
+      mediaRestorationOwnerRef.current = restorationOwnerId;
+      const clearOwnedProgress = () => {
+        if (mediaRestorationOwnerRef.current !== restorationOwnerId) return;
+        mediaRestorationOwnerRef.current = null;
+        setMediaRestorationProgress(null);
+      };
+      operation.signal.addEventListener('abort', clearOwnedProgress, { once: true });
+      if (operation.isActive()) setMediaRestorationProgress({ loaded: 0, total: media.length });
       try {
         const restored = await draftService.restoreMediaFiles(media, (loaded, total) => {
+          if (!operation.isActive() || mediaRestorationOwnerRef.current !== restorationOwnerId) return;
           setMediaRestorationProgress({ loaded, total });
-        });
+        }, session, operation);
+        if (!operation.isActive()) return;
         if (restored.files.length > 0) {
           setAttachedMediaFiles(restored.files);
           setAttachedMediaTags(prev => ({ ...prev, ...restored.tags }));
@@ -422,9 +451,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           notifyWarning('Partial media restored', `${restored.files.length} of ${media.length} staged media files were restored.`);
         }
       } catch (err) {
-        console.warn('Draft media restoration notice:', err);
+        // Current-session denial must reach usePropertyDraft's terminal withdrawal path.
+        // Stale-generation errors are ignored there without mutating the replacement session.
+        throw err;
       } finally {
-        setMediaRestorationProgress(null);
+        operation.signal.removeEventListener('abort', clearOwnedProgress);
+        clearOwnedProgress();
       }
     }
   }, [attachedMediaFiles.length, notifyWarning]);
@@ -510,6 +542,24 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       singleDraft.cancelAutosave();
     }
   }, [uploadMode, singleDraft.cancelAutosave]);
+
+  useEffect(() => subscribeUploaderSession((reason) => {
+    if (reason === 'session-expired') return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    setIsUploadingMedia(false);
+    setIsUploadingCloudinary(false);
+    setIsSubmittingListing(false);
+    setIsSavingDb(false);
+  }), []);
+
+  const withdrawSingleProtectedWork = useCallback((
+    error: unknown,
+    session: UploaderSession,
+    fallbackMessage: string
+  ) => singleDraft.withdrawCurrentSessionDenial(error, session, fallbackMessage), [
+    singleDraft.withdrawCurrentSessionDenial
+  ]);
 
   // Automatically autosave on changes
   useEffect(() => {
@@ -742,21 +792,43 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const uploadPendingMedia = async (
     targetPropertyId: number,
     pendingItems: Array<{ file: File; originalIndex: number }>,
-    metadata: { title?: string; sector?: string; rentVal?: string; vastuFacing?: string }
+    metadata: { title?: string; sector?: string; rentVal?: string; vastuFacing?: string },
+    capturedSession?: UploaderSession | null,
+    capturedOperation?: UploaderOperationGuard | null
   ) => {
     if (!targetPropertyId || pendingItems.length === 0) return;
+    const session = capturedSession || captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = capturedOperation || singleDraft.captureProtectedOperation(session);
+    if (!operation) return;
     setIsUploadingMedia(true);
 
     // 1. Authoritative Media Deduplication: Check already-persisted assets for this listing to avoid re-uploading
     let existingReqIds = new Set<string>();
     try {
-      const existing = await propertyService.fetchTaggedMedia(targetPropertyId);
+      const existing = await propertyService.fetchTaggedMedia(targetPropertyId, session);
+      if (!operation.isActive()) return;
       if (Array.isArray(existing)) {
         existing.forEach(a => {
           if (a.uploadRequestId) existingReqIds.add(a.uploadRequestId);
         });
       }
-    } catch {}
+    } catch (error) {
+      if (
+        withdrawSingleProtectedWork(
+          error,
+          session,
+          'You no longer have permission to access this property media.'
+        )
+      ) return;
+      if (!operation.isActive()) return;
+      if ((error as any)?.status === 401 || (error as any)?.status === 403) {
+        setIsUploadingMedia(false);
+        handleClearSingleDraftState();
+        return;
+      }
+    }
+    if (!operation.isActive()) return;
 
     const itemsToUpload: Array<{ file: File; originalIndex: number }> = [];
     let completedCount = 0;
@@ -774,6 +846,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     // Fast-path: if all media items are already durably persisted, finalize publication immediately
     if (itemsToUpload.length === 0) {
+      if (!operation.isActive()) return;
       setIsUploadingMedia(false);
       setFailedMediaUploads([]);
       setUploadStatusMsg('All property media verified successfully.');
@@ -783,7 +856,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         stageLabel: `Listing #${targetPropertyId} and all ${totalMedia} media items verified successfully!`
       }));
       notifySuccess('1 property uploaded', `Listing #${targetPropertyId} and all media items published successfully.`, undefined, 'PROPERTY');
-      void singleDraft.onPublishSuccess(targetPropertyId);
+      void singleDraft.onPublishSuccess(targetPropertyId, session);
       setNewBhkLabel('');
       if (singleMicBaseTextRef.current) singleMicBaseTextRef.current = '';
       revokeAllMediaPreviewUrls();
@@ -809,6 +882,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     const failedItems: Array<{ file: File; originalIndex: number }> = [];
     const failureMessages: string[] = [];
+    let authorizationLost = false;
 
     const CONCURRENCY_LIMIT = 3;
     let nextIndex = 0;
@@ -835,6 +909,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         const pendingIndex = nextIndex;
         nextIndex += 1;
         const item = itemsToUpload[pendingIndex];
+        if (!isUploaderSessionActive(session)) {
+          authorizationLost = true;
+          return;
+        }
 
         try {
           const draftMediaId = (item.file as any)?.draftMediaId || attachedDraftMediaIds[item.originalIndex];
@@ -850,6 +928,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           }, {
             signal: abortController.signal,
             onProgress: (progress) => {
+              if (!operation.isActive()) return;
               const itemLabel = `Media ${completedCount + 1} of ${totalMedia} (${item.file.name})`;
               const statusText = progress.stage === 'retrying'
                 ? `Connection interrupted. Retrying ${itemLabel} (attempt ${progress.attempt}/${progress.maxAttempts})…`
@@ -866,11 +945,33 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                 stageLabel: statusText
               }));
             }
-          });
+          }, session);
+          if (!operation.isActive()) return;
         } catch (mediaError) {
+          if (
+            withdrawSingleProtectedWork(
+              mediaError,
+              session,
+              'You no longer have permission to upload this property media.'
+            )
+          ) {
+            authorizationLost = true;
+            handleClearSingleDraftState();
+            return;
+          }
+          if (!operation.isActive()) {
+            authorizationLost = true;
+            return;
+          }
+          if ((mediaError as any)?.status === 401 || (mediaError as any)?.status === 403) {
+            authorizationLost = true;
+            handleClearSingleDraftState();
+            return;
+          }
           failedItems.push(item);
           failureMessages.push(getErrorMessage(mediaError, `${item.file.name} could not be uploaded.`));
         } finally {
+          if (!operation.isActive()) return;
           completedCount += 1;
           const statusText = `Uploaded ${completedCount} of ${totalMedia} media file(s)…`;
           setUploadStatusMsg(statusText);
@@ -894,8 +995,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       await Promise.all(workers);
     } finally {
       window.removeEventListener('offline', handleOffline);
-      setIsUploadingMedia(false);
+      if (operation.isActive()) {
+        setIsUploadingMedia(false);
+      }
     }
+    if (authorizationLost || !operation.isActive()) return;
 
     setFailedMediaUploads(failedItems);
 
@@ -913,7 +1017,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         details: failureMessages.join(' • '),
         action: {
           label: 'Retry failed media',
-          onClick: () => void uploadPendingMedia(targetPropertyId, failedItems, metadata)
+          onClick: () => void uploadPendingMedia(
+            targetPropertyId,
+            failedItems,
+            metadata,
+            session,
+            singleDraft.captureProtectedOperation(session)
+          )
         }
       });
       // CRITICAL P0 INVARIANT: DO NOT finalize draft when media uploads fail!
@@ -922,6 +1032,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     }
 
     setUploadStatusMsg('All property media uploaded successfully.');
+    if (!operation.isActive()) return;
     setUploadPipeline(prev => ({
       ...prev,
       stage: 'success',
@@ -939,7 +1050,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     );
 
     // Terminal completion: All media succeeded, safely finalize draft into PUBLISHED tombstone
-    void singleDraft.onPublishSuccess(targetPropertyId);
+    void singleDraft.onPublishSuccess(targetPropertyId, session);
     // Reset single-property transient form state after confirmed success
     setNewBhkLabel('');
     if (singleMicBaseTextRef.current) {
@@ -956,16 +1067,22 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const handleRetryFailedMedia = async () => {
     const targetPropertyId = lastExtractedResult?.databaseId;
     if (!targetPropertyId || failedMediaUploads.length === 0) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
     await uploadPendingMedia(targetPropertyId, failedMediaUploads, {
       title: lastExtractedResult.title,
       sector: lastExtractedResult.sector,
       rentVal: lastExtractedResult.rentVal,
       vastuFacing: lastExtractedResult.vastuFacing
-    });
+    }, session);
   };
 
   const handleSaveToDatabase = async () => {
     if (!lastExtractedResult) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = singleDraft.captureProtectedOperation(session);
+    if (!operation) return;
 
     if (lastExtractedResult.savedToDatabase && lastExtractedResult.databaseId) {
       if (failedMediaUploads.length > 0) {
@@ -1067,7 +1184,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         draftId: singleDraft.currentDraftId || undefined
       };
 
-      const saved = await propertyService.createPropertyFromParsed(payload);
+      const saved = await propertyService.createPropertyFromParsed(payload, session);
+      if (!singleDraft.isProtectedOperationActive(operation)) return;
       const propertyId = saved.propertyId;
       setIsSavingDb(false);
       window.dispatchEvent(new Event('pathome_property_published'));
@@ -1097,9 +1215,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             sector: payload.sector,
             rentVal: payload.rentVal || `₹${rentAmountNum.toLocaleString('en-IN')} / month`,
             vastuFacing: payload.vastuFacing
-          }
+          },
+          session,
+          operation
         );
+        if (!operation.isActive()) return;
       } else {
+        if (!operation.isActive()) return;
         setUploadPipeline(prev => ({
           ...prev,
           savedPropertyId: propertyId,
@@ -1112,7 +1234,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           undefined,
           'PROPERTY'
         );
-        void singleDraft.onPublishSuccess(propertyId);
+        void singleDraft.onPublishSuccess(propertyId, session);
         // Reset single-property transient form state after confirmed success
         setNewBhkLabel('');
         if (singleMicBaseTextRef.current) {
@@ -1126,6 +1248,29 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         setDbSaveSuccessMsg(null);
       }
     } catch (err: unknown) {
+      if (withdrawSingleProtectedWork(
+        err,
+        session,
+        'You no longer have permission to publish this property.'
+      )) return;
+      if (!operation.isActive()) return;
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) {
+        handleClearSingleDraftState();
+        setUploadPipeline(prev => ({
+          ...prev,
+          active: false,
+          stage: 'failure',
+          errorMessage: getErrorMessage(err, 'You no longer have permission to publish this property.')
+        }));
+        if ((err as any)?.status === 403) {
+          showErrorDialog({
+            title: 'Property access denied',
+            message: getErrorMessage(err, 'You no longer have permission to publish this property.'),
+            details: getErrorDetails(err)
+          });
+        }
+        return;
+      }
       console.warn('Backend endpoint status notice:', err);
       const message = getErrorMessage(err, 'Please check the required property details and try again.');
       setUploadPipeline(prev => ({
@@ -1141,7 +1286,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       });
       setDbSaveSuccessMsg(`⚡ Action needed: ${message}`);
     } finally {
-      setIsSavingDb(false);
+      if (operation.isActive()) {
+        setIsSavingDb(false);
+      }
     }
   };
 
@@ -1355,12 +1502,17 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const handleCloudinaryPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const files = Array.from(e.target.files);
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = singleDraft.captureProtectedOperation(session);
+    if (!operation) return;
     setIsUploadingCloudinary(true);
     setUploadStatusMsg(`Uploading ${files.length === 1 ? 'photo' : 'photos'}…`);
 
     const uploadPendingPhotos = async (pendingFiles: File[]) => {
       const failedFiles: File[] = [];
       const failureMessages: string[] = [];
+      let authorizationLost = false;
       setIsUploadingCloudinary(true);
 
       for (let index = 0; index < pendingFiles.length; index += 1) {
@@ -1376,18 +1528,32 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             vastuFacing: mediaVastu
           }, {
             onProgress: (progress) => {
+              if (!operation.isActive()) return;
               const overallProgress = Math.round(((index + (progress.percent / 100)) / pendingFiles.length) * 100);
               setUploadStatusMsg(progress.stage === 'retrying'
                 ? `Connection interrupted. Retrying photo… ${overallProgress}%`
                 : `Uploading photos… ${overallProgress}%`);
             }
-          });
+          }, session);
+          if (!operation.isActive()) return;
         } catch (error) {
+          if (withdrawSingleProtectedWork(
+            error,
+            session,
+            'You no longer have permission to upload property media.'
+          )) {
+            authorizationLost = true;
+            setIsUploadingCloudinary(false);
+            handleClearSingleDraftState();
+            return;
+          }
+          if (!operation.isActive()) return;
           failedFiles.push(file);
           failureMessages.push(getErrorMessage(error, `${file.name} could not be uploaded.`));
         }
       }
 
+      if (authorizationLost || !operation.isActive()) return;
       setIsUploadingCloudinary(false);
       if (failedFiles.length > 0) {
         setUploadStatusMsg(`${failedFiles.length} ${failedFiles.length === 1 ? 'photo needs' : 'photos need'} another attempt.`);
@@ -1397,7 +1563,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           details: failureMessages.join(' • '),
           action: {
             label: 'Retry failed photos',
-            onClick: () => void uploadPendingPhotos(failedFiles)
+            onClick: () => {
+              if (operation.isActive()) void uploadPendingPhotos(failedFiles);
+            }
           }
         });
         return;
@@ -1413,6 +1581,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const handleCloudinaryVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = singleDraft.captureProtectedOperation(session);
+    if (!operation) return;
     setIsUploadingCloudinary(true);
     setUploadStatusMsg('Uploading walkthrough video…');
 
@@ -1428,13 +1600,27 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           priceTag: mediaPriceTag,
           vastuFacing: mediaVastu
         }, {
-          onProgress: (progress) => setUploadStatusMsg(progress.stage === 'retrying'
-            ? `Connection interrupted. Retrying video… ${progress.percent}%`
-            : `Uploading walkthrough video… ${progress.percent}%`)
-        });
+          onProgress: (progress) => {
+            if (!operation.isActive()) return;
+            setUploadStatusMsg(progress.stage === 'retrying'
+              ? `Connection interrupted. Retrying video… ${progress.percent}%`
+              : `Uploading walkthrough video… ${progress.percent}%`);
+          }
+        }, session);
+        if (!operation.isActive()) return;
         setUploadStatusMsg('✓ Walkthrough video uploaded.');
         notifySuccess('Walkthrough video uploaded', 'The walkthrough video was added to this listing.', undefined, 'PROPERTY');
       } catch (err: unknown) {
+        if (withdrawSingleProtectedWork(
+          err,
+          session,
+          'You no longer have permission to upload this video.'
+        )) {
+          setIsUploadingCloudinary(false);
+          handleClearSingleDraftState();
+          return;
+        }
+        if (!operation.isActive()) return;
         setUploadStatusMsg('The walkthrough video needs another attempt.');
         showErrorDialog({
           title: 'Unable to upload the walkthrough video',
@@ -1442,11 +1628,15 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           details: getErrorDetails(err),
           action: {
             label: 'Retry video',
-            onClick: () => void uploadVideo()
+            onClick: () => {
+              if (operation.isActive()) void uploadVideo();
+            }
           }
         });
       } finally {
-        setIsUploadingCloudinary(false);
+        if (operation.isActive()) {
+          setIsUploadingCloudinary(false);
+        }
       }
     };
 
@@ -1484,11 +1674,23 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
     setIsSubmittingListing(true);
     setPublishSuccessNotification(null);
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) {
+      setIsSubmittingListing(false);
+      return;
+    }
+    const operation = singleDraft.captureProtectedOperation(session);
+    if (!operation) {
+      setIsSubmittingListing(false);
+      return;
+    }
 
     try {
       // Parsing is read-only. The administrator must review the canonical backend
       // result before the separate publish action can create a listing.
-      const parsed = await propertyService.parsePropertyPrompt(newBhkLabel, singleInputSourceRef.current);
+      const parsed = await propertyService.parsePropertyPrompt(
+        newBhkLabel, singleInputSourceRef.current, session);
+      if (!operation.isActive()) return;
       setLastExtractedResult({
         ...parsed,
         rawInput: newBhkLabel,
@@ -1504,6 +1706,33 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         'PROPERTY'
       );
     } catch (err: unknown) {
+      if (withdrawSingleProtectedWork(
+        err,
+        session,
+        'You do not have permission to review property details.'
+      )) {
+        setIsSubmittingListing(false);
+        if ((err as any)?.status === 403) {
+          showErrorDialog({
+            title: 'Property access denied',
+            message: getErrorMessage(err, 'You do not have permission to review property details.'),
+            details: getErrorDetails(err)
+          });
+        }
+        return;
+      }
+      if (!operation.isActive()) return;
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) {
+        handleClearSingleDraftState();
+        if ((err as any)?.status === 403) {
+          showErrorDialog({
+            title: 'Property access denied',
+            message: getErrorMessage(err, 'You do not have permission to review property details.'),
+            details: getErrorDetails(err)
+          });
+        }
+        return;
+      }
       console.error('Failed to parse property listing:', err);
       showErrorDialog({
         title: 'Unable to review property details',
@@ -1511,7 +1740,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         details: getErrorDetails(err)
       });
     } finally {
-      setIsSubmittingListing(false);
+      if (operation.isActive()) {
+        setIsSubmittingListing(false);
+      }
     }
   };
 
@@ -1520,6 +1751,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       f => f.type.startsWith('image/') || f.type.startsWith('video/')
     );
     if (fileArray.length === 0) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = singleDraft.captureProtectedOperation(session);
+    if (!operation) return;
 
     setUploadStatusMsg(`Preparing ${fileArray.length} ${fileArray.length === 1 ? 'file' : 'files'}…`);
     const preparedFiles: File[] = [];
@@ -1528,12 +1763,15 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
     for (const file of fileArray) {
       try {
         const prepared = await prepareMediaForUpload(file);
+        if (!operation.isActive()) return;
         preparedFiles.push(prepared);
       } catch (error) {
+        if (!operation.isActive()) return;
         preparationErrors.push(getErrorMessage(error, `${file.name} could not be prepared.`));
       }
     }
 
+    if (!operation.isActive()) return;
     if (preparedFiles.length > 0) {
       const startIdx = attachedMediaFiles.length;
       const newTags: Record<number, RoomTag> = { ...attachedMediaTags };
@@ -1556,16 +1794,40 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           roomTag: tag,
           isCover: idx === coverPhotoIndex,
           mediaId
-        }).then(staged => {
+        }, session).then(staged => {
+          if (!operation.isActive()) return;
           if (staged && staged.mediaId) {
             (file as any).draftMediaId = staged.mediaId;
             setAttachedDraftMediaIds(prev => ({ ...prev, [idx]: staged.mediaId }));
           }
-        }).catch(err => console.warn('Draft media staging notice:', err));
+        }).catch(err => {
+          if (withdrawSingleProtectedWork(
+            err,
+            session,
+            'You no longer have permission to stage this media.'
+          )) {
+            handleClearSingleDraftState();
+            return;
+          }
+          if (!operation.isActive()) return;
+          if ((err as any)?.status === 401 || (err as any)?.status === 403) {
+            handleClearSingleDraftState();
+            if ((err as any)?.status === 403) {
+              showErrorDialog({
+                title: 'Media access denied',
+                message: getErrorMessage(err, 'You no longer have permission to stage this media.'),
+                details: getErrorDetails(err)
+              });
+            }
+            return;
+          }
+          console.warn('Draft media staging notice:', err);
+        });
       });
     }
 
     if (preparationErrors.length > 0) {
+      if (!operation.isActive()) return;
       showErrorDialog({
         title: preparedFiles.length > 0 ? 'Some media could not be added' : 'Media could not be added',
         message: preparedFiles.length > 0
@@ -1857,7 +2119,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           {canReviewVisitOutcomes && activeTab === 'visit-outcomes' && <OperationsVisitOutcomePanel />}
 
           {/* THE SAME OE WORKSPACE USED BY THE EMPLOYEE CONSOLE — AUTHORITY IS SERVER-VERIFIED */}
-          {activeTab === 'operations' && <OperationsWorkspace authority={operationsAuthority} />}
+          {activeTab === 'operations' && <OperationsWorkspace authority={operationsAuthority} layout="embedded" />}
 
           {activeTab === 'failed-uploads' && (
             <FailedUploadsPanel onCountChange={refreshFailedUploadsCount} />
@@ -1913,6 +2175,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                             drafts={singleDraft.draftsList}
                             isLoadingDrafts={singleDraft.isLoadingDrafts}
                             onSelectDraft={async (id) => {
+                              const operation = singleDraft.captureProtectedOperation();
+                              if (!operation) return;
                               const selected = singleDraft.draftsList.find((d) => d.draftId === id);
                               const isBatch = selected ? selected.draftType === 'BATCH' : id.includes('batch');
                               const isPublishing = selected?.status === 'PUBLISHING';
@@ -1921,10 +2185,11 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                               // reconciliation to run before switching modes or mounting workspaces!
                               if (isPublishing) {
                                 try {
-                                  const detail = await draftService.getDraft(id);
+                                  const detail = await draftService.getDraft(id, operation.session);
+                                  if (!operation.isActive()) return;
                                   if (detail && detail.status === 'PUBLISHED') {
                                     handleDraftAlreadyPublished(detail);
-                                    await singleDraft.refreshDraftsList();
+                                    await singleDraft.refreshDraftsList(operation.session);
                                     return;
                                   }
                                 } catch (err) {

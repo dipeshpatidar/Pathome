@@ -161,7 +161,7 @@ public class PropertyDraftController {
         if (streamInfo.contentLength() > 0) {
             headers.setContentLength(streamInfo.contentLength());
         }
-        headers.set(HttpHeaders.CACHE_CONTROL, "private, max-age=3600");
+        headers.set(HttpHeaders.CACHE_CONTROL, "no-store");
 
         return new ResponseEntity<>(new InputStreamResource(streamInfo.inputStream()), headers, HttpStatus.OK);
     }

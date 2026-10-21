@@ -19,13 +19,17 @@ class FailedUploadServiceTest {
 
     private MediaUploadFailureRepository repository;
     private MediaStagingService mediaStagingService;
+    private BackOfficePropertyAuthority propertyAuthority;
     private FailedUploadService service;
 
     @BeforeEach
     void setUp() {
         repository = mock(MediaUploadFailureRepository.class);
         mediaStagingService = mock(MediaStagingService.class);
-        service = new FailedUploadService(repository, mediaStagingService);
+        propertyAuthority = mock(BackOfficePropertyAuthority.class);
+        service = new FailedUploadService(repository, mediaStagingService, propertyAuthority);
+        lenient().when(repository.findByIdForUpdate(anyLong())).thenAnswer(invocation ->
+                repository.findById(invocation.getArgument(0)));
     }
 
     private FailedUploadService.UploadFailureContext makeContext(String uploadRequestId) {
@@ -103,6 +107,18 @@ class FailedUploadServiceTest {
     }
 
     @Test
+    void markRetrying_holdsRecoveryAuthorityWithinItsCommittingTransaction() {
+        when(repository.markRetryingIfFailed(1L)).thenReturn(1);
+
+        assertTrue(service.markRetrying(1L));
+
+        org.mockito.InOrder order = inOrder(propertyAuthority, repository);
+        order.verify(propertyAuthority).holdEvidenceForCurrentMutation(
+                BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
+        order.verify(repository).markRetryingIfFailed(1L);
+    }
+
+    @Test
     void markRetrying_withNullId_returnsFalse() {
         boolean result = service.markRetrying(null);
         assertFalse(result);
@@ -114,6 +130,7 @@ class FailedUploadServiceTest {
         MediaUploadFailure failure = new MediaUploadFailure();
         failure.setStatus("RETRYING");
         failure.setUploadRequestId("media-42-abc");
+        failure.setListingId(42L);
         when(repository.findById(5L)).thenReturn(Optional.of(failure));
         when(repository.saveAndFlush(any())).thenReturn(failure);
 
@@ -131,6 +148,37 @@ class FailedUploadServiceTest {
 
         service.dismiss(3L);
         assertEquals("DISMISSED", failure.getStatus());
+    }
+
+    @Test
+    void dismiss_holdsRecoveryAuthorityWithinItsCommittingTransaction() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("FAILED");
+        when(repository.findById(3L)).thenReturn(Optional.of(failure));
+        when(repository.saveAndFlush(any())).thenReturn(failure);
+
+        service.dismiss(3L);
+
+        org.mockito.InOrder order = inOrder(propertyAuthority, repository);
+        order.verify(propertyAuthority).holdEvidenceForCurrentMutation(
+                BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
+        order.verify(repository).findByIdForUpdate(3L);
+    }
+
+    @Test
+    void recordResolution_holdsAssociatedMediaAuthorityWithinItsCommittingTransaction() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("RETRYING");
+        failure.setListingId(42L);
+        when(repository.findById(5L)).thenReturn(Optional.of(failure));
+        when(repository.saveAndFlush(any())).thenReturn(failure);
+
+        service.recordResolution(5L, "https://cdn.example/img.webp");
+
+        org.mockito.InOrder order = inOrder(propertyAuthority, repository);
+        order.verify(propertyAuthority).holdEvidenceForCurrentMutation(
+                BackOfficePropertyAuthority.Action.UPLOADER_MEDIA);
+        order.verify(propertyAuthority).requireUploaderMediaById(42L);
     }
 
     @Test
@@ -157,6 +205,7 @@ class FailedUploadServiceTest {
         MediaUploadFailure failure = new MediaUploadFailure();
         failure.setStatus("FAILED");
         failure.setStagingObjectKey("staging/req-123/img.webp");
+        failure.setListingId(42L);
         when(repository.findById(10L)).thenReturn(Optional.of(failure));
         when(repository.saveAndFlush(any())).thenReturn(failure);
 
@@ -185,6 +234,7 @@ class FailedUploadServiceTest {
         MediaUploadFailure failure = new MediaUploadFailure();
         failure.setStatus("FAILED");
         failure.setStagingObjectKey("staging/req-789/img.webp");
+        failure.setListingId(42L);
         when(repository.findById(12L)).thenReturn(Optional.of(failure));
         when(repository.saveAndFlush(any())).thenReturn(failure);
 
@@ -193,5 +243,16 @@ class FailedUploadServiceTest {
 
         assertDoesNotThrow(() -> service.recordResolution(12L, "https://cdn.example/resolved.webp"));
         assertEquals("RESOLVED", failure.getStatus());
+    }
+
+    @Test
+    void recordResolution_withoutAPropertyRelationshipFailsClosed() {
+        MediaUploadFailure failure = new MediaUploadFailure();
+        failure.setStatus("RETRYING");
+        when(repository.findById(13L)).thenReturn(Optional.of(failure));
+
+        assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> service.recordResolution(13L, "https://cdn.example/resolved.webp"));
+        verify(repository, never()).saveAndFlush(any());
     }
 }

@@ -28,6 +28,7 @@ import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
@@ -49,6 +50,7 @@ import java.util.*;
 import java.time.LocalDate;
 import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -93,6 +95,9 @@ public class PropertyControllerTest {
     private PropertyVisitRequestRepository propertyVisitRequestRepository;
 
     @Mock
+    private BackOfficePropertyAuthority backOfficePropertyAuthority;
+
+    @Mock
     private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
 
     @InjectMocks
@@ -104,6 +109,32 @@ public class PropertyControllerTest {
         propertyController.setDraftRepository(draftRepository);
         propertyController.setLocalityRepository(localityRepository);
         propertyController.setTrustedOperationalIntakeService(trustedOperationalIntakeService);
+        BackOfficePropertyAuthority.Actor actor = new BackOfficePropertyAuthority.Actor(
+                new UsernamePasswordAuthenticationToken("admin@pathome.in", null,
+                        List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))),
+                1L, "admin@pathome.in", "ROLE_ADMIN");
+        lenient().when(backOfficePropertyAuthority.require(any()))
+                .thenReturn(actor);
+        lenient().when(backOfficePropertyAuthority.requireForMutation(any(), any()))
+                .thenReturn(actor);
+        lenient().when(backOfficePropertyAuthority.requireDraft(any(), anyString()))
+                .thenReturn(actor);
+        lenient().when(backOfficePropertyAuthority.requireUploaderMedia(any()))
+                .thenReturn(actor);
+        lenient().when(backOfficePropertyAuthority.withListingMutation(
+                        any(), anyLong(), any(Function.class)))
+                .thenAnswer(invocation -> {
+                    Function<Listing, Object> mutation = invocation.getArgument(2);
+                    Long listingId = invocation.getArgument(1);
+                    Listing listing = listingRepository.findById(listingId)
+                            .orElseGet(RentalDetails::new);
+                    return mutation.apply(listing);
+                });
+        lenient().doAnswer(invocation -> {
+            Runnable mutation = invocation.getArgument(1);
+            mutation.run();
+            return null;
+        }).when(backOfficePropertyAuthority).withMutationEvidence(any(), any(Runnable.class));
     }
 
     @Test
@@ -590,6 +621,41 @@ public class PropertyControllerTest {
     }
 
     @Test
+    public void authorizationDenialAfterTransferCannotBecomeASuccessfulWinningAssetReplay() {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(20L);
+        PropertyMediaAsset raceAsset = new PropertyMediaAsset();
+        raceAsset.setListingId(20L);
+        raceAsset.setUploadRequestId("media-20-denied1");
+        raceAsset.setMediaUrl("https://cdn.example/private.webp");
+
+        when(listingRepository.findById(20L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdAndUploadRequestId(20L, "media-20-denied1"))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(raceAsset));
+        when(cloudinaryService.uploadImage(any(), eq("media-20-denied1")))
+                .thenReturn("https://cdn.example/private.webp");
+        doThrow(new org.springframework.security.access.AccessDeniedException("revoked"))
+                .when(backOfficePropertyAuthority).withListingMutation(
+                        eq(BackOfficePropertyAuthority.Action.UPLOADER_MEDIA), eq(20L), any(Function.class));
+
+        assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> propertyController.uploadTaggedMediaAsset(
+                        20L,
+                        new MockMultipartFile("file", "photo.webp", "image/webp", new byte[]{1}),
+                        "GENERAL",
+                        "IMAGE",
+                        "Caption",
+                        false,
+                        "Vijay Nagar",
+                        "₹20,000",
+                        "North Facing",
+                        "media-20-denied1"
+                ));
+        verify(failedUploadService, never()).recordFailure(any());
+    }
+
+    @Test
     public void createFromParsedPromptRejectsUnreviewedData() {
         ParsedPropertyDTO dto = new ParsedPropertyDTO();
         dto.setBhk("2 BHK");
@@ -771,6 +837,7 @@ public class PropertyControllerTest {
         com.indore.pathome.spaces.entity.PropertyUploadDraft existingDraft =
                 new com.indore.pathome.spaces.entity.PropertyUploadDraft();
         existingDraft.setDraftId("draft-published-xyz");
+        existingDraft.setAdminId("admin@pathome.in");
         existingDraft.setPublishedPropertyId(42L);
         existingDraft.setStatus("PUBLISHED");
 
@@ -805,8 +872,15 @@ public class PropertyControllerTest {
         RentalDetails existingListing = new RentalDetails();
         existingListing.setId(77L);
         existingListing.setOriginDraftId("draft-persisted-db-77");
+        com.indore.pathome.spaces.entity.PropertyUploadDraft existingDraft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        existingDraft.setDraftId("draft-persisted-db-77");
+        existingDraft.setAdminId("admin@pathome.in");
+        existingDraft.setStatus("PUBLISHING");
 
         when(listingRepository.findByOriginDraftId("draft-persisted-db-77")).thenReturn(Optional.of(existingListing));
+        when(draftRepository.findByDraftIdForUpdate("draft-persisted-db-77"))
+                .thenReturn(Optional.of(existingDraft));
 
         ResponseEntity<Map<String, Object>> response = propertyController.createFromParsedPrompt(dto);
 
@@ -816,6 +890,48 @@ public class PropertyControllerTest {
         assertEquals(77L, response.getBody().get("propertyId"));
 
         verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    public void createFromParsedPrompt_foreignDraftReplayIsDeniedBeforePrivateListingDisclosure() {
+        ParsedPropertyDTO dto = new ParsedPropertyDTO();
+        dto.setAdminVerified(true);
+        dto.setDraftId("draft-owned-by-admin-a");
+        dto.setTitle("2 BHK Apartment");
+        dto.setBhk("2 BHK");
+        dto.setType("Flat");
+        dto.setCity("Indore");
+        dto.setSector("Vijay Nagar");
+        dto.setOwnerPhone("+91 98260 12345");
+        dto.setRentAmount(25000.0);
+        dto.setDepositVal("50000 Security Deposit");
+
+        com.indore.pathome.spaces.entity.PropertyUploadDraft foreignDraft =
+                new com.indore.pathome.spaces.entity.PropertyUploadDraft();
+        foreignDraft.setDraftId("draft-owned-by-admin-a");
+        foreignDraft.setAdminId("admin-a@pathome.test");
+        foreignDraft.setStatus("PUBLISHING");
+        RentalDetails foreignListing = new RentalDetails();
+        foreignListing.setId(77L);
+        foreignListing.setOriginDraftId("draft-owned-by-admin-a");
+
+        when(draftRepository.findByDraftIdForUpdate("draft-owned-by-admin-a"))
+                .thenReturn(Optional.of(foreignDraft));
+        when(listingRepository.findByOriginDraftId("draft-owned-by-admin-a"))
+                .thenReturn(Optional.of(foreignListing));
+
+        UsernamePasswordAuthenticationToken adminB = new UsernamePasswordAuthenticationToken(
+                "admin-b@pathome.test", null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        adminB.setDetails(new PathomeAuthenticationDetails(new MockHttpServletRequest(), 2L));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(adminB);
+
+        try {
+            assertThrows(jakarta.persistence.EntityNotFoundException.class,
+                    () -> propertyController.createFromParsedPrompt(dto));
+            verify(listingRepository, never()).findByOriginDraftId("draft-owned-by-admin-a");
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
     }
 
     @Test
@@ -840,6 +956,7 @@ public class PropertyControllerTest {
         com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
                 new com.indore.pathome.spaces.entity.PropertyUploadDraft();
         draft.setDraftId("draft-race-condition");
+        draft.setAdminId("admin@pathome.in");
         draft.setStatus("DRAFT");
         draft.setPublishedPropertyId(null);
         when(draftRepository.findByDraftIdForUpdate("draft-race-condition")).thenReturn(Optional.of(draft));
@@ -885,20 +1002,8 @@ public class PropertyControllerTest {
 
         when(draftRepository.findByDraftIdForUpdate("draft-admin-b-only")).thenReturn(Optional.of(draft));
 
-        // Mock current authenticated user as admin-a@pathome.in
-        org.springframework.security.core.Authentication auth = mock(org.springframework.security.core.Authentication.class);
-        when(auth.getName()).thenReturn("admin-a@pathome.in");
-        org.springframework.security.core.context.SecurityContext context = mock(org.springframework.security.core.context.SecurityContext.class);
-        when(context.getAuthentication()).thenReturn(auth);
-        org.springframework.security.core.context.SecurityContextHolder.setContext(context);
-
-        try {
-            assertThrows(org.springframework.security.access.AccessDeniedException.class, () ->
-                    propertyController.createFromParsedPrompt(dto)
-            );
-        } finally {
-            org.springframework.security.core.context.SecurityContextHolder.clearContext();
-        }
+        assertThrows(jakarta.persistence.EntityNotFoundException.class, () ->
+                propertyController.createFromParsedPrompt(dto));
     }
 
     @Test
@@ -920,6 +1025,7 @@ public class PropertyControllerTest {
         com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
                 new com.indore.pathome.spaces.entity.PropertyUploadDraft();
         draft.setDraftId("draft-new-123");
+        draft.setAdminId("admin@pathome.in");
         draft.setStatus("DRAFT");
         draft.setPublishedPropertyId(null);
 
@@ -961,6 +1067,7 @@ public class PropertyControllerTest {
         com.indore.pathome.spaces.entity.PropertyUploadDraft draft =
                 new com.indore.pathome.spaces.entity.PropertyUploadDraft();
         draft.setDraftId("draft-retain-456");
+        draft.setAdminId("admin@pathome.in");
         draft.setStatus("DRAFT");
         draft.setPayload("{\"title\":\"2 BHK Apartment\",\"details\":\"preserved\"}");
         draft.setItemCount(1);

@@ -23,14 +23,25 @@ import {
   Clock
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
-import { getErrorDetails, getErrorMessage } from '../services/apiError';
+import { createApiRequestError, getErrorDetails, getErrorMessage } from '../services/apiError';
 import { describeMediaLimits, prepareMediaForUpload } from '../utils/imageOptimizer';
 import { useNotification } from '../context/NotificationContext';
 import { RoomTag, ROOM_TAG_OPTIONS, DEFAULT_SMART_TAG_SEQUENCE } from '../types';
 import { DraftManagementBar } from './DraftManagementBar';
-import { usePropertyDraft, CompletedListingSummary } from '../hooks/usePropertyDraft';
+import {
+  usePropertyDraft,
+  CompletedListingSummary,
+  UploaderOperationGuard
+} from '../hooks/usePropertyDraft';
 import { draftService, DraftMedia, DraftDetail } from '../services/draftService';
 import { countDetectedProperties } from '../utils/propertyPromptComposer';
+import {
+  UploaderSession,
+  captureUploaderSession,
+  isUploaderSessionActive,
+  isUploaderSessionChangedError,
+  subscribeUploaderSession
+} from '../utils/uploaderSession';
 
 export interface StagedMediaItem {
   id: string;
@@ -504,6 +515,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const parseRequestIdRef = useRef(0);
   const inputSourceRef = useRef<'TYPED' | 'DICTATED' | 'MIXED'>('TYPED');
   const stagedCardsRef = useRef<StagedProperty[]>(stagedCards);
+  const withdrawBatchDenialRef = useRef<(
+    error: unknown,
+    session: UploaderSession,
+    fallbackMessage: string
+  ) => boolean>(() => false);
 
   useEffect(() => {
     stagedCardsRef.current = stagedCards;
@@ -522,6 +538,19 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     });
   }, []);
 
+  useEffect(() => subscribeUploaderSession((reason) => {
+    if (reason === 'session-expired') return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = batchDraft.captureProtectedOperation(session);
+    if (!operation) return;
+    stagedCardsRef.current.forEach(revokeCardMediaUrls);
+    setStagedCards([]);
+    setIsParsing(false);
+    setIsPublishing(false);
+    setPublishingCardId(null);
+  }), [revokeCardMediaUrls]);
+
   useEffect(() => {
     return () => {
       stagedCardsRef.current.forEach(revokeCardMediaUrls);
@@ -531,8 +560,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const pendingSingleMediaRef = useRef<DraftMedia[]>([]);
 
   // Admin Draft & Recovery System for Batch Upload
-  const handleRestoreBatchDraft = useCallback(async (payload: any, media?: DraftMedia[]) => {
+  const handleRestoreBatchDraft = useCallback(async (
+    payload: any,
+    media: DraftMedia[] | undefined,
+    session: UploaderSession,
+    operation: UploaderOperationGuard
+  ) => {
     if (!payload) return;
+    if (!operation.isActive()) return;
     if (typeof payload.rawPrompts === 'string') {
       rawPromptsRef.current = payload.rawPrompts;
       parsedPromptsRef.current = payload.rawPrompts;
@@ -612,15 +647,42 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         });
 
         const stagedMedia = Array.from(mergedMediaMap.values());
-        return {
+        const normalizedCard: StagedProperty = {
           ...card,
+          id: typeof card.id === 'string' && card.id ? card.id : `restored-card-${idx + 1}`,
+          title: typeof card.title === 'string' ? card.title : '',
+          description: typeof card.description === 'string' ? card.description : '',
+          bhk: typeof card.bhk === 'string' ? card.bhk : '',
+          type: typeof card.type === 'string' ? card.type : '',
+          status: typeof card.status === 'string' ? card.status : 'ACTIVE',
+          city: typeof card.city === 'string' ? card.city : '',
+          sector: typeof card.sector === 'string' ? card.sector : '',
+          ownerPhone: typeof card.ownerPhone === 'string' ? card.ownerPhone : '',
+          rentAmount: typeof card.rentAmount === 'number' ? card.rentAmount : 0,
+          depositVal: typeof card.depositVal === 'string' ? card.depositVal : '',
           floor: typeof card.floor === 'number' ? card.floor : null,
           totalFloors: typeof card.totalFloors === 'number' ? card.totalFloors : null,
           preferredTenants: Array.isArray(card.preferredTenants) ? card.preferredTenants : [],
+          amenities: Array.isArray(card.amenities) ? card.amenities : [],
+          parserMissingFields: Array.isArray(card.parserMissingFields) ? card.parserMissingFields : [],
+          conflicts: Array.isArray(card.conflicts) ? card.conflicts : [],
+          appliedAmendments: Array.isArray(card.appliedAmendments) ? card.appliedAmendments : [],
+          missingFields: Array.isArray(card.missingFields) ? card.missingFields : [],
+          mediaUrls: Array.isArray(card.mediaUrls) ? card.mediaUrls : [],
           stagedMedia,
           localPhotos: stagedMedia.map((m) => m.file).filter(Boolean) as File[],
-          localPhotoPreviews: stagedMedia.map((m) => m.previewUrl).filter(Boolean)
+          localPhotoPreviews: stagedMedia.map((m) => m.previewUrl).filter(Boolean),
+          isConfirmed: Boolean(card.isConfirmed),
+          failedMediaFiles: Array.isArray(card.failedMediaFiles) ? card.failedMediaFiles : [],
+          mediaUploadStatus: card.mediaUploadStatus || 'idle',
+          mediaUploadProgress: typeof card.mediaUploadProgress === 'number'
+            ? card.mediaUploadProgress
+            : 0,
+          mediaUploadMessage: typeof card.mediaUploadMessage === 'string'
+            ? card.mediaUploadMessage
+            : ''
         };
+        return validateCard(normalizedCard);
       });
 
       setStagedCards(restoredCards);
@@ -630,7 +692,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       // Background binary File download from B2 staging to reconstruct File objects
       if (serverMedia.length > 0) {
-        draftService.restoreMediaFiles(serverMedia).then((restored) => {
+        draftService.restoreMediaFiles(serverMedia, undefined, session, operation).then((restored) => {
+          if (!operation.isActive()) return;
           if (restored.byMediaId && restored.byMediaId.size > 0) {
             setStagedCards((current) =>
               current.map((c) => {
@@ -654,6 +717,13 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
             );
           }
         }).catch((err) => {
+          const withdrawn = withdrawBatchDenialRef.current(
+            err,
+            session,
+            'You no longer have permission to restore these properties.'
+          );
+          if (withdrawn) return;
+          if (!operation.isActive()) return;
           console.warn('Background batch media restoration notice:', err);
         });
       }
@@ -670,6 +740,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     setDetectedCount(0);
     setActiveCardId(null);
     setMobileWorkspaceView('descriptions');
+    setIsParsing(false);
+    setIsPublishing(false);
+    setPublishingCardId(null);
   }, [revokeCardMediaUrls]);
 
   const handleBatchDraftAlreadyPublished = useCallback((
@@ -690,6 +763,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     onClearDraftState: handleClearBatchDraftState,
     onDraftAlreadyPublished: handleBatchDraftAlreadyPublished
   });
+
+  useEffect(() => {
+    withdrawBatchDenialRef.current = (error, session, fallbackMessage) =>
+      batchDraft.withdrawCurrentSessionDenial(error, session, fallbackMessage);
+  }, [batchDraft.withdrawCurrentSessionDenial]);
 
   useEffect(() => {
     if (isPublishing) return;
@@ -952,6 +1030,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
   const parseBatchDetails = useCallback(async (details: string) => {
     if (!details.trim()) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = batchDraft.captureProtectedOperation(session);
+    if (!operation) return;
 
     // Publication recovery guard: Stable card identity invariant.
     // If the draft has completed listings or any staged card with publishedId,
@@ -967,7 +1049,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     initialMediaAddedRef.current = false;
 
     try {
-      const dtos = await propertyService.parseBatchPrompts(details, inputSourceRef.current);
+      const dtos = await propertyService.parseBatchPrompts(details, inputSourceRef.current, session);
+      if (!batchDraft.isProtectedOperationActive(operation)) return;
       const mapped: StagedProperty[] = dtos.map((dto: any, idx: number) => {
         const card: StagedProperty = {
           id: `staged-${idx}-${Date.now()}`,
@@ -1023,6 +1106,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       });
 
       if (requestId !== parseRequestIdRef.current || rawPromptsRef.current !== details) return;
+      if (!operation.isActive()) return;
 
       parsedPromptsRef.current = details;
       if (pendingSingleMediaRef.current.length > 0 && mapped.length > 0) {
@@ -1030,7 +1114,16 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         const unassignedServerMedia = pendingSingleMediaRef.current;
         pendingSingleMediaRef.current = [];
         const activeDraftId = initialDraftId || batchDraft.ensureDraftId();
-        void draftService.reassignCardMedia(activeDraftId, firstCardId);
+        void draftService.reassignCardMedia(activeDraftId, firstCardId, session).catch((error) => {
+          if (batchDraft.withdrawCurrentSessionDenial(
+            error,
+            session,
+            'You no longer have permission to attach these property files.'
+          )) return;
+          if (operation.isActive()) {
+            console.warn('Unable to reassign staged media after parsing:', error);
+          }
+        });
 
         mapped[0].stagedMedia = unassignedServerMedia.map((m) => ({
           id: m.mediaId,
@@ -1050,6 +1143,23 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         setMobileWorkspaceView('review');
       }
     } catch (err: unknown) {
+      if (batchDraft.withdrawCurrentSessionDenial(
+        err,
+        session,
+        'You do not have permission to review these properties.'
+      )) return;
+      if (!operation.isActive()) return;
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) {
+        handleClearBatchDraftState();
+        if ((err as any)?.status === 403) {
+          showErrorDialog({
+            title: 'Property access denied',
+            message: getErrorMessage(err, 'You do not have permission to review these properties.'),
+            details: getErrorDetails(err)
+          });
+        }
+        return;
+      }
       console.error('Failed to parse batch prompts:', err);
       showErrorDialog({
         title: 'Unable to review these properties',
@@ -1057,11 +1167,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         details: getErrorDetails(err)
       });
     } finally {
-      if (requestId === parseRequestIdRef.current) {
+      if (operation.isActive() && requestId === parseRequestIdRef.current) {
         setIsParsing(false);
       }
     }
-  }, [showErrorDialog, completedListings, stagedCards]);
+  }, [batchDraft, showErrorDialog, completedListings, stagedCards]);
 
   useEffect(() => {
     if (!initialDetails.trim() || importedDetailsRef.current === initialDetails) return;
@@ -1092,18 +1202,34 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     const fileArray = Array.from(files).filter(
       (file) => file.type.startsWith('image/') || file.type.startsWith('video/')
     );
+    if (fileArray.length === 0) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = batchDraft.captureProtectedOperation(session);
+    if (!operation) return;
     const compressedFiles: File[] = [];
     const previews: string[] = [];
+    const revokePreviews = () => previews.forEach((url) => {
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    });
 
     const preparationErrors: string[] = [];
     for (const file of fileArray) {
       try {
         const preparedFile = await prepareMediaForUpload(file);
+        if (!operation.isActive()) {
+          revokePreviews();
+          return;
+        }
         compressedFiles.push(preparedFile);
         previews.push(URL.createObjectURL(preparedFile));
       } catch (error) {
         preparationErrors.push(getErrorMessage(error, `${file.name} could not be prepared.`));
       }
+    }
+    if (!operation.isActive()) {
+      revokePreviews();
+      return;
     }
 
     const draftId = batchDraft.ensureDraftId();
@@ -1162,7 +1288,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         roomTag,
         isCover,
         mediaId
-      }).then((staged) => {
+      }, session).then((staged) => {
+        if (!operation.isActive()) return;
         if (staged?.mediaId) {
           (file as any).draftMediaId = staged.mediaId;
           setStagedCards((current) =>
@@ -1178,6 +1305,12 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           );
         }
       }).catch((err) => {
+        if (batchDraft.withdrawCurrentSessionDenial(
+          err,
+          session,
+          'You no longer have permission to stage this property media.'
+        )) return;
+        if (!operation.isActive()) return;
         console.warn(`Draft media staging notice for card [${cardId}]:`, err);
         setStagedCards((current) =>
           current.map((card) => {
@@ -1194,6 +1327,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
 
     if (preparationErrors.length > 0) {
+      if (!operation.isActive()) return;
       showErrorDialog({
         title: compressedFiles.length > 0 ? 'Some media could not be added' : 'Media could not be added',
         message: compressedFiles.length > 0
@@ -1241,7 +1375,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const handleRemoveStagedMedia = (cardId: string, mediaId: string) => {
     const draftId = batchDraft.currentDraftId;
     if (draftId && mediaId) {
-      draftService.deleteMedia(draftId, mediaId).catch((err) => {
+      const session = captureUploaderSession();
+      if (!session || !isUploaderSessionActive(session)) return;
+      draftService.deleteMedia(draftId, mediaId, session).catch((err) => {
+        if (batchDraft.withdrawCurrentSessionDenial(
+          err,
+          session,
+          'You no longer have permission to remove this property media.'
+        )) return;
         console.warn('Non-fatal media deletion notice from staging:', err);
       });
     }
@@ -1288,8 +1429,22 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     initialMediaAddedRef.current = true;
     if (initialDraftId) {
       const firstCardId = stagedCards[0].id;
-      void draftService.reassignCardMedia(initialDraftId, firstCardId);
+      const session = captureUploaderSession();
+      if (!session || !isUploaderSessionActive(session)) return;
+      const operation = batchDraft.captureProtectedOperation(session);
+      if (!operation) return;
+      void draftService.reassignCardMedia(initialDraftId, firstCardId, session).catch((error) => {
+        if (batchDraft.withdrawCurrentSessionDenial(
+          error,
+          session,
+          'You no longer have permission to attach these property files.'
+        )) return;
+        if (operation.isActive()) {
+          console.warn('Unable to reassign initial draft media:', error);
+        }
+      });
 
+      if (!operation.isActive()) return;
       setStagedCards((current) =>
         current.map((c) => {
           if (c.id !== firstCardId) return c;
@@ -1333,7 +1488,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
 
     void attachMediaToCard(stagedCards[0].id, initialMediaFiles);
-  }, [attachMediaToCard, initialDraftId, initialMediaFiles, stagedCards]);
+  }, [attachMediaToCard, batchDraft, initialDraftId, initialMediaFiles, stagedCards]);
 
   // Direct Clipboard Pasting (Cmd+V / Ctrl+V) onto Active Card
   const handleCardPaste = useCallback(
@@ -1437,8 +1592,18 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const uploadMediaFilesForCard = async (
     card: StagedProperty,
     propertyId: number,
-    mediaItemsToUpload?: StagedMediaItem[]
+    mediaItemsToUpload?: StagedMediaItem[],
+    capturedSession?: UploaderSession | null,
+    capturedOperation?: UploaderOperationGuard | null
   ): Promise<{ failedFiles: File[]; errors: string[] }> => {
+    const session = capturedSession || captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) {
+      throw new Error('The signed-in session changed before media upload started.');
+    }
+    const operation = capturedOperation || batchDraft.captureProtectedOperation(session);
+    if (!operation) {
+      throw new Error('Uploader access was withdrawn before media upload started.');
+    }
     const rawItems = mediaItemsToUpload || card.stagedMedia || [];
     const totalFiles = rawItems.length;
     if (totalFiles === 0) return { failedFiles: [], errors: [] };
@@ -1446,11 +1611,25 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     // Deduplicate against existing assets on the property
     let existingReqIds = new Set<string>();
     try {
-      const existing = await propertyService.fetchTaggedMedia(propertyId);
+      const existing = await propertyService.fetchTaggedMedia(propertyId, session);
+      if (!operation.isActive()) return { failedFiles: [], errors: [] };
       if (Array.isArray(existing)) {
         existing.forEach(a => { if (a.uploadRequestId) existingReqIds.add(a.uploadRequestId); });
       }
-    } catch {}
+    } catch (error) {
+      if (batchDraft.withdrawCurrentSessionDenial(
+        error,
+        session,
+        'You no longer have permission to access this property media.'
+      )) {
+        handleClearBatchDraftState();
+        return { failedFiles: [], errors: [] };
+      }
+      if (!operation.isActive()
+          || (error as any)?.status === 401 || (error as any)?.status === 403) {
+        throw error;
+      }
+    }
 
     const items: StagedMediaItem[] = [];
     let completedCount = 0;
@@ -1465,6 +1644,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     });
 
     if (items.length === 0) {
+      if (!operation.isActive()) return { failedFiles: [], errors: [] };
       setStagedCards((current) => current.map((item) => item.id === card.id
         ? {
             ...item,
@@ -1479,7 +1659,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
     const failedFiles: File[] = [];
     const errors: string[] = [];
+    let authorizationLost = false;
 
+    if (!operation.isActive()) return { failedFiles: [], errors: [] };
     setStagedCards((current) => current.map((item) => item.id === card.id
       ? {
           ...item,
@@ -1516,6 +1698,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         nextIndex += 1;
         const mediaItem = items[fileIndex];
         let file = mediaItem.file;
+        if (!operation.isActive()) {
+          authorizationLost = true;
+          return;
+        }
 
         if (!file && mediaItem.id) {
           const draftId = batchDraft.currentDraftId;
@@ -1523,17 +1709,41 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
             try {
               const streamUrl = draftService.getMediaStreamUrl(draftId, mediaItem.id);
               const res = await fetch(streamUrl, {
-                headers: draftService.getAuthHeaders()
+                headers: draftService.getAuthHeaders(session)
               });
+              if (!operation.isActive()) {
+                authorizationLost = true;
+                return;
+              }
               if (res.ok) {
                 const blob = await res.blob();
+                if (!operation.isActive()) {
+                  authorizationLost = true;
+                  return;
+                }
                 file = new File([blob], getMediaFilename(mediaItem), {
                   type: mediaItem.contentType || (isMediaVideo(mediaItem) ? 'video/mp4' : 'image/jpeg')
                 });
                 (file as any).draftMediaId = mediaItem.id;
                 mediaItem.file = file;
+              } else {
+                throw await createApiRequestError(
+                  res, 'A saved batch preview could not be restored.', false, session.token);
               }
             } catch (err) {
+              if (batchDraft.withdrawCurrentSessionDenial(
+                err,
+                session,
+                'You no longer have permission to restore this property media.'
+              )) {
+                authorizationLost = true;
+                handleClearBatchDraftState();
+                return;
+              }
+              if (!operation.isActive()) {
+                authorizationLost = true;
+                return;
+              }
               console.warn('On-demand stream restore notice:', err);
             }
           }
@@ -1561,6 +1771,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           }, {
             signal: abortController.signal,
             onProgress: (progress) => {
+              if (!operation.isActive()) return;
               const overallProgress = Math.round(
                 ((completedCount + (progress.percent / 100)) / totalFiles) * 100
               );
@@ -1581,11 +1792,26 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
                   }
                 : item));
             }
-          });
+          }, session);
+          if (!operation.isActive()) return;
         } catch (error) {
+          if (batchDraft.withdrawCurrentSessionDenial(
+            error,
+            session,
+            'You no longer have permission to upload this property media.'
+          )) {
+            authorizationLost = true;
+            handleClearBatchDraftState();
+            return;
+          }
+          if (!operation.isActive()) {
+            authorizationLost = true;
+            return;
+          }
           failedFiles.push(file);
           errors.push(getErrorMessage(error, `${getMediaFilename(mediaItem)} could not be uploaded.`));
         } finally {
+          if (!operation.isActive()) return;
           completedCount += 1;
           const overallProgress = Math.round((completedCount / totalFiles) * 100);
           setStagedCards((current) => current.map((item) => item.id === card.id
@@ -1609,6 +1835,9 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     } finally {
       window.removeEventListener('offline', handleOffline);
     }
+    if (authorizationLost || !operation.isActive()) {
+      return { failedFiles: [], errors: [] };
+    }
 
     setStagedCards((current) => current.map((item) => item.id === card.id
       ? {
@@ -1630,6 +1859,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
   const handleRetryCardMedia = async (cardId: string) => {
     const card = stagedCards.find((item) => item.id === cardId);
     if (!card?.publishedId || card.failedMediaFiles.length === 0) return;
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) return;
+    const operation = batchDraft.captureProtectedOperation(session);
+    if (!operation) return;
 
     const itemsToRetry = (card.stagedMedia || []).filter((m) =>
       Boolean(m.file && card.failedMediaFiles.includes(m.file))
@@ -1639,7 +1872,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     setIsPublishing(true);
     batchDraft.suspendAutosave();
     try {
-      const result = await uploadMediaFilesForCard(card, card.publishedId, itemsToRetry);
+      const result = await uploadMediaFilesForCard(
+        card,
+        card.publishedId,
+        itemsToRetry,
+        session,
+        operation
+      );
+      if (!operation.isActive()) return;
       if (result.failedFiles.length > 0) {
         showErrorDialog({
           title: 'Some media still needs attention',
@@ -1653,7 +1893,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       const publishedListingId = card.publishedId;
       let allMediaPersisted = false;
       try {
-        const serverAssets = await propertyService.fetchTaggedMedia(publishedListingId);
+        const serverAssets = await propertyService.fetchTaggedMedia(publishedListingId, session);
+        if (!operation.isActive()) return;
         if (Array.isArray(serverAssets)) {
           const existingReqIds = new Set(
             serverAssets
@@ -1671,6 +1912,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           });
         }
       } catch (err) {
+        if (batchDraft.withdrawCurrentSessionDenial(
+          err,
+          session,
+          'You no longer have permission to verify this property media.'
+        )) {
+          handleClearBatchDraftState();
+          return;
+        }
+        if (!operation.isActive()) return;
         console.warn('[handleRetryCardMedia] Could not verify permanent media assets on server:', err);
       }
 
@@ -1689,11 +1939,12 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       let remainingDraft: any = null;
       try {
-        remainingDraft = await batchDraft.onBatchPublished([card.id], [newlyCompletedItem]);
+        remainingDraft = await batchDraft.onBatchPublished([card.id], [newlyCompletedItem], session);
       } catch (err) {
         console.error('[handleRetryCardMedia] Failed to reconcile retried card:', err);
         return;
       }
+      if (!operation.isActive()) return;
 
       // Revoke object URLs for this completed card
       (card.stagedMedia || []).forEach((item) => {
@@ -1718,7 +1969,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
 
       const isServerBatchComplete = remainingDraft === null || (remainingDraft && remainingDraft.itemCount === 0);
       if (isServerBatchComplete) {
-        await batchDraft.onPublishSuccess();
+        await batchDraft.onPublishSuccess(undefined, session);
         const totalPublishedCount = updatedCompleted.length;
         onSuccess(totalPublishedCount);
 
@@ -1737,8 +1988,10 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         }
       }
     } finally {
-      setIsPublishing(false);
-      batchDraft.resumeAutosave();
+      if (operation.isActive()) {
+        setIsPublishing(false);
+        batchDraft.resumeAutosave();
+      }
     }
   };
 
@@ -1754,6 +2007,16 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
     }
 
     setIsPublishing(true);
+    const session = captureUploaderSession();
+    if (!session || !isUploaderSessionActive(session)) {
+      setIsPublishing(false);
+      return;
+    }
+    const operation = batchDraft.captureProtectedOperation(session);
+    if (!operation) {
+      setIsPublishing(false);
+      return;
+    }
     batchDraft.suspendAutosave();
 
     try {
@@ -1810,7 +2073,8 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           adminVerified: c.isConfirmed
         }));
 
-        res = await propertyService.createBatchProperties(payloadListings, draftId);
+        res = await propertyService.createBatchProperties(payloadListings, draftId, session);
+        if (!operation.isActive()) return;
 
         const createdResults = Array.isArray(res.createdListings)
           ? res.createdListings.filter((item: any) =>
@@ -1852,7 +2116,14 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         );
 
         if (card && card.stagedMedia && card.stagedMedia.length > 0) {
-          const result = await uploadMediaFilesForCard(card, propId, card.stagedMedia);
+          const result = await uploadMediaFilesForCard(
+            card,
+            propId,
+            card.stagedMedia,
+            session,
+            operation
+          );
+          if (!operation.isActive()) return;
           if (result.errors.length > 0) {
             mediaUploadErrors.push(`Property ${card.promptIndex}: ${result.errors.join(', ')}`);
           }
@@ -1866,6 +2137,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
           }
         }
       }
+      if (!operation.isActive()) return;
       setPublishingCardId(null);
 
       // Distinguish cards whose listing and media succeeded completely from those needing attention
@@ -1904,17 +2176,27 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       batchDraft.cancelAutosave();
 
       let remainingDraft: any = null;
-      let reconcileError: 'network' | 'server' | null = null;
+      let reconcileError: 'network' | 'server' | 'authorization' | null = null;
       try {
-        remainingDraft = await batchDraft.onBatchPublished(successfulCardIds, newlyCompleted);
+        remainingDraft = await batchDraft.onBatchPublished(successfulCardIds, newlyCompleted, session);
       } catch (err: unknown) {
+        if (isUploaderSessionChangedError(err) || (err as any)?.status === 401
+            || (err as any)?.status === 403) {
+          reconcileError = 'authorization';
+        } else {
         // Distinguish real network loss (TypeError: Failed to fetch / NetworkError / offline) from
         // server-side errors (HTTP 500, 409 StaleObjectStateException, etc.).
-        const isNetworkLoss =
-          (typeof navigator !== 'undefined' && !navigator.onLine) ||
-          (err instanceof TypeError && /fetch|network|load/i.test((err as TypeError).message)) ||
-          (err as any)?.status === 0;
-        reconcileError = isNetworkLoss ? 'network' : 'server';
+          const isNetworkLoss =
+            (typeof navigator !== 'undefined' && !navigator.onLine) ||
+            (err instanceof TypeError && /fetch|network|load/i.test((err as TypeError).message)) ||
+            (err as any)?.status === 0;
+          reconcileError = isNetworkLoss ? 'network' : 'server';
+        }
+      }
+
+      if (reconcileError === 'authorization' || !operation.isActive()) {
+        handleClearBatchDraftState();
+        return;
       }
 
       if (reconcileError === 'network') {
@@ -1937,6 +2219,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         return;
       }
 
+      if (!operation.isActive()) return;
       // Update completed listings in state
       const updatedCompleted = [...completedListings];
       newlyCompleted.forEach((nc) => {
@@ -1972,7 +2255,7 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
       const failedCreateCount = res ? Number(res.failedCount || 0) : 0;
       if (isServerBatchComplete && mediaUploadErrors.length === 0 && failedCreateCount === 0) {
         // FULL BATCH SUCCESS (confirmed by server tombstone)
-        await batchDraft.onPublishSuccess();
+        await batchDraft.onPublishSuccess(undefined, session);
         const totalPublishedCount = updatedCompleted.length;
         onSuccess(totalPublishedCount);
 
@@ -2011,6 +2294,15 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         });
       }
     } catch (err: unknown) {
+      if (batchDraft.withdrawCurrentSessionDenial(
+        err,
+        session,
+        'You no longer have permission to publish these properties.'
+      )) {
+        handleClearBatchDraftState();
+        return;
+      }
+      if (!operation.isActive()) return;
       console.error('Batch publish failed:', err);
       const isNetworkLoss =
         (typeof navigator !== 'undefined' && !navigator.onLine) ||
@@ -2025,9 +2317,11 @@ export const BatchPropertyIngestionStudio: React.FC<BatchPropertyIngestionStudio
         details: getErrorDetails(err)
       });
     } finally {
-      setPublishingCardId(null);
-      setIsPublishing(false);
-      batchDraft.resumeAutosave();
+      if (operation.isActive()) {
+        setPublishingCardId(null);
+        setIsPublishing(false);
+        batchDraft.resumeAutosave();
+      }
     }
   };
 

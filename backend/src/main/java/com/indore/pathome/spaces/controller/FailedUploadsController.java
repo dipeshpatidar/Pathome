@@ -8,6 +8,7 @@ import com.indore.pathome.spaces.exception.MediaUploadException;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
 import org.slf4j.Logger;
@@ -26,11 +27,12 @@ import java.util.Optional;
 /**
  * Admin REST controller for viewing, retrying, and dismissing failed media upload records.
  *
- * <p>All endpoints require a valid admin JWT (enforced by the Spring Security filter chain and method security).</p>
+ * <p>All endpoints require a live legacy Administrator with an active staff profile and effective global
+ * {@code STAFF_ADMIN} grant. Sub-admins retain only the separately approved uploader and own-draft paths.</p>
  */
 @RestController
 @RequestMapping("/api/v1/admin/failed-uploads")
-@PreAuthorize("hasAnyRole('ADMIN', 'SUB_ADMIN')")
+@PreAuthorize("hasRole('ADMIN')")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class FailedUploadsController {
 
@@ -44,6 +46,7 @@ public class FailedUploadsController {
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final ListingRepository listingRepository;
     private final MediaStagingService mediaStagingService;
+    private final BackOfficePropertyAuthority propertyAuthority;
 
     @org.springframework.beans.factory.annotation.Autowired
     public FailedUploadsController(
@@ -51,20 +54,24 @@ public class FailedUploadsController {
             CloudinaryService cloudinaryService,
             PropertyMediaAssetRepository mediaAssetRepository,
             ListingRepository listingRepository,
-            @org.springframework.beans.factory.annotation.Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
+            @org.springframework.beans.factory.annotation.Qualifier("mediaStagingService") MediaStagingService mediaStagingService,
+            BackOfficePropertyAuthority propertyAuthority) {
         this.failedUploadService = Objects.requireNonNull(failedUploadService);
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository);
         this.listingRepository = Objects.requireNonNull(listingRepository);
         this.mediaStagingService = mediaStagingService;
+        this.propertyAuthority = Objects.requireNonNull(propertyAuthority);
     }
 
     public FailedUploadsController(
             FailedUploadService failedUploadService,
             CloudinaryService cloudinaryService,
             PropertyMediaAssetRepository mediaAssetRepository,
-            ListingRepository listingRepository) {
-        this(failedUploadService, cloudinaryService, mediaAssetRepository, listingRepository, failedUploadService.getMediaStagingService());
+            ListingRepository listingRepository,
+            BackOfficePropertyAuthority propertyAuthority) {
+        this(failedUploadService, cloudinaryService, mediaAssetRepository, listingRepository,
+                failedUploadService.getMediaStagingService(), propertyAuthority);
     }
 
     /**
@@ -161,6 +168,8 @@ public class FailedUploadsController {
             }
             try {
                 return reconcileDatabase(failure);
+            } catch (org.springframework.security.access.AccessDeniedException denied) {
+                throw denied;
             } catch (Exception e) {
                 String diagnostic = MediaUploadException.diagnosticFrom(e);
                 log.warn("Database reconciliation failed [failureId={}]: {}", id, diagnostic);
@@ -189,6 +198,8 @@ public class FailedUploadsController {
 
             try {
                 return retryFromStagedMedia(failure);
+            } catch (org.springframework.security.access.AccessDeniedException denied) {
+                throw denied;
             } catch (MediaUploadException mue) {
                 failedUploadService.recordRetryFailure(id, mue.getSafeReason(), mue.getDiagnostic());
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -219,6 +230,8 @@ public class FailedUploadsController {
 
         try {
             return executeRetryWithFile(failure, file);
+        } catch (org.springframework.security.access.AccessDeniedException denied) {
+            throw denied;
         } catch (MediaUploadException mue) {
             failedUploadService.recordRetryFailure(id, mue.getSafeReason(), mue.getDiagnostic());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
@@ -249,7 +262,11 @@ public class FailedUploadsController {
         RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
 
         // Upsert PropertyMediaAsset without calling Cloudinary again
-        upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_RECONCILED");
+        propertyAuthority.withListingMutation(BackOfficePropertyAuthority.Action.FAILED_UPLOAD, listingId, listing -> {
+            upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag,
+                    "ADMIN_RECONCILED");
+            return null;
+        });
 
         failedUploadService.recordResolution(failure.getId(), cdnUrl);
 
@@ -281,8 +298,15 @@ public class FailedUploadsController {
         MediaType mediaType = safeParseMediaType(failure.getMediaType());
         RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
 
+        failedUploadService.getById(failure.getId())
+                .orElseThrow(() -> new org.springframework.security.access.AccessDeniedException(
+                        "Current administrative authority is required"));
         try {
-            upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_RETRY");
+            propertyAuthority.withListingMutation(BackOfficePropertyAuthority.Action.FAILED_UPLOAD, listingId, listing -> {
+                upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag,
+                        "ADMIN_RETRY");
+                return null;
+            });
             failedUploadService.recordResolution(failure.getId(), cdnUrl);
 
             return ResponseEntity.ok(Map.of(
@@ -290,6 +314,8 @@ public class FailedUploadsController {
                     "mediaUrl", cdnUrl,
                     "listingId", listingId
             ));
+        } catch (org.springframework.security.access.AccessDeniedException denied) {
+            throw denied;
         } catch (Exception dbEx) {
             String dbDiagnostic = MediaUploadException.diagnosticFrom(dbEx);
             log.error("Cloudinary succeeded during staged retry but DB persistence failed [failureId={}]: {}", failure.getId(), dbDiagnostic);
@@ -324,8 +350,15 @@ public class FailedUploadsController {
         }
 
         RoomTag roomTag = safeParseRoomTag(failure.getRoomTag());
+        failedUploadService.getById(failure.getId())
+                .orElseThrow(() -> new org.springframework.security.access.AccessDeniedException(
+                        "Current administrative authority is required"));
         try {
-            upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag, "ADMIN_REPLACE");
+            propertyAuthority.withListingMutation(BackOfficePropertyAuthority.Action.FAILED_UPLOAD, listingId, listing -> {
+                upsertMediaAssetAndGallery(listingId, failure.getUploadRequestId(), cdnUrl, mediaType, roomTag,
+                        "ADMIN_REPLACE");
+                return null;
+            });
             failedUploadService.recordResolution(failure.getId(), cdnUrl);
 
             return ResponseEntity.ok(Map.of(
@@ -333,6 +366,8 @@ public class FailedUploadsController {
                     "mediaUrl", cdnUrl,
                     "listingId", listingId
             ));
+        } catch (org.springframework.security.access.AccessDeniedException denied) {
+            throw denied;
         } catch (Exception dbEx) {
             String dbDiagnostic = MediaUploadException.diagnosticFrom(dbEx);
             log.error("Cloudinary succeeded during replace upload but DB persistence failed [failureId={}]: {}", failure.getId(), dbDiagnostic);

@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -74,6 +76,7 @@ public class FailedUploadService {
 
     private final MediaUploadFailureRepository repository;
     private final MediaStagingService mediaStagingService;
+    private final BackOfficePropertyAuthority propertyAuthority;
 
     private static final int MAX_CACHE_ENTRIES = 5000;
 
@@ -83,13 +86,11 @@ public class FailedUploadService {
     @Autowired
     public FailedUploadService(
             MediaUploadFailureRepository repository,
-            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService) {
+            @Qualifier("mediaStagingService") MediaStagingService mediaStagingService,
+            BackOfficePropertyAuthority propertyAuthority) {
         this.repository = Objects.requireNonNull(repository);
         this.mediaStagingService = mediaStagingService;
-    }
-
-    public FailedUploadService(MediaUploadFailureRepository repository) {
-        this(repository, null);
+        this.propertyAuthority = Objects.requireNonNull(propertyAuthority);
     }
 
     public MediaStagingService getMediaStagingService() {
@@ -165,6 +166,8 @@ public class FailedUploadService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markRetrying(Long failureId) {
         if (failureId == null) return false;
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
+        // This conditional UPDATE is both the FAILED -> RETRYING transition and the recovery-row lock.
         return repository.markRetryingIfFailed(failureId) > 0;
     }
 
@@ -174,14 +177,24 @@ public class FailedUploadService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordResolution(Long failureId, String resolvedUrl) {
-        repository.findById(failureId).ifPresent(failure -> {
+        if (failureId == null) return;
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.UPLOADER_MEDIA);
+        Optional<MediaUploadFailure> observed = repository.findByIdForUpdate(failureId);
+        if (observed.isEmpty()) return;
+        Long listingId = observed.get().getListingId();
+        if (listingId == null) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "A property relationship is required to resolve media recovery");
+        }
+        propertyAuthority.requireUploaderMediaById(listingId);
+        observed.ifPresent(failure -> {
             failure.setStatus("RESOLVED");
             failure.setResolvedMediaUrl(resolvedUrl);
             repository.saveAndFlush(failure);
             if (failure.getUploadRequestId() != null) {
                 cache.remove(failure.getUploadRequestId());
             }
-            cleanupStagedMedia(failure.getStagingObjectKey());
+            cleanupAfterCommit(failure.getStagingObjectKey());
         });
     }
 
@@ -210,14 +223,16 @@ public class FailedUploadService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void dismiss(Long failureId) {
-        repository.findById(failureId).ifPresent(failure -> {
+        if (failureId == null) return;
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
+        repository.findByIdForUpdate(failureId).ifPresent(failure -> {
             if ("RESOLVED".equals(failure.getStatus())) return; // Do not overwrite terminal RESOLVED status
             failure.setStatus("DISMISSED");
             repository.saveAndFlush(failure);
             if (failure.getUploadRequestId() != null) {
                 cache.remove(failure.getUploadRequestId());
             }
-            cleanupStagedMedia(failure.getStagingObjectKey());
+            cleanupAfterCommit(failure.getStagingObjectKey());
         });
     }
 
@@ -264,6 +279,7 @@ public class FailedUploadService {
     /** Returns unresolved failures for admin display — bounded, never findAll(). */
     @Transactional(readOnly = true)
     public List<MediaUploadFailure> getUnresolved() {
+        propertyAuthority.require(BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
         return repository.findByStatusInOrderByCreatedAtDesc(
                 UNRESOLVED_STATUSES,
                 PageRequest.of(0, ADMIN_PAGE_SIZE)
@@ -273,18 +289,21 @@ public class FailedUploadService {
     /** Returns count of unresolved failures for the nav-item badge. */
     @Transactional(readOnly = true)
     public long countUnresolved() {
+        propertyAuthority.require(BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
         return repository.countByStatusIn(UNRESOLVED_STATUSES);
     }
 
     /** Returns all failures for a given listing. */
     @Transactional(readOnly = true)
     public List<MediaUploadFailure> getByListingId(Long listingId) {
+        propertyAuthority.requireUploaderMediaById(listingId);
         return repository.findByListingIdOrderByCreatedAtDesc(listingId);
     }
 
     /** Returns a single failure record. */
     @Transactional(readOnly = true)
     public Optional<MediaUploadFailure> getById(Long failureId) {
+        propertyAuthority.require(BackOfficePropertyAuthority.Action.FAILED_UPLOAD);
         return repository.findById(failureId);
     }
 
@@ -298,6 +317,21 @@ public class FailedUploadService {
         } catch (Exception e) {
             log.warn("Failed to delete staged object [{}] (non-fatal): {}", stagingObjectKey, e.getMessage());
         }
+    }
+
+    private void cleanupAfterCommit(String stagingObjectKey) {
+        if (stagingObjectKey == null || stagingObjectKey.isBlank()) return;
+        if (!TransactionSynchronizationManager.isSynchronizationActive()
+                || !TransactionSynchronizationManager.isActualTransactionActive()) {
+            cleanupStagedMedia(stagingObjectKey);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                cleanupStagedMedia(stagingObjectKey);
+            }
+        });
     }
 
     // ---- Private helpers ----

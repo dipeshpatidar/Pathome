@@ -45,6 +45,7 @@ class PropertyDraftServiceTest {
     private ObjectMapper objectMapper;
     private ListingRepository listingRepository;
     private PropertyMediaAssetRepository mediaAssetRepository;
+    private BackOfficePropertyAuthority propertyAuthority;
     private PropertyDraftService service;
 
     private static final String ADMIN_ID = "admin@pathome.in";
@@ -59,7 +60,18 @@ class PropertyDraftServiceTest {
         listingRepository = mock(ListingRepository.class);
         mediaAssetRepository = mock(PropertyMediaAssetRepository.class);
         objectMapper = new ObjectMapper();
-        service = new PropertyDraftService(draftRepository, draftMediaRepository, mediaStagingService, objectMapper);
+        propertyAuthority = mock(BackOfficePropertyAuthority.class);
+        service = new PropertyDraftService(draftRepository, draftMediaRepository, mediaStagingService, objectMapper,
+                propertyAuthority);
+        lenient().when(draftRepository.findByDraftIdForUpdate(anyString())).thenAnswer(invocation -> {
+            String draftId = invocation.getArgument(0);
+            Optional<PropertyUploadDraft> byId = draftRepository.findByDraftId(draftId);
+            return byId.isPresent()
+                    ? byId
+                    : draftRepository.findByDraftIdAndAdminId(draftId, ADMIN_ID);
+        });
+        lenient().when(draftRepository.saveAndFlush(any(PropertyUploadDraft.class))).thenAnswer(invocation ->
+                draftRepository.save(invocation.getArgument(0)));
         service.setListingRepository(listingRepository);
         service.setMediaAssetRepository(mediaAssetRepository);
     }
@@ -85,7 +97,28 @@ class PropertyDraftServiceTest {
         assertEquals("SINGLE", result.draftType());
         assertEquals("2 BHK Flat • Nanda Nagar", result.titleSummary());
         assertEquals(1, result.version());
-        verify(draftRepository).save(any(PropertyUploadDraft.class));
+        verify(draftRepository).saveAndFlush(any(PropertyUploadDraft.class));
+    }
+
+    @Test
+    void saveOrUpdateDraft_firstTimeCreateUsesOwnerAdmissionWithoutRequiringAnExistingDraft() {
+        SaveDraftRequest req = new SaveDraftRequest(
+                DRAFT_ID, "BATCH", "DRAFT", "Fresh batch", 2, null,
+                "{\"cards\":[]}"
+        );
+
+        when(draftRepository.findByDraftIdForUpdate(DRAFT_ID)).thenReturn(Optional.empty());
+        when(draftRepository.saveAndFlush(any(PropertyUploadDraft.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DraftDetailDTO result = service.saveOrUpdateDraft(ADMIN_ID, req);
+
+        assertEquals(DRAFT_ID, result.draftId());
+        verify(propertyAuthority).requireDraft(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, ADMIN_ID);
+        verify(propertyAuthority).holdEvidenceForCurrentMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT);
+        verify(propertyAuthority, never()).requireDraftForMutation(any(), any());
     }
 
     @Test
@@ -1232,6 +1265,28 @@ class PropertyDraftServiceTest {
         assertThrows(IllegalStateException.class, () ->
                 service.saveOrUpdateDraft(ADMIN_ID, req)
         );
+    }
+
+    @Test
+    void saveOrUpdateDraft_rejectsModifyingPublishingDraftBeforePublicationFinishes() {
+        PropertyUploadDraft draft = new PropertyUploadDraft();
+        draft.setDraftId(DRAFT_ID);
+        draft.setAdminId(ADMIN_ID);
+        draft.setDraftType("SINGLE");
+        draft.setStatus("PUBLISHING");
+        draft.setVersion(4);
+        draft.setPayload("{\"rawPrompt\":\"publication in progress\"}");
+        when(draftRepository.findByDraftIdForUpdate(DRAFT_ID)).thenReturn(Optional.of(draft));
+
+        SaveDraftRequest req = new SaveDraftRequest(
+                DRAFT_ID, "SINGLE", "DRAFT", "Late autosave", 1, 4,
+                "{\"rawPrompt\":\"must not overwrite publication\"}"
+        );
+
+        assertThrows(IllegalStateException.class,
+                () -> service.saveOrUpdateDraft(ADMIN_ID, req));
+        verify(draftRepository, never()).save(any(PropertyUploadDraft.class));
+        verify(draftRepository, never()).saveAndFlush(any(PropertyUploadDraft.class));
     }
 
     @Test

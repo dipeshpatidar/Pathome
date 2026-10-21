@@ -7,6 +7,7 @@ import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -44,6 +45,9 @@ class FailedUploadsSecurityTest {
     private ListingRepository listingRepository;
 
     @MockBean
+    private BackOfficePropertyAuthority propertyAuthority;
+
+    @MockBean
     @org.springframework.beans.factory.annotation.Qualifier("mediaStagingService")
     private MediaStagingService mediaStagingService;
 
@@ -77,11 +81,9 @@ class FailedUploadsSecurityTest {
 
     @Test
     @WithMockUser(roles = "SUB_ADMIN")
-    void subAdminRole_canListFailedUploads() throws Exception {
-        when(failedUploadService.getUnresolved()).thenReturn(List.of());
-
+    void subAdminRole_cannotListFailedUploads() throws Exception {
         mockMvc.perform(get("/api/v1/admin/failed-uploads"))
-                .andExpect(status().isOk());
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -95,11 +97,9 @@ class FailedUploadsSecurityTest {
 
     @Test
     @WithMockUser(roles = "SUB_ADMIN")
-    void subAdminRole_canAccessCount() throws Exception {
-        when(failedUploadService.countUnresolved()).thenReturn(0L);
-
+    void subAdminRole_cannotAccessCount() throws Exception {
         mockMvc.perform(get("/api/v1/admin/failed-uploads/count"))
-                .andExpect(status().isOk());
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -134,13 +134,9 @@ class FailedUploadsSecurityTest {
 
     @Test
     @WithMockUser(roles = "SUB_ADMIN")
-    void subAdminRole_canRetryFailedUpload() throws Exception {
-        MediaUploadFailure failure = new MediaUploadFailure();
-        failure.setStatus("RESOLVED");
-        when(failedUploadService.getById(1L)).thenReturn(Optional.of(failure));
-
+    void subAdminRole_cannotRetryFailedUpload() throws Exception {
         mockMvc.perform(post("/api/v1/admin/failed-uploads/1/retry"))
-                .andExpect(status().isOk());
+                .andExpect(status().isForbidden());
     }
 
     @Test

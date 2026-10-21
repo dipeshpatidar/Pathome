@@ -70,6 +70,7 @@ public class PropertyDraftService {
     private final MediaStagingService mediaStagingService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final BackOfficePropertyAuthority propertyAuthority;
 
     @Autowired(required = false)
     private ListingRepository listingRepository;
@@ -99,9 +100,10 @@ public class PropertyDraftService {
             PropertyUploadDraftRepository draftRepository,
             PropertyDraftMediaRepository draftMediaRepository,
             @Qualifier("draftMediaStagingService") MediaStagingService mediaStagingService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            BackOfficePropertyAuthority propertyAuthority
     ) {
-        this(draftRepository, draftMediaRepository, mediaStagingService, objectMapper, null);
+        this(draftRepository, draftMediaRepository, mediaStagingService, objectMapper, null, propertyAuthority);
     }
 
     @Autowired
@@ -110,13 +112,16 @@ public class PropertyDraftService {
             PropertyDraftMediaRepository draftMediaRepository,
             @Qualifier("draftMediaStagingService") MediaStagingService mediaStagingService,
             ObjectMapper objectMapper,
-            @Autowired(required = false) PlatformTransactionManager transactionManager
+            @Autowired(required = false) PlatformTransactionManager transactionManager,
+            BackOfficePropertyAuthority propertyAuthority
     ) {
         this.draftRepository = Objects.requireNonNull(draftRepository, "draftRepository must not be null");
         this.draftMediaRepository = Objects.requireNonNull(draftMediaRepository, "draftMediaRepository must not be null");
         this.mediaStagingService = mediaStagingService;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
         this.transactionTemplate = transactionManager != null ? new TransactionTemplate(transactionManager) : null;
+        this.propertyAuthority = Objects.requireNonNull(propertyAuthority,
+                "propertyAuthority must not be null");
     }
 
     /**
@@ -124,6 +129,7 @@ public class PropertyDraftService {
      */
     @Transactional(readOnly = true)
     public List<DraftSummaryDTO> listDrafts(String adminId) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
         String cleanAdminId = sanitizeAdminId(adminId);
         List<PropertyUploadDraft> drafts = draftRepository
                 .findAllByAdminIdAndStatusNotOrderByUpdatedAtDesc(cleanAdminId, "DISCARDED");
@@ -157,6 +163,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public DraftDetailDTO getDraft(String adminId, String draftId) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.OWN_DRAFT);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -165,6 +173,10 @@ public class PropertyDraftService {
 
         // Auto-reconcile backend truth for BATCH drafts (interrupted publication recovery)
         if ("BATCH".equalsIgnoreCase(draft.getDraftType()) && listingRepository != null) {
+            draft = draftRepository.findByDraftIdForUpdate(draftId)
+                    .filter(row -> cleanAdminId.equals(sanitizeAdminId(row.getAdminId())))
+                    .orElseThrow(() -> new EntityNotFoundException(
+                            "Draft not found or access denied: " + draftId));
             reconcileInterruptedBatchDraftState(draft, cleanAdminId);
         }
 
@@ -197,6 +209,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public DraftDetailDTO saveOrUpdateDraft(String adminId, SaveDraftRequest request) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.OWN_DRAFT);
         String cleanAdminId = sanitizeAdminId(adminId);
         if (request == null || request.draftId() == null || request.draftId().isBlank()) {
             throw new IllegalArgumentException("Draft ID must be provided");
@@ -210,18 +224,21 @@ public class PropertyDraftService {
             throw new IllegalArgumentException("Draft payload exceeds maximum allowed size of 2 MB");
         }
 
-        Optional<PropertyUploadDraft> existingOpt = draftRepository.findByDraftId(request.draftId());
+        draftRepository.lockCreationByDraftId(request.draftId());
+        Optional<PropertyUploadDraft> existingOpt = draftRepository.findByDraftIdForUpdate(request.draftId());
         PropertyUploadDraft draft;
 
         if (existingOpt.isPresent()) {
             draft = existingOpt.get();
             // Ownership check: Admin A cannot overwrite Admin B's draft
-            if (!draft.getAdminId().equals(cleanAdminId)) {
+            if (!cleanAdminId.equals(sanitizeAdminId(draft.getAdminId()))) {
                 throw new EntityNotFoundException("Draft not found or access denied: " + request.draftId());
             }
 
-            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
-                throw new IllegalStateException("Draft is already published and cannot be modified.");
+            if ("PUBLISHED".equalsIgnoreCase(draft.getStatus())
+                    || "PUBLISHING".equalsIgnoreCase(draft.getStatus())
+                    || draft.getPublishedPropertyId() != null) {
+                throw new IllegalStateException("Draft publication is already in progress or complete and cannot be modified.");
             }
 
             // Optimistic concurrency check
@@ -262,7 +279,25 @@ public class PropertyDraftService {
             draft.setUpdatedAt(LocalDateTime.now());
         }
 
-        PropertyUploadDraft saved = draftRepository.save(draft);
+        PropertyUploadDraft saved;
+        if (existingOpt.isPresent()) {
+            saved = draftRepository.save(draft);
+        } else {
+            try {
+                saved = draftRepository.saveAndFlush(draft);
+            } catch (DataIntegrityViolationException conflict) {
+                PropertyUploadDraft winner = draftRepository.findByDraftIdForUpdate(request.draftId())
+                        .orElseThrow(() -> conflict);
+                if (!cleanAdminId.equals(sanitizeAdminId(winner.getAdminId()))) {
+                    throw new EntityNotFoundException("Draft not found or access denied: " + request.draftId());
+                }
+                throw new DraftConflictException(
+                        request.draftId(),
+                        winner.getVersion(),
+                        "A draft with this identifier was created concurrently. Please reload the latest draft before saving."
+                );
+            }
+        }
         activeDraftCache.put(cleanAdminId + ":" + saved.getDraftId(), saved.getDraftId());
 
         List<PropertyDraftMedia> mediaEntities = draftMediaRepository.findAllByDraftIdAndAdminId(saved.getDraftId(), cleanAdminId);
@@ -289,6 +324,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public void discardDraft(String adminId, String draftId) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
+        propertyAuthority.holdEvidenceForCurrentMutation(BackOfficePropertyAuthority.Action.OWN_DRAFT);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -321,6 +358,7 @@ public class PropertyDraftService {
      * an isolated transaction with DataIntegrityViolationException conflict recovery.
      */
     public PropertyUploadDraft ensureDraftExists(String cleanAdminId, String draftId) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, cleanAdminId);
         Optional<PropertyUploadDraft> existing = draftRepository.findByDraftId(draftId);
         if (existing.isPresent()) {
             PropertyUploadDraft draft = existing.get();
@@ -344,6 +382,7 @@ public class PropertyDraftService {
     }
 
     private PropertyUploadDraft createInitialDraftRecord(String cleanAdminId, String draftId) {
+        propertyAuthority.requireForMutation(BackOfficePropertyAuthority.Action.OWN_DRAFT, null);
         PropertyUploadDraft draft = new PropertyUploadDraft();
         draft.setDraftId(draftId);
         draft.setAdminId(cleanAdminId);
@@ -390,6 +429,7 @@ public class PropertyDraftService {
             Boolean isCover,
             String clientMediaId
     ) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -523,6 +563,8 @@ public class PropertyDraftService {
             String roomTag,
             boolean coverFlag
     ) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
         // 1. Reload the latest fresh draft version from DB, falling back to initialized draft if newly created
         PropertyUploadDraft draft = draftRepository.findByDraftIdAndAdminId(draftId, adminId)
                 .orElse(initialDraft);
@@ -575,6 +617,7 @@ public class PropertyDraftService {
      */
     @Transactional(readOnly = true)
     public StagedMediaStream getDraftMediaStream(String adminId, String draftId, String mediaId) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
         validateMediaId(mediaId);
@@ -603,6 +646,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public void deleteDraftMedia(String adminId, String draftId, String mediaId) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
         validateMediaId(mediaId);
@@ -627,6 +672,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public int reassignUnassignedMediaToCard(String adminId, String draftId, String targetCardId) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
         if (targetCardId == null || targetCardId.isBlank()) {
@@ -664,6 +711,7 @@ public class PropertyDraftService {
     }
 
     public DraftDetailDTO reconcileBatchDraft(String adminId, String draftId, List<String> publishedCardIds, List<Map<String, Object>> newCompletedListings) {
+        propertyAuthority.requireDraft(BackOfficePropertyAuthority.Action.OWN_DRAFT, adminId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -720,6 +768,8 @@ public class PropertyDraftService {
     private ReconcileResult reconcileBatchDraftInTx(
             String cleanAdminId, String draftId,
             List<String> publishedCardIds, List<Map<String, Object>> newCompletedListings) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
 
         // Pessimistic write lock prevents any concurrent saveOrUpdateDraft from committing
         // a version increment between our load and our save.
@@ -1031,6 +1081,8 @@ public class PropertyDraftService {
      */
     @Transactional
     public void onPropertyPublished(String adminId, String draftId, Long listingId) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
         String cleanAdminId = sanitizeAdminId(adminId);
         validateDraftId(draftId);
 
@@ -1217,6 +1269,26 @@ public class PropertyDraftService {
             );
         } catch (Exception e) {
             log.warn("Non-fatal: failed to dispatch published notification for draft [{}]: {}", draftId, e.getMessage());
+        }
+    }
+
+    /**
+     * Applies the truthful partial-completion lifecycle transition for an authorized batch. The
+     * admission and ownership check happen inside this transaction and before the draft row is mutated.
+     */
+    @Transactional
+    public void markBatchDraftPublishing(String adminId, String draftId) {
+        propertyAuthority.requireDraftForMutation(
+                BackOfficePropertyAuthority.Action.OWN_DRAFT, draftId);
+        String cleanAdminId = sanitizeAdminId(adminId);
+        validateDraftId(draftId);
+        PropertyUploadDraft draft = draftRepository.findByDraftIdForUpdate(draftId)
+                .filter(row -> cleanAdminId.equals(sanitizeAdminId(row.getAdminId())))
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found or access denied: " + draftId));
+        if (!"PUBLISHED".equalsIgnoreCase(draft.getStatus())) {
+            draft.setStatus("PUBLISHING");
+            draft.setUpdatedAt(LocalDateTime.now());
+            draftRepository.save(draft);
         }
     }
 

@@ -4,6 +4,7 @@ import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
 import com.indore.pathome.spaces.service.ListingReviewAuthority.Reviewer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
@@ -37,9 +38,24 @@ import static org.mockito.Mockito.*;
  */
 class ListingReviewAuthorityTest {
     private static final Long STAFF_USER_ID = 42L;
+    private static final Long LEGACY_ADMIN_USER_ID = 4242L;
 
     private final StaffAccessService access = mock(StaffAccessService.class);
-    private final ListingReviewAuthority authority = new ListingReviewAuthority(access);
+    private final BackOfficePropertyAuthority propertyAuthority = mock(BackOfficePropertyAuthority.class);
+    private final ListingReviewAuthority authority = new ListingReviewAuthority(access, propertyAuthority);
+
+    @BeforeEach
+    void admitLegacyAdministratorWithLiveEvidence() {
+        when(propertyAuthority.require(eq(BackOfficePropertyAuthority.Action.LEGACY_REVIEW),
+                any(Authentication.class))).thenAnswer(call -> {
+            Authentication credential = call.getArgument(1);
+            Long userId = credential.getDetails() instanceof PathomeAuthenticationDetails details
+                    ? details.getUserId() : LEGACY_ADMIN_USER_ID;
+            if (userId == null) userId = LEGACY_ADMIN_USER_ID;
+            return new BackOfficePropertyAuthority.Actor(
+                    credential, userId, "codex.lessor.review@pathome.test", "ROLE_ADMIN");
+        });
+    }
 
     @AfterEach
     void clearTheRequestPrincipal() {
@@ -50,11 +66,22 @@ class ListingReviewAuthorityTest {
 
     @Test
     void aLegacyAdminAuthorityIsAdmittedWithoutAnyStaffDecision() {
-        Reviewer reviewer = authority.require(authenticate("ROLE_ADMIN", null));
+        Reviewer reviewer = authority.require(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
 
         assertTrue(reviewer.legacyAdmin());
-        assertNull(reviewer.userId());
+        assertEquals(LEGACY_ADMIN_USER_ID, reviewer.userId());
         verifyNoInteractions(access);
+    }
+
+    @Test
+    void aLegacyAdminCredentialIsNotCurrentAuthorityWithoutItsLiveStaffEvidence() {
+        Reviewer reviewer = authority.require(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
+
+        assertTrue(reviewer.legacyAdmin());
+        assertEquals(LEGACY_ADMIN_USER_ID, reviewer.userId());
+        verify(propertyAuthority).require(
+                BackOfficePropertyAuthority.Action.LEGACY_REVIEW,
+                SecurityContextHolder.getContext().getAuthentication());
     }
 
     @Test
@@ -109,7 +136,7 @@ class ListingReviewAuthorityTest {
                 when(refusing.requireGlobalAdmin(STAFF_USER_ID)).thenThrow(new AccessDeniedException(refusal));
 
                 assertThrows(AccessDeniedException.class,
-                        () -> new ListingReviewAuthority(refusing)
+                        () -> new ListingReviewAuthority(refusing, propertyAuthority)
                                 .require(authenticate(authorityName, STAFF_USER_ID)),
                         authorityName + " / " + refusal);
                 verify(refusing).requireGlobalAdmin(STAFF_USER_ID);
@@ -172,7 +199,7 @@ class ListingReviewAuthorityTest {
 
     @Test
     void revalidatingALegacyAdminReDecidesThePrincipalAndNeverConsultsTheStaffDatabase() {
-        Reviewer reviewer = authority.require(authenticate("ROLE_ADMIN", null));
+        Reviewer reviewer = authority.require(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
 
         authority.revalidate(reviewer);
 
@@ -186,6 +213,8 @@ class ListingReviewAuthorityTest {
         // moment the authenticated credential stops carrying ROLE_ADMIN, the guarded decision refuses.
         Authentication credential = mock(Authentication.class);
         when(credential.isAuthenticated()).thenReturn(true);
+        when(credential.getDetails()).thenReturn(
+                new PathomeAuthenticationDetails(new MockHttpServletRequest(), LEGACY_ADMIN_USER_ID));
         doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))).when(credential).getAuthorities();
         authenticate(credential);
         Reviewer reviewer = authority.require(credential);
@@ -249,8 +278,8 @@ class ListingReviewAuthorityTest {
     void aLegacyAdministratorVerdictCannotBeReplayedForAnotherLegacyAdministrator() {
         // Two administrators whose credentials carry exactly the same authority - the legacy rule alone
         // would let the second one inherit the first one's verdict.
-        Reviewer verdict = authority.require(authenticate("ROLE_ADMIN", null));
-        authenticate("ROLE_ADMIN", null);
+        Reviewer verdict = authority.require(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
+        authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID);
 
         assertThrows(AccessDeniedException.class, () -> authority.revalidate(verdict));
         assertThrows(AccessDeniedException.class, () -> authority.revalidateLegacyAdministrator(verdict));
@@ -261,7 +290,7 @@ class ListingReviewAuthorityTest {
     void aVerdictIsRefusedOutsideTheRequestItWasMintedFor() {
         when(access.requireGlobalAdmin(STAFF_USER_ID)).thenReturn(new User());
         Reviewer staffVerdict = authority.require(authenticate("ROLE_TENANT", STAFF_USER_ID));
-        Reviewer legacyVerdict = authority.require(authenticate("ROLE_ADMIN", null));
+        Reviewer legacyVerdict = authority.require(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
         SecurityContextHolder.clearContext();
 
         assertThrows(AccessDeniedException.class, () -> authority.revalidate(staffVerdict));
@@ -288,9 +317,9 @@ class ListingReviewAuthorityTest {
     void onlyTheLegacyAdministratorAuthorityReachesTheNonExtendedOperations() {
         when(access.requireGlobalAdmin(STAFF_USER_ID)).thenReturn(new User());
 
-        Reviewer legacy = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", null));
+        Reviewer legacy = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
         assertTrue(legacy.legacyAdmin());
-        assertNull(legacy.userId());
+        assertEquals(LEGACY_ADMIN_USER_ID, legacy.userId());
         assertThrows(AccessDeniedException.class,
                 () -> authority.requireLegacyAdministrator(authenticate("ROLE_TENANT", STAFF_USER_ID)));
         assertThrows(AccessDeniedException.class, () -> authority.requireLegacyAdministrator(null));
@@ -307,15 +336,15 @@ class ListingReviewAuthorityTest {
         assertThrows(AccessDeniedException.class, () -> authority.revalidateLegacyAdministrator(staffVerdict));
         assertThrows(AccessDeniedException.class, () -> authority.revalidateLegacyAdministrator(null));
 
-        Reviewer legacyVerdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", null));
+        Reviewer legacyVerdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
         authority.revalidateLegacyAdministrator(legacyVerdict);
         verify(access, times(1)).requireGlobalAdmin(STAFF_USER_ID);
     }
 
     @Test
     void theLegacyOnlyGuardedReDecisionRefusesALegacyVerdictOnceAnotherRequestIsCurrent() {
-        Reviewer legacyVerdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", null));
-        authenticate("ROLE_ADMIN", null);
+        Reviewer legacyVerdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
+        authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID);
 
         assertThrows(AccessDeniedException.class, () -> authority.revalidateLegacyAdministrator(legacyVerdict));
     }
@@ -392,9 +421,9 @@ class ListingReviewAuthorityTest {
 
     @Test
     void anUnattributableIdentityIsRefusedRatherThanRecorded() {
-        when(access.requireAttributableUser(null))
+        when(access.requireAttributableUser(LEGACY_ADMIN_USER_ID))
                 .thenThrow(new AccessDeniedException("An attributable staff or administrator identity is required"));
-        Reviewer verdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", null));
+        Reviewer verdict = authority.requireLegacyAdministrator(authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
 
         assertThrows(AccessDeniedException.class, () -> authority.attributableActor(verdict));
     }

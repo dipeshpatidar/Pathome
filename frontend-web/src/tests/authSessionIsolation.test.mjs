@@ -17,12 +17,14 @@ function storage(entries = []) {
 }
 
 test('logout removes only persisted account identity and prevents rehydration', () => {
-  const profile = { id: 11, role: 'TENANT', fullName: 'Lessor A' };
+  const profile = { id: 11, role: 'TENANT', fullName: 'Lessor A', email: 'lessor-a@example.test' };
   const local = storage([
     ['pathome_auth_token', 'token-a'],
     ['pathome_role', 'TENANT'],
     ['pathome_user', JSON.stringify(profile)],
     ['pathome_active_admin_tab', 'overview'],
+    ['pathome_active_draft_single_lessor-a@example.test', 'draft-a'],
+    ['pathome_active_draft_batch_lessor-a@example.test', 'draft-batch-a'],
     ['pathome_lessor_unsynced_11_draft-a', 'private-edit'],
     ['pathome_lessor_unsynced_22_draft-b', 'other-account-edit'],
     ['pathome_guest_draft_id', 'guest-draft'],
@@ -33,7 +35,9 @@ test('logout removes only persisted account identity and prevents rehydration', 
     assert.deepEqual(readPersistedUser(), profile);
     clearPersistedUser();
     assert.equal(readPersistedUser(), null);
-    for (const key of ['pathome_auth_token', 'pathome_role', 'pathome_user', 'pathome_active_admin_tab']) {
+    for (const key of ['pathome_auth_token', 'pathome_role', 'pathome_user', 'pathome_active_admin_tab',
+      'pathome_active_draft_single_lessor-a@example.test',
+      'pathome_active_draft_batch_lessor-a@example.test']) {
       assert.equal(local.getItem(key), null);
     }
     assert.equal(local.getItem('pathome_guest_draft_id'), 'guest-draft');
@@ -94,6 +98,22 @@ test('incoherent stored identity cannot restore account UI', () => {
     ['pathome_auth_token', 'old-token'],
     ['pathome_role', 'TENANT'],
     ['pathome_user', JSON.stringify({ id: 11, role: 'SUPER_ADMIN' })]
+  ]);
+  globalThis.localStorage = local;
+  try {
+    assert.equal(readPersistedUser(), null);
+    assert.equal(local.getItem('pathome_auth_token'), null);
+    assert.equal(local.getItem('pathome_user'), null);
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test('a missing persisted email fails closed instead of falling back to shared admin buffers', () => {
+  const local = storage([
+    ['pathome_auth_token', 'token-a'],
+    ['pathome_role', 'ADMIN'],
+    ['pathome_user', JSON.stringify({ id: 11, role: 'ADMIN', fullName: 'Admin A' })]
   ]);
   globalThis.localStorage = local;
   try {

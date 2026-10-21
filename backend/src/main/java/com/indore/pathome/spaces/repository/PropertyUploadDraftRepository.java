@@ -59,6 +59,14 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
     @Query("SELECT d FROM PropertyUploadDraft d WHERE d.draftId = :draftId")
     Optional<PropertyUploadDraft> findByDraftIdForUpdate(@Param("draftId") String draftId);
 
+    /**
+     * Serializes first-time creation for one draft identifier across application instances. The
+     * transaction-scoped advisory lock closes the "both readers see absent" race without changing the
+     * draft schema or allowing a loser to overwrite the committed winner.
+     */
+    @Query(value = "select pg_advisory_xact_lock(hashtextextended(:draftId, 0))", nativeQuery = true)
+    void lockCreationByDraftId(@Param("draftId") String draftId);
+
     @Modifying(clearAutomatically = true)
     @Query("UPDATE PropertyUploadDraft d SET d.updatedAt = :now WHERE d.draftId = :draftId AND d.adminId = :adminId")
     int touchUpdatedAt(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("now") LocalDateTime now);

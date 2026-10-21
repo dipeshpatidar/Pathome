@@ -60,7 +60,8 @@ public class PropertyPublishNotificationTest {
                 draftMediaRepository,
                 mediaStagingService,
                 objectMapper,
-                null // null transaction manager -> direct in-tx execution
+                null, // null transaction manager -> direct in-tx execution
+                mock(BackOfficePropertyAuthority.class)
         );
         draftService.setListingRepository(listingRepository);
         draftService.setNotificationService(notificationService);
@@ -466,7 +467,8 @@ public class PropertyPublishNotificationTest {
                 draftMediaRepository,
                 mediaStagingService,
                 objectMapper,
-                txManager
+                txManager,
+                mock(BackOfficePropertyAuthority.class)
         );
         transactionalDraftService.setNotificationService(notificationService);
 

@@ -106,7 +106,7 @@ public class LandlordReviewService {
 
     @Transactional(readOnly = true)
     public LandlordReviewPage revisions(int page, Reviewer reviewer) {
-        reviewAuthority.revalidate(reviewer);
+        reviewAuthority.revalidateLegacyAdministrator(reviewer);
         if (page < 0) throw new IllegalArgumentException("Page must be zero or greater");
         var slice = drafts.findByStatusAndPublishedPropertyIdIsNotNullAndLandlordUserIdIsNotNullOrderByUpdatedAtDescIdDesc(
                 "REVIEW", PageRequest.of(page, 20));
@@ -156,7 +156,7 @@ public class LandlordReviewService {
 
     @Transactional(readOnly = true)
     public LandlordReviewDetail revisionDetail(String draftId, Reviewer reviewer) {
-        reviewAuthority.revalidate(reviewer);
+        reviewAuthority.revalidateLegacyAdministrator(reviewer);
         PropertyUploadDraft draft = drafts.findByDraftId(draftId)
                 .filter(row -> row.getLandlordUserId() != null && row.getPublishedPropertyId() != null
                         && List.of("REVIEW", "CHANGES_REQUIRED", "APPROVED").contains(row.getStatus()))
@@ -175,11 +175,9 @@ public class LandlordReviewService {
                                                Reviewer reviewer) {
         boolean legacyOnly = target == ListingWorkflowStatus.CHANGES_REQUIRED;
         commandBounds.apply();
-        if (!legacyOnly) {
-            // Held before the Listing lock, so a revocation cannot commit between this decision and its own
-            // commit; the request-changes operation is not part of the extension and holds no staff evidence.
-            reviewAuthority.holdAuthorityEvidence(reviewer);
-        }
+        // Held before the Listing lock. The legacy path now has live role/profile/grant evidence too, so
+        // a demotion or revocation is ordered against both the extended and legacy mutations.
+        reviewAuthority.holdAuthorityEvidence(reviewer);
         listings.lockLandlordReviewId(listingId)
                 .orElseThrow(() -> new EntityNotFoundException("Property not found"));
         // Decided under the listing row lock, so a grant revoked between the entry decision and this
@@ -292,6 +290,7 @@ public class LandlordReviewService {
     @Transactional
     public LandlordListingAction approveRevision(String draftId, Reviewer reviewer) {
         commandBounds.apply();
+        reviewAuthority.holdAuthorityEvidence(reviewer);
         PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
                 .filter(row -> row.getLandlordUserId() != null && row.getPublishedPropertyId() != null)
                 .orElseThrow(() -> new EntityNotFoundException("Revision not found"));
@@ -342,6 +341,7 @@ public class LandlordReviewService {
     @Transactional
     public LandlordReviewItem requestRevisionChanges(String draftId, String note, Reviewer reviewer) {
         commandBounds.apply();
+        reviewAuthority.holdAuthorityEvidence(reviewer);
         PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
                 .filter(row -> row.getLandlordUserId() != null && row.getPublishedPropertyId() != null)
                 .orElseThrow(() -> new EntityNotFoundException("Revision not found"));

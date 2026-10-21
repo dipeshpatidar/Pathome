@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -30,6 +31,13 @@ public class ListingGalleryConcurrencyTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        com.indore.pathome.spaces.service.BackOfficePropertyAuthority authority =
+                mock(com.indore.pathome.spaces.service.BackOfficePropertyAuthority.class);
+        lenient().when(authority.withListingMutation(any(), anyLong(), any(Function.class)))
+                .thenAnswer(invocation -> {
+                    Function<RentalDetails, Object> mutation = invocation.getArgument(2);
+                    return mutation.apply(new RentalDetails());
+                });
         controller = new PropertyController(
                 listingRepository,
                 mock(com.indore.pathome.spaces.repository.PropertyMediaAssetRepository.class),
@@ -41,7 +49,8 @@ public class ListingGalleryConcurrencyTest {
                 mock(com.indore.pathome.spaces.service.BatchPropertyPublishingService.class),
                 null,
                 mock(com.indore.pathome.spaces.repository.UserRepository.class),
-                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class)
+                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class),
+                authority
         );
     }
 

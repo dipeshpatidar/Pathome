@@ -23,19 +23,30 @@ public class BatchPropertyPublishingService {
     private final ListingRepository listingRepository;
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final PropertyParserService propertyParserService;
+    private final BackOfficePropertyAuthority propertyAuthority;
 
     public BatchPropertyPublishingService(
             ListingRepository listingRepository,
             PropertyMediaAssetRepository mediaAssetRepository,
-            PropertyParserService propertyParserService) {
+            PropertyParserService propertyParserService,
+            BackOfficePropertyAuthority propertyAuthority) {
         this.listingRepository = Objects.requireNonNull(listingRepository);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository);
         this.propertyParserService = Objects.requireNonNull(propertyParserService);
+        this.propertyAuthority = Objects.requireNonNull(propertyAuthority);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Listing publish(RentalDetails listing, List<String> mediaUrls) {
         Objects.requireNonNull(listing, "Property listing must not be null");
+        String draftId = baseDraftId(listing.getOriginDraftId());
+        if (draftId == null) {
+            propertyAuthority.requireForMutation(
+                    BackOfficePropertyAuthority.Action.BATCH_CREATE, null);
+        } else {
+            propertyAuthority.requireDraftForMutation(
+                    BackOfficePropertyAuthority.Action.BATCH_CREATE, draftId);
+        }
         List<String> safeMediaUrls = mediaUrls == null
                 ? List.of()
                 : mediaUrls.stream().filter(Objects::nonNull).filter(url -> !url.isBlank()).toList();
@@ -60,6 +71,12 @@ public class BatchPropertyPublishingService {
             mediaAssetRepository.saveAllAndFlush(assets);
         }
         return saved;
+    }
+
+    private static String baseDraftId(String originDraftId) {
+        if (originDraftId == null || originDraftId.isBlank()) return null;
+        int separator = originDraftId.indexOf(':');
+        return (separator < 0 ? originDraftId : originDraftId.substring(0, separator)).trim();
     }
 
     private String monthlyRentPriceTag(RentalDetails listing) {

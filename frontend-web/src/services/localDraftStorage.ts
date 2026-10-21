@@ -116,7 +116,11 @@ export const localDraftStorage = {
   /**
    * Stores or updates a local draft record in IndexedDB (with LocalStorage fallback).
    */
-  async save(adminEmail: string, draft: LocalDraftRecord): Promise<void> {
+  async save(
+    adminEmail: string,
+    draft: LocalDraftRecord,
+    shouldCommit: () => boolean = () => true
+  ): Promise<void> {
     if (!adminEmail || !draft.draftId) return;
     const cleanEmail = adminEmail.trim().toLowerCase();
     const storageKey = makeStorageKey(cleanEmail, draft.draftId);
@@ -131,6 +135,7 @@ export const localDraftStorage = {
 
     try {
       const db = await getIndexedDB();
+      if (!shouldCommit()) return;
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
@@ -139,6 +144,7 @@ export const localDraftStorage = {
         req.onerror = () => reject(req.error);
       });
     } catch {
+      if (!shouldCommit()) return;
       // Fallback to localStorage if IndexedDB is unavailable
       try {
         localStorage.setItem(`pathome_local_draft_${storageKey}`, JSON.stringify(record));
@@ -218,24 +224,52 @@ export const localDraftStorage = {
   /**
    * Removes a local draft record.
    */
-  async remove(adminEmail: string, draftId: string): Promise<void> {
-    if (!adminEmail || !draftId) return;
+  async remove(
+    adminEmail: string,
+    draftId: string,
+    shouldRemove: () => boolean = () => true
+  ): Promise<void> {
+    await localDraftStorage.removeIf(adminEmail, draftId, shouldRemove);
+  },
+
+  /**
+   * Removes a record only while the captured owner still permits deletion. The ownership check runs
+   * inside the same IndexedDB read/write transaction so delayed cleanup cannot erase replacement work.
+   */
+  async removeIf(
+    adminEmail: string,
+    draftId: string,
+    shouldRemove: () => boolean
+  ): Promise<void> {
+    if (!adminEmail || !draftId || !shouldRemove()) return;
     const cleanEmail = adminEmail.trim().toLowerCase();
     const storageKey = makeStorageKey(cleanEmail, draftId);
 
     try {
       const db = await getIndexedDB();
+      if (!shouldRemove()) return;
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
-        const req = store.delete(storageKey);
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
+        const get = store.get(storageKey);
+        get.onsuccess = () => {
+          if (get.result && shouldRemove()) store.delete(storageKey);
+        };
+        get.onerror = () => reject(get.error);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
       });
     } catch {
+      if (!shouldRemove()) return;
       try {
-        localStorage.removeItem(`pathome_local_draft_${storageKey}`);
-      } catch {}
+        const fallbackKey = `pathome_local_draft_${storageKey}`;
+        const raw = localStorage.getItem(fallbackKey);
+        if (raw && JSON.parse(raw)?.adminEmail === cleanEmail && shouldRemove()) {
+          localStorage.removeItem(fallbackKey);
+        }
+      } catch {
+        // Cleanup is best-effort and must never delete an unverified replacement record.
+      }
     }
   },
 

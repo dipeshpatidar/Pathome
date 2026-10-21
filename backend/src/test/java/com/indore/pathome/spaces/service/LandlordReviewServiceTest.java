@@ -7,6 +7,7 @@ import com.indore.pathome.spaces.repository.*;
 import com.indore.pathome.spaces.security.PathomeAuthenticationDetails;
 import com.indore.pathome.spaces.service.ListingReviewAuthority.Reviewer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -38,12 +39,27 @@ class LandlordReviewServiceTest {
     private final LandlordSubmissionService submissions = mock(LandlordSubmissionService.class);
     private final LandlordLocationService locations = mock(LandlordLocationService.class);
     private final StaffAccessService access = mock(StaffAccessService.class);
+    private final BackOfficePropertyAuthority propertyAuthority = mock(BackOfficePropertyAuthority.class);
     private final OperationalAuditService audit = mock(OperationalAuditService.class);
-    private final ListingReviewAuthority reviewAuthority = spy(new ListingReviewAuthority(access));
+    private final ListingReviewAuthority reviewAuthority = spy(
+            new ListingReviewAuthority(access, propertyAuthority));
     private final User attributableActor = new User();
     private final LandlordReviewService service = new LandlordReviewService(listings, drafts, media,
             draftService, submissions, locations, new ListingWorkflowService(),
             mock(PropertyMediaAssetRepository.class), reviewAuthority, audit, mock(TransactionalCommandBounds.class));
+
+    @BeforeEach
+    void admitLegacyAdministrator() {
+        when(propertyAuthority.require(eq(BackOfficePropertyAuthority.Action.LEGACY_REVIEW),
+                any(Authentication.class))).thenAnswer(call -> {
+            Authentication credential = call.getArgument(1);
+            Long userId = credential.getDetails() instanceof PathomeAuthenticationDetails details
+                    ? details.getUserId() : LEGACY_ADMIN_USER_ID;
+            return new BackOfficePropertyAuthority.Actor(
+                    credential, userId == null ? LEGACY_ADMIN_USER_ID : userId,
+                    "admin@pathome.test", "ROLE_ADMIN");
+        });
+    }
 
     @AfterEach
     void clearTheRequestPrincipal() {
@@ -197,7 +213,7 @@ class LandlordReviewServiceTest {
         assertThrows(AccessDeniedException.class, () -> service.revisionDetail("revision-1", verdict));
 
         verifyNoInteractions(listings, drafts, media);
-        verify(access, times(5)).requireGlobalAdmin(STAFF_USER_ID);
+        verify(access, times(3)).requireGlobalAdmin(STAFF_USER_ID);
     }
 
     @Test
@@ -466,7 +482,8 @@ class LandlordReviewServiceTest {
         when(listings.findById(79L)).thenReturn(Optional.of(listing));
 
         // A verdict legitimately minted in the administrator's own request...
-        Reviewer borrowedAdministrator = reviewAuthority.require(authenticate("ROLE_ADMIN", null));
+        Reviewer borrowedAdministrator = reviewAuthority.require(
+                authenticate("ROLE_ADMIN", LEGACY_ADMIN_USER_ID));
         assertTrue(borrowedAdministrator.legacyAdmin());
         // ... and an equivalent credential the caller wrote for itself, which this request must refuse.
         Authentication selfBuilt = authentication("ROLE_ADMIN", null);

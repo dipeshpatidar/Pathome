@@ -30,6 +30,7 @@ public class MediaUploadClaimConcurrencyTest {
     private CloudinaryService cloudinaryService;
     private FailedUploadService failedUploadService;
     private MediaUploadClaimService claimService;
+    private BackOfficePropertyAuthority propertyAuthority;
     private PropertyController controller;
 
     private Listing sampleListing;
@@ -47,6 +48,12 @@ public class MediaUploadClaimConcurrencyTest {
         ParserLearningCaptureService captureService = mock(ParserLearningCaptureService.class);
         BatchPropertyPublishingService batchService = mock(BatchPropertyPublishingService.class);
         MediaStagingService stagingService = mock(MediaStagingService.class);
+        propertyAuthority = mock(BackOfficePropertyAuthority.class);
+        lenient().when(propertyAuthority.withListingMutation(any(), anyLong(), any(java.util.function.Function.class)))
+                .thenAnswer(invocation -> {
+                    java.util.function.Function<Listing, Object> mutation = invocation.getArgument(2);
+                    return mutation.apply(sampleListing);
+                });
 
         controller = new PropertyController(
                 listingRepository,
@@ -59,7 +66,8 @@ public class MediaUploadClaimConcurrencyTest {
                 batchService,
                 stagingService,
                 mock(com.indore.pathome.spaces.repository.UserRepository.class),
-                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class)
+                mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class),
+                propertyAuthority
         );
         controller.setMediaUploadClaimService(claimService);
 
@@ -70,6 +78,50 @@ public class MediaUploadClaimConcurrencyTest {
 
         when(listingRepository.findById(42L)).thenReturn(Optional.of(sampleListing));
         when(listingRepository.findById(43L)).thenReturn(Optional.of(sampleListing));
+    }
+
+    @Test
+    void completedClaimWaitReauthorizesBeforeReturningThePrivateAsset() {
+        String uploadRequestId = "media-42-wait-positive";
+        PropertyMediaAsset existing = new PropertyMediaAsset();
+        existing.setListingId(42L);
+        existing.setUploadRequestId(uploadRequestId);
+        existing.setMediaUrl("https://cdn.example/private.webp");
+        when(claimService.acquireOrWait(42L, uploadRequestId))
+                .thenReturn(MediaUploadClaimService.ClaimResult.alreadyComplete(existing));
+        when(mediaAssetRepository.findByListingIdAndUploadRequestId(42L, uploadRequestId))
+                .thenReturn(Optional.empty());
+
+        ResponseEntity<?> response = controller.uploadTaggedMediaAsset(
+                42L,
+                new MockMultipartFile("file", "photo.jpg", "image/jpeg", new byte[]{1}),
+                "GENERAL", "IMAGE", null, false, null, null, null, uploadRequestId);
+
+        assertTrue(response.getStatusCode().is2xxSuccessful());
+        verify(propertyAuthority, times(2)).requireUploaderMedia(sampleListing);
+    }
+
+    @Test
+    void denialDuringClaimWaitIsTerminalAndNeverReturnsThePrivateAsset() {
+        String uploadRequestId = "media-42-wait-denied";
+        PropertyMediaAsset existing = new PropertyMediaAsset();
+        existing.setListingId(42L);
+        existing.setUploadRequestId(uploadRequestId);
+        existing.setMediaUrl("https://cdn.example/private.webp");
+        when(claimService.acquireOrWait(42L, uploadRequestId))
+                .thenReturn(MediaUploadClaimService.ClaimResult.alreadyComplete(existing));
+        when(mediaAssetRepository.findByListingIdAndUploadRequestId(42L, uploadRequestId))
+                .thenReturn(Optional.empty());
+        when(propertyAuthority.requireUploaderMedia(sampleListing))
+                .thenReturn(null)
+                .thenThrow(new org.springframework.security.access.AccessDeniedException("revoked"));
+
+        assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> controller.uploadTaggedMediaAsset(
+                        42L,
+                        new MockMultipartFile("file", "photo.jpg", "image/jpeg", new byte[]{1}),
+                        "GENERAL", "IMAGE", null, false, null, null, null, uploadRequestId));
+        verify(cloudinaryService, never()).uploadImageResult(any(), any());
     }
 
     @Test

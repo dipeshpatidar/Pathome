@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,7 +51,8 @@ class BatchPropertyPublishingServiceTest {
         doThrow(new IllegalStateException("media write failed"))
                 .when(mediaAssetRepository).saveAllAndFlush(anyList());
         BatchPropertyPublishingService service = new BatchPropertyPublishingService(
-                listingRepository, mediaAssetRepository, propertyParserService);
+                listingRepository, mediaAssetRepository, propertyParserService,
+                mock(BackOfficePropertyAuthority.class));
 
         assertThrows(IllegalStateException.class,
                 () -> service.publish(listing, List.of("https://cdn.example/property.jpg")));
