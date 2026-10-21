@@ -1,0 +1,55 @@
+{
+  "tempRoot": "/var/folders/sq/5t0q68_126xf9ryjvk7zl2rw0000gn/T/pathome-f4-callback-xhQRvq",
+  "controls": [
+    {
+      "control": "M1 media worker epoch queue/dispatch guard",
+      "source": "draftService.ts",
+      "mutantHash": "e6d89073920155823b321323968787018165ed544ef3e3ba77207e2d924cfe78",
+      "mutantBuildHash": "86387fa43b2f3c53cc0461b55055b7af49b7654600f72b1730860bee62420103",
+      "failure": "retired restore claims additional protected media"
+    },
+    {
+      "control": "M2 owned restoration-progress settlement/finalizer",
+      "source": "MasterAdminDashboard.tsx",
+      "mutantHash": "4c6df177129516a30772fbb5d039165eed2423b3bb43dcbe916ec6fab36b493d",
+      "mutantBuildHash": "1123a706e8c07ab07af5caf65f286babd80c61c35e3be4b56d0f6d233a8b860a",
+      "failure": "fetching progress hides terminal denial"
+    },
+    {
+      "control": "M3 immediate bulk denial retirement",
+      "source": "usePropertyDraft.ts",
+      "mutantHash": "202264d28b3dfd7cac82996e12fd9c5f4d988df6fb479ebf22a5b214ac208683",
+      "mutantBuildHash": "4473dab6d14a01d75fa01154f52e20183cfc4cd94b17bce5e2d03a426b35429b",
+      "failure": "editor and autosave remain live after DELETE403"
+    },
+    {
+      "control": "M4 bulk next-item dispatch ownership",
+      "source": "usePropertyDraft.ts",
+      "mutantHash": "171a76885c4a977eccaae8c3c3fe43ae1546bd8b7954a32d23274e0a94daaf94",
+      "mutantBuildHash": "94269cd9559b8de56be72c7ab3af12f696819d1f0c25a303c53f6da1a233c2c5",
+      "failure": "a post-denial chunk dispatches another protected DELETE"
+    },
+    {
+      "control": "M5 bulk caller initiating-session finalization guard",
+      "source": "DraftManagementBar.tsx",
+      "mutantHash": "10274d774bac867ae6e678566bd21bb27bc5375645ce679e1e472621e8d16d65",
+      "mutantBuildHash": "8e3b9706d577c225a0d7927b0bf4964f51f821a8aa9666089073bdf7f5b4244e",
+      "failure": "stale completion mutates the replacement owner UI"
+    }
+  ],
+  "beforeSourceHashes": {
+    "draftService": "fde5c08982ab9b95ac48d64d41e66beb0958c74adf066522a149d1d04467136a",
+    "hook": "f682a75540687c7ffd5da3d467e7bf8abd5dc367af28b2edb988f25b64830735",
+    "single": "b3a89e845d30dc944f1e3ad201239cbf386e8fe8ad948f6a115a3f616f08ef6c",
+    "bar": "212a81414c3827b68eb97a70404ee0a177723d0e729e4abdc6f850b99942c2f3"
+  },
+  "beforeBuildHash": "f0992f697b7a504b38869c11d653b1105fd90e3b52ed1819535a5da18101f1ee",
+  "afterSourceHashes": {
+    "draftService": "fde5c08982ab9b95ac48d64d41e66beb0958c74adf066522a149d1d04467136a",
+    "hook": "f682a75540687c7ffd5da3d467e7bf8abd5dc367af28b2edb988f25b64830735",
+    "single": "b3a89e845d30dc944f1e3ad201239cbf386e8fe8ad948f6a115a3f616f08ef6c",
+    "bar": "212a81414c3827b68eb97a70404ee0a177723d0e729e4abdc6f850b99942c2f3"
+  },
+  "restoredBuildHash": "f0992f697b7a504b38869c11d653b1105fd90e3b52ed1819535a5da18101f1ee",
+  "restoredHashesMatch": true
+}

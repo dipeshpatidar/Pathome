@@ -46,7 +46,7 @@ export class Evidence {
     const previous = this.records.get(id);
     if (!previous || this.recorded.has(id)) throw Error('Missing or duplicate scenario evidence: ' + id);
     this.recorded.add(id);
-    this.records.set(id, { ...previous, ...entry }); this.checkpoint = id; this.flush();
+    this.records.set(id, { ...previous, ...entry, reason: entry.reason ?? null }); this.checkpoint = id; this.flush();
     this.log(entry.result + ' ' + id + (entry.reason ? ' ' + entry.reason : ''));
   }
   flush() {

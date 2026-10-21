@@ -77,6 +77,11 @@ Legend: AUTH is `ListingReviewAuthority`; FILTER is the request matchers in `Sec
 Nothing is written to `supported_cities`, `localities`, `listings`, `staff_access_grants`,
 `operating_teams` or `operational_audit_events` by hand, and no migration is added.
 
+The journey writes `journey-state.json` with e-mail addresses and identifiers only: no password and no
+bearer token is written, printed or committed. Credentials come from the ephemeral run
+(`$PATHOME_OE_TEST_RUN_DIR/secrets.env`), and `package4.sh journey-browser` supplies the shared
+disposable password from there, so the browser pass never reads one from the state file.
+
 ## Commands
 
 ```bash
@@ -90,6 +95,11 @@ bash tools/oe-integration-env/package4.sh journey-browser
 
 Every command prints one line per check and exits non-zero on failure. Nothing is reported as passing
 unless it actually ran.
+
+The Maven test run and the backend are configured through `lib/env-isolation.sh`: `.env.local` is never
+sourced, inherited destinations are neutralised, and the disposable datasource is repinned to the
+designation. The approved Phase 2A Operations acceptance suite (`phase2a.sh`, see `PHASE2A.md`) reuses
+this same environment and the same guard.
 
 ## Boundaries
 

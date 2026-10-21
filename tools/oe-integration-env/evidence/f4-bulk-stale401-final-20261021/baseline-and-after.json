@@ -1,0 +1,27 @@
+{
+  "repository": "/Users/dipeshpatidar/Documents/Pathome-tenant-ui-v0",
+  "branch": "feature/phase2a-oe-ui-integration",
+  "head": "285c5844df4192bdec2c0ecc771bc9676e12dcb9",
+  "index": "empty",
+  "dirtyEntryCountBefore": 207,
+  "dirtyEntryCountAfter": 208,
+  "sourceBefore": {
+    "usePropertyDraft.ts": "f682a75540687c7ffd5da3d467e7bf8abd5dc367af28b2edb988f25b64830735",
+    "DraftManagementBar.tsx": "212a81414c3827b68eb97a70404ee0a177723d0e729e4abdc6f850b99942c2f3"
+  },
+  "sourceAfter": {
+    "usePropertyDraft.ts": "bc97eda04053dc0da9454c4cb1cc15e0e069dfdbe7e09d64704126a398e5d7c4",
+    "DraftManagementBar.tsx": "8bdda0b8be45931d7700373ac9c2c024d784e55960f17a43d2443c10fcaeb21c",
+    "propertyUploaderSessionIsolation.test.mjs": "5efdb910454153ba6bee1fb4069f286640ba1fbee33ed2cd5a318e921fcdaf3c",
+    "discard-generation-isolation.mjs": "af5c8ab5d62f5e73fad001a6368ed7e1ee338d86e579b4168dab63bd801b5dd6"
+  },
+  "productionBuild": {
+    "index.html": "b36506af0c25800a2698f22d8a10d40c7f739a1aa16885b3f642fd1e6c1cc8cd",
+    "assets/index-DqjPF9iw.js": "04d4999fe5e421fa599af3488e75bda2d8b44d9349d0218f3435986c9215a1f6",
+    "assets/index-DymRWZef.css": "fd3497db1ca584dcfc3b6c515337a772556c7fe4c268646c5dcc7b530178cf0f"
+  },
+  "trackers": {
+    "crossRole": "44c9dc7af26818e1bd35249eaf8f3842f28a2d68cf5975c9db1c9e3c6b7bab17",
+    "visitSession": "0e324e11bf49738a4d011d354281b42e1b018febe2ae27def95e1f0ffacb7d96"
+  }
+}

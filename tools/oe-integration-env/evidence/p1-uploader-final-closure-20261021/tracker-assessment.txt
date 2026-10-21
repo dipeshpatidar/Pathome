@@ -1,0 +1,6 @@
+file=Pathome_Cross_Role_Development_Tracker_BatchB_Conditional_Acceptance_2026-10-19.xlsx
+sha256=44c9dc7af26818e1bd35249eaf8f3842f28a2d68cf5975c9db1c9e3c6b7bab17
+file=Pathome_Visit_Session_Implementation_Packages_BatchB_Conditional_Acceptance_2026-10-19.xlsx
+sha256=0e324e11bf49738a4d011d354281b42e1b018febe2ae27def95e1f0ffacb7d96
+assessment=read-only; DEP-004/005/006/007 remain review/publication dependencies; DEP-020 failed-upload administration remains partial pending independent acceptance; DEP-031 configurable permissions remains planned; DEP-050/051 frozen historical truth preserved; DEP-054 future governance remains unimplemented; Batch D CRM/intake/conversion remains separate; no workbook modified.
+deadlines=Web V1 31 Oct 2026 HIGH RISK; native Tenant/GE 15 Nov 2026 AT RISK

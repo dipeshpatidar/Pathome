@@ -69,7 +69,10 @@ reported as passing unless it actually ran.
 * Fixtures are created only through `POST /auth/register`, `POST /api/v1/staff/admin/**` and the 3A
   Team API. `operating_teams`, `staff_access_grants` and `operational_audit_events` are never written
   by hand, and no trigger is bypassed.
-* Existing scripts (`run.sh`, `lib/provision.sh`, `lib/verify.sh`) and their evidence are preserved.
+* Existing scripts (`run.sh`, `lib/provision.sh`, `lib/verify.sh`) keep their behaviour and their
+  evidence. `lib/verify.sh` compares the disposable schema with repository artefacts (the migration
+  files and `expected-schema.txt`) instead of with the preserved development database, and its Maven
+  runs get their configuration from `lib/env-isolation.sh` rather than from `.env.local`.
 
 ---
 

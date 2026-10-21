@@ -1,0 +1,5 @@
+before: pathome_oe_test_integration|DISPOSABLE|1 owned_uploader_schemas=0
+after: pathome_oe_test_integration|DISPOSABLE|1 owned_uploader_schemas=0
+endpoint: loopback only
+protected pathome_db selected: no
+real owner account or grant modified: no

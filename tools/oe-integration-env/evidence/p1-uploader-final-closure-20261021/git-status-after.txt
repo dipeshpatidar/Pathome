@@ -1,0 +1,203 @@
+1 .M N... 100644 100644 100644 fefe1115d43306c41d596aa58f155e3c28987e68 fefe1115d43306c41d596aa58f155e3c28987e68 backend/src/main/java/com/indore/pathome/spaces/config/SecurityConfig.java
+1 .M N... 100644 100644 100644 b6f1fd273208da70e33e036f00848c1caecdffd3 b6f1fd273208da70e33e036f00848c1caecdffd3 backend/src/main/java/com/indore/pathome/spaces/controller/ClaimableWorkController.java
+1 .M N... 100644 100644 100644 64ee81b3dfb2e4956d732bd770923b41bbf535ab 64ee81b3dfb2e4956d732bd770923b41bbf535ab backend/src/main/java/com/indore/pathome/spaces/controller/FailedUploadsController.java
+1 .M N... 100644 100644 100644 40794b160fcedd08e18e12ac3ab3258548aa631c 40794b160fcedd08e18e12ac3ab3258548aa631c backend/src/main/java/com/indore/pathome/spaces/controller/LandlordReviewController.java
+1 .M N... 100644 100644 100644 4e9493fff2e3286458d7fd5556526d187ff34c9d 4e9493fff2e3286458d7fd5556526d187ff34c9d backend/src/main/java/com/indore/pathome/spaces/controller/MetaLeadWebhookController.java
+1 .M N... 100644 100644 100644 a97d0b141109a005ad84500219746bfef7968984 a97d0b141109a005ad84500219746bfef7968984 backend/src/main/java/com/indore/pathome/spaces/controller/OperationsMyWorkController.java
+1 .M N... 100644 100644 100644 1f05c7ad5302f166a918e7eb1a7a5c6262b87e9f 1f05c7ad5302f166a918e7eb1a7a5c6262b87e9f backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java
+1 .M N... 100644 100644 100644 9d19af93c227ac9d4cd227291f130f7b843a5a12 9d19af93c227ac9d4cd227291f130f7b843a5a12 backend/src/main/java/com/indore/pathome/spaces/controller/PropertyDraftController.java
+1 .M N... 100644 100644 100644 c1e76bd9a92dbc89612af50e51be0e57c51b28f6 c1e76bd9a92dbc89612af50e51be0e57c51b28f6 backend/src/main/java/com/indore/pathome/spaces/controller/VisitOperationsController.java
+1 .M N... 100644 100644 100644 76c1eec79c94cf00450d2dd902c189153b5e0433 76c1eec79c94cf00450d2dd902c189153b5e0433 backend/src/main/java/com/indore/pathome/spaces/dto/ClaimableWorkPage.java
+1 .M N... 100644 100644 100644 beb823055550b9475d3d0eb0c004603bc6ba4246 beb823055550b9475d3d0eb0c004603bc6ba4246 backend/src/main/java/com/indore/pathome/spaces/dto/OperationsMyWorkPage.java
+1 .M N... 100644 100644 100644 cd59163c6285d8a0249e03ee49ecce5c3e577169 cd59163c6285d8a0249e03ee49ecce5c3e577169 backend/src/main/java/com/indore/pathome/spaces/dto/OperationsStandaloneRequestDetailView.java
+1 .M N... 100644 100644 100644 8e6b9f3c9edeac750e020d28c3c6cbd1b2ebb39c 8e6b9f3c9edeac750e020d28c3c6cbd1b2ebb39c backend/src/main/java/com/indore/pathome/spaces/dto/OperationsVisitSessionView.java
+1 .M N... 100644 100644 100644 f971cc4b4d9980c338bc6a79cebd73d3cc6c6bd4 f971cc4b4d9980c338bc6a79cebd73d3cc6c6bd4 backend/src/main/java/com/indore/pathome/spaces/dto/TenantVisitRequestResponse.java
+1 .M N... 100644 100644 100644 f1679a673b1444c79f72babf7fbb216b07ada09c f1679a673b1444c79f72babf7fbb216b07ada09c backend/src/main/java/com/indore/pathome/spaces/dto/VisitSessionItemView.java
+1 .M N... 100644 100644 100644 e2841de63405f58b5826393dfe50e49254214f02 e2841de63405f58b5826393dfe50e49254214f02 backend/src/main/java/com/indore/pathome/spaces/entity/LeadRoutingQueue.java
+1 .M N... 100644 100644 100644 4e4625e15ea27cc442ff9d891811690242f71c0c 4e4625e15ea27cc442ff9d891811690242f71c0c backend/src/main/java/com/indore/pathome/spaces/entity/LeadStatus.java
+1 .M N... 100644 100644 100644 cb061f2c027916107b5cc1786d2791db74b9f60c cb061f2c027916107b5cc1786d2791db74b9f60c backend/src/main/java/com/indore/pathome/spaces/repository/ClaimableWorkRepository.java
+1 .M N... 100644 100644 100644 2157ef7ecd9f63d62e7d0db70cad3132c5c44644 2157ef7ecd9f63d62e7d0db70cad3132c5c44644 backend/src/main/java/com/indore/pathome/spaces/repository/LeadRoutingQueueRepository.java
+1 .M N... 100644 100644 100644 427fc5b3f9deb5aeb102c17cd82a8b5bffb91368 427fc5b3f9deb5aeb102c17cd82a8b5bffb91368 backend/src/main/java/com/indore/pathome/spaces/repository/MediaUploadFailureRepository.java
+1 .M N... 100644 100644 100644 343582f26afe2e5c50811e8136171cd581cdb954 343582f26afe2e5c50811e8136171cd581cdb954 backend/src/main/java/com/indore/pathome/spaces/repository/OperationsMyWorkRepository.java
+1 .M N... 100644 100644 100644 611215833474c35b29b68fcec1f8daa6aff5f4a4 611215833474c35b29b68fcec1f8daa6aff5f4a4 backend/src/main/java/com/indore/pathome/spaces/repository/PropertyUploadDraftRepository.java
+1 .M N... 100644 100644 100644 fe1e6dfae5baea8191b8d003056acf56a0babc27 fe1e6dfae5baea8191b8d003056acf56a0babc27 backend/src/main/java/com/indore/pathome/spaces/repository/PropertyVisitRequestRepository.java
+1 .M N... 100644 100644 100644 45cc0cc7e817b5a4cefd3f97ba504ac543100047 45cc0cc7e817b5a4cefd3f97ba504ac543100047 backend/src/main/java/com/indore/pathome/spaces/repository/UserRepository.java
+1 .M N... 100644 100644 100644 cccd8a7ec1cbdcabc56c6b6f351aaa488e4dd85c cccd8a7ec1cbdcabc56c6b6f351aaa488e4dd85c backend/src/main/java/com/indore/pathome/spaces/repository/VisitSessionRepository.java
+1 .M N... 100644 100644 100644 060ceb83cb29db84046ebf43b0d4bdfb60404169 060ceb83cb29db84046ebf43b0d4bdfb60404169 backend/src/main/java/com/indore/pathome/spaces/service/BatchPropertyPublishingService.java
+1 .M N... 100644 100644 100644 841249d31ca9217a31e8eb4149d0fed81abe4ca6 841249d31ca9217a31e8eb4149d0fed81abe4ca6 backend/src/main/java/com/indore/pathome/spaces/service/ClaimableWorkService.java
+1 .M N... 100644 100644 100644 811480a600349af459b161e57fa37481c6e26ae6 811480a600349af459b161e57fa37481c6e26ae6 backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java
+1 .M N... 100644 100644 100644 f9d44fe2babc1830a3a8f9cf34df3f60c2cb4018 f9d44fe2babc1830a3a8f9cf34df3f60c2cb4018 backend/src/main/java/com/indore/pathome/spaces/service/LandlordReviewService.java
+1 .M N... 100644 100644 100644 c4ea9198942190394d50d2dc5c8a21db18402ff1 c4ea9198942190394d50d2dc5c8a21db18402ff1 backend/src/main/java/com/indore/pathome/spaces/service/ListingReviewAuthority.java
+1 .D N... 100644 100644 000000 ee1005759d2350a00a123efc19e46ea4eec1b59d ee1005759d2350a00a123efc19e46ea4eec1b59d backend/src/main/java/com/indore/pathome/spaces/service/MetaLeadIngestionService.java
+1 .M N... 100644 100644 100644 cba01e5c6baebd0aefd0fb27388d5d3a807da17e cba01e5c6baebd0aefd0fb27388d5d3a807da17e backend/src/main/java/com/indore/pathome/spaces/service/OperationsMyWorkService.java
+1 .M N... 100644 100644 100644 8032161cb76fd0b9a50ae2c2c1e4dd3332274065 8032161cb76fd0b9a50ae2c2c1e4dd3332274065 backend/src/main/java/com/indore/pathome/spaces/service/PropertyDraftService.java
+1 .D N... 100644 100644 000000 03211bf91640b3571ff498cfce44e00a4aca744c 03211bf91640b3571ff498cfce44e00a4aca744c backend/src/main/java/com/indore/pathome/spaces/service/StaleLeadScheduledTask.java
+1 .M N... 100644 100644 100644 e90dc1a6ca22f58dba17c98d912dabd4bf670063 e90dc1a6ca22f58dba17c98d912dabd4bf670063 backend/src/main/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityService.java
+1 .M N... 100644 100644 100644 17a1e8df596f694f4df0015a352c1ddf4f0a0c2c 17a1e8df596f694f4df0015a352c1ddf4f0a0c2c backend/src/main/java/com/indore/pathome/spaces/service/TenantVisitRequestHistoryService.java
+1 .M N... 100644 100644 100644 8faeb079c206ed51ea2785de244e01dee83f0847 8faeb079c206ed51ea2785de244e01dee83f0847 backend/src/main/java/com/indore/pathome/spaces/service/VisitOperationsService.java
+1 .M N... 100644 100644 100644 b3e27ce861f60ef64eb514648d8f7f8cd3c9ea88 b3e27ce861f60ef64eb514648d8f7f8cd3c9ea88 backend/src/main/java/com/indore/pathome/spaces/service/VisitSchedulingRecommendationService.java
+1 .M N... 100644 100644 100644 d776f292254a34593c8b88171a5cc9a7949367b6 d776f292254a34593c8b88171a5cc9a7949367b6 backend/src/main/resources/application.yml
+1 .M N... 100644 100644 100644 84142697a581225e369fd9722f5400528d36bd51 84142697a581225e369fd9722f5400528d36bd51 backend/src/test/java/com/indore/pathome/spaces/controller/FailedUploadsControllerTest.java
+1 .M N... 100644 100644 100644 70362fee7dc8cd9e033e5321e849aed514df22ab 70362fee7dc8cd9e033e5321e849aed514df22ab backend/src/test/java/com/indore/pathome/spaces/controller/ListingGalleryConcurrencyTest.java
+1 .M N... 100644 100644 100644 6d40b8dd1950291bc374f29f2004e3574d759769 6d40b8dd1950291bc374f29f2004e3574d759769 backend/src/test/java/com/indore/pathome/spaces/controller/MediaUploadClaimConcurrencyTest.java
+1 .M N... 100644 100644 100644 0ddad399be00aa43b9cb54c83db9f0e3cb5600f1 0ddad399be00aa43b9cb54c83db9f0e3cb5600f1 backend/src/test/java/com/indore/pathome/spaces/controller/PropertyControllerTest.java
+1 .M N... 100644 100644 100644 e42b3ebc20a8f9e35bb44234d31625d30e09c87a e42b3ebc20a8f9e35bb44234d31625d30e09c87a backend/src/test/java/com/indore/pathome/spaces/repository/ClaimableWorkRepositoryPostgresTest.java
+1 .M N... 100644 100644 100644 5bd8731118c912b6faa4a1be3d498b9877e08caa 5bd8731118c912b6faa4a1be3d498b9877e08caa backend/src/test/java/com/indore/pathome/spaces/repository/VisitOperationsQueuePostgresTest.java
+1 .M N... 100644 100644 100644 c9bd1bf19a3ee47ebfebe92ed016cf8bdcb05aab c9bd1bf19a3ee47ebfebe92ed016cf8bdcb05aab backend/src/test/java/com/indore/pathome/spaces/security/FailedUploadsSecurityTest.java
+1 .M N... 100644 100644 100644 b97c62c1dfb9e32575ba53ba4b9446bd232c5052 b97c62c1dfb9e32575ba53ba4b9446bd232c5052 backend/src/test/java/com/indore/pathome/spaces/security/LandlordReviewSecurityTest.java
+1 .M N... 100644 100644 100644 3a1577200a6ec6cd48b3d583a897df3a47b0c92f 3a1577200a6ec6cd48b3d583a897df3a47b0c92f backend/src/test/java/com/indore/pathome/spaces/service/BatchPropertyPublishingServiceTest.java
+1 .M N... 100644 100644 100644 fb3b56fdcabf0875524faa8390c3602a1f002c63 fb3b56fdcabf0875524faa8390c3602a1f002c63 backend/src/test/java/com/indore/pathome/spaces/service/ClaimableWorkHttpPostgresTest.java
+1 .M N... 100644 100644 100644 b6c2fe5948c59a97fb282bbaa2f07353953451bd b6c2fe5948c59a97fb282bbaa2f07353953451bd backend/src/test/java/com/indore/pathome/spaces/service/FailedUploadServiceTest.java
+1 .M N... 100644 100644 100644 3902bde20cb0541fc8c0d74d2e2624f8b408afb0 3902bde20cb0541fc8c0d74d2e2624f8b408afb0 backend/src/test/java/com/indore/pathome/spaces/service/LandlordReviewServiceTest.java
+1 .M N... 100644 100644 100644 b0cc7000e5bda258656b39631c767049604af547 b0cc7000e5bda258656b39631c767049604af547 backend/src/test/java/com/indore/pathome/spaces/service/ListingReviewAuthorityHttpPostgresTest.java
+1 .M N... 100644 100644 100644 67e4b2ce17cd5ce45411db75e29def3d87850b3b 67e4b2ce17cd5ce45411db75e29def3d87850b3b backend/src/test/java/com/indore/pathome/spaces/service/ListingReviewAuthorityTest.java
+1 .D N... 100644 100644 000000 75829fc2ade2fb4191e216e4ee87874a50efbbd9 75829fc2ade2fb4191e216e4ee87874a50efbbd9 backend/src/test/java/com/indore/pathome/spaces/service/MetaLeadIngestionServiceTest.java
+1 .M N... 100644 100644 100644 d41818b2705b7736fe3f41fbd8ddcc0a10730955 d41818b2705b7736fe3f41fbd8ddcc0a10730955 backend/src/test/java/com/indore/pathome/spaces/service/OperationsMyWorkHttpPostgresTest.java
+1 .M N... 100644 100644 100644 5b3066a0ce5bed349b3f9e73ec80f21c13fed08f 5b3066a0ce5bed349b3f9e73ec80f21c13fed08f backend/src/test/java/com/indore/pathome/spaces/service/OwnedOperationsHttpPostgresTest.java
+1 .M N... 100644 100644 100644 084d11651562518d556a189b2494b0a22011ee54 084d11651562518d556a189b2494b0a22011ee54 backend/src/test/java/com/indore/pathome/spaces/service/PropertyDraftServiceTest.java
+1 .M N... 100644 100644 100644 24951e1674b21b1aafbac90fdec5bf0a2c59d780 24951e1674b21b1aafbac90fdec5bf0a2c59d780 backend/src/test/java/com/indore/pathome/spaces/service/PropertyPublishNotificationTest.java
+1 .M N... 100644 100644 100644 4b32ff93b17b0c112960d876acfadc51e76397c5 4b32ff93b17b0c112960d876acfadc51e76397c5 backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityServiceTest.java
+1 .M N... 100644 100644 100644 ee756eb0036c35308e781454f3b64a14d087dc66 ee756eb0036c35308e781454f3b64a14d087dc66 backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitRequestHistoryServiceTest.java
+1 .M N... 100644 100644 100644 42c80046526701da06fabd07b241b81baea2d92d 42c80046526701da06fabd07b241b81baea2d92d backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsPostgresIntegrationTest.java
+1 .M N... 100644 100644 100644 f5c6fa7532d4e7a6ec1a248b2d77576cbb6316b1 f5c6fa7532d4e7a6ec1a248b2d77576cbb6316b1 backend/src/test/java/com/indore/pathome/spaces/service/VisitOperationsServiceTest.java
+1 .M N... 100644 100644 100644 b29d559291ed1949666545176f293f67ed2d3bd4 b29d559291ed1949666545176f293f67ed2d3bd4 backend/src/test/java/com/indore/pathome/spaces/support/DisposableIntegrationTarget.java
+1 .M N... 100644 100644 100644 5e28801615cb4e4fec20ae62057f04a9c7c112e4 5e28801615cb4e4fec20ae62057f04a9c7c112e4 chat_gpt_changes
+1 .M N... 100644 100644 100644 19e96608a4807b14e96254a098c7fd5c90a471e1 19e96608a4807b14e96254a098c7fd5c90a471e1 frontend-web/browser-verification/operations-completion/run.mjs
+1 .M N... 100644 100644 100644 8df8f459c9981ab5307fb557ca0ad2c0465988a2 8df8f459c9981ab5307fb557ca0ad2c0465988a2 frontend-web/src/components/BatchPropertyIngestionStudio.tsx
+1 .M N... 100644 100644 100644 2bd2eba06e6692423c446c7d10e43b329b692f27 2bd2eba06e6692423c446c7d10e43b329b692f27 frontend-web/src/components/DraftManagementBar.tsx
+1 .M N... 100644 100644 100644 8c3f506a92fd5bb3ff55bf7423fb1861ae92b556 8c3f506a92fd5bb3ff55bf7423fb1861ae92b556 frontend-web/src/components/EmployeeCrmDashboard.tsx
+1 .M N... 100644 100644 100644 175fdf7799cee59fe8bb7eeee3537d4d8e3d8e4f 175fdf7799cee59fe8bb7eeee3537d4d8e3d8e4f frontend-web/src/components/Home.tsx
+1 .M N... 100644 100644 100644 80d573a3c1b2c1f096550a6131ba639e57920a2e 80d573a3c1b2c1f096550a6131ba639e57920a2e frontend-web/src/components/MasterAdminDashboard.tsx
+1 .M N... 100644 100644 100644 cee5a2dc205201102a6135806a7262312a4323ad cee5a2dc205201102a6135806a7262312a4323ad frontend-web/src/components/Navbar.tsx
+1 .M N... 100644 100644 100644 54eca6b8911b94f07b8c665d3e1d9b30b0adb71f 54eca6b8911b94f07b8c665d3e1d9b30b0adb71f frontend-web/src/components/TenantDashboard.tsx
+1 .M N... 100644 100644 100644 270d96e6e3c1d730f3e50c9e2f0a344053c24ec8 270d96e6e3c1d730f3e50c9e2f0a344053c24ec8 frontend-web/src/components/VisitRequestModal.tsx
+1 .M N... 100644 100644 100644 b642093382ce2dad4ae5dcddce36a0c3fb265651 b642093382ce2dad4ae5dcddce36a0c3fb265651 frontend-web/src/components/operations/OperationsDraftItinerary.tsx
+1 .M N... 100644 100644 100644 ef53bcc22ec1b32436b5c0cc8776f1b133c23c93 ef53bcc22ec1b32436b5c0cc8776f1b133c23c93 frontend-web/src/components/operations/OperationsGePicker.tsx
+1 .M N... 100644 100644 100644 584b2f1d83177c72f3e6f4f2b7d648876ae0afe9 584b2f1d83177c72f3e6f4f2b7d648876ae0afe9 frontend-web/src/components/operations/OperationsLessorContactPanel.tsx
+1 .M N... 100644 100644 100644 0d299b28ab212d99b332d25b7a3bcfce09b06d3d 0d299b28ab212d99b332d25b7a3bcfce09b06d3d frontend-web/src/components/operations/OperationsRequestCoordination.tsx
+1 .M N... 100644 100644 100644 99705f712c1da1f461828b3afad961d9da4546c1 99705f712c1da1f461828b3afad961d9da4546c1 frontend-web/src/components/operations/OperationsScheduleFlow.tsx
+1 .M N... 100644 100644 100644 9915ab8c2e12a5043f43e2fd40efeb66a258885c 9915ab8c2e12a5043f43e2fd40efeb66a258885c frontend-web/src/components/operations/OperationsWorkDetail.tsx
+1 .M N... 100644 100644 100644 3b9ed81b5bcea0b7d05dafe5ff960b23bb1fda18 3b9ed81b5bcea0b7d05dafe5ff960b23bb1fda18 frontend-web/src/components/operations/OperationsWorkLists.tsx
+1 .M N... 100644 100644 100644 bdbe7cbdc338db2ed7e34133bc2a6ee92aea97d4 bdbe7cbdc338db2ed7e34133bc2a6ee92aea97d4 frontend-web/src/components/operations/OperationsWorkspace.tsx
+1 .M N... 100644 100644 100644 f57f5f42da778ec88bca70c22c4ff6b2aaea8068 f57f5f42da778ec88bca70c22c4ff6b2aaea8068 frontend-web/src/components/operations/OperationsWorkspacePrimitives.tsx
+1 .M N... 100644 100644 100644 ecfad8d3e9116b463edf5c52fa601975ce6334fd ecfad8d3e9116b463edf5c52fa601975ce6334fd frontend-web/src/components/operations/operationsSchedule.css
+1 .M N... 100644 100644 100644 f61e28883f3287cd83c6aebcf0712dc10ab233a6 f61e28883f3287cd83c6aebcf0712dc10ab233a6 frontend-web/src/components/operations/operationsWorkspace.css
+1 .M N... 100644 100644 100644 e85b1eed8eb9b1a43ce146f2e2605ecf65cb1ef9 e85b1eed8eb9b1a43ce146f2e2605ecf65cb1ef9 frontend-web/src/hooks/useOperationsCapability.ts
+1 .M N... 100644 100644 100644 018c733a630d8cb14f07a2634d9d0e2ca845afa8 018c733a630d8cb14f07a2634d9d0e2ca845afa8 frontend-web/src/hooks/usePropertyDraft.ts
+1 .M N... 100644 100644 100644 eacd53874498639fc8ea68447b202b676d3d6a39 eacd53874498639fc8ea68447b202b676d3d6a39 frontend-web/src/services/draftService.ts
+1 .M N... 100644 100644 100644 9d94272b9205b41d88020b40f081b6d746790d54 9d94272b9205b41d88020b40f081b6d746790d54 frontend-web/src/services/localDraftStorage.ts
+1 .M N... 100644 100644 100644 c4248540f04d8e2cf449282a748b866547cd9488 c4248540f04d8e2cf449282a748b866547cd9488 frontend-web/src/services/operationsWorkspaceService.ts
+1 .M N... 100644 100644 100644 a621f0593c42bb9b371a9104b0898c1b0afbfa71 a621f0593c42bb9b371a9104b0898c1b0afbfa71 frontend-web/src/services/propertyService.ts
+1 .M N... 100644 100644 100644 ee70200f1550d8e35b3e5ae8244daea9d48cd52a ee70200f1550d8e35b3e5ae8244daea9d48cd52a frontend-web/src/services/tenantVisitService.ts
+1 .M N... 100644 100644 100644 696b3cf26b6d45c9ad944561c7f39af6346c4f26 696b3cf26b6d45c9ad944561c7f39af6346c4f26 frontend-web/src/tests/authSessionIsolation.test.mjs
+1 .M N... 100644 100644 100644 ded7e56c659aacd15672a816f1dfa13550ad83f6 ded7e56c659aacd15672a816f1dfa13550ad83f6 frontend-web/src/tests/operationsCompletionContextOwnership.test.mjs
+1 .M N... 100644 100644 100644 aedcdd6bb1c2705fd85ea4efec7f56a009109a6d aedcdd6bb1c2705fd85ea4efec7f56a009109a6d frontend-web/src/tests/operationsDestinationNavigation.test.mjs
+1 .M N... 100644 100644 100644 8bca47255fc0ad6c0fa7ed4ec2a2929c406c9f26 8bca47255fc0ad6c0fa7ed4ec2a2929c406c9f26 frontend-web/src/tests/operationsOwnershipRaceCorrections.test.mjs
+1 .M N... 100644 100644 100644 3296c3fedb83783628777ed8cd4c4ceddb89164c 3296c3fedb83783628777ed8cd4c4ceddb89164c frontend-web/src/tests/operationsPropertyAvailability.test.mjs
+1 .M N... 100644 100644 100644 042707382d0f4f01afa2a15a11387aa7dd5ae1d0 042707382d0f4f01afa2a15a11387aa7dd5ae1d0 frontend-web/src/tests/operationsScheduling.test.mjs
+1 .M N... 100644 100644 100644 c823f1a3e7248093380a37292478783a458bd28f c823f1a3e7248093380a37292478783a458bd28f frontend-web/src/tests/operationsWorkspaceIntegration.test.mjs
+1 .M N... 100644 100644 100644 d7ae917a80ef80f0d76904a0912ba44890b1ac73 d7ae917a80ef80f0d76904a0912ba44890b1ac73 frontend-web/src/tests/visitRequestAcknowledgementService.test.mjs
+1 .M N... 100644 100644 100644 864537f2eef3a9a137e8ed6161606e382f0ab227 864537f2eef3a9a137e8ed6161606e382f0ab227 frontend-web/src/utils/authSession.ts
+1 .M N... 100644 100644 100644 25a81aa9620a2732895a3242744315c927c6bcfc 25a81aa9620a2732895a3242744315c927c6bcfc frontend-web/src/utils/operationsSession.ts
+1 .M N... 100644 100644 100644 4aee14c2d297c737d35be5040deee5a9f57963e2 4aee14c2d297c737d35be5040deee5a9f57963e2 frontend-web/src/utils/operationsWorkspacePresentation.ts
+1 .M N... 100644 100644 100644 2322c5316257c0f4856930519315afe065609d93 2322c5316257c0f4856930519315afe065609d93 tools/oe-integration-env/PACKAGE3.md
+1 .M N... 100644 100644 100644 b261c6122a29a01ebd1e7e45f4108e3b2a9014be b261c6122a29a01ebd1e7e45f4108e3b2a9014be tools/oe-integration-env/PACKAGE4.md
+1 .M N... 100644 100644 100644 7a0797df79a72e2952443425a102611265e7310f 7a0797df79a72e2952443425a102611265e7310f tools/oe-integration-env/README.md
+1 .M N... 100644 100644 100644 636089cb67ac50e304b446beb024e2dc5e508210 636089cb67ac50e304b446beb024e2dc5e508210 tools/oe-integration-env/oe-test.env
+1 .M N... 100644 100644 100644 92c9543b5f666a690ca3f656e4d309a1aedec882 92c9543b5f666a690ca3f656e4d309a1aedec882 tools/oe-integration-env/phase2a/evidence.mjs
+? backend/src/main/java/com/indore/pathome/spaces/controller/LeadController.java
+? backend/src/main/java/com/indore/pathome/spaces/controller/OperationsTenantContactController.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/GeAvailabilityResultCode.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsGeAvailabilityView.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsLinkedRequestTimingView.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsSessionTenantContactView.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsTenantContactStatus.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsTenantContactView.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/OperationsWorkFilter.java
+? backend/src/main/java/com/indore/pathome/spaces/dto/crm/
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadActivity.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadCommandReceipt.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadIntent.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadLegacyProvenance.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadPreferredLocality.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadSourceEvent.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadSourceEventKind.java
+? backend/src/main/java/com/indore/pathome/spaces/entity/LeadSourceEventState.java
+? backend/src/main/java/com/indore/pathome/spaces/repository/LeadActivityRepository.java
+? backend/src/main/java/com/indore/pathome/spaces/repository/LeadCommandReceiptRepository.java
+? backend/src/main/java/com/indore/pathome/spaces/repository/LeadPreferredLocalityRepository.java
+? backend/src/main/java/com/indore/pathome/spaces/repository/LeadSourceEventRepository.java
+? backend/src/main/java/com/indore/pathome/spaces/service/BackOfficePropertyAuthority.java
+? backend/src/main/java/com/indore/pathome/spaces/service/LeadAccessContext.java
+? backend/src/main/java/com/indore/pathome/spaces/service/LeadAccessService.java
+? backend/src/main/java/com/indore/pathome/spaces/service/LeadContract.java
+? backend/src/main/java/com/indore/pathome/spaces/service/LeadService.java
+? backend/src/main/java/com/indore/pathome/spaces/service/MetaLeadInboxService.java
+? backend/src/main/java/com/indore/pathome/spaces/service/OperationsGeAvailabilityService.java
+? backend/src/main/java/com/indore/pathome/spaces/service/OperationsPropertyCoverResolver.java
+? backend/src/main/java/com/indore/pathome/spaces/service/OperationsTenantContactResolver.java
+? backend/src/main/java/com/indore/pathome/spaces/service/OperationsTenantContactService.java
+? backend/src/main/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityTransaction.java
+? backend/src/main/resources/db/migration/V51__operations_work_filters_indexes.sql
+? backend/src/main/resources/db/migration/V52__crm_lead_foundation_and_source_inbox.sql
+? backend/src/test/java/com/indore/pathome/spaces/controller/BackOfficePropertyAuthorizationHttpPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/controller/LeadControllerTest.java
+? backend/src/test/java/com/indore/pathome/spaces/controller/UploaderMediaClosureHttpPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/dto/
+? backend/src/test/java/com/indore/pathome/spaces/security/MetaWebhookSignatureTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/AvailabilityTimezoneContractTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/BackOfficePropertyAuthorityTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/LeadAccessServiceTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/LeadContractTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/MetaLeadInboxServiceTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/OperationsGeAvailabilityServiceTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/OperationsPropertyCoverResolverTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/OperationsTenantContactHttpPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/OperationsTenantContactResolverTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityHttpPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityTopologyPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/TenantVisitAvailabilityTransactionTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/VisitSchedulingReceiptCompatibilityTest.java
+? backend/src/test/java/com/indore/pathome/spaces/service/VisitSchedulingReceiptPostgresTest.java
+? backend/src/test/java/com/indore/pathome/spaces/support/C26DiagnosticOrderer.java
+? backend/src/test/java/com/indore/pathome/spaces/support/C26ExecutionProbe.java
+? backend/src/test/java/com/indore/pathome/spaces/support/DisposablePostgresTarget.java
+? backend/src/test/java/com/indore/pathome/spaces/support/DisposablePostgresTargetTest.java
+? frontend-web/browser-verification/operations-batch-b/
+? frontend-web/browser-verification/property-uploader-session/
+? frontend-web/browser-verification/tenant-availability/
+? frontend-web/src/components/TenantAvailabilityEditor.tsx
+? frontend-web/src/components/operations/OperationsGeAvailability.tsx
+? frontend-web/src/components/operations/OperationsPropertyThumb.tsx
+? frontend-web/src/tests/navbarAccountMenuAccessibility.test.mjs
+? frontend-web/src/tests/operationsAvailabilityDraftLifecycle.test.mjs
+? frontend-web/src/tests/operationsAvailabilityRecoveryFailureClasses.test.mjs
+? frontend-web/src/tests/operationsBatchBCorrections.test.mjs
+? frontend-web/src/tests/operationsBatchC.test.mjs
+? frontend-web/src/tests/operationsFreshSchedulingDrawer.test.mjs
+? frontend-web/src/tests/operationsTenantContact.test.mjs
+? frontend-web/src/tests/operationsWorkspaceRoute.test.mjs
+? frontend-web/src/tests/operationsWorkspaceTerminology.test.mjs
+? frontend-web/src/tests/propertyUploaderSessionIsolation.test.mjs
+? frontend-web/src/tests/support/availabilityCommandBridge.mjs
+? frontend-web/src/tests/support/availabilityDraftItineraryHarness.mjs
+? frontend-web/src/tests/support/availabilityDraftSaveHarness.mjs
+? frontend-web/src/tests/support/availabilityProductionRunnerHarness.mjs
+? frontend-web/src/tests/support/operationsSchedulingCallbacksHarness.mjs
+? frontend-web/src/tests/tenantAvailability.test.mjs
+? frontend-web/src/tests/tenantAvailabilityRecovery.test.mjs
+? frontend-web/src/tests/uploaderRestoreTerminalDenial.test.mjs
+? frontend-web/src/utils/operationsWorkspaceRoute.ts
+? frontend-web/src/utils/tenantAvailability.ts
+? frontend-web/src/utils/uploaderSession.ts
+? tools/oe-integration-env/CORRECTION_REPORT.md
+? tools/oe-integration-env/OE_BATCH_C_F1_F5_CORRECTION_C26_HANDOFF_20261020.md
+? tools/oe-integration-env/OE_C26_BATCH_C_EXECUTION_HANDOFF_20261020.md
+? tools/oe-integration-env/PATHOME_P1_UPLOADER_F1_F4_CLOSURE_IMPLEMENTATION_AND_VERIFICATION_HANDOFF_20261021.md
+? tools/oe-integration-env/R1_OE_1_E4_CLEAR_NULL_CLOSURE_20261019.md
+? tools/oe-integration-env/R1_OE_1_FINAL_ACCEPTANCE_20261018.md
+? tools/oe-integration-env/R1_OE_1_RESUMED_CLOSURE_20261019.md
+? tools/oe-integration-env/evidence/
+? tools/oe-integration-env/phase2a/batchc-closure.mjs
+? tools/oe-integration-env/phase2a/uploader-closure.mjs
+? tools/oe-integration-env/tests/batchc-clock-evidence.test.mjs

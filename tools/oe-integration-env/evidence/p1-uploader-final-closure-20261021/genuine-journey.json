@@ -1,0 +1,147 @@
+{
+  "run": "20261021132533-3d65981d",
+  "schema": "p1_uploader_e2e_202610211325333d65981d",
+  "target": "loopback pathome_oe_test_integration / DISPOSABLE",
+  "userId": 1,
+  "token": "[REDACTED]",
+  "singleDraftId": "draft-single-mvi5alvl-ov9ir",
+  "singlePropertyId": 1,
+  "batchDraftId": "draft-batch-mvi5anzy-dcerk",
+  "batchResponse": {
+    "failedListings": [
+      {
+        "error": "Review this property's required details and try publishing it again.",
+        "index": 2
+      }
+    ],
+    "failedCount": 1,
+    "createdListings": [
+      {
+        "title": "2 BHK Flat in Vijay Nagar, Indore",
+        "requestIndex": 0,
+        "propertyNumber": 1,
+        "id": 2,
+        "status": "CREATED",
+        "sector": "Vijay Nagar"
+      }
+    ],
+    "total": 2,
+    "successCount": 1,
+    "createdIds": [
+      2
+    ]
+  },
+  "listingCountBeforeRevocation": 2,
+  "listingCountAfterRevocation": 2,
+  "persisted": {
+    "user_id": 1,
+    "single_listing": "ACTIVE",
+    "batch_listing_count": 1,
+    "single_draft_status": "PUBLISHED"
+  },
+  "liveAttestation": "pathome_oe_test_integration|pathome|::1|1",
+  "buildManifest": {
+    "dist/assets/index-CTQbqtQv.js": "9dc19696d65c010016136725712405c74a02ae6e6ae8a0093a2c43ae95ee2e7d",
+    "dist/assets/index-tXklvGb9.css": "ef48b3ccfdffbd1ac344709bcea9d416eda46a0fa4b4a20cae4f2f8d77e64324",
+    "dist/index.html": "d524b22fd569f5823fe6c44fbe0b2088b7d9b424973b222f9d57d71cdc6166fa"
+  },
+  "sourceManifest": {
+    "frontend-web/src/hooks/usePropertyDraft.ts": "d45c03aa74065b740f2f8bf11e22a65dcd51d4d8ab275dffffc9c876961cdf75",
+    "frontend-web/src/services/draftService.ts": "0dd7ea9adf29a54738b2407ad9027aa1b7d6195c76cc826fc4720f567ca01367",
+    "frontend-web/src/services/localDraftStorage.ts": "548162dbb288678a61956b89559707a6105301fe29614f3807545f0039f4b430",
+    "frontend-web/src/components/MasterAdminDashboard.tsx": "18eb443b201f18ea93652911b1e70227215d3a64341d14f8a7e46594a22eb98c",
+    "frontend-web/src/components/BatchPropertyIngestionStudio.tsx": "28fbdc0eba34d6864a86122685e2064a79324c4cedcd2112eeb01982bc76cdb9",
+    "backend/src/main/java/com/indore/pathome/spaces/controller/PropertyController.java": "518482347b469e62078554cd3edd1c33f01d7ab6af466aca13ec6d05d7b20922",
+    "backend/src/main/java/com/indore/pathome/spaces/service/FailedUploadService.java": "e70fee62d58c8366501a5ef5d3ee18dfae66be4186a968d020babcb92f87c267"
+  },
+  "assertionCount": 17,
+  "checks": [
+    {
+      "label": "project target guard and live disposable marker passed before schema creation",
+      "pass": true,
+      "detail": "pathome_oe_test_integration|pathome|::1|1"
+    },
+    {
+      "label": "real password registration created the synthetic User",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "label": "real browser login returned a synthetic Admin token",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "built React persisted a fresh text-only SINGLE draft",
+      "pass": true,
+      "detail": "draft-single-mvi5alvl-ov9ir"
+    },
+    {
+      "label": "fresh SINGLE draft resumes from PostgreSQL with its text",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "label": "genuine React reviewed-text single creation succeeded",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "label": "actual React bulk text operation reached the genuine parse endpoint",
+      "pass": true,
+      "detail": "status=200 count=2"
+    },
+    {
+      "label": "actual React bulk editor retained the entered text",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "actual React bulk autosave committed the fresh BATCH draft before publish",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "label": "actual React bulk review accepted a manual field edit",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "two React-reviewed cards are confirmed before the mixed server-validation batch",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "actual React bulk editor created a fresh text-only BATCH draft",
+      "pass": true,
+      "detail": "draft-batch-mvi5anzy-dcerk"
+    },
+    {
+      "label": "actual React mixed-validity batch preserved per-card partial success",
+      "pass": true,
+      "detail": "status=200 success=1 failed=1"
+    },
+    {
+      "label": "current synthetic browser session receives UI permission denial after revocation",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "current-session 403 keeps the retained browser credential",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "label": "retained synthetic Admin token is denied after current grant revocation",
+      "pass": true,
+      "detail": "status=403"
+    },
+    {
+      "label": "PostgreSQL contains the genuine listing and independent batch result",
+      "pass": true,
+      "detail": "{\"user_id\":1,\"single_listing\":\"ACTIVE\",\"batch_listing_count\":1,\"single_draft_status\":\"PUBLISHED\"}"
+    }
+  ],
+  "provider": "NOT CONTACTED",
+  "capturedAt": "2026-10-21T13:25:52.700Z"
+}
