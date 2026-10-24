@@ -38,10 +38,17 @@ public class MetaLeadInboxService {
 
     @Transactional
     public void acceptMetaLead(String pageId, String leadgenId, String formId, String payloadHash) {
+        acceptMetaLead(pageId, leadgenId, formId, payloadHash, "LEGACY_ENVELOPE_V1");
+    }
+
+    @Transactional
+    public void acceptMetaLead(String pageId, String leadgenId, String formId, String payloadHash,
+                               String fingerprintVersion) {
         String accountId = bounded(pageId, 128, "Meta page identity");
         String externalId = bounded(leadgenId, 160, "Meta lead identity");
-        bounded(formId, 100, "Meta form identity");
+        String providerFormId = bounded(formId, 100, "Meta form identity");
         String hash = bounded(payloadHash, 64, "Payload hash").toLowerCase(Locale.ROOT);
+        String version = bounded(fingerprintVersion, 24, "Fingerprint version");
         String lockKey = PROVIDER + ":" + accountId + ":" + externalId;
         jdbc.query("select pg_advisory_xact_lock(hashtextextended(?, 0))",
                 statement -> statement.setString(1, lockKey), resultSet -> null);
@@ -49,7 +56,16 @@ public class MetaLeadInboxService {
         Optional<LeadSourceEvent> existing = sourceEvents
                 .findByProviderAndProviderAccountIdAndExternalEventId(PROVIDER, accountId, externalId);
         if (existing.isPresent()) {
-            if (!existing.get().getPayloadHash().equals(hash)) {
+            LeadSourceEvent event = existing.get();
+            if ("LEGACY_ENVELOPE_V1".equals(event.getFingerprintVersion())) {
+                // V52 compared whole-envelope hashes. Its rows cannot be safely reclassified as proof
+                // of tampering, so retain them and surface an explicit reconciliation requirement.
+                event.markForLegacyFingerprintReconciliation(databaseClock.now());
+                sourceEvents.saveAndFlush(event);
+                return;
+            }
+            if (!event.getPayloadHash().equals(hash)
+                    || !version.equals(event.getFingerprintVersion())) {
                 throw new VisitOperationsConflictException(
                         "This source event was already recorded with different content");
             }
@@ -57,8 +73,11 @@ public class MetaLeadInboxService {
         }
 
         Instant now = databaseClock.now();
-        sourceEvents.saveAndFlush(new LeadSourceEvent(UUID.randomUUID(), PROVIDER, accountId, externalId,
-                LeadSourceEventKind.META_LEADGEN, hash, now, LeadSourceEventState.QUARANTINED, ACTIVATION_GATE));
+        LeadSourceEvent event = new LeadSourceEvent(UUID.randomUUID(), PROVIDER, accountId, externalId,
+                LeadSourceEventKind.META_LEADGEN, hash, version, now,
+                LeadSourceEventState.QUARANTINED, ACTIVATION_GATE);
+        event.setProviderFormId(providerFormId);
+        sourceEvents.saveAndFlush(event);
     }
 
     private static String bounded(String value, int maximum, String field) {

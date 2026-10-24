@@ -21,6 +21,16 @@ base ground_executive_scheduling_profiles
 base ground_executive_shifts
 base ground_executive_unavailability
 base lead_routing_queue
+base lead_activities
+base lead_command_receipts
+base lead_contact_preferences
+base lead_lookup_events
+base lead_preferred_localities
+base lead_share_events
+base lead_shares
+base lead_shortlist_items
+base lead_shortlists
+base lead_source_events
 base lessor_profiles
 base listings
 base localities

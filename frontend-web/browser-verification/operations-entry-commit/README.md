@@ -26,8 +26,52 @@ OE_ENTRY_COMMIT_SCENARIOS=3,4 node frontend-web/browser-verification/operations-
 ```
 
 Requires Playwright with Chromium (installed globally in this environment). The script prints one line
-per check and exits non-zero on any failure. `OE_ENTRY_COMMIT_SCENARIOS` runs a subset (1-8), which is
+per check and exits non-zero on any failure. `OE_ENTRY_COMMIT_SCENARIOS` runs a subset (1-13), which is
 what the negative controls use to keep their output focused.
+
+## C07 development Strict Mode and fence evidence
+
+Scenarios 9-11 are the focused C07 supplement. `OE_ENTRY_COMMIT_STRICT=1` bundles React in development
+mode and mounts the real hook under `StrictMode`; the harness records Strict effect setup, cleanup and
+setup, request ownership, abort, replacement, late finalizer and rendered terminal state. Scenario 9
+uses the hook's public `revalidate` lifecycle from a Strict-replayed consumer effect, so cleanup owns a
+real held capability request to retire before the replacement setup starts.
+
+```bash
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_SCENARIOS=9 \
+  node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_SCENARIOS=10 \
+  node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_SCENARIOS=11 \
+  node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_SCENARIOS=12,13 \
+  node frontend-web/browser-verification/operations-entry-commit/run.mjs
+```
+
+Scenarios 12 and 13 are the final row 19 late-error closure. Strict cleanup retires Account A's first
+request, replayed setup issues A's replacement, and then a real `pathome_auth_changed` notification
+installs Account B and starts B's independently held request. While B is pending, the retired A
+request settles with a controlled HTTP `500` or network rejection; overlapping B checks must still
+share, and B must settle independently. These are synthetic page-level transports: the harness records
+the capability request `init.headers.Authorization` value but does not attain an actual backend HTTP
+transmission. The protected-read probe records only the stored session token. For these two scenarios
+the controlled signal becomes aborted immediately but delays its listener notification, allowing the
+retired failure's `finally` finalizer to execute after B is already pending.
+
+The expected-red controls are isolated in-memory source transforms; no production file is written:
+
+```bash
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_CONTROL=broad-checking \
+  OE_ENTRY_COMMIT_SCENARIOS=9 node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_CONTROL=missing-session-request-fence \
+  OE_ENTRY_COMMIT_SCENARIOS=10 node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_CONTROL=disabled-timeout-settlement \
+  OE_ENTRY_COMMIT_SCENARIOS=11 node frontend-web/browser-verification/operations-entry-commit/run.mjs
+OE_ENTRY_COMMIT_STRICT=1 OE_ENTRY_COMMIT_CONTROL=missing-late-error-fence \
+  OE_ENTRY_COMMIT_SCENARIOS=12,13 node frontend-web/browser-verification/operations-entry-commit/run.mjs
+```
+
+Each command must exit non-zero only on the assertion named by its control.
 
 ## Coverage
 

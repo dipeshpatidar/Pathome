@@ -664,7 +664,7 @@ public class PropertyController {
         });
         visitRequest.setTenantNote(normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note"));
         try {
-            PropertyVisitRequest saved = trustedOperationalIntakeService.admitAndSave(visitRequest);
+            PropertyVisitRequest saved = trustedOperationalIntakeService.admitNewTenantIntakeAndSave(visitRequest);
             return ResponseEntity.status(HttpStatus.CREATED).body(toVisitRequestAcknowledgement(saved));
         } catch (DataIntegrityViolationException duplicate) {
             PropertyVisitRequest saved = propertyVisitRequestRepository

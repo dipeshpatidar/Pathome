@@ -60,7 +60,7 @@ class LeadAccessServiceTest {
                 List.of(), List.of(9L));
         LeadRoutingQueue lead = lead(10L, 9L, 44L, LeadLegacyProvenance.VERIFIED_MANUAL);
 
-        assertTrue(context.canRead(lead));
+        assertTrue(context.canRead(lead, 7L));
         assertFalse(context.canEdit(lead, 7L));
         assertFalse(context.canRevealContact(lead, 7L));
         assertTrue(context.canAssign(9L));
@@ -79,7 +79,7 @@ class LeadAccessServiceTest {
 
         assertTrue(context.canEdit(owned, 7L));
         assertTrue(context.canRevealContact(owned, 7L));
-        assertFalse(context.canRead(foreign));
+        assertFalse(context.canRead(foreign, 7L));
     }
 
     @Test
@@ -89,8 +89,55 @@ class LeadAccessServiceTest {
         LeadRoutingQueue legacy = lead(10L, null, null, LeadLegacyProvenance.LEGACY_UNVERIFIED);
         legacy.setSupportedCity(city(5L));
 
-        assertFalse(intake.canRead(legacy));
-        assertTrue(new LeadAccessContext(true, List.of(), List.of(), List.of(), List.of()).canRead(legacy));
+        assertFalse(intake.canRead(legacy, 7L));
+        assertFalse(new LeadAccessContext(true, List.of(), List.of(), List.of(), List.of())
+                .canRead(legacy, 7L));
+    }
+
+    @Test
+    void diagnosticOnlyAdminCannotReadEditAssignOrRouteAnOrdinaryLead() {
+        LeadAccessContext admin = new LeadAccessContext(true, List.of(), List.of(), List.of(), List.of());
+        LeadRoutingQueue verified = lead(10L, 9L, 44L, LeadLegacyProvenance.VERIFIED_MANUAL);
+
+        assertFalse(admin.canList());
+        assertFalse(admin.canRead(verified, 7L));
+        assertFalse(admin.canEdit(verified, 7L));
+        assertFalse(admin.canAssign(9L));
+        assertFalse(admin.canRoute(5L));
+    }
+
+    @Test
+    void diagnosticOnlyAdminCannotObtainTheOrdinaryLeadCollectionContext() {
+        User actor = actor(7L);
+        StaffAccessGrant adminGrant = grant(
+                StaffCapability.STAFF_ADMIN, StaffScopeType.GLOBAL, null, null);
+        when(access.requireAttributableUser(7L)).thenReturn(actor);
+        when(access.effectiveGrants(7L)).thenReturn(List.of(adminGrant));
+
+        assertThrows(AccessDeniedException.class, () -> leads.context(7L));
+    }
+
+    @Test
+    void combinedAdminAndCoordinatorGrantRetainsOnlyTheCoordinatorLeadAccess() {
+        LeadAccessContext combined = new LeadAccessContext(true, List.of(), List.of(),
+                List.of(9L), List.of());
+        LeadRoutingQueue owned = lead(10L, 9L, 7L, LeadLegacyProvenance.VERIFIED_MANUAL);
+        LeadRoutingQueue foreign = lead(11L, 9L, 44L, LeadLegacyProvenance.VERIFIED_MANUAL);
+
+        assertTrue(combined.canRead(owned, 7L));
+        assertTrue(combined.canEdit(owned, 7L));
+        assertFalse(combined.canRead(foreign, 7L));
+        assertFalse(combined.canEdit(foreign, 7L));
+    }
+
+    @Test
+    void coordinatorCannotReadAnotherCoordinatorsLeadInTheSameTeam() {
+        LeadAccessContext context = new LeadAccessContext(false, List.of(), List.of(),
+                List.of(9L), List.of());
+        LeadRoutingQueue foreignOwner = lead(10L, 9L, 44L, LeadLegacyProvenance.VERIFIED_MANUAL);
+
+        assertFalse(context.canRead(foreignOwner, 7L));
+        assertTrue(context.canRead(foreignOwner, 44L));
     }
 
     private static User actor(Long id) {

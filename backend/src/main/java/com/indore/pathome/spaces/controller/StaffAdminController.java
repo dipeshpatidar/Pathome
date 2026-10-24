@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.StaffGrantCommand;
 import com.indore.pathome.spaces.dto.StaffGrantView;
+import com.indore.pathome.spaces.dto.StaffAccountSearchPage;
 import com.indore.pathome.spaces.dto.StaffStateCommand;
 import com.indore.pathome.spaces.dto.StaffUserAccessState;
 import com.indore.pathome.spaces.service.StaffAdministrationService;
@@ -15,6 +16,15 @@ public class StaffAdminController {
 
     public StaffAdminController(StaffAdministrationService staffAdministration) {
         this.staffAdministration = staffAdministration;
+    }
+
+    @GetMapping("/users")
+    public StaffAccountSearchPage search(Authentication authentication,
+            @RequestParam String query,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return staffAdministration.searchAccounts(StaffAuthentication.userId(authentication),
+                query, page, size);
     }
 
     @GetMapping("/users/{userId}")

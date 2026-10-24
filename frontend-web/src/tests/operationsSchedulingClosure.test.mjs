@@ -172,9 +172,9 @@ test('remounted actual React result labels retained state as last verified and o
       outcome:{kind:'scheduled',approval,currentSession,refreshFailed:true,verificationFailed:true},
       onClose(){},onAcknowledgeOutcome(){},onConfirm(){},loadRanked(){},loadDiscovery(){},onRefreshSession(){},onRetryScheduling(){}}));
     assert.match(html,/Check the session/);assert.match(html,/temporarily unavailable/i);
-    assert.match(html,/original booking command was accepted/);
+    assert.match(html,/Pathome accepted the booking request/);
     assert.doesNotMatch(html,/The visit is scheduled\.|Current Session:|current Session details were verified|Retry scheduling/);
-    if(currentSession)assert.match(html,/Last verified Session status: CANCELLED/);
+    if(currentSession)assert.match(html,/Last confirmed visit plan status: CANCELLED/);
     else assert.doesNotMatch(html,/SCHEDULED/);
   }
 });

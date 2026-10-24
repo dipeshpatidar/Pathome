@@ -21,6 +21,19 @@ public class LeadAccessService {
 
     @Transactional(readOnly = true)
     public LeadAccessContext context(Long actorId) {
+        return context(actorId, false);
+    }
+
+    /**
+     * A global Staff Admin may run the duplicate diagnostic even without ordinary Lead queue scope.
+     * This does not widen list/detail/contact access, which continues to require a normal Lead scope.
+     */
+    @Transactional(readOnly = true)
+    public LeadAccessContext contextForDiagnostics(Long actorId) {
+        return context(actorId, true);
+    }
+
+    private LeadAccessContext context(Long actorId, boolean allowDiagnosticOnlyGlobalAdmin) {
         User actor = access.requireAttributableUser(actorId);
         List<StaffAccessGrant> grants = access.effectiveGrants(actor.getId());
         boolean globalAdmin = false;
@@ -48,15 +61,15 @@ public class LeadAccessService {
                 routingCities.stream().distinct().sorted().toList(),
                 ownedTeams.stream().distinct().sorted().toList(),
                 supervisedTeams.stream().distinct().sorted().toList());
-        if (!context.canList()) {
+        if (!context.canList() && !(allowDiagnosticOnlyGlobalAdmin && globalAdmin)) {
             throw new org.springframework.security.access.AccessDeniedException(
                     "Current Lead authority is required");
         }
         return context;
     }
 
-    void requireReadable(LeadAccessContext context, LeadRoutingQueue lead) {
-        if (!context.canRead(lead)) throw LeadAccessContext.hidden();
+    void requireReadable(LeadAccessContext context, LeadRoutingQueue lead, Long actorId) {
+        if (!context.canRead(lead, actorId)) throw LeadAccessContext.hidden();
     }
 
     void requireEditable(LeadAccessContext context, LeadRoutingQueue lead, Long actorId) {

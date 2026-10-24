@@ -411,9 +411,9 @@ export const OperationsGeAvailability: React.FC<Props> = ({
           <div className="oe-gea-info" role="note">
             <Info size={18} aria-hidden="true" />
             <p>
-              This is an informational view of potential City scheduling candidates. A feasible row
-              is not a booking and does not promise the same time later. To book, choose a freshly
-              evaluated option in Browse feasible GEs.
+              This view shows who may be available for this City. A matching row is not a booking and
+              does not promise the same time later. To book, choose a newly checked option in Matching
+              Ground Executives.
             </p>
           </div>
 
@@ -473,7 +473,7 @@ export const OperationsGeAvailability: React.FC<Props> = ({
                 </Fact>
               </dl>
 
-              <h4 className="oe-gea-subtitle">Property windows</h4>
+              <h4 className="oe-gea-subtitle">Property visit times</h4>
               {stops.length > 0 ? (
                 <ol className="oe-gea-stops">
                   {stops.map((stop) => <StopWindowRow key={`${stop.position}-${stop.itemId ?? 'none'}`} stop={stop} />)}
@@ -517,7 +517,7 @@ export const OperationsGeAvailability: React.FC<Props> = ({
 
               {view.planInputFingerprint ? (
                 <details className="oe-gea-fingerprint">
-                  <summary>Plan snapshot reference</summary>
+                  <summary>Visit plan details</summary>
                   <code>{view.planInputFingerprint}</code>
                 </details>
               ) : null}
@@ -639,8 +639,8 @@ export const OperationsGeAvailability: React.FC<Props> = ({
                 <div>
                   <p className="oe-notice-title">This evaluation no longer matches the visit plan</p>
                   <p className="oe-notice-body">
-                    The stale roster and timing were cleared. Reload the authoritative visit plan
-                    before reading availability again.
+                    The old list and times were cleared. Refresh the visit plan before reading
+                    availability again.
                   </p>
                   <div className="oe-notice-actions">
                     <button
@@ -648,7 +648,7 @@ export const OperationsGeAvailability: React.FC<Props> = ({
                       className="oe-btn oe-btn--secondary oe-btn--sm"
                       onClick={onRequireFreshSession}
                     >
-                      Reload visit plan
+                      Refresh visit plan
                     </button>
                   </div>
                 </div>

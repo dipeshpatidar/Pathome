@@ -197,6 +197,63 @@ export const hasOperationsWorkspaceAccess = (
   return capabilities.capabilities.some(coordinatesOperationalWork);
 };
 
+export const hasRoutingWorkspaceAccess = (
+  capabilities: StaffCapabilities | null | undefined
+): boolean => {
+  if (!capabilities || capabilities.staffActive !== true || !Array.isArray(capabilities.capabilities)) {
+    return false;
+  }
+  return capabilities.capabilities.some((capability) =>
+    (capability.capability === 'OPS_ROUTING' && capability.scopeType === 'CITY')
+    || (capability.capability === 'CITY_TEAM_ADMIN' && capability.scopeType === 'CITY')
+    || (capability.capability === 'STAFF_ADMIN' && capability.scopeType === 'GLOBAL')
+  );
+};
+
+export interface RoutingScope {
+  cityId: number | null;
+  cityName: string;
+}
+
+export const routingCapabilityScopes = (
+  capabilities: StaffCapabilities | null | undefined
+): RoutingScope[] => {
+  if (!capabilities || !Array.isArray(capabilities.capabilities)) return [];
+  const scopes = new Map<string, RoutingScope>();
+  for (const capability of capabilities.capabilities) {
+    if ((capability.capability === 'OPS_ROUTING'
+      || capability.capability === 'CITY_TEAM_ADMIN') && capability.scopeType === 'CITY') {
+      const key = String(capability.cityId ?? '-');
+      scopes.set(key, {
+        cityId: capability.cityId,
+        cityName: capability.cityDisplayName ?? 'Supported City'
+      });
+    }
+  }
+  return [...scopes.values()].sort((left, right) =>
+    (left.cityId ?? Number.MAX_SAFE_INTEGER) - (right.cityId ?? Number.MAX_SAFE_INTEGER));
+};
+
+export const routingAuthorityScopeFingerprint = (
+  capabilities: StaffCapabilities | null | undefined
+): string => {
+  if (!capabilities?.staffActive || !Array.isArray(capabilities.capabilities)) return '';
+  return capabilities.capabilities
+    .filter((capability) =>
+      (capability.capability === 'OPS_ROUTING'
+        || capability.capability === 'CITY_TEAM_ADMIN'
+        || capability.capability === 'STAFF_ADMIN')
+      && capability.scopeType !== 'TEAM'
+    )
+    .map((capability) => [
+      capability.capability,
+      capability.scopeType,
+      capability.cityId ?? '-'
+    ].join(':'))
+    .sort()
+    .join('|');
+};
+
 export const operationsCapabilityScopes = (
   capabilities: StaffCapabilities | null | undefined
 ): OperationsScope[] => {
@@ -235,6 +292,36 @@ export const operationsAuthorityScopeFingerprint = (
     scopes.add(`${capability.cityId ?? '-'}:${capability.teamId}`);
   }
   return [...scopes].sort().join('|');
+};
+
+/**
+ * Effective identity of every staff grant that can admit one of the approved Lead surfaces.
+ * The existing coordinate fingerprint remains unchanged for operational work queues.
+ */
+export const leadAuthorityScopeFingerprint = (
+  capabilities: StaffCapabilities | null | undefined
+): string => {
+  if (!capabilities?.staffActive || !Array.isArray(capabilities.capabilities)) {
+    return '';
+  }
+  return capabilities.capabilities
+    .filter((capability) =>
+      (capability.capability === 'OPS_COORDINATE'
+        || capability.capability === 'OPS_SUPERVISE'
+        || capability.capability === 'OPS_INTAKE'
+        || capability.capability === 'CITY_TEAM_ADMIN')
+      && capability.cityId !== null
+      || capability.capability === 'STAFF_ADMIN'
+      && capability.scopeType === 'GLOBAL'
+    )
+    .map((capability) => [
+      capability.capability,
+      capability.scopeType,
+      capability.cityId ?? '-',
+      capability.teamId ?? '-'
+    ].join(':'))
+    .sort()
+    .join('|');
 };
 
 /* ------------------------------------------------------------------ *
@@ -361,32 +448,98 @@ export const toMyWorkItem = (raw: unknown): OperationsMyWorkItem | null => {
 
 export const toClaimableWorkItem = (raw: unknown): ClaimableWorkItem | null => toWorkSummary(raw);
 
-export const toCapabilitySummary = (raw: unknown): StaffCapabilitySummary | null => {
+const STAFF_CAPABILITY_VALUES = new Set([
+  'STAFF_ADMIN',
+  'CITY_TEAM_ADMIN',
+  'OPS_INTAKE',
+  'OPS_COORDINATE',
+  'OPS_SUPERVISE',
+  'OPS_ROUTING'
+]);
+const STAFF_SCOPE_TYPE_VALUES = new Set(['GLOBAL', 'CITY', 'TEAM']);
+
+const malformedStaffCapabilities = (detail: string): Error =>
+  new Error(`Staff capability response ${detail}.`);
+
+const requiredCapabilityText = (
+  record: Record<string, unknown>,
+  field: string
+): string => {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    throw malformedStaffCapabilities(`is missing ${field}`);
+  }
+  const value = record[field];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw malformedStaffCapabilities(`has an invalid ${field}`);
+  }
+  return value;
+};
+
+const requiredCapabilityNullableText = (
+  record: Record<string, unknown>,
+  field: string
+): string | null => {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    throw malformedStaffCapabilities(`is missing ${field}`);
+  }
+  const value = record[field];
+  if (value === null || typeof value === 'string') return value;
+  throw malformedStaffCapabilities(`has an invalid ${field}`);
+};
+
+const requiredCapabilityNullableInteger = (
+  record: Record<string, unknown>,
+  field: string
+): number | null => {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    throw malformedStaffCapabilities(`is missing ${field}`);
+  }
+  const value = record[field];
+  if (value === null) return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+  throw malformedStaffCapabilities(`has an invalid ${field}`);
+};
+
+export const toCapabilitySummary = (raw: unknown): StaffCapabilitySummary => {
   const record = asRecord(raw);
-  if (!record) return null;
-  const capability = readText(record.capability);
-  const scopeType = readText(record.scopeType);
-  if (capability === null || scopeType === null) return null;
+  if (!record) throw malformedStaffCapabilities('contains an invalid capability entry');
+  const capability = requiredCapabilityText(record, 'capability');
+  const scopeType = requiredCapabilityText(record, 'scopeType');
+  if (!STAFF_CAPABILITY_VALUES.has(capability)) {
+    throw malformedStaffCapabilities('contains an unknown capability');
+  }
+  if (!STAFF_SCOPE_TYPE_VALUES.has(scopeType)) {
+    throw malformedStaffCapabilities('contains an unknown scope type');
+  }
   return {
     capability,
     scopeType,
-    cityId: readInteger(record.cityId),
-    cityDisplayName: readText(record.cityDisplayName),
-    teamId: readInteger(record.teamId),
-    teamDisplayName: readText(record.teamDisplayName)
+    cityId: requiredCapabilityNullableInteger(record, 'cityId'),
+    cityDisplayName: requiredCapabilityNullableText(record, 'cityDisplayName'),
+    teamId: requiredCapabilityNullableInteger(record, 'teamId'),
+    teamDisplayName: requiredCapabilityNullableText(record, 'teamDisplayName')
   };
 };
 
 export const toStaffCapabilities = (raw: unknown): StaffCapabilities => {
   const record = asRecord(raw);
-  if (!record) throw new Error('Staff capability response was not an object');
-  const list = Array.isArray(record.capabilities) ? record.capabilities : [];
+  if (!record) throw malformedStaffCapabilities('was not an object');
+  const staffActive = record.staffActive;
+  if (typeof staffActive !== 'boolean') {
+    throw malformedStaffCapabilities('has an invalid staffActive');
+  }
+  const capabilities = record.capabilities;
+  if (!Array.isArray(capabilities)) {
+    throw malformedStaffCapabilities('has an invalid capabilities list');
+  }
+  const serverTime = record.serverTime;
+  if (serverTime !== undefined && serverTime !== null && typeof serverTime !== 'string') {
+    throw malformedStaffCapabilities('has an invalid serverTime');
+  }
   return {
-    staffActive: record.staffActive === true,
-    capabilities: list
-      .map(toCapabilitySummary)
-      .filter((entry): entry is StaffCapabilitySummary => entry !== null),
-    serverTime: readText(record.serverTime)
+    staffActive,
+    capabilities: capabilities.map(toCapabilitySummary),
+    serverTime: readText(serverTime)
   };
 };
 

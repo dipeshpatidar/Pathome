@@ -11,9 +11,16 @@ import {
 } from '../utils/operationsSession';
 import {
   hasOperationsWorkspaceAccess,
+  hasRoutingWorkspaceAccess,
+  leadAuthorityScopeFingerprint,
   operationsAuthorityScopeFingerprint,
+  routingAuthorityScopeFingerprint,
   type StaffCapabilities
 } from '../utils/operationsWorkspacePresentation';
+import {
+  hasLeadDiagnosticsAccess,
+  hasLeadWorkspaceAccess
+} from '../utils/operationsLeadPresentation';
 
 /**
  * Runtime authority state for the Operations (OE) workspace.
@@ -66,6 +73,72 @@ export interface OperationsAuthority {
 
 /** Approved lightweight revalidation cadence while the workspace is visible. */
 export const OPERATIONS_REVERIFICATION_INTERVAL_MS = 30_000;
+
+/**
+ * Matches the existing Operations scheduling-request bound. A capability read is a small,
+ * authoritative control-plane request; leaving it pending indefinitely would suppress both a
+ * truthful retry state and the workspace itself.
+ */
+export const OPERATIONS_CAPABILITY_TIMEOUT_MS = 10_000;
+
+export type OperationsAuthorityView = 'checking' | 'granted' | 'restricted' | 'unavailable';
+
+/**
+ * Maps settled terminal authority ahead of admission. A terminal denial or transport failure may
+ * deliberately clear entry admission, so testing `entryAdmitted` first would mask the very state
+ * the user needs to see.
+ */
+export const resolveOperationsAuthorityView = (
+  authority: Pick<OperationsAuthority, 'state' | 'entryAdmitted'>
+): OperationsAuthorityView => {
+  if (authority.state === 'restricted') return 'restricted';
+  if (authority.state === 'unavailable') return 'unavailable';
+  if (authority.state === 'checking' || !authority.entryAdmitted) return 'checking';
+  return 'granted';
+};
+
+export type OperationsCapabilityRequestOutcome<T> =
+  | { kind: 'fulfilled'; value: T }
+  | { kind: 'timeout' }
+  | { kind: 'aborted' }
+  | { kind: 'rejected'; cause: unknown };
+
+/**
+ * Races one capability transport against its owned timeout. The controller is also the cancellation
+ * boundary: retiring a check resolves this helper immediately instead of leaving an orphaned timer.
+ * The first outcome wins, so a transport that ignores abort and later resolves cannot overwrite a
+ * timeout or a newer retry.
+ */
+export const awaitOperationsCapabilityRequest = <T>(
+  request: Promise<T>,
+  control: AbortController,
+  timeoutMs = OPERATIONS_CAPABILITY_TIMEOUT_MS
+): Promise<OperationsCapabilityRequestOutcome<T>> => new Promise((resolve) => {
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const finish = (outcome: OperationsCapabilityRequestOutcome<T>): void => {
+    if (settled) return;
+    settled = true;
+    if (timer !== null) clearTimeout(timer);
+    control.signal.removeEventListener('abort', onAbort);
+    resolve(outcome);
+  };
+  const onAbort = (): void => finish({ kind: 'aborted' });
+  control.signal.addEventListener('abort', onAbort, { once: true });
+  timer = setTimeout(() => {
+    if (settled) return;
+    finish({ kind: 'timeout' });
+    control.abort();
+  }, timeoutMs);
+  if (control.signal.aborted) {
+    onAbort();
+    return;
+  }
+  request.then(
+    (value) => finish({ kind: 'fulfilled', value }),
+    (cause) => finish({ kind: 'rejected', cause })
+  );
+});
 
 /**
  * Why a capability check was issued. The source decides whether it may be shared with a check that is
@@ -197,12 +270,19 @@ export interface UseOperationsCapabilityOptions {
    * transitioning to `/operations` re-verify instead of inheriting the earlier verdict.
    */
   workspaceEntry?: string | null;
+  /**
+   * The approved authority boundary for the entry. Operational visit work requires an effective
+   * OPS_COORDINATE grant. The Lead surface additionally admits supervised Teams, City intake/admin
+   * scopes and global Staff Admin diagnostics; the latter is narrowed again for source exceptions.
+   */
+  accessPolicy?: 'operations' | 'routing' | 'lead-workspace' | 'lead-diagnostics';
 }
 
 export const useOperationsCapability = (
   options: UseOperationsCapabilityOptions = {}
 ): OperationsAuthority => {
   const workspaceEntry = options.workspaceEntry ?? null;
+  const accessPolicy = options.accessPolicy ?? 'operations';
   const workspaceOpen = workspaceEntry !== null;
   const [state, setState] = useState<OperationsAuthorityState>('checking');
   const [capabilities, setCapabilities] = useState<StaffCapabilities | null>(null);
@@ -291,7 +371,11 @@ export const useOperationsCapability = (
     admittedEntry: number
   ): void => {
     verifiedGrantRef.current = true;
-    const scope = operationsAuthorityScopeFingerprint(result);
+    const scope = accessPolicy === 'operations'
+      ? operationsAuthorityScopeFingerprint(result)
+      : accessPolicy === 'routing'
+        ? routingAuthorityScopeFingerprint(result)
+        : leadAuthorityScopeFingerprint(result);
     const scopeChanged = authorityScopeRef.current !== null && authorityScopeRef.current !== scope;
     authorityScopeRef.current = scope;
     verdictRef.current = {
@@ -305,7 +389,17 @@ export const useOperationsCapability = (
     if (admittedEntry === committedEntryRef.current?.generation) setAdmission({ generation: admittedEntry, session });
     setCapabilities(result);
     setState('granted');
-  }, []);
+  }, [accessPolicy]);
+
+  const hasRequiredAccess = useCallback(
+    (result: StaffCapabilities): boolean => {
+      if (accessPolicy === 'lead-workspace') return hasLeadWorkspaceAccess(result);
+      if (accessPolicy === 'lead-diagnostics') return hasLeadDiagnosticsAccess(result);
+      if (accessPolicy === 'routing') return hasRoutingWorkspaceAccess(result);
+      return hasOperationsWorkspaceAccess(result);
+    },
+    [accessPolicy]
+  );
 
   /**
    * Retires every in-flight check that does not belong to `current` (and every check when `current`
@@ -414,13 +508,24 @@ export const useOperationsCapability = (
       const promise = (async (): Promise<boolean> => {
         const isCurrent = () => mountedRef.current && id === requestRef.current;
         try {
-          const result = await operationsWorkspaceService.capabilities({ session, signal: control.signal });
+          const outcome = await awaitOperationsCapabilityRequest(
+            operationsWorkspaceService.capabilities({ session, signal: control.signal }),
+            control
+          );
+          if (outcome.kind === 'aborted') return false;
           // A response whose check was abandoned while it was in flight is not a verdict: it must not
           // restore authority after a newer denial or transient failure, and it must not outrun the
           // exact session it was issued for.
           if (!isCurrent()) return false;
+          if (!isOperationsSessionActive(session)) return false;
+          if (outcome.kind === 'timeout') {
+            applyInvalidation('unavailable');
+            return false;
+          }
           if (control.signal.aborted) return false;
-          if (hasOperationsWorkspaceAccess(result)) {
+          if (outcome.kind === 'rejected') throw outcome.cause;
+          const result = outcome.value;
+          if (hasRequiredAccess(result)) {
             applyGrant(session, result, entry);
             return true;
           }
@@ -431,6 +536,7 @@ export const useOperationsCapability = (
           // about authority.
           if (control.signal.aborted || (cause as { name?: string } | null)?.name === 'AbortError') return false;
           if (!isCurrent()) return false;
+          if (!isOperationsSessionActive(session)) return false;
           // The identity changed: a newer session owns the UI and has already been scheduled.
           if (isOperationsSessionChangedError(cause)) return false;
           const denied = cause instanceof ApiRequestError && (cause.status === 401 || cause.status === 403);
@@ -448,7 +554,7 @@ export const useOperationsCapability = (
       inFlightRef.current = { id, session, source, entryGeneration: entry, promise };
       return promise;
     },
-    [applyGrant, applyInvalidation, retireObsoleteChecks]
+    [applyGrant, applyInvalidation, hasRequiredAccess, retireObsoleteChecks]
   );
 
   const verifySession = useCallback(

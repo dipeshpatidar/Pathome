@@ -26,10 +26,19 @@ public record LeadCaptureCommand(
         Boolean petsAllowed,
         Boolean liftRequired,
         String floorRequirement,
-        List<Long> preferredLocalityIds,
+        List<Object> preferredLocalityIds,
         Instant followUpAt,
         String followUpZoneId,
         String sourceChannel,
         String campaignRef,
-        String referralRef) {
+    String referralRef,
+    DuplicateDecision duplicateDecision,
+    Long existingLeadId,
+    Long expectedExistingLeadVersion,
+    String reasonCode) {
+
+    public enum DuplicateDecision {
+        ATTACH_ENQUIRY,
+        KEEP_DISTINCT
+    }
 }

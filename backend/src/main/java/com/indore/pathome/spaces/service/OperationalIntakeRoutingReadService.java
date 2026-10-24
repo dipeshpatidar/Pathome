@@ -12,6 +12,7 @@ import com.indore.pathome.spaces.repository.OperationalIntakeRoutingRepository;
 import com.indore.pathome.spaces.repository.OperationalIntakeRoutingRepository.RoutingRow;
 import com.indore.pathome.spaces.repository.OperatingTeamRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
+import com.indore.pathome.spaces.repository.VisitRequestRoutingTaskRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -39,24 +40,35 @@ public class OperationalIntakeRoutingReadService {
     private final OperationalIntakeRoutingRepository routing;
     private final SupportedCityRepository cities;
     private final OperatingTeamRepository teams;
+    private final VisitRequestRoutingTaskRepository routingTasks;
     private final StaffAccessService access;
 
     public OperationalIntakeRoutingReadService(OperationalIntakeRoutingRepository routing,
                                                 SupportedCityRepository cities, OperatingTeamRepository teams,
-                                                StaffAccessService access) {
+                                                StaffAccessService access,
+                                                VisitRequestRoutingTaskRepository routingTasks) {
         this.routing = routing;
         this.cities = cities;
         this.teams = teams;
         this.access = access;
+        this.routingTasks = routingTasks;
     }
 
     @Transactional(readOnly = true)
     public IntakeRoutingRequestPage listEligibleRequests(Long actorId, int page, int size) {
         IntakeRoutingAuthority.Scope scope = IntakeRoutingAuthority.resolve(access, actorId);
         Pageable pageable = PageRequest.of(requirePage(page), requirePageSize(size));
-        Page<RoutingRow> result = scope.global()
-                ? routing.findEligibleRequestPage(pageable)
-                : routing.findEligibleCityScopedRequestPage(scope.cityIds(), pageable);
+        Page<RoutingRow> result;
+        if (scope.global()) {
+            result = routing.findEligibleRequestPage(pageable);
+        } else if (scope.broadCityAdmin() && !scope.routingCityIds().isEmpty()) {
+            result = routing.findEligibleMixedRequestPage(
+                    scope.broadCityIds(), scope.routingCityIds(), pageable);
+        } else if (scope.broadCityAdmin()) {
+            result = routing.findEligibleCityScopedRequestPage(scope.cityIds(), pageable);
+        } else {
+            result = routing.findEligibleRoutingOnlyRequestPage(scope.routingCityIds(), pageable);
+        }
         return new IntakeRoutingRequestPage(result.getContent().stream()
                 .map(OperationalIntakeRoutingReadService::toView).toList(),
                 result.getTotalElements(), page, size, result.getTotalPages());
@@ -77,7 +89,13 @@ public class OperationalIntakeRoutingReadService {
         if (!scope.coversCanonicalSource(row.getCityId(), row.getLocalityCityId())) {
             throw new EntityNotFoundException("Visit Request not found");
         }
-        if (!scope.global() && !scope.coversCity(cityId)) {
+        boolean enrolled = routingTasks.existsByRequestId(requestId);
+        if (!scope.global() && !scope.hasBroadAuthority(row.getCityId())
+                && !scope.coversRoutingOnlySource(row.getCityId(), row.getLocalityCityId(),
+                Boolean.TRUE.equals(row.getScopeReady()), enrolled)) {
+            throw new EntityNotFoundException("Visit Request not found");
+        }
+        if (!scope.global() && (!scope.coversCity(cityId) || !cityId.equals(row.getCityId()))) {
             throw new EntityNotFoundException("Supported City not found");
         }
         SupportedCity city = cities.findByIdAndActiveTrue(cityId)

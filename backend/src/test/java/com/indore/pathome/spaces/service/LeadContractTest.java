@@ -1,12 +1,18 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.LeadStatus;
+import com.indore.pathome.spaces.dto.crm.LeadCaptureCommand;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,6 +35,43 @@ class LeadContractTest {
                 () -> LeadContract.validateBudget(BigDecimal.valueOf(18000), BigDecimal.valueOf(12000)));
         assertThrows(IllegalArgumentException.class,
                 () -> LeadContract.validateBudget(BigDecimal.valueOf(-1), null));
+    }
+
+    @Test
+    void budgetsMustFitNumericStorageWithoutRounding() {
+        LeadContract.validateBudget(new BigDecimal("999999999999.99"), null);
+        LeadContract.validateBudget(new BigDecimal("100.000"), new BigDecimal("1E+2"));
+        assertThrows(IllegalArgumentException.class,
+                () -> LeadContract.validateBudget(new BigDecimal("1.001"), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> LeadContract.validateBudget(new BigDecimal("1000000000000"), null));
+    }
+
+    @Test
+    void localityIdsMustBeExactPositiveSupportedIntegers() {
+        assertEquals(List.of(1L, 2L), LeadContract.exactPositiveIds(
+                List.of(1, "2", new BigInteger("2")), "preferredLocalityIds"));
+        for (Object fractional : List.of(1.9d, 1.9f, new BigDecimal("1.9"), "1.9", "1e2")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> LeadContract.exactPositiveIds(Arrays.asList(fractional), "preferredLocalityIds"));
+        }
+        for (Object invalid : Arrays.asList(0, -1, null, new BigInteger("9223372036854775808"),
+                "not-an-id", List.of(1))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> LeadContract.exactPositiveIds(Arrays.asList(invalid), "preferredLocalityIds"));
+        }
+        ArrayList<Integer> tooMany = new ArrayList<>();
+        for (int i = 1; i <= 21; i++) tooMany.add(i);
+        assertThrows(IllegalArgumentException.class,
+                () -> LeadContract.exactPositiveIds(tooMany, "preferredLocalityIds"));
+    }
+
+    @Test
+    void jacksonDoesNotCoerceFractionalLocalityIdsBeforeValidation() throws Exception {
+        LeadCaptureCommand command = new ObjectMapper().readValue(
+                "{\"preferredLocalityIds\":[1.9]}", LeadCaptureCommand.class);
+        assertThrows(IllegalArgumentException.class, () -> LeadContract.exactPositiveIds(
+                command.preferredLocalityIds(), "preferredLocalityIds"));
     }
 
     @Test

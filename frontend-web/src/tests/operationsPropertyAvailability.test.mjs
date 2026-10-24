@@ -736,12 +736,17 @@ const openEditor = (recorded, overrides) => {
     propertyAvailabilitySource: 'PHONE'
   });
   const detail = presentation.toSessionDetail(availabilitySessionFixture([responseItem]));
+  const editorNow = new Date('2026-10-22T00:00:00Z');
   return openAvailabilityEditor(presentation, {
     session: detail,
     item: detail.items[0],
     blocked: false,
     busyCommand: null
-  }, overrides);
+  }, {
+    setAvailabilityCommand: (session, itemId, choice, window, _now) =>
+      presentation.setAvailabilityCommand(session, itemId, choice, window, editorNow),
+    ...overrides
+  });
 };
 
 /** 12:47:37.123456789Z reads 08:47 in New York — the window the reported defect was raised on. */

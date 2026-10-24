@@ -198,7 +198,7 @@ export const OperationsRequestCoordination: React.FC<Props> = ({
           Add to an existing draft
         </h4>
         <p className="oe-step-hint">
-          These are your owned DRAFT sessions. The server checks that this request may join the one
+          These are your draft visit plans. Pathome checks that this request may join the one
           you choose; the list itself is not a promise of eligibility.
         </p>
         {draftError ? (

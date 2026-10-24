@@ -12,6 +12,7 @@ import com.indore.pathome.spaces.repository.OperationalIntakeRoutingRepository;
 import com.indore.pathome.spaces.repository.OperationalIntakeRoutingRepository.RoutingRow;
 import com.indore.pathome.spaces.repository.OperatingTeamRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
+import com.indore.pathome.spaces.repository.VisitRequestRoutingTaskRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
@@ -38,8 +39,10 @@ class OperationalIntakeRoutingReadServiceTest {
     private final SupportedCityRepository cities = mock(SupportedCityRepository.class);
     private final OperatingTeamRepository teams = mock(OperatingTeamRepository.class);
     private final StaffAccessService access = mock(StaffAccessService.class);
+    private final VisitRequestRoutingTaskRepository routingTasks =
+            mock(VisitRequestRoutingTaskRepository.class);
     private final OperationalIntakeRoutingReadService service =
-            new OperationalIntakeRoutingReadService(routing, cities, teams, access);
+            new OperationalIntakeRoutingReadService(routing, cities, teams, access, routingTasks);
 
     // ------------------------------------------------------------------ derived classification
 
@@ -111,6 +114,40 @@ class OperationalIntakeRoutingReadServiceTest {
     }
 
     @Test
+    void routingOnlyStaffReadsOnlyDurablyEnrolledIntake() {
+        when(access.currentCapabilities(9L)).thenReturn(routingOnly(5L));
+        when(routing.findEligibleRoutingOnlyRequestPage(eq(List.of(5L)), any()))
+                .thenReturn(new PageImpl<>(List.of(row(1L, 5L, 5L, null))));
+
+        IntakeRoutingRequestPage page = service.listEligibleRequests(9L, 0, 20);
+
+        assertEquals(1, page.items().size());
+        verify(routing).findEligibleRoutingOnlyRequestPage(
+                List.of(5L), org.springframework.data.domain.PageRequest.of(0, 20));
+        verify(routing, never()).findEligibleCityScopedRequestPage(any(), any());
+        verify(routing, never()).findEligibleRequestPage(any());
+    }
+
+    @Test
+    void mixedBroadAndRoutingScopesKeepTheirDifferentHistoricalReadRules() {
+        when(access.currentCapabilities(10L)).thenReturn(new StaffCapabilitiesResponse(true, List.of(
+                summary(StaffCapability.CITY_TEAM_ADMIN, StaffScopeType.CITY, 5L),
+                summary(StaffCapability.OPS_ROUTING, StaffScopeType.CITY, 9L)), Instant.now()));
+        when(routing.findEligibleMixedRequestPage(
+                eq(List.of(5L)), eq(List.of(9L)), any()))
+                .thenReturn(new PageImpl<>(List.of(row(1L, 5L, 5L, null))));
+        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(row(81L, 9L, 9L, "RECEIVED")));
+        when(routingTasks.existsByRequestId(81L)).thenReturn(false);
+
+        IntakeRoutingRequestPage page = service.listEligibleRequests(10L, 0, 20);
+        assertEquals(1, page.items().size());
+        assertThrows(EntityNotFoundException.class,
+                () -> service.readCandidates(10L, 81L, 9L, 0, 20));
+        verify(routing).findEligibleMixedRequestPage(
+                List.of(5L), List.of(9L), org.springframework.data.domain.PageRequest.of(0, 20));
+    }
+
+    @Test
     void aCityAdminCannotReadOrNameAForeignRequestOrCity() {
         when(access.currentCapabilities(2L)).thenReturn(cityAdmin(5L));
         when(routing.findRoutingRow(81L)).thenReturn(Optional.of(row(81L, 9L, 9L, null, null, null, null, null, null)));
@@ -170,7 +207,8 @@ class OperationalIntakeRoutingReadServiceTest {
     @Test
     void aCityAdminReadsItsAuthorizedCanonicallyResolvedRequest() {
         when(access.currentCapabilities(2L)).thenReturn(cityAdmin(5L));
-        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(row(81L, 5L, 5L, "RECEIVED")));
+        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(
+                row(81L, 5L, 5L, "RECEIVED", null, true, null, null, null)));
         stubReadableCity(5L);
 
         IntakeRoutingCandidatesView view = service.readCandidates(2L, 81L, 5L, 0, 20);
@@ -179,6 +217,42 @@ class OperationalIntakeRoutingReadServiceTest {
         assertEquals(IntakeRoutingRequestView.LocationState.CANONICAL, view.request().locationState());
         assertEquals(5L, view.city().id());
         verify(teams).findActiveTeamPageByCityId(eq(5L), any());
+    }
+
+    @Test
+    void routingOnlyStaffCanReadCanonicalTeamCandidatesInItsCity() {
+        when(access.currentCapabilities(9L)).thenReturn(routingOnly(5L));
+        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(
+                row(81L, 5L, 5L, "RECEIVED", null, true, null, null, null)));
+        when(routingTasks.existsByRequestId(81L)).thenReturn(true);
+        stubReadableCity(5L);
+
+        IntakeRoutingCandidatesView view = service.readCandidates(9L, 81L, 5L, 0, 20);
+
+        assertEquals(81L, view.request().requestId());
+        assertEquals(5L, view.city().id());
+        verify(teams).findActiveTeamPageByCityId(eq(5L), any());
+    }
+
+    @Test
+    void routingOnlyStaffCannotReadAnUnenrolledHistoricalRequestByDirectId() {
+        when(access.currentCapabilities(9L)).thenReturn(routingOnly(5L));
+        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(row(81L, 5L, 5L, "RECEIVED")));
+        when(routingTasks.existsByRequestId(81L)).thenReturn(false);
+
+        assertThrows(EntityNotFoundException.class, () -> service.readCandidates(9L, 81L, 5L, 0, 20));
+        verify(teams, never()).findActiveTeamPageByCityId(any(), any());
+    }
+
+    @Test
+    void routingOnlyStaffCannotReadAnEnrolledRequestThatIsNotOperationallyReady() {
+        when(access.currentCapabilities(9L)).thenReturn(routingOnly(5L));
+        when(routing.findRoutingRow(81L)).thenReturn(Optional.of(
+                row(81L, 5L, 5L, "RECEIVED", null, false, null, null, null)));
+        when(routingTasks.existsByRequestId(81L)).thenReturn(true);
+
+        assertThrows(EntityNotFoundException.class, () -> service.readCandidates(9L, 81L, 5L, 0, 20));
+        verify(teams, never()).findActiveTeamPageByCityId(any(), any());
     }
 
     @Test
@@ -258,6 +332,11 @@ class OperationalIntakeRoutingReadServiceTest {
     private static StaffCapabilitiesResponse cityAdmin(Long cityId) {
         return new StaffCapabilitiesResponse(true, List.of(
                 summary(StaffCapability.CITY_TEAM_ADMIN, StaffScopeType.CITY, cityId)), Instant.now());
+    }
+
+    private static StaffCapabilitiesResponse routingOnly(Long cityId) {
+        return new StaffCapabilitiesResponse(true, List.of(
+                summary(StaffCapability.OPS_ROUTING, StaffScopeType.CITY, cityId)), Instant.now());
     }
 
     private static StaffCapabilitySummary summary(StaffCapability capability, StaffScopeType scopeType, Long cityId) {

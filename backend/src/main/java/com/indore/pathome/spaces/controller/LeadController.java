@@ -1,18 +1,40 @@
 package com.indore.pathome.spaces.controller;
 
 import com.indore.pathome.spaces.dto.crm.LeadActivityPage;
+import com.indore.pathome.spaces.dto.crm.LeadActivityCommand;
+import com.indore.pathome.spaces.dto.crm.LeadActivityView;
 import com.indore.pathome.spaces.dto.crm.LeadAssignmentCommand;
 import com.indore.pathome.spaces.dto.crm.LeadCaptureCommand;
 import com.indore.pathome.spaces.dto.crm.LeadCommandReceiptView;
 import com.indore.pathome.spaces.dto.crm.LeadContactView;
+import com.indore.pathome.spaces.dto.crm.LeadContactPreferenceCommand;
+import com.indore.pathome.spaces.dto.crm.LeadContactPreferenceView;
+import com.indore.pathome.spaces.dto.crm.LeadDestinationRevealView;
 import com.indore.pathome.spaces.dto.crm.LeadDetailView;
+import com.indore.pathome.spaces.dto.crm.LeadDuplicateCandidateResponse;
+import com.indore.pathome.spaces.dto.crm.LeadDuplicateCandidatesCommand;
 import com.indore.pathome.spaces.dto.crm.LeadLifecycleCommand;
 import com.indore.pathome.spaces.dto.crm.LeadPage;
 import com.indore.pathome.spaces.dto.crm.LeadPatchCommand;
 import com.indore.pathome.spaces.dto.crm.LeadRoutingCommand;
+import com.indore.pathome.spaces.dto.crm.LeadShareEventCommand;
+import com.indore.pathome.spaces.dto.crm.LeadShareEventView;
+import com.indore.pathome.spaces.dto.crm.LeadShareHistoryPage;
+import com.indore.pathome.spaces.dto.crm.LeadSharePrepareCommand;
+import com.indore.pathome.spaces.dto.crm.LeadShareView;
+import com.indore.pathome.spaces.dto.crm.LeadShortlistCommand;
+import com.indore.pathome.spaces.dto.crm.LeadShortlistView;
+import com.indore.pathome.spaces.dto.crm.LeadSourceAttachCommand;
+import com.indore.pathome.spaces.dto.crm.LeadSourceExceptionPage;
+import com.indore.pathome.spaces.dto.crm.LeadSourceExceptionView;
 import com.indore.pathome.spaces.dto.crm.LeadTeamTransferCommand;
 import com.indore.pathome.spaces.entity.LeadStatus;
+import com.indore.pathome.spaces.service.LeadContactPreferenceService;
+import com.indore.pathome.spaces.service.LeadFollowUpFilter;
 import com.indore.pathome.spaces.service.LeadService;
+import com.indore.pathome.spaces.service.LeadShareService;
+import com.indore.pathome.spaces.service.LeadShortlistService;
+import com.indore.pathome.spaces.service.LeadSourceProcessingService;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -21,6 +43,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,6 +51,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -41,9 +65,21 @@ public class LeadController {
     private static final CacheControl NO_STORE = CacheControl.noStore();
 
     private final LeadService leads;
+    private final LeadContactPreferenceService contactPreferences;
+    private final LeadShortlistService shortlists;
+    private final LeadShareService shares;
+    private final LeadSourceProcessingService sources;
 
-    public LeadController(LeadService leads) {
+    public LeadController(LeadService leads,
+                          LeadContactPreferenceService contactPreferences,
+                          LeadShortlistService shortlists,
+                          LeadShareService shares,
+                          LeadSourceProcessingService sources) {
         this.leads = leads;
+        this.contactPreferences = contactPreferences;
+        this.shortlists = shortlists;
+        this.shares = shares;
+        this.sources = sources;
     }
 
     @GetMapping("/leads")
@@ -54,12 +90,16 @@ public class LeadController {
             @RequestParam(required = false) String status,
             @RequestParam(name = "owner", required = false) String owner,
             @RequestParam(required = false) String followUpBefore,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) String followUp,
+            @RequestParam(required = false) String followUpZone,
             @RequestParam(defaultValue = "0") String page,
             @RequestParam(defaultValue = "20") String size) {
         boolean ownerMe = "me".equalsIgnoreCase(trim(owner));
         LeadPage result = leads.list(StaffAuthentication.userId(authentication),
                 optionalLong(cityId, "cityId"), optionalLong(teamId, "teamId"),
-                optionalStatus(status), ownerMe, optionalInstant(followUpBefore),
+                optionalStatus(status), ownerMe, optionalInstant(followUpBefore), q,
+                optionalFollowUp(followUp), trim(followUpZone),
                 integer(page, "page"), integer(size, "size"));
         return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
@@ -72,6 +112,55 @@ public class LeadController {
         LeadDetailView result = leads.capture(StaffAuthentication.userId(authentication),
                 idempotencyKey, command);
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/duplicate-candidates")
+    public ResponseEntity<LeadDuplicateCandidateResponse> duplicateCandidates(
+            Authentication authentication,
+            @RequestBody LeadDuplicateCandidatesCommand command) {
+        LeadDuplicateCandidateResponse result = leads.duplicateCandidates(
+                StaffAuthentication.userId(authentication), command);
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/{leadId}/source-events")
+    public ResponseEntity<LeadDetailView> attachSource(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody LeadSourceAttachCommand command) {
+        LeadDetailView result = leads.attachSource(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), idempotencyKey, command);
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/{leadId}/activities")
+    public ResponseEntity<LeadActivityView> logActivity(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestBody LeadActivityCommand command) {
+        LeadActivityView result = leads.logActivity(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), command);
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @GetMapping("/leads/source-exceptions")
+    public ResponseEntity<LeadSourceExceptionPage> sourceExceptions(
+            Authentication authentication,
+            @RequestParam(defaultValue = "0") String page,
+            @RequestParam(defaultValue = "20") String size) {
+        LeadSourceExceptionPage result = sources.exceptions(
+                StaffAuthentication.userId(authentication), integer(page, "page"), integer(size, "size"));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/source-exceptions/{eventId}/retry")
+    public ResponseEntity<LeadSourceExceptionView> retrySource(
+            Authentication authentication,
+            @PathVariable String eventId) {
+        LeadSourceExceptionView result = sources.retry(
+                StaffAuthentication.userId(authentication), uuid(eventId));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
 
     @GetMapping("/leads/{leadId}")
@@ -127,6 +216,103 @@ public class LeadController {
         return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
 
+    @PostMapping("/leads/{leadId}/contact-preferences")
+    public ResponseEntity<LeadContactPreferenceView> contactPreference(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody LeadContactPreferenceCommand command) {
+        LeadContactPreferenceView result = contactPreferences.record(
+                StaffAuthentication.userId(authentication), positiveLong(leadId, "leadId"),
+                idempotencyKey, command);
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(NO_STORE).body(result);
+    }
+
+    @GetMapping("/leads/{leadId}/contact-preferences")
+    public ResponseEntity<List<LeadContactPreferenceView>> contactPreferenceHistory(
+            Authentication authentication,
+            @PathVariable String leadId) {
+        List<LeadContactPreferenceView> result = contactPreferences.history(
+                StaffAuthentication.userId(authentication), positiveLong(leadId, "leadId"));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @GetMapping("/leads/{leadId}/contact-preferences/{revision}/destination")
+    public ResponseEntity<LeadDestinationRevealView> revealDestination(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @PathVariable String revision) {
+        LeadDestinationRevealView result = contactPreferences.reveal(
+                StaffAuthentication.userId(authentication), positiveLong(leadId, "leadId"),
+                positiveLong(revision, "revision"));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/{leadId}/shortlists")
+    public ResponseEntity<LeadShortlistView> createShortlist(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody LeadShortlistCommand command) {
+        LeadShortlistView result = shortlists.create(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), idempotencyKey, command);
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(NO_STORE).body(result);
+    }
+
+    @PutMapping("/leads/{leadId}/shortlists/{shortlistId}")
+    public ResponseEntity<LeadShortlistView> updateShortlist(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @PathVariable String shortlistId,
+            @RequestBody LeadShortlistCommand command) {
+        LeadShortlistView result = shortlists.update(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), positiveLong(shortlistId, "shortlistId"), command);
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @GetMapping("/leads/{leadId}/shortlists/{shortlistId}")
+    public ResponseEntity<LeadShortlistView> getShortlist(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @PathVariable String shortlistId) {
+        LeadShortlistView result = shortlists.get(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), positiveLong(shortlistId, "shortlistId"));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/{leadId}/shares")
+    public ResponseEntity<LeadShareView> prepareShare(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestBody LeadSharePrepareCommand command) {
+        LeadShareView result = shares.prepare(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), command);
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(NO_STORE).body(result);
+    }
+
+    @PostMapping("/leads/{leadId}/shares/{shareId}/events")
+    public ResponseEntity<LeadShareEventView> recordShareEvent(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @PathVariable String shareId,
+            @RequestBody LeadShareEventCommand command) {
+        LeadShareEventView result = shares.recordEvent(StaffAuthentication.userId(authentication),
+                positiveLong(leadId, "leadId"), uuid(shareId), command);
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
+    @GetMapping("/leads/{leadId}/shares")
+    public ResponseEntity<LeadShareHistoryPage> shareHistory(
+            Authentication authentication,
+            @PathVariable String leadId,
+            @RequestParam(defaultValue = "0") String page,
+            @RequestParam(defaultValue = "10") String size) {
+        LeadShareHistoryPage result = shares.history(
+                StaffAuthentication.userId(authentication), positiveLong(leadId, "leadId"),
+                integer(page, "page"), integer(size, "size"));
+        return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
+    }
+
     @GetMapping("/leads/{leadId}/activities")
     public ResponseEntity<LeadActivityPage> activities(
             Authentication authentication,
@@ -140,9 +326,10 @@ public class LeadController {
 
     @GetMapping("/lead-commands/{operationId}")
     public ResponseEntity<LeadCommandReceiptView> receipt(Authentication authentication,
-                                                          @PathVariable String operationId) {
+                                                          @PathVariable String operationId,
+                                                          @RequestParam(required = false) String action) {
         LeadCommandReceiptView result = leads.receipt(StaffAuthentication.userId(authentication),
-                uuid(operationId));
+                uuid(operationId), trim(action));
         return ResponseEntity.ok().cacheControl(NO_STORE).body(result);
     }
 
@@ -189,6 +376,17 @@ public class LeadController {
             return Instant.parse(clean);
         } catch (Exception exception) {
             throw new IllegalArgumentException("followUpBefore must be an ISO-8601 instant");
+        }
+    }
+
+    private static LeadFollowUpFilter optionalFollowUp(String value) {
+        String clean = trim(value);
+        if (clean == null) return null;
+        try {
+            return LeadFollowUpFilter.valueOf(clean.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException(
+                    "followUp must be OVERDUE, TODAY or NONE");
         }
     }
 

@@ -2,6 +2,8 @@ package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.dto.StaffGrantCommand;
 import com.indore.pathome.spaces.dto.StaffGrantView;
+import com.indore.pathome.spaces.dto.StaffAccountSearchPage;
+import com.indore.pathome.spaces.dto.StaffAccountSearchView;
 import com.indore.pathome.spaces.dto.StaffStateCommand;
 import com.indore.pathome.spaces.dto.StaffUserAccessState;
 import com.indore.pathome.spaces.entity.EmployeeProfile;
@@ -21,6 +23,7 @@ import com.indore.pathome.spaces.repository.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -76,6 +79,23 @@ public class StaffAdministrationService {
         List<StaffGrantView> grantViews = grants.findAllByUserIdOrderByCreatedAtDesc(target.getId()).stream()
                 .map(StaffAdministrationService::toGrantView).toList();
         return toUserState(target, profile, grantViews);
+    }
+
+    @Transactional(readOnly = true)
+    public StaffAccountSearchPage searchAccounts(Long actorUserId, String rawQuery, int page, int size) {
+        access.requireGlobalAdmin(actorUserId);
+        if (page < 0) throw new IllegalArgumentException("page must not be negative");
+        if (size < 1 || size > 50) throw new IllegalArgumentException("size must be between 1 and 50");
+        String query = rawQuery == null ? "" : rawQuery.trim();
+        if (query.length() < 2 || query.length() > 120) {
+            throw new IllegalArgumentException("Enter at least two characters to find a staff account");
+        }
+        var rows = users.searchStaffAccounts(query, PageRequest.of(page, size));
+        return new StaffAccountSearchPage(rows.getContent().stream()
+                .map(row -> new StaffAccountSearchView(row.getId(), row.getEmail(), row.getFullName(),
+                        Boolean.TRUE.equals(row.getProfileExists()),
+                        Boolean.TRUE.equals(row.getStaffActive())))
+                .toList(), rows.getTotalElements(), page, size, rows.getTotalPages());
     }
 
     @Transactional
@@ -318,7 +338,7 @@ public class StaffAdministrationService {
         };
         boolean capabilityValid = switch (command.capability()) {
             case STAFF_ADMIN -> command.scopeType() == StaffScopeType.GLOBAL;
-            case CITY_TEAM_ADMIN, OPS_INTAKE -> command.scopeType() == StaffScopeType.CITY;
+            case CITY_TEAM_ADMIN, OPS_INTAKE, OPS_ROUTING -> command.scopeType() == StaffScopeType.CITY;
             case OPS_COORDINATE, OPS_SUPERVISE -> command.scopeType() == StaffScopeType.TEAM;
         };
         if (!shapeValid || !capabilityValid) {

@@ -65,6 +65,32 @@ export const createApiRequestError = async (response: Response, fallback: string
   return new ApiRequestError(message, response.status, details);
 };
 
+/**
+ * Parses an application error while retaining its bounded server message for a caller that has an
+ * exact, known no-write classification. It does not expose arbitrary 5xx details.
+ */
+export const createClassifiedApiRequestError = async (
+  response: Response,
+  fallback: string,
+  requestToken?: string | null
+): Promise<ApiRequestError> => {
+  let payload: ApiErrorPayload | null = null;
+  try {
+    payload = await response.json() as ApiErrorPayload;
+  } catch {
+    // A proxy or lost response has no trustworthy application message.
+  }
+  if (response.status === 401) notifySessionExpired(requestToken);
+  const safeMessage = payload?.error === 'Service Unavailable' && typeof payload.message === 'string'
+    ? payload.message
+    : undefined;
+  return new ApiRequestError(
+    messageForStatus(response.status, safeMessage || fallback),
+    response.status,
+    safeMessage
+  );
+};
+
 export const getErrorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message.trim() ? error.message : fallback;
 

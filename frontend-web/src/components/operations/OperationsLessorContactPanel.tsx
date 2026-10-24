@@ -233,8 +233,8 @@ export const OperationsLessorContactPanel: React.FC<Props> = ({
           <div className="oe-contact-card">
             <p className="oe-contact-msg">
               {isTenant
-                ? 'The tenant’s account has no usable name and mobile on record. Contact is only ever shown when the backend can resolve it for you.'
-                : 'No canonical lessor contact is on record for this property. Contact is only ever shown when the backend can resolve it for you.'}
+                ? 'The tenant’s account has no usable name and mobile on record. Contact is only shown when Pathome can confirm the saved details.'
+                : 'No saved lessor contact is on record for this property. Contact is only shown when Pathome can confirm the saved details.'}
             </p>
             <button type="button" className="oe-link" onClick={hide}>Dismiss</button>
           </div>

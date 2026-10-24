@@ -312,7 +312,7 @@ listings.published_at'
     "$(oe_verify_rejection_outcome "$outcome" 'cannot be deleted')"
 
   outcome="$(oe_verify_rejection \
-    "UPDATE staff_access_grants SET capability = 'STAFF_ADMIN' WHERE id = (SELECT max(id) FROM staff_access_grants)")"
+    "UPDATE staff_access_grants SET capability = CASE WHEN capability = 'STAFF_ADMIN' THEN 'OPS_INTAKE' ELSE 'STAFF_ADMIN' END WHERE id = (SELECT max(id) FROM staff_access_grants)")"
   check 'rewriting a staff grant fact is rejected' 'rejected' \
     "$(oe_verify_rejection_outcome "$outcome" 'immutable')"
 

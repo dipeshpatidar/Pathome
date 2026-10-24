@@ -14,7 +14,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { installOperationsActionHarness } from './support/operationsActionHarness.mjs';
-import { createItineraryHarness } from './support/availabilityDraftItineraryHarness.mjs';
+import {
+  createItineraryHarness,
+  ITINERARY_CLOCK
+} from './support/availabilityDraftItineraryHarness.mjs';
 import { createAvailabilitySaveHarness } from './support/availabilityDraftSaveHarness.mjs';
 
 const h = await installOperationsActionHarness();
@@ -104,6 +107,43 @@ const attemptFor = (window = WINDOW, expectedSessionVersion = 6) => ({
 });
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('T1 availability validation uses one deterministic clock for past, equal and future boundaries', () => {
+  const detail = detailFor();
+  const at = (start) => presentation.setAvailabilityCommand(detail, 91, 'window', {
+    ...WINDOW,
+    availabilityStartAt: start
+  }, ITINERARY_CLOCK);
+
+  assert.equal(at('2026-09-30T23:59:59.999Z').errors.start,
+    'A new window must start in the future.');
+  assert.equal(at('2026-10-01T00:00:00.000Z').errors.start,
+    'A new window must start in the future.',
+  'the exact current instant is not future');
+  assert.equal(at('2026-10-01T00:00:00.001Z').errors.start, undefined);
+  assert.equal(at('2026-10-01T00:00:00.001Z').command?.availabilityStartAt,
+    '2026-10-01T00:00:00.001Z');
+});
+
+test('T1 Asia/Kolkata wall time and precision remain exact at the command boundary', () => {
+  assert.equal(
+    presentation.zoneInputToServerInstant('2026-10-02T05:30', KOLKATA),
+    '2026-10-02T05:30:00+05:30'
+  );
+  assert.equal(
+    Date.parse(presentation.zoneInputToServerInstant('2026-10-02T05:30', KOLKATA)),
+    Date.parse('2026-10-02T00:00:00Z')
+  );
+  const precise = '2026-10-02T05:30:00.123456+05:30';
+  const result = presentation.setAvailabilityCommand(detailFor(), 91, 'window', {
+    ...WINDOW,
+    availabilityStartAt: precise,
+    availabilityEndAt: '2026-10-03T05:30:00+05:30'
+  }, ITINERARY_CLOCK);
+  assert.equal(result.command?.availabilityStartAt, precise);
+  assert.equal(result.command?.availabilityZoneId, KOLKATA);
+  assert.equal(result.command?.availabilityEndAt, '2026-10-03T05:30:00+05:30');
+});
 
 /* ------------------------------------------------------------------ *
  * P2-01 — recoverable unsuccessful save

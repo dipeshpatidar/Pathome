@@ -50,12 +50,15 @@ const compile = () => {
 const COMPILED = compile();
 
 export const IDENTITY = '41|EMPLOYEE|deadbeef';
+/** One deterministic instant for every mounted itinerary validation in this harness. */
+export const ITINERARY_CLOCK = new Date('2026-10-01T00:00:00Z');
 
 /**
  * Creates one mounted itinerary. `onSave` may return a promise; by default a successful save is
  * assumed. `legacyCloseBeforeSave` and `ignoreSavingStatus` exist only for isolated negative controls.
  */
 export const createItineraryHarness = (presentation, options) => {
+  const clock = options.now ?? ITINERARY_CLOCK;
   const cells = [];
   const pendingEffects = [];
   let nextCell = 0;
@@ -149,6 +152,7 @@ export const createItineraryHarness = (presentation, options) => {
 
   const context = {
     ...presentation,
+    setAvailabilityCommand: (...args) => presentation.setAvailabilityCommand(...args, clock),
     React,
     useMemo,
     useEffect,
@@ -301,6 +305,7 @@ export const createItineraryHarness = (presentation, options) => {
 
   return {
     internal: state,
+    clock,
     saveCalls,
     discards,
     render,

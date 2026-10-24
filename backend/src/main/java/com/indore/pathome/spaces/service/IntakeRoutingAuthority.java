@@ -22,7 +22,23 @@ import java.util.List;
 final class IntakeRoutingAuthority {
     private IntakeRoutingAuthority() {}
 
-    record Scope(boolean global, List<Long> cityIds) {
+    record Scope(boolean global, List<Long> broadCityIds, List<Long> routingCityIds, List<Long> cityIds) {
+        boolean broadAuthority() {
+            return global || !broadCityIds.isEmpty();
+        }
+
+        boolean broadCityAdmin() {
+            return !broadCityIds.isEmpty();
+        }
+
+        boolean hasBroadAuthority(Long cityId) {
+            return global || cityId != null && broadCityIds.contains(cityId);
+        }
+
+        boolean hasRoutingAuthority(Long cityId) {
+            return cityId != null && routingCityIds.contains(cityId);
+        }
+
         boolean coversCity(Long cityId) {
             return cityId != null && cityIds.contains(cityId);
         }
@@ -40,6 +56,32 @@ final class IntakeRoutingAuthority {
             if (global) return true;
             return sourceCityId != null && canonicalLocalityCityId != null
                     && sourceCityId.equals(canonicalLocalityCityId) && coversCity(sourceCityId);
+        }
+
+        /**
+         * Routing-only task surfaces require the complete trusted-new-Request tuple. City Team Admin
+         * keeps its separately authorized canonical reconciliation reach; global Staff Admin keeps its
+         * restricted diagnostic reach and is never narrowed by this predicate.
+         */
+        boolean coversRoutingTaskSource(Long sourceCityId, Long canonicalLocalityCityId, boolean ready) {
+            if (global) return true;
+            if (!ready || !coversCanonicalSource(sourceCityId, canonicalLocalityCityId)) return false;
+            return hasBroadAuthority(sourceCityId) || routingCityIds.contains(sourceCityId);
+        }
+
+        /**
+         * A routing-only operator may use a manual exception only for a ready, canonically consistent
+         * Request created through trusted new intake. The durable task row is the enrollment evidence.
+         */
+        boolean coversRoutingOnlySource(Long sourceCityId, Long canonicalLocalityCityId,
+                                        boolean ready, boolean enrolled) {
+            if (global || hasBroadAuthority(sourceCityId)) return true;
+            return enrolled && ready && hasRoutingAuthority(sourceCityId)
+                    && coversCanonicalSource(sourceCityId, canonicalLocalityCityId);
+        }
+
+        boolean canManageCoverage(Long cityId) {
+            return global || cityId != null && cityIds.contains(cityId);
         }
     }
 
@@ -60,9 +102,17 @@ final class IntakeRoutingAuthority {
                 .map(StaffCapabilitySummary::cityId)
                 .distinct()
                 .toList();
-        if (!global && cityIds.isEmpty()) {
+        List<Long> routingCityIds = capabilities.capabilities().stream()
+                .filter(summary -> summary.capability() == StaffCapability.OPS_ROUTING
+                        && summary.scopeType() == StaffScopeType.CITY && summary.cityId() != null)
+                .map(StaffCapabilitySummary::cityId)
+                .distinct()
+                .toList();
+        List<Long> allCityIds = java.util.stream.Stream.concat(cityIds.stream(), routingCityIds.stream())
+                .distinct().toList();
+        if (!global && allCityIds.isEmpty()) {
             throw new AccessDeniedException("Current intake routing authority is required");
         }
-        return new Scope(global, cityIds);
+        return new Scope(global, cityIds, routingCityIds, allCityIds);
     }
 }

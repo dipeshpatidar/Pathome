@@ -29,12 +29,13 @@ class MetaLeadInboxServiceTest {
     @Test
     void identicalReplayDoesNotCreateASecondSourceEvent() {
         LeadSourceEvent existing = new LeadSourceEvent(UUID.randomUUID(), "META_LEADGEN", "page-1",
-                "lead-1", LeadSourceEventKind.META_LEADGEN, "a".repeat(64), Instant.now(),
+                "lead-1", LeadSourceEventKind.META_LEADGEN, "a".repeat(64), "EVENT_CANONICAL_V2",
+                Instant.now(),
                 LeadSourceEventState.QUARANTINED, "SOURCE_ACTIVATION_NOT_APPROVED");
         when(sourceEvents.findByProviderAndProviderAccountIdAndExternalEventId(
                 "META_LEADGEN", "page-1", "lead-1")).thenReturn(Optional.of(existing));
 
-        inbox.acceptMetaLead("page-1", "lead-1", "form-1", "a".repeat(64));
+        inbox.acceptMetaLead("page-1", "lead-1", "form-1", "a".repeat(64), "EVENT_CANONICAL_V2");
 
         verify(sourceEvents, never()).saveAndFlush(any());
     }
@@ -42,13 +43,29 @@ class MetaLeadInboxServiceTest {
     @Test
     void sameExternalEventWithDifferentPayloadIsRejected() {
         LeadSourceEvent existing = new LeadSourceEvent(UUID.randomUUID(), "META_LEADGEN", "page-1",
-                "lead-1", LeadSourceEventKind.META_LEADGEN, "a".repeat(64), Instant.now(),
+                "lead-1", LeadSourceEventKind.META_LEADGEN, "a".repeat(64), "EVENT_CANONICAL_V2",
+                Instant.now(),
                 LeadSourceEventState.QUARANTINED, "SOURCE_ACTIVATION_NOT_APPROVED");
         when(sourceEvents.findByProviderAndProviderAccountIdAndExternalEventId(
                 "META_LEADGEN", "page-1", "lead-1")).thenReturn(Optional.of(existing));
 
         assertThrows(VisitOperationsConflictException.class,
-                () -> inbox.acceptMetaLead("page-1", "lead-1", "form-1", "b".repeat(64)));
+                () -> inbox.acceptMetaLead("page-1", "lead-1", "form-1", "b".repeat(64),
+                        "EVENT_CANONICAL_V2"));
         verify(sourceEvents, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void legacyEnvelopeHashIsPreservedForExplicitReconciliationInsteadOfFalseTampering() {
+        LeadSourceEvent existing = new LeadSourceEvent(UUID.randomUUID(), "META_LEADGEN", "page-1",
+                "lead-1", LeadSourceEventKind.META_LEADGEN, "a".repeat(64), Instant.now(),
+                LeadSourceEventState.QUARANTINED, "SOURCE_ACTIVATION_NOT_APPROVED");
+        when(sourceEvents.findByProviderAndProviderAccountIdAndExternalEventId(
+                "META_LEADGEN", "page-1", "lead-1")).thenReturn(Optional.of(existing));
+
+        inbox.acceptMetaLead("page-1", "lead-1", "form-1", "b".repeat(64),
+                "EVENT_CANONICAL_V2");
+
+        verify(sourceEvents).saveAndFlush(existing);
     }
 }

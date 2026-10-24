@@ -12,6 +12,8 @@ import java.util.Map;
 
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.APPROVED_DATABASE;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.APPROVED_PORT;
+import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.G10_APPROVED_DATABASE;
+import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.ROUTING_APPROVED_DATABASE;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.DATASOURCE_URL_FLAG;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.DATASOURCE_USERNAME_FLAG;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.DESIGNATION_FLAG;
@@ -217,6 +219,49 @@ class DisposableIntegrationTargetGuardTest {
         Map<String, String> bareIpv6 = validEnvironment();
         bareIpv6.put(HOST_FLAG, "::1");
         assertRefused(REFUSED_ENDPOINT, bareIpv6, NO_CONNECTION_ALLOWED);
+    }
+
+    @Test
+    void acceptsTheExplicitG10TargetButNoOtherWellFormedDatabase() {
+        Map<String, String> g10 = validEnvironment();
+        g10.put(DESIGNATION_FLAG, G10_APPROVED_DATABASE);
+        g10.put(DATASOURCE_URL_FLAG, "jdbc:postgresql://localhost:" + APPROVED_PORT + "/"
+                + G10_APPROVED_DATABASE);
+        Target target = DisposableIntegrationTarget.verify(g10,
+                facts -> new LiveFacts(G10_APPROVED_DATABASE, 1));
+        assertEquals(G10_APPROVED_DATABASE, target.database());
+
+        Map<String, String> unknown = validEnvironment();
+        unknown.put(DESIGNATION_FLAG, "pathome_oe_test_other");
+        unknown.put(DATASOURCE_URL_FLAG, "jdbc:postgresql://localhost:" + APPROVED_PORT
+                + "/pathome_oe_test_other");
+        assertRefused(REFUSED_NAME, unknown, NO_CONNECTION_ALLOWED);
+    }
+
+    @Test
+    void acceptsOnlyTheExactRoutingTargetWithItsRestrictedRuntimeRole() {
+        Map<String, String> routing = validEnvironment();
+        routing.put(DESIGNATION_FLAG, ROUTING_APPROVED_DATABASE);
+        routing.put(HOST_FLAG, RoutingAcceptanceContract.HOST);
+        routing.put(DATASOURCE_URL_FLAG, "jdbc:postgresql://"
+                + RoutingAcceptanceContract.HOST + ":" + RoutingAcceptanceContract.PORT + "/"
+                + ROUTING_APPROVED_DATABASE);
+        routing.put(DATASOURCE_USERNAME_FLAG, RoutingAcceptanceContract.RUNTIME_USER);
+        routing.put(RoutingAcceptanceContract.ACCEPTANCE_FLAG,
+                RoutingAcceptanceContract.ACCEPTANCE_ID);
+        Target target = DisposableIntegrationTarget.verify(routing,
+                facts -> new LiveFacts(ROUTING_APPROVED_DATABASE, 1));
+        assertEquals(ROUTING_APPROVED_DATABASE, target.database());
+
+        Map<String, String> sharedCredential = new HashMap<>(routing);
+        sharedCredential.put(DATASOURCE_USERNAME_FLAG, RoutingAcceptanceContract.MIGRATOR_USER);
+        assertRefused(REFUSED_NAME, sharedCredential, NO_CONNECTION_ALLOWED);
+
+        Map<String, String> protectedAlias = new HashMap<>(routing);
+        protectedAlias.put(DESIGNATION_FLAG, "pathome_oe_test_integration");
+        protectedAlias.put(DATASOURCE_URL_FLAG,
+                "jdbc:postgresql://127.0.0.1:5432/pathome_oe_test_integration");
+        assertRefused(REFUSED_NAME, protectedAlias, NO_CONNECTION_ALLOWED);
     }
 
     private static void assertRefused(int expectedCode, Map<String, String> environment, LiveProbe probe) {

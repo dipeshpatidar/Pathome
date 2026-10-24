@@ -31,7 +31,8 @@ import {
   AlertTriangle,
   AlertCircle,
   Inbox,
-  Wrench
+  Wrench,
+  UserRoundCheck
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { failedUploadService } from '../services/failedUploadService';
@@ -47,6 +48,7 @@ import { FailedUploadsPanel } from './FailedUploadsPanel';
 import { OperationsVisitRepairPanel } from './OperationsVisitRepairPanel';
 import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
 import { OperationsWorkspace } from './operations/OperationsWorkspace';
+import { OwnerStaffPermissions } from './OwnerStaffPermissions';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
 import { DraftManagementBar } from './DraftManagementBar';
 import {
@@ -80,7 +82,10 @@ interface MasterAdminDashboardProps {
  * exact signed-in account on entry and the workspace fails closed until that succeeds. Persisting the
  * host tab is what keeps `/admin` on the same console surface after a refresh.
  */
-const PERSISTED_ADMIN_TABS = new Set(['learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes', 'operations']);
+const PERSISTED_ADMIN_TABS = new Set([
+  'learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes',
+  'operations', 'staff-permissions'
+]);
 
 const PRESET_PROMPTS = [
   {
@@ -1878,6 +1883,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
   const adminNavItems = [
     { id: 'learning', label: 'Learning review', badge: 'Review', icon: ShieldCheck, color: 'text-emerald-600' },
+    { id: 'staff-permissions', label: 'Staff permissions', badge: 'Owner', icon: UserRoundCheck, color: 'text-emerald-600' },
     ...(operationsAuthority.canEnter ? [{ id: 'operations', label: 'Operations workspace', badge: 'Operations', icon: Inbox, color: 'text-emerald-600' }] : []),
     ...(canReviewVisitRepairs ? [{ id: 'visit-repairs', label: 'Visit repairs', badge: 'Operations', icon: Wrench, color: 'text-amber-600' }] : []),
     ...(canReviewVisitOutcomes ? [{ id: 'visit-outcomes', label: 'Visit outcome exceptions', badge: 'Operations', icon: FileText, color: 'text-amber-600' }] : []),
@@ -2114,6 +2120,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         <AnimatePresence mode="wait">
 
           {activeTab === 'learning' && <ParserLearningReviewPanel />}
+          {activeTab === 'staff-permissions' && <OwnerStaffPermissions />}
 
           {canReviewVisitRepairs && activeTab === 'visit-repairs' && <OperationsVisitRepairPanel />}
           {canReviewVisitOutcomes && activeTab === 'visit-outcomes' && <OperationsVisitOutcomePanel />}

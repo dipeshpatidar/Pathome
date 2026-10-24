@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowRight, CircleAlert, Flag, Home, Inbox, ListChecks, Lock, MapPin, RefreshCw, Filter } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { ArrowRight, CircleAlert, Flag, Home, Inbox, ListChecks, Lock, MapPin, RefreshCw, Filter, ShieldAlert, Users } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ApiRequestError } from '../../services/apiError';
 import { readSchedulingIntent, preserveSchedulingIntent, forgetSchedulingIntent } from '../../utils/operationsSchedulingIntent';
 import {
@@ -41,6 +41,7 @@ import {
   createAvailabilityDraft,
   formatOperationsDateTime,
   freshSchedulingSessionIsEligible,
+  hasOperationsWorkspaceAccess,
   linkedRequestsLabel,
   operationsAuthorityScopeFingerprint,
   operationsCapabilityScopes,
@@ -84,6 +85,15 @@ import {
   type OperationsWorkPage,
   type StaffCapabilities
 } from '../../utils/operationsWorkspacePresentation';
+import {
+  hasLeadDiagnosticsAccess,
+  hasLeadWorkspaceAccess,
+  leadScopes
+} from '../../utils/operationsLeadPresentation';
+import {
+  operationsWorkspaceDestinations,
+  type OperationsWorkspaceDestinationKey
+} from '../../utils/operationsWorkspaceNavigation';
 import {
   focusWorkspaceTitle,
   PageHeader,
@@ -409,13 +419,30 @@ interface Props {
    * `embedded` keeps the compact presentation used inside the Employee and Admin consoles.
    */
   layout?: 'page' | 'embedded';
+  /** Lead route content rendered inside the one shared Operations frame. */
+  leadContent?: React.ReactNode;
+  /** Capture/unsaved-navigation guard registered by the mounted Lead surface. */
+  leadNavigationGuard?: React.MutableRefObject<((leave: () => void) => void) | null>;
 }
 
-export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page' }) => {
+export const OperationsWorkspace: React.FC<Props> = ({
+  authority,
+  layout = 'page',
+  leadContent,
+  leadNavigationGuard
+}) => {
   const { notifySuccess } = useNotification();
+  const location = useLocation();
   const routerNavigate = useNavigate();
   const isPageLayout = layout === 'page';
   const capabilities: StaffCapabilities | null = authority.capabilities;
+  const leadSurface = leadContent !== undefined;
+  const normalizedPath = location.pathname.replace(/\/+$/, '') || '/operations';
+  const sourceExceptionsSurface = normalizedPath === '/operations/leads/source-exceptions';
+  const destinations = operationsWorkspaceDestinations(capabilities);
+  const leadsAuthorized = hasLeadWorkspaceAccess(capabilities);
+  const diagnosticsAuthorized = hasLeadDiagnosticsAccess(capabilities);
+  const leadScopeRows = leadScopes(capabilities);
   /**
    * The read-admission boundary. Granted authority is not enough on its own: the workspace may only
    * mount protected content and start protected reads once a verification has actually succeeded for
@@ -1023,16 +1050,16 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
 
   // Authority restoration re-authorizes the reads; an old snapshot is never simply redisplayed.
   useEffect(() => {
-    if (!accessGranted) return;
+    if (!accessGranted || !hasOperationsWorkspaceAccess(capabilities)) return;
     void Promise.all([loadAttention(0), loadMyWork(0), loadClaimable(0)]);
-  }, [accessGranted, loadAttention, loadMyWork, loadClaimable]);
+  }, [accessGranted, capabilities, loadAttention, loadMyWork, loadClaimable]);
 
   // A queue-wide 403 is resolved by asking the authoritative capability endpoint, never inferred.
   const queuesDenied = [attention.status, myWork.status, claimable.status].includes('denied');
   useEffect(() => {
-    if (!accessGranted || !queuesDenied) return;
+    if (!accessGranted || !hasOperationsWorkspaceAccess(capabilities) || !queuesDenied) return;
     authorityRef.current.revalidate();
-  }, [accessGranted, queuesDenied]);
+  }, [accessGranted, capabilities, queuesDenied]);
 
   // Returning from a detail restores the scroll position and refocuses the row that was opened.
   useEffect(() => {
@@ -2322,7 +2349,8 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
    */
   const saveAvailability = useCallback(async (
     editorGeneration: number,
-    window: AvailabilityWindowInput
+    window: AvailabilityWindowInput,
+    now: Date = new Date()
   ): Promise<OperationsAvailabilitySaveOutcome> => {
     const draft = availabilityDraftRef.current;
     if (!draft || draft.editorGeneration !== editorGeneration) {
@@ -2686,7 +2714,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
         });
       },
       buildTransmit: (fresh) => {
-        const validation = setAvailabilityCommand(fresh, itemId, choice, window);
+        const validation = setAvailabilityCommand(fresh, itemId, choice, window, now);
         const command = validation.command;
         if (command === null) return null;
         const attempt: OperationsAvailabilityAttempt = {
@@ -3053,7 +3081,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
         if (fresh.sessionId !== reviewed.sessionId || fresh.version !== reviewed.sessionVersion) {
           setScheduleOutcome({
             kind: 'review-required',
-            message: `These candidates were evaluated at version ${reviewed.sessionVersion ?? 'unknown'} of this session, but the server now reports version ${fresh.version ?? 'unknown'}, so nothing was booked. Reload the session to see the current itinerary, then evaluate and review again.`
+            message: `These matches were checked before the visit plan changed, so nothing was booked. Refresh the visit plan, then check the current properties and matches again.`
           });
           return;
         }
@@ -3074,7 +3102,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
               if (intent && receipt === null) {
                 forgetSchedulingIntent(operation.session, sessionId, intent.commandId);
                 if (scheduleOutcomeContextHolds(operation, drawer)) setScheduleOutcome({ kind: 'conflict', status: cause.status ?? 0,
-                  message: 'The server rejected this command and no completed receipt was recorded.', detail: cause.message });
+                  message: 'The request was rejected and no saved result was recorded.', detail: cause.message });
                 return;
               }
             } catch { message = 'The request result could not be verified. Check again when the connection is available.'; }
@@ -3176,7 +3204,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     try {
       const intent = accepted ? null : readSchedulingIntent(session, sessionId);
       const knownApproval = accepted?.approval ?? null;
-      if (!intent && !knownApproval) throw Error('No pending command receipt is available. Review the authoritative session details.');
+      if (!intent && !knownApproval) throw Error('No saved request result is available. Review the current visit details.');
       if (retry && (!intent || scheduleOutcome?.kind !== 'uncertain' || scheduleOutcome.retryCommandId !== intent.commandId)) return;
       let receipt = intent ? await operationsWorkspaceService.schedulingCommand(sessionId, intent, context) : knownApproval;
       if (!ownership.canCommit(operation, authorityRef.current) || !scheduleOutcomeContextHolds(operation, drawer)) return;
@@ -3203,7 +3231,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
         if (!retry) {
           applyAuthoritativeSession(fresh, operation);
           setScheduleOutcome({ kind: 'uncertain', retryCommandId: intent.commandId,
-            message: 'No completed command is recorded. This does not prove failure. You still own the unchanged DRAFT Session. Retry scheduling will recheck access and resend only the original booking command.' });
+            message: 'No completed booking is recorded. This does not prove it failed. You still own the unchanged draft visit plan. Retry checks access and resends only the original booking request.' });
           return;
         }
         receipt = await operationsWorkspaceService.selectGroundExecutive(sessionId,
@@ -3294,6 +3322,10 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
       routeAdmissionRef.current = false;
       return;
     }
+    if (leadSurface || !hasOperationsWorkspaceAccess(capabilities)) {
+      routeAdmissionRef.current = false;
+      return;
+    }
     if (!accessGranted) {
       routeAdmissionRef.current = false;
       return;
@@ -3308,10 +3340,10 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     }
     if (route.kind === 'queue' && route.page === 1 && !hasOperationsFilters(route.filters)) return;
     applyOperationsRoute(route, { writeHistory: true });
-  }, [accessGranted, applyOperationsRoute, commitRoute, isPageLayout]);
+  }, [accessGranted, applyOperationsRoute, capabilities, commitRoute, isPageLayout, leadSurface]);
 
   useEffect(() => {
-    if (!isPageLayout) return undefined;
+    if (!isPageLayout || leadSurface || !hasOperationsWorkspaceAccess(capabilities)) return undefined;
     const onPopState = () => {
       const route = readBrowserOperationsRoute();
       if (operationsRoutesEqual(route, routeRef.current)) return;
@@ -3320,7 +3352,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [applyOperationsRoute, isPageLayout]);
+  }, [applyOperationsRoute, capabilities, isPageLayout, leadSurface]);
 
   const applyFilters = useCallback((next: OperationsQueueFilters) => {
     if (view === 'home') return;
@@ -3388,6 +3420,13 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
   }, [applyOperationsRoute, busyCommand, clearProtectedState, refreshAll, showNotice]);
 
   useLayoutEffect(() => {
+    if (leadSurface) {
+      routeAdmissionRef.current = false;
+      if (admittedScopeFingerprint !== effectiveScopeFingerprint) {
+        setAdmittedScopeFingerprint(effectiveScopeFingerprint);
+      }
+      return;
+    }
     if (!accessGranted) {
       if (admittedScopeFingerprint !== null) setAdmittedScopeFingerprint(null);
       return;
@@ -3404,6 +3443,7 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     admittedScopeFingerprint,
     capabilities,
     effectiveScopeFingerprint,
+    leadSurface,
     reconcileScopeChange
   ]);
 
@@ -3473,6 +3513,129 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     save: saveAvailability
   };
 
+  const scopes = operationsCapabilityScopes(capabilities);
+  const sidebarScopes = scopes.length
+    ? scopes.map((scope) => ({ teamName: scope.teamName, cityName: scope.cityName }))
+    : leadScopeRows.map((scope) => ({
+        teamName: scope.teamName ?? `${scope.cityName} intake`,
+        cityName: scope.cityName
+      }));
+  const destinationIcons: Record<OperationsWorkspaceDestinationKey, typeof Home> = {
+    home: Home,
+    attention: Flag,
+    'my-work': ListChecks,
+    claimable: Inbox,
+    'automatic-routing': MapPin,
+    leads: Users,
+    exceptions: ShieldAlert
+  };
+  const destinationCounts: Partial<Record<OperationsWorkspaceDestinationKey, number | null>> = {
+    attention: attention.status === 'ready' ? attention.unfilteredTotalCount : null,
+    'my-work': myWork.status === 'ready' ? myWork.unfilteredTotalCount : null,
+    claimable: claimable.status === 'ready' ? claimable.unfilteredTotalCount : null
+  };
+  const currentLeadSurface = leadSurface && !sourceExceptionsSurface;
+  const workspaceDestinations = destinations.map((destination) => ({
+    ...destination,
+    icon: destinationIcons[destination.key],
+    count: destinationCounts[destination.key] ?? null,
+    current: destination.key === 'leads'
+      ? currentLeadSurface
+      : destination.key === 'automatic-routing'
+        ? false
+      : destination.key === 'exceptions'
+        ? sourceExceptionsSurface
+        : !leadSurface && detailTarget === null && view === destination.key
+  }));
+  const activateDestination = (key: OperationsWorkspaceDestinationKey, path: string) => {
+    const leave = () => {
+      closeDetail();
+      if (key === 'automatic-routing') {
+        routerNavigate(path);
+        requestAnimationFrame(() => focusWorkspaceTitle());
+        return;
+      }
+      if (!path.startsWith('/operations/leads')) {
+        navigate(key as QueueView);
+        return;
+      }
+      routerNavigate(path);
+      requestAnimationFrame(() => focusWorkspaceTitle());
+    };
+    if (leadSurface && leadNavigationGuard?.current) leadNavigationGuard.current(leave);
+    else leave();
+  };
+  const navButton = (
+    destination: (typeof workspaceDestinations)[number],
+    variant: 'sidebar' | 'tabs'
+  ) => {
+    const Icon = destination.icon;
+    return (
+      <button
+        key={`${variant}-${destination.key}`}
+        type="button"
+        className={`${variant === 'sidebar' ? 'oe-sidebar-btn' : 'oe-tab-btn'}${destination.key === 'attention' ? ' oe-nav-btn--flag' : ''}`}
+        aria-current={destination.current ? 'page' : undefined}
+        onClick={() => activateDestination(destination.key, destination.path)}
+      >
+        <Icon size={variant === 'sidebar' ? 18 : 20} aria-hidden="true" />
+        <span className="oe-nav-label">{variant === 'sidebar' ? destination.label : destination.short}</span>
+        {variant === 'sidebar' && destination.count !== null
+          ? <span className="oe-nav-count">{destination.count}</span>
+          : null}
+        {variant === 'tabs' && destination.key === 'attention' && destination.count !== null
+          ? <span className="oe-nav-count">{destination.count}</span>
+          : null}
+      </button>
+    );
+  };
+  const pageFrame = (content: React.ReactNode, wrapped = false) => (
+    <section className="oe oe--page" aria-label="Operations workspace">
+      <a className="oe-skip" href="#oe-main-content">Skip to Operations content</a>
+      <div className="oe-shell">
+        <aside className="oe-sidebar" aria-label="Operations navigation">
+          <div className="oe-sidebar-brand">
+            <span className="oe-sidebar-mark" aria-hidden="true">P</span>
+            <span className="oe-sidebar-brand-name">Pathome</span>
+            <span className="oe-sidebar-brand-sub">Operations</span>
+          </div>
+          <nav className="oe-sidebar-nav" aria-label="Operations destinations">
+            {workspaceDestinations.map((item) => navButton(item, 'sidebar'))}
+          </nav>
+          {sidebarScopes.length ? (
+            <section className="oe-sidebar-scope" aria-label="Your teams">
+              <p className="oe-sidebar-scope-label">Your teams</p>
+              <ul>
+                {sidebarScopes.map((scope, index) => (
+                  <li key={`${scope.cityName}:${scope.teamName}:${index}`}>
+                    <span>{scope.teamName}</span>
+                    <small>{scope.cityName}</small>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </aside>
+        <div className="oe-main" id="oe-main-content" tabIndex={-1}>
+          {wrapped ? <div className="oe-stack">{content}</div> : content}
+        </div>
+      </div>
+      {workspaceDestinations.length ? (
+        <nav
+          className="oe-tabbar"
+          aria-label="Operations destinations"
+          style={{ gridTemplateColumns: `repeat(${workspaceDestinations.length}, minmax(0, 1fr))` }}
+        >
+          {workspaceDestinations.map((item) => navButton(item, 'tabs'))}
+        </nav>
+      ) : null}
+    </section>
+  );
+
+  if (leadSurface) {
+    return pageFrame(leadContent);
+  }
+
   /**
    * Authority has not been confirmed *for the entry on screen*: either the account's verdict is still
    * pending, or the account is granted but this entry has not been verified yet. Both are the same
@@ -3480,17 +3643,23 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
    * transient failure are reported explicitly by the blocks below instead.
    */
   if (!accessGranted && authority.state !== 'restricted' && authority.state !== 'unavailable') {
+    const content = (
+      <>
+        <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">Verifying your Operations access</h2>
+        <StateMessage
+          icon={<Lock size={20} />}
+          title="Verifying your Operations access"
+          body="Confirming your coordination assignment with the server. Work queues stay hidden until it is confirmed."
+        />
+        <SkeletonRows rows={3} />
+      </>
+    );
+    if (isPageLayout) return pageFrame(content, true);
     return (
       <section className="oe oe--embedded" aria-label="Operations workspace">
         <div className="oe-main">
           <div className="oe-stack" aria-busy="true">
-            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">Verifying your Operations access</h2>
-            <StateMessage
-              icon={<Lock size={20} />}
-              title="Verifying your Operations access"
-              body="Confirming your coordination assignment with the server. Work queues stay hidden until it is confirmed."
-            />
-            <SkeletonRows rows={3} />
+            {content}
           </div>
         </div>
       </section>
@@ -3502,17 +3671,23 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
    * previous scope may remain on screen for even one paint; the layout effect clears and reloads it.
    */
   if (accessGranted && !scopeCurrent) {
+    const content = (
+      <>
+        <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">Updating your team access</h2>
+        <StateMessage
+          icon={<Lock size={20} />}
+          title="Updating your team access"
+          body="Your City or Team assignment changed. Work from the previous scope is hidden while the queues reload from your current access."
+        />
+        <SkeletonRows rows={3} />
+      </>
+    );
+    if (isPageLayout) return pageFrame(content, true);
     return (
       <section className="oe oe--embedded" aria-label="Operations workspace">
         <div className="oe-main">
           <div className="oe-stack" aria-busy="true">
-            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">Updating your team access</h2>
-            <StateMessage
-              icon={<Lock size={20} />}
-              title="Updating your team access"
-              body="Your City or Team assignment changed. Work from the previous scope is hidden while the queues reload from your current access."
-            />
-            <SkeletonRows rows={3} />
+            {content}
           </div>
         </div>
       </section>
@@ -3521,16 +3696,22 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
 
   // Explicit denial: protected state was already cleared and every action is withheld.
   if (authority.state === 'restricted') {
+    const content = (
+      <>
+        <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">No access to Operations</h2>
+        <StateMessage
+          icon={<Lock size={20} />}
+          title="You don’t have access to Operations"
+          body="This workspace needs an active coordination assignment for a team. If you think this is a mistake, contact your administrator."
+        />
+      </>
+    );
+    if (isPageLayout) return pageFrame(content, true);
     return (
       <section className="oe oe--embedded" aria-label="Operations workspace">
         <div className="oe-main">
           <div className="oe-stack">
-            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">No access to Operations</h2>
-            <StateMessage
-              icon={<Lock size={20} />}
-              title="You don’t have access to Operations"
-              body="This workspace needs an active coordination assignment for a team. If you think this is a mistake, contact your administrator."
-            />
+            {content}
           </div>
         </div>
       </section>
@@ -3539,24 +3720,30 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
 
   // Recoverable state: authority could not be verified, so protected work stays hidden and paused.
   if (authority.state === 'unavailable') {
+    const content = (
+      <>
+        <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">
+          Operations access could not be verified
+        </h2>
+        <StateMessage
+          icon={<CircleAlert size={20} />}
+          tone="warn"
+          title="We couldn’t verify your Operations access"
+          body="Your coordination assignment could not be confirmed right now, so protected work is hidden and ownership actions are paused. Nothing about your work has changed."
+        >
+          <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={authority.revalidate}>
+            <RefreshCw size={14} aria-hidden="true" />
+            Retry
+          </button>
+        </StateMessage>
+      </>
+    );
+    if (isPageLayout) return pageFrame(content, true);
     return (
       <section className="oe oe--embedded" aria-label="Operations workspace">
         <div className="oe-main">
           <div className="oe-stack">
-            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">
-              Operations access could not be verified
-            </h2>
-            <StateMessage
-              icon={<CircleAlert size={20} />}
-              tone="warn"
-              title="We couldn’t verify your Operations access"
-              body="Your coordination assignment could not be confirmed right now, so protected work is hidden and ownership actions are paused. Nothing about your work has changed."
-            >
-              <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={authority.revalidate}>
-                <RefreshCw size={14} aria-hidden="true" />
-                Retry
-              </button>
-            </StateMessage>
+            {content}
           </div>
         </div>
       </section>
@@ -3567,27 +3754,32 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
   const accessLost = [attention.status, myWork.status, claimable.status].includes('denied');
 
   if (signedOut || accessLost) {
+    const content = (
+      <>
+        <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">
+          {signedOut ? 'Your session has ended' : 'No access to Operations'}
+        </h2>
+        <StateMessage
+          icon={<Lock size={20} />}
+          title={signedOut ? 'Your session has ended' : 'You don’t have access to Operations'}
+          body={signedOut
+            ? 'Sign in again to continue to the Operations workspace. Your work has not changed.'
+            : 'This workspace needs an active coordination assignment for a team. If you think this is a mistake, contact your administrator.'}
+        />
+      </>
+    );
+    if (isPageLayout) return pageFrame(content, true);
     return (
       <section className="oe oe--embedded" aria-label="Operations workspace">
         <div className="oe-main">
           <div className="oe-stack">
-            <h2 id="oe-page-title" tabIndex={-1} className="oe-sr">
-              {signedOut ? 'Your session has ended' : 'No access to Operations'}
-            </h2>
-            <StateMessage
-              icon={signedOut ? <Lock size={20} /> : <Lock size={20} />}
-              title={signedOut ? 'Your session has ended' : 'You don’t have access to Operations'}
-              body={signedOut
-                ? 'Sign in again to continue to the Operations workspace. Your work has not changed.'
-                : 'This workspace needs an active coordination assignment for a team. If you think this is a mistake, contact your administrator.'}
-            />
+            {content}
           </div>
         </div>
       </section>
     );
   }
 
-  const scopes = operationsCapabilityScopes(capabilities);
   const noticeVisible = notice !== null
     && notice.sessionIdentity !== null
     && notice.sessionIdentity === (readOperationsSession()?.identity ?? null);
@@ -3597,59 +3789,25 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
     { view: 'my-work', label: 'My work', icon: ListChecks, count: myWork.status === 'ready' ? myWork.unfilteredTotalCount : null },
     { view: 'claimable', label: 'Available work', icon: Inbox, count: claimable.status === 'ready' ? claimable.unfilteredTotalCount : null }
   ];
-  const navButton = (
-    item: (typeof navItems)[number],
-    variant: 'sidebar' | 'tabs'
-  ) => {
-    const Icon = item.icon;
-    const current = detailTarget === null && view === item.view;
-    return (
-      <button
-        key={`${variant}-${item.view}`}
-        type="button"
-        className={`${variant === 'sidebar' ? 'oe-sidebar-btn' : 'oe-tab-btn'}${item.flagged ? ' oe-nav-btn--flag' : ''}`}
-        aria-current={current ? 'page' : undefined}
-        onClick={() => { closeDetail(); navigate(item.view); }}
-      >
-        <Icon size={variant === 'sidebar' ? 18 : 20} aria-hidden="true" />
-        <span className="oe-nav-label">{item.label}</span>
-        {item.count !== null ? <span className="oe-nav-count">{item.count}</span> : null}
-      </button>
-    );
-  };
-
-  return (
-    <section className={isPageLayout ? 'oe oe--page' : 'oe oe--embedded'} aria-label="Operations workspace">
-      {isPageLayout ? <a className="oe-skip" href="#oe-main-content">Skip to Operations content</a> : null}
-      <div className={isPageLayout ? 'oe-shell' : undefined}>
-        {isPageLayout ? (
-          <aside className="oe-sidebar" aria-label="Operations navigation">
-            <p className="oe-sidebar-brand">Operations</p>
-            <nav className="oe-sidebar-nav" aria-label="Operations destinations">
-              {navItems.map((item) => navButton(item, 'sidebar'))}
-            </nav>
-          </aside>
-        ) : null}
-        <div className="oe-main" id={isPageLayout ? 'oe-main-content' : undefined} tabIndex={isPageLayout ? -1 : undefined}>
-          <div className="oe-stack">
-          {!isPageLayout ? (
-            <nav className="oe-subnav" aria-label="Operations queues">
-              {navItems.map((item) => (
-                <button
-                  key={item.view}
-                  type="button"
-                  className={`oe-subnav-btn${item.flagged ? ' oe-subnav-btn--flag' : ''}`}
-                  aria-current={detailTarget === null && view === item.view ? 'page' : undefined}
-                  onClick={() => { closeDetail(); navigate(item.view); }}
-                >
-                  {React.createElement(item.icon, { size: 16, 'aria-hidden': true })}
-                  {item.label}
-                  {item.count !== null ? <span className="oe-subnav-count">{item.count}</span> : null}
-                </button>
-              ))}
-            </nav>
-          ) : null}
-
+  const operationsSubnav = !isPageLayout ? (
+    <nav className="oe-subnav" aria-label="Operations queues">
+      {navItems.map((item) => (
+        <button
+          key={item.view}
+          type="button"
+          className={`oe-subnav-btn${item.flagged ? ' oe-subnav-btn--flag' : ''}`}
+          aria-current={detailTarget === null && view === item.view ? 'page' : undefined}
+          onClick={() => { closeDetail(); navigate(item.view); }}
+        >
+          {React.createElement(item.icon, { size: 16, 'aria-hidden': true })}
+          {item.label}
+          {item.count !== null ? <span className="oe-subnav-count">{item.count}</span> : null}
+        </button>
+      ))}
+    </nav>
+  ) : null;
+  const workspaceBody = (
+    <div className="oe-stack">
           {noticeVisible && notice ? (
             <WorkspaceNotice
               key={notice.id}
@@ -3749,13 +3907,14 @@ export const OperationsWorkspace: React.FC<Props> = ({ authority, layout = 'page
               onFiltersChange={applyFilters}
             />
           )}
-          </div>
-        </div>
-        {isPageLayout ? (
-          <nav className="oe-tabbar" aria-label="Operations destinations">
-            {navItems.map((item) => navButton(item, 'tabs'))}
-          </nav>
-        ) : null}
+    </div>
+  );
+  if (isPageLayout) return pageFrame(workspaceBody);
+  return (
+    <section className="oe oe--embedded" aria-label="Operations workspace">
+      <div className="oe-main">
+        {operationsSubnav}
+        {workspaceBody}
       </div>
     </section>
   );

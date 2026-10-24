@@ -208,6 +208,11 @@ public class LeadRoutingQueue {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 
+    /** Marks aggregate-version change for CRM child commands that must invalidate stale workspaces. */
+    public void touchCrmState() {
+        this.updatedAt = LocalDateTime.now();
+    }
+
     @PreUpdate
     public void onUpdate() {
         this.updatedAt = LocalDateTime.now();

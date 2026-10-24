@@ -16,7 +16,8 @@ export async function bounded(operation, milliseconds, label) {
   })]); } finally { clearTimeout(timer); }
 }
 export function privateDirectory(path) {
-  if (!/^\/(private\/)?tmp\/pathome-oe-[A-Za-z0-9_/-]+$/.test(path) || path.split('/').includes('..')) throw Error('Invalid private directory');
+  if (!/^\/(private\/)?tmp\/(pathome-oe-|pathome-routing-c07-correction-20261024-01)[A-Za-z0-9_/-]*$/.test(path)
+      || path.split('/').includes('..')) throw Error('Invalid private directory');
   const parts = path.split('/').filter(Boolean); let cursor = '';
   for (const part of parts) {
     cursor += '/' + part;

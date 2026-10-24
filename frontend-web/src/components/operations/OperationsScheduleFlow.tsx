@@ -138,7 +138,7 @@ const SelectionSummary: React.FC<{
         </span>
       </Row>
       <Row label="Found by">
-        {selection.source === 'recommended' ? 'Ranked suggestion' : selection.source === 'browse' ? 'Browse feasible GEs' : 'Search'}
+        {selection.source === 'recommended' ? 'Top suggestion' : selection.source === 'browse' ? 'Matching Ground Executives' : 'Search'}
       </Row>
     </dl>
   );
@@ -427,31 +427,31 @@ export const OperationsScheduleFlow: React.FC<Props> = ({
                     <p>
                       <strong>
                         {outcome.verificationFailed
-                          ? scheduledSession ? `Last verified Session status: ${scheduledSession.status}.` : 'Current Session status is temporarily unavailable.'
+                          ? scheduledSession ? `Last confirmed visit plan status: ${scheduledSession.status}.` : 'The current visit plan status is temporarily unavailable.'
                           : (scheduledSession?.status ?? '') === 'SCHEDULED'
                           ? 'The visit is scheduled.'
-                          : `Current Session status: ${scheduledSession?.status ?? 'Not returned'}.`}
+                          : `Current visit plan status: ${scheduledSession?.status ?? 'Not returned'}.`}
                       </strong>{' '}
-                      The original booking command was accepted. {outcome.verificationFailed
-                        ? 'Current Session details are temporarily unavailable. Any retained details below are last verified observations.'
-                        : 'The details below show the current Session.'}
+                      Pathome accepted the booking request. {outcome.verificationFailed
+                        ? 'Current visit details are temporarily unavailable. Any details below were confirmed earlier.'
+                        : 'The details below show the current visit plan.'}
                     </p>
                   </div>
                   {outcome.verificationFailed ? (
                     <div className="oe-notice oe-notice--warn" role="alert">
                       <span className="oe-notice-icon" aria-hidden="true"><CircleAlert size={18} /></span>
                       <div>
-                        <p className="oe-notice-title">Session refresh is temporarily unavailable</p>
-                        <p className="oe-notice-body">Check again when the connection is available. Checking only reads the Session; it does not repeat the booking.</p>
+                        <p className="oe-notice-title">Visit plan refresh is temporarily unavailable</p>
+                        <p className="oe-notice-body">Check again when the connection is available. This only reads the visit plan; it does not book again.</p>
                       </div>
                     </div>
                   ) : outcome.refreshFailed ? (
                     <div className="oe-notice oe-notice--warn" role="alert">
                       <span className="oe-notice-icon" aria-hidden="true"><CircleAlert size={18} /></span>
                       <div>
-                        <p className="oe-notice-title">Current Session: {scheduledSession?.status}. Your work lists couldn’t be refreshed</p>
+                        <p className="oe-notice-title">Current visit plan: {scheduledSession?.status}. Your work lists couldn’t be refreshed</p>
                         <p className="oe-notice-body">
-                          The current Session details were verified. Reloading your queues failed, so
+                          The current visit plan was checked. Refreshing your queues failed, so
                           those lists may be out of date. Refresh to see the current record.
                         </p>
                         <div className="oe-notice-actions">
@@ -615,7 +615,7 @@ const ConflictStep: React.FC<{
         return {
           category: 'Review required',
           title: 'This session changed since these candidates were evaluated',
-          body: 'Its itinerary or version moved on while you were deciding, so nothing was booked. Reload the session to see the current itinerary, reload the candidates, and review the new evaluation before booking.'
+          body: 'Its properties changed while you were deciding, so nothing was booked. Refresh the visit plan, check the current properties and review the new matches before booking.'
         };
       case 'not-sent':
         return {
@@ -628,18 +628,18 @@ const ConflictStep: React.FC<{
           ? {
               category: 'Conflict',
               title: 'This selection is no longer available',
-              body: 'The server rejected this command. Review the authoritative session before choosing again.'
+              body: 'Pathome rejected this choice. Review the current visit plan before choosing again.'
             }
           : outcome.status === 400
             ? {
                 category: 'Refused',
-                title: 'The server refused this selection',
-                body: 'The selection and its reason must match the server’s current recommendation baseline.'
+                title: 'Pathome refused this selection',
+                body: 'The selected Ground Executive and reason must match the current visit plan.'
               }
             : {
                 category: 'Conflict',
                 title: 'This booking couldn’t be completed',
-                body: 'Review the authoritative session before choosing again.'
+                body: 'Review the current visit plan before choosing again.'
               };
     }
   })();
@@ -665,7 +665,7 @@ const ConflictStep: React.FC<{
         ) : null}
         {outcome.kind === 'conflict' && outcome.status === 409 ? (
           <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onRefreshSession}>
-            Refresh the session
+            Refresh visit plan
           </button>
         ) : null}
         {outcome.kind === 'conflict' ? (
@@ -675,12 +675,12 @@ const ConflictStep: React.FC<{
         ) : null}
         {outcome.kind === 'not-sent' || outcome.kind === 'uncertain' ? (
           <button type="button" className="oe-btn oe-btn--primary oe-btn--md" disabled={blocked} onClick={onRefreshSession}>
-            {blocked ? 'Checking…' : 'Check the session'}
+            {blocked ? 'Checking…' : 'Check visit plan'}
           </button>
         ) : null}
         {outcome.kind === 'review-required' ? (
           <button type="button" className="oe-btn oe-btn--primary oe-btn--md" onClick={onRefreshSession}>
-            Reload the session
+            Refresh visit plan
           </button>
         ) : null}
         <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={outcome.kind === 'denied' || outcome.kind === 'uncertain' ? onClose : onRefreshCandidates}>

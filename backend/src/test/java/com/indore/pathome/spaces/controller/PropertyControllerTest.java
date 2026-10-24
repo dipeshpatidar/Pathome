@@ -410,7 +410,7 @@ public class PropertyControllerTest {
         when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
         when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
         when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.empty());
-        when(trustedOperationalIntakeService.admitAndSave(any())).thenAnswer(invocation -> {
+        when(trustedOperationalIntakeService.admitNewTenantIntakeAndSave(any())).thenAnswer(invocation -> {
             var saved = invocation.getArgument(0, com.indore.pathome.spaces.entity.PropertyVisitRequest.class);
             saved.setId(15L);
             return saved;
@@ -428,7 +428,7 @@ public class PropertyControllerTest {
         assertEquals("RECEIVED", response.getBody().status());
         assertTrue(response.getBody().message().contains("before confirming"));
         var saved = org.mockito.ArgumentCaptor.forClass(PropertyVisitRequest.class);
-        verify(trustedOperationalIntakeService).admitAndSave(saved.capture());
+        verify(trustedOperationalIntakeService).admitNewTenantIntakeAndSave(saved.capture());
         assertEquals(8L, saved.getValue().getTenant().getId());
         assertEquals(java.time.Instant.parse("2099-10-02T07:30:00Z"), saved.getValue().getAvailabilityStartAt());
         assertEquals(java.time.Instant.parse("2099-10-02T08:30:00Z"), saved.getValue().getPreferredAt());

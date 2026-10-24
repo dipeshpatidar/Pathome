@@ -28,7 +28,7 @@ test('all shell and JS files parse without executing',()=>{
     execFileSync(process.execPath,['--check',join(repo,'frontend-web/browser-verification',name,'run.mjs')],{env});
 });
 test('existing hermetic DB / Package 3 / media controls remain green',()=>{
-  for(const [file,command,count] of [['lib/db-guard.sh','selftest',13],['lib/db-guard.sh','selftest-package3',10],['lib/env-isolation.sh','selftest',19]]){
+  for(const [file,command,count] of [['lib/db-guard.sh','selftest',13],['lib/db-guard.sh','selftest-package3',10],['lib/env-isolation.sh','selftest',27]]){
     const output=execFileSync('/bin/bash',[join(tool,file),command],{env,encoding:'utf8',timeout:10000});
     assert.doesNotMatch(output,/^FAIL/m); assert.equal(output.split('\n').filter(line=>line.startsWith('PASS')).length,count);
   }
@@ -202,11 +202,11 @@ test('stale PIDs, foreign listeners, broken ancestry and stale attestations fail
     assert.throws(()=>verifyBinding(environment,{inspect,now}));
   }finally{rmSync(root,{recursive:true});}
 });
-test('real migration filenames are numerically ordered V2 through V50',()=>{
+test('real migration filenames are numerically ordered V2 through V54',()=>{
   const declaration=read('run.sh').match(/oe_repo_migration_files\(\) \{[\s\S]*?\n\}/)[0];
   const result=bash(guard+'OE_MIGRATION_DIR='+q(join(repo,'backend/src/main/resources/db/migration'))+'\n'+declaration+'\noe_repo_migration_files');
   assert.equal(result.status,0);
-  assert.deepEqual(result.stdout.trim().split('\n').map(file=>Number(file.match(/\/V(\d+)__/)[1])),Array.from({length:49},(_,i)=>i+2));
+  assert.deepEqual(result.stdout.trim().split('\n').map(file=>Number(file.match(/\/V(\d+)__/)[1])),Array.from({length:53},(_,i)=>i+2));
 });
 test('82 unique required entries: 19 fixtures / 63 coverage; every area and actor is declared',()=>{
   assert.equal(SCENARIOS.length,82);assert.equal(SCENARIOS.filter(s=>s.kind==='fixture').length,19);

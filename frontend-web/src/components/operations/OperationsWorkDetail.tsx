@@ -496,7 +496,7 @@ const OwnedRequest: React.FC<{
             <h3 className="oe-h3">Actions</h3>
             {closed ? (
               <p className="oe-quiet">
-                This request is closed and kept as read-only history. No ownership actions apply.
+                This visit request is closed and kept for history. No ownership actions apply.
               </p>
             ) : coordinationOpen ? (
               <OperationsRequestCoordination
@@ -602,8 +602,8 @@ const OwnedRequest: React.FC<{
                 reveal={actions.revealRequestContact}
               />
               <p className="oe-footnote">
-                Contact is shown only when the backend resolves a canonical, trusted record for this
-                property. It is never taken from another source, and it is not stored in this browser.
+                Contact is shown only when Pathome can confirm the saved record for this property.
+                It is never taken from another source, and it is not stored in this browser.
               </p>
             </Section>
             <Section title="Tenant contact">
@@ -614,7 +614,7 @@ const OwnedRequest: React.FC<{
                 reveal={actions.revealRequestTenantContact}
               />
               <p className="oe-footnote">
-                Only the tenant’s account name and mobile are shown, and only when the backend confirms
+                Only the tenant’s account name and mobile are shown, and only when Pathome confirms
                 you currently own this request. The disclosure is audited and never stored in this browser.
               </p>
             </Section>
@@ -718,7 +718,7 @@ const OwnedSession: React.FC<{
             <h3 className="oe-h3">Actions</h3>
             {closed ? (
               <p className="oe-quiet">
-                This session is closed and kept as read-only history. No ownership actions apply.
+                This visit plan is closed and kept for history. No ownership actions apply.
               </p>
             ) : (
               <div className="oe-actions-list">
@@ -793,9 +793,9 @@ const OwnedSession: React.FC<{
             {!closed && !draft && !releasable ? (
               <p className="oe-quiet">
                 {detail.status === 'SCHEDULED'
-                  ? 'A visit time is booked, so this session is read-only here. The booked time, the assigned Ground Executive and release cannot be changed from this workspace.'
+                  ? 'A visit time is booked, so this page is view only. The booked time, the assigned Ground Executive and release cannot be changed from this workspace.'
                   : detail.status === 'STARTED'
-                    ? 'The visit is in progress. This view is read-only.'
+                    ? 'The visit is in progress. This page is view only.'
                     : 'This session is not in a state that can be released from here.'}
               </p>
             ) : null}
@@ -850,7 +850,7 @@ const OwnedSession: React.FC<{
                 reveal={actions.revealSessionTenantContact}
               />
               <p className="oe-footnote">
-                Shown only while you currently own this visit and the backend can resolve the tenant’s
+                Shown only while you currently own this visit and Pathome can confirm the tenant’s
                 account contact. The scheduled time and the tenant’s confirmation remain separate facts.
               </p>
             </Section>
@@ -872,7 +872,7 @@ const OwnedSession: React.FC<{
             </Section>
 
             {hasExecution ? (
-              <Section title="Execution">
+              <Section title="Visit progress">
                 <dl className="oe-fields">
                   <Field label="Started">
                     {formatOperationsDetailDateTime(detail.startedAt)
@@ -882,7 +882,7 @@ const OwnedSession: React.FC<{
                     {formatOperationsDetailDateTime(detail.expiresAt)
                       ?? <MissingValue>Not recorded</MissingValue>}
                   </Field>
-                  <Field label="Execution state changed">
+                  <Field label="Visit progress last updated">
                     {formatOperationsDetailDateTime(detail.executionStateChangedAt)
                       ?? <MissingValue>Not recorded</MissingValue>}
                   </Field>

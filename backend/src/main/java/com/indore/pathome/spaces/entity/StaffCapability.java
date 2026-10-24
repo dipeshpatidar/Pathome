@@ -5,5 +5,6 @@ public enum StaffCapability {
     CITY_TEAM_ADMIN,
     OPS_INTAKE,
     OPS_COORDINATE,
-    OPS_SUPERVISE
+    OPS_SUPERVISE,
+    OPS_ROUTING
 }

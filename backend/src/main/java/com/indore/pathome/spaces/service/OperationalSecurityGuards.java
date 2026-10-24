@@ -45,6 +45,43 @@ public class OperationalSecurityGuards {
         }
     }
 
+    /**
+     * Guards one duplicate-candidate lookup against concurrent scope and actor-authority changes.
+     *
+     * <p>Cities and Teams are held {@code FOR SHARE}: they conflict with active-state writers while
+     * leaving unrelated actors in the same scope free to proceed. The actor's profile, grants and User
+     * row are then held {@code FOR UPDATE}, which serializes that actor's admissions through commit
+     * without making the shared scope a mutex.
+     *
+     * <p>The order is City (sorted) &rarr; Team (sorted) &rarr; EmployeeProfile &rarr; grants (sorted)
+     * &rarr; User. This is the established governance order and must not be rearranged.
+     */
+    public void acquireDuplicateLookup(Collection<Long> cityIds, Collection<Long> teamIds, Long actorId) {
+        if (actorId == null || actorId <= 0) {
+            throw new EntityNotFoundException("Lead not found");
+        }
+        for (Long cityId : sorted(cityIds)) {
+            if (jdbc.queryForList("select id from supported_cities where id = ? for share",
+                    Long.class, cityId).isEmpty()) {
+                throw new EntityNotFoundException("Supported City not found");
+            }
+        }
+        for (Long teamId : sorted(teamIds)) {
+            if (jdbc.queryForList("select id from operating_teams where id = ? for share",
+                    Long.class, teamId).isEmpty()) {
+                throw new EntityNotFoundException("Operating Team not found");
+            }
+        }
+        jdbc.queryForList("select id from employee_profiles where user_id = ? for update",
+                Long.class, actorId);
+        jdbc.queryForList("select id from staff_access_grants where user_id = ? order by id for update",
+                Long.class, actorId);
+        if (jdbc.queryForList("select id from users where id = ? for update",
+                Long.class, actorId).isEmpty()) {
+            throw new EntityNotFoundException("Lead not found");
+        }
+    }
+
     public boolean cityIsActive(Long cityId) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
                 "select active from supported_cities where id = ?", Boolean.class, cityId));

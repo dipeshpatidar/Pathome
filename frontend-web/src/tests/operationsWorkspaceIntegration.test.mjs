@@ -241,7 +241,10 @@ test('operations access needs an effective OPS_COORDINATE Team grant', () => {
     false
   );
   assert.equal(hasOperationsWorkspaceAccess(null), false);
-  assert.equal(hasOperationsWorkspaceAccess(toStaffCapabilities({ staffActive: true })), false);
+  assert.throws(
+    () => toStaffCapabilities({ staffActive: true }),
+    /Staff capability response/
+  );
 });
 
 test('capability scopes list each coordinating team once and never fabricate a label', () => {
@@ -252,7 +255,14 @@ test('capability scopes list each coordinating team once and never fabricate a l
       { capability: 'OPS_COORDINATE', scopeType: 'TEAM', teamId: 7, teamDisplayName: 'Team A', cityId: 1, cityDisplayName: 'Indore' },
       { capability: 'OPS_COORDINATE', scopeType: 'TEAM', teamId: 7, teamDisplayName: 'Team A', cityId: 1, cityDisplayName: 'Indore' },
       { capability: 'OPS_SUPERVISE', scopeType: 'TEAM', teamId: 8, teamDisplayName: 'Team B', cityId: 1, cityDisplayName: 'Indore' },
-      { capability: 'OPS_COORDINATE', scopeType: 'TEAM', teamId: 9 }
+      {
+        capability: 'OPS_COORDINATE',
+        scopeType: 'TEAM',
+        teamId: 9,
+        teamDisplayName: null,
+        cityId: null,
+        cityDisplayName: null
+      }
     ]
   });
   const scopes = operationsCapabilityScopes(parsed);
@@ -269,12 +279,13 @@ test('both consoles gate the OE destination on the shared server-verified author
   const shellHookCalls = [home, navbar, dashboard, admin]
     .reduce((total, source) => total + (source.match(/useOperationsCapability\(/g) ?? []).length, 0);
   assert.equal(shellHookCalls, 1, 'exactly one capability state machine may exist');
-  assert.match(home, /const operationsAuthority = useOperationsCapability\(\{ workspaceEntry: operationsSurface \}\)/);
-  // The entry identity, not a shared boolean: both consoles and the destination are distinct entries.
   assert.match(
     home,
-    /const operationsSurface = operationsRoute\s*\n\s*\? 'destination'\s*\n\s*: embeddedOperationsOpen\s*\n\s*\? \(role === 'EMPLOYEE' \? 'embedded:employee' : 'embedded:admin'\)\s*\n\s*: null;/
+    /const operationsAuthority = useOperationsCapability\(\{\s*workspaceEntry: operationsSurface,\s*accessPolicy:/
   );
+  // The entry identity, not a shared boolean: both consoles and the destination are distinct entries.
+  assert.match(home, /operationsRoutingRoute\s*\n\s*\? 'destination:routing'/);
+  assert.match(home, /accessPolicy: operationsRoutingRoute\s*\n\s*\? 'routing'/);
   assert.equal(dashboard.includes('useOperationsCapability('), false);
   assert.equal(admin.includes('useOperationsCapability('), false);
   assert.match(dashboard, /import type \{ OperationsAuthority \} from '\.\.\/hooks\/useOperationsCapability';/);
@@ -798,7 +809,10 @@ test('pending work is cancelled and a stale session can never populate the works
   // Losing authority also deactivates the workspace surface and invalidates a pending command.
   assert.match(workspace, /ownership\.setWorkspaceActive\(accessGranted\);/);
   assert.match(workspace, /if \(!accessGranted\) clearProtectedState\('authorization-lost'\);/);
-  assert.match(workspace, /if \(!accessGranted \|\| !queuesDenied\) return;\s*\n\s*authorityRef\.current\.revalidate\(\);/);
+  assert.match(
+    workspace,
+    /if \(!accessGranted \|\| !hasOperationsWorkspaceAccess\(capabilities\) \|\| !queuesDenied\) return;\s*\n\s*authorityRef\.current\.revalidate\(\);/
+  );
 });
 
 /* 12. No synthetic fixtures in production operations data ------------------------- */

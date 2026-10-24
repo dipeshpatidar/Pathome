@@ -301,7 +301,11 @@ export const createAvailabilitySaveHarness = (presentation, options = {}) => {
 
   return {
     state,
-    save: context.__p2SaveAvailability,
+    save: (editorGeneration, window) => context.__p2SaveAvailability(
+      editorGeneration,
+      window,
+      options.now ?? new Date('2026-10-22T00:00:00Z')
+    ),
     setDraft(next) {
       writeDraft(next);
     },

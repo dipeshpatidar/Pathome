@@ -40,6 +40,11 @@ cloudinary:
   api-secret: ${CLOUDINARY_API_SECRET}
 
 pathome:
+  crm:
+    public-origin: ${PATHOME_CRM_PUBLIC_ORIGIN:}
+    contact-encryption-key: ${PATHOME_CRM_CONTACT_ENCRYPTION_KEY:}
+    contact-encryption-key-id: ${PATHOME_CRM_CONTACT_ENCRYPTION_KEY_ID:primary}
+    meta-source-enabled: ${PATHOME_CRM_META_SOURCE_ENABLED:false}
   visit:
     auto-shift-threshold-minutes: ${PATHOME_VISIT_AUTO_SHIFT_THRESHOLD_MINUTES:10}
     reservation-horizon-days: ${PATHOME_VISIT_RESERVATION_HORIZON_DAYS:7}

@@ -158,6 +158,8 @@ export const openAvailabilityEditor = (presentation, props, overrides = {}) => {
 
   const context = {
     ...presentation,
+    setAvailabilityCommand: (session, itemId, choice, window) =>
+      presentation.setAvailabilityCommand(session, itemId, choice, window, CLOCK),
     React,
     useMemo: (factory) => factory(),
     useEffect: () => {},

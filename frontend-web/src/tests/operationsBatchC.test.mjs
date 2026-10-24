@@ -190,17 +190,17 @@ test('the five public outcome codes map to distinct truthful labels', () => {
 });
 
 test('C1 copy never claims that a continuation means more feasible Ground Executives', () => {
-  assert.match(picker, /label: 'Browse feasible GEs'/);
+  assert.match(picker, /label: 'Matching Ground Executives'/);
   assert.match(picker, /Shows GEs with an evaluated time for this visit plan\. It does not show every employee\./);
   assert.match(picker, /More records remain to check\./);
-  assert.match(picker, /No feasible matches found in this evaluation/);
+  assert.match(picker, /No matching visit time was found in this check/);
   assert.doesNotMatch(picker, /More are available/);
   assert.doesNotMatch(picker, /label: 'Browse all'/);
 });
 
 test('the information view has no booking action and explains its informational authority', () => {
-  assert.match(availability, /This is an informational view of potential City scheduling candidates/);
-  assert.match(availability, /To book, choose a freshly/);
+  assert.match(availability, /This view shows who may be available for this City/);
+  assert.match(availability, /To book, choose a newly checked option/);
   assert.match(availability, /First-stop arrival travel and later-commitment protection are/);
   assert.doesNotMatch(availability, /onSelect/);
   assert.doesNotMatch(availability, /groundExecutiveUserId\s*:\s*entry\.groundExecutiveUserId,[\s\S]{0,200}scheduledAt/);

@@ -90,7 +90,12 @@ public class OperationalAuditEvent {
                 && (actorUser != null || operatorReference == null || operatorReference.isBlank())) {
             throw new IllegalArgumentException("Deployment audit events require an operator reference only");
         }
+        if (actorKind == AuditActorKind.SYSTEM && (actorUser != null || operatorReference != null)) {
+            throw new IllegalArgumentException("System audit events cannot impersonate a User or operator");
+        }
     }
 
     public Long getId() { return id; }
+    public Instant getOccurredAt() { return occurredAt; }
+    public AuditActorKind getActorKind() { return actorKind; }
 }

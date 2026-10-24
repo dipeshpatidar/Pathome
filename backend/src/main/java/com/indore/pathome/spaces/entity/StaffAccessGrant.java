@@ -90,7 +90,7 @@ public class StaffAccessGrant {
         };
         boolean capabilityValid = switch (capability) {
             case STAFF_ADMIN -> scopeType == StaffScopeType.GLOBAL && expiresAt == null;
-            case CITY_TEAM_ADMIN, OPS_INTAKE -> scopeType == StaffScopeType.CITY;
+            case CITY_TEAM_ADMIN, OPS_INTAKE, OPS_ROUTING -> scopeType == StaffScopeType.CITY;
             case OPS_COORDINATE, OPS_SUPERVISE -> scopeType == StaffScopeType.TEAM;
         };
         if (!shapeValid || !capabilityValid) {

@@ -53,7 +53,7 @@
  * the dispatch gate closed, and a Claim/Release pre-flight is still its own check.
  *
  * Usage:  node frontend-web/browser-verification/operations-entry-commit/run.mjs
- *   OE_ENTRY_COMMIT_SCENARIOS=3,4   run a subset of scenarios 1-8
+ *   OE_ENTRY_COMMIT_SCENARIOS=3,4   run a subset of scenarios 1-13
  * Requires Playwright with Chromium (installed globally in this environment), like its siblings.
  */
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,11 @@ const { chromium } = playwright;
 
 const FRONTEND_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const ORIGIN = 'http://oe.local';
+/**
+ * Development effect replay is opt-in so the historical production-renderer scenarios retain their
+ * exact semantics. C07 evidence runs enable it explicitly and assert the captured setup/cleanup order.
+ */
+const STRICT_MODE = process.env.OE_ENTRY_COMMIT_STRICT === '1';
 /**
  * The hook module the harness mounts. Overridable so the negative control can point the harness at a
  * temporary copy that deliberately reproduces the old render-phase side effect; the real module is the
@@ -181,10 +186,196 @@ const staleInFlightSharingDefectPlugin = {
   }
 };
 
+const broadCheckingDefectPlugin = {
+  name: 'c07-broad-checking-control',
+  setup(build) {
+    build.onLoad({ filter: /useOperationsCapability\.ts$/ }, async (args) => {
+      const source = await readFile(args.path, 'utf8');
+      const committed = `  if (authority.state === 'restricted') return 'restricted';
+  if (authority.state === 'unavailable') return 'unavailable';
+  if (authority.state === 'checking' || !authority.entryAdmitted) return 'checking';
+  return 'granted';`;
+      const superseded = `  // NEGATIVE CONTROL (test-only): the superseded broad checking predicate.
+  if (authority.state === 'unavailable') return 'unavailable';
+  if (authority.state === 'granted' && authority.entryAdmitted) return 'granted';
+  return 'checking';`;
+      if (!source.includes(committed)) {
+        throw new Error('broad-checking negative-control marker not found in the hook');
+      }
+      return { contents: source.replace(committed, superseded), loader: 'ts' };
+    });
+  }
+};
+
+const missingSessionRequestFencePlugin = {
+  name: 'c07-missing-session-request-fence-control',
+  setup(build) {
+    build.onLoad({ filter: /useOperationsCapability\.ts$/ }, async (args) => {
+      const source = await readFile(args.path, 'utf8');
+      const guardedSuccess = `          if (!isCurrent()) return false;
+          if (!isOperationsSessionActive(session)) return false;
+          if (outcome.kind === 'timeout') {`;
+      const superseded = `          // NEGATIVE CONTROL (test-only): both current-request and current-session fences are removed
+          // from the successful-response path, reproducing the delayed previous-user acceptance bug.
+          (window.__c07ControlProbes ||= []).push({
+            id,
+            requestRef: requestRef.current,
+            current: isCurrent(),
+            sessionActive: isOperationsSessionActive(session),
+            outcome: outcome.kind
+          });
+          if (outcome.kind === 'timeout') {`;
+      if (!source.includes(guardedSuccess)) {
+        throw new Error('current-session/request negative-control marker not found in the hook');
+      }
+      return { contents: source.replace(guardedSuccess, superseded), loader: 'ts' };
+    });
+  }
+};
+
+const missingServiceSessionFencePlugin = {
+  name: 'c07-missing-service-session-fence-control',
+  setup(build) {
+    build.onLoad({ filter: /operationsWorkspaceService\.ts$/ }, async (args) => {
+      const source = await readFile(args.path, 'utf8');
+      const guardedResponse = `  if (!response.ok) throw await createApiRequestError(response, fallbackMessage, false, session.token);
+  assertOperationsSessionActive(session);
+  return response;`;
+      const superseded = `  if (!response.ok) throw await createApiRequestError(response, fallbackMessage, false, session.token);
+  // NEGATIVE CONTROL (test-only): the service-level post-response session fence is also removed.
+  return response;`;
+      if (!source.includes(guardedResponse)) {
+        throw new Error('service current-session negative-control marker not found');
+      }
+      const guardedDetail = `  if (mapped === null) throw new ApiRequestError(fallbackMessage, response.status);
+  assertOperationsSessionActive(session);
+  return mapped;`;
+      const supersededDetail = `  if (mapped === null) throw new ApiRequestError(fallbackMessage, response.status);
+  // NEGATIVE CONTROL (test-only): the payload-level current-session fence is also removed.
+  return mapped;`;
+      if (!source.includes(guardedDetail)) {
+        throw new Error('service detail current-session negative-control marker not found');
+      }
+      return {
+        contents: source.replace(guardedResponse, superseded).replace(guardedDetail, supersededDetail),
+        loader: 'ts'
+      };
+    });
+  }
+};
+
+const disabledTimeoutSettlementPlugin = {
+  name: 'c07-disabled-timeout-settlement-control',
+  setup(build) {
+    build.onLoad({ filter: /useOperationsCapability\.ts$/ }, async (args) => {
+      const source = await readFile(args.path, 'utf8');
+      const timer = `  timer = setTimeout(() => {
+    if (settled) return;
+    finish({ kind: 'timeout' });
+    control.abort();
+  }, timeoutMs);`;
+      const superseded = `  // NEGATIVE CONTROL (test-only): the owned timeout settlement is disabled. A held transport can
+  // therefore remain pending indefinitely and never produce a truthful terminal state.
+  void timeoutMs;`;
+      if (!source.includes(timer)) {
+        throw new Error('timeout-settlement negative-control marker not found in the hook');
+      }
+      return { contents: source.replace(timer, superseded), loader: 'ts' };
+    });
+  }
+};
+
+/**
+ * Test-only counterfactual for the late-error/rejection closure. The corrected implementation has two
+ * independent suppressors: the transport race resolves a retired request as aborted, and the hook
+ * rejects either a stale request identity or an inactive session before applying a failure. This
+ * control removes both so a retired transport that deliberately ignores abort can visibly mutate the
+ * replacement session. The green scenarios must catch that mutation and keep rendering `checking`.
+ */
+const missingLateErrorFencePlugin = {
+  name: 'c07-missing-late-error-fence-control',
+  setup(build) {
+    build.onLoad({ filter: /useOperationsCapability\.ts$/ }, async (args) => {
+      const source = await readFile(args.path, 'utf8');
+      const abortListener = `  control.signal.addEventListener('abort', onAbort, { once: true });`;
+      const initialAbort = `  if (control.signal.aborted) {
+    onAbort();
+    return;
+  }`;
+      const successFence = `          if (!isCurrent()) return false;
+          if (!isOperationsSessionActive(session)) return false;
+          if (outcome.kind === 'timeout') {`;
+      const abortedBeforeRejection = `          if (control.signal.aborted) return false;
+          if (outcome.kind === 'rejected') throw outcome.cause;`;
+      const catchFence = `          if (control.signal.aborted || (cause as { name?: string } | null)?.name === 'AbortError') return false;
+          if (!isCurrent()) return false;
+          if (!isOperationsSessionActive(session)) return false;`;
+      const awaitedOutcome = `          const outcome = await awaitOperationsCapabilityRequest(
+            operationsWorkspaceService.capabilities({ session, signal: control.signal }),
+            control
+          );`;
+      if (![abortListener, initialAbort, successFence, abortedBeforeRejection, catchFence, awaitedOutcome]
+        .every((marker) => source.includes(marker))) {
+        throw new Error('late-error negative-control marker not found in the hook');
+      }
+      const contents = source
+        .replace(
+          abortListener,
+          '  // NEGATIVE CONTROL (test-only): the retired transport ignores its abort boundary.'
+        )
+        .replace(
+          initialAbort,
+          '  // NEGATIVE CONTROL (test-only): a pre-aborted transport remains outstanding.'
+        )
+        .replace(
+          awaitedOutcome,
+          `${awaitedOutcome}
+          (window.__c07ControlProbes ||= []).push({
+            event: 'outcome-reached',
+            id,
+            requestRef: requestRef.current,
+            aborted: control.signal.aborted,
+            current: isCurrent(),
+            sessionActive: isOperationsSessionActive(session),
+            outcome: outcome.kind
+          });`
+        )
+        .replace(
+          successFence,
+          `          // NEGATIVE CONTROL (test-only): request and session ownership fences are removed.
+          if (outcome.kind === 'timeout') {`
+        )
+        .replace(
+          abortedBeforeRejection,
+          `          // NEGATIVE CONTROL (test-only): an aborted retired transport may reach the rejection path.
+          if (outcome.kind === 'rejected') throw outcome.cause;`
+        )
+        .replace(
+          catchFence,
+          `          // NEGATIVE CONTROL (test-only): late error/rejection ownership fences are removed.
+          (window.__c07ControlProbes ||= []).push({
+            event: 'late-error-reached',
+            id,
+            requestRef: requestRef.current,
+            aborted: control.signal.aborted,
+            current: isCurrent(),
+            sessionActive: isOperationsSessionActive(session),
+            cause: (cause as { name?: string; message?: string } | null)?.name || 'unknown'
+          });`
+        );
+      return { contents, loader: 'ts' };
+    });
+  }
+};
+
 const controlPlugins = {
   'render-phase': () => [renderPhaseDefectPlugin],
   'workspace-open-render-phase': () => [renderPhaseWorkspaceOpenDefectPlugin],
-  'stale-inflight-sharing': () => [staleInFlightSharingDefectPlugin]
+  'stale-inflight-sharing': () => [staleInFlightSharingDefectPlugin],
+  'broad-checking': () => [broadCheckingDefectPlugin],
+  'missing-session-request-fence': () => [missingSessionRequestFencePlugin, missingServiceSessionFencePlugin],
+  'disabled-timeout-settlement': () => [disabledTimeoutSettlementPlugin],
+  'missing-late-error-fence': () => [missingLateErrorFencePlugin]
 };
 
 const TOKEN_A = 'token-entry-a';
@@ -203,10 +394,55 @@ const HARNESS_HTML = '<!doctype html><html><head><meta charset="utf-8"><title>OE
  * so the harness can observe both "the transport was aborted" and "an aborted transport nevertheless
  * produced a late response".
  */
-function installStub(storageEntries) {
+function installStub(options) {
+  const storageEntries = Array.isArray(options) ? options : options.storageEntries;
+  const deferAbortNotification = !Array.isArray(options) && options.deferAbortNotification === true;
+  if (deferAbortNotification) {
+    /**
+     * Fault injection for the late-finalizer cases. `aborted` is visible immediately, but the signal's
+     * event is delivered later. The synthetic transport can therefore settle after B is pending and
+     * exercise the retired request's finalizer against B's live registry entry.
+     */
+    class DeferredAbortSignal extends EventTarget {
+      constructor() {
+        super();
+        this.aborted = false;
+        this.reason = undefined;
+      }
+    }
+    window.AbortController = class DeferredAbortController {
+      constructor() {
+        this.signal = new DeferredAbortSignal();
+      }
+      abort(reason) {
+        if (this.signal.aborted) return;
+        this.signal.aborted = true;
+        this.signal.reason = reason === undefined
+          ? new DOMException('The operation was aborted.', 'AbortError')
+          : reason;
+        const record = this.signal.capabilityRecord;
+        if (record && !record.aborted) {
+          record.aborted = true;
+          window.__stub.capEvents.push({ type: 'aborted', id: record.id, token: record.token });
+          window.__c07Lifecycle.push('capability-aborted:id=' + record.id);
+        }
+        let remainingFrames = 300;
+        const notifyLater = () => {
+          remainingFrames -= 1;
+          if (remainingFrames <= 0) this.signal.dispatchEvent(new Event('abort'));
+          else window.requestAnimationFrame(notifyLater);
+        };
+        window.requestAnimationFrame(notifyLater);
+      }
+    };
+  }
+
   const state = {
+    nextRequestId: 1,
     /** One record per capability request, in issue order. */
     capRequests: [],
+    /** Transport lifecycle events, including abort/release/finalizer observations. */
+    capEvents: [],
     /** Every other API request that actually reached the transport. */
     others: [],
     /** Set to 'deny' to answer eligibility-denied. */
@@ -226,6 +462,7 @@ function installStub(storageEntries) {
     deny: { staffActive: true, capabilities: [], serverTime: new Date().toISOString() }
   };
   window.__stub = state;
+  window.__c07Lifecycle = [];
   storageEntries.forEach(function (entry) { window.localStorage.setItem(entry[0], entry[1]); });
 
   /**
@@ -264,24 +501,87 @@ function installStub(storageEntries) {
     const signal = options.signal;
 
     if (path.indexOf('/api/v1/staff/me/capabilities') === 0) {
-      const record = { token: token, aborted: false, released: false, settled: false, release: null };
+      const id = state.nextRequestId++;
+      const record = {
+        id: id,
+        token: token,
+        aborted: false,
+        released: false,
+        settled: false,
+        finalized: false,
+        settlement: null,
+        signal: signal,
+        release: null,
+        reject: null
+      };
       state.capRequests.push(record);
-      return new Promise(function (resolve) {
-        record.release = function () {
+      state.capEvents.push({ type: 'issued', id: id, token: token });
+      window.__c07Lifecycle.push('capability-issued:id=' + id);
+      if (signal) signal.capabilityRecord = record;
+      return new Promise(function (resolve, reject) {
+        record.release = function (override) {
+          if (record.released) return false;
           record.released = true;
           record.settled = true;
-          resolve(jsonResponse(200, state.capabilityBody === 'deny' ? state.deny : state.grant));
+          const fallbackBody = state.capabilityBody === 'deny' ? state.deny : state.grant;
+          const answer = override || { status: 200, body: fallbackBody };
+          record.settlement = { transport: 'http', status: answer.status };
+          state.capEvents.push({ type: 'released', id: id, token: token });
+          state.capEvents.push({
+            type: 'settled',
+            id: id,
+            token: token,
+            transport: 'http',
+            status: answer.status
+          });
+          window.__c07Lifecycle.push('capability-settled:id=' + id + ':http:' + answer.status);
+          resolve(jsonResponse(answer.status, answer.body));
+          return true;
+        };
+        record.reject = function (message) {
+          if (record.released) return false;
+          record.released = true;
+          record.settled = true;
+          record.settlement = { transport: 'network', error: message };
+          state.capEvents.push({
+            type: 'settled',
+            id: id,
+            token: token,
+            transport: 'network',
+            error: message
+          });
+          window.__c07Lifecycle.push('capability-settled:id=' + id + ':network');
+          reject(new TypeError(message));
+          return true;
         };
         // A held capability check never settles on its own; the scenario releases it explicitly. An
         // abort is recorded but deliberately does not reject, so a late response can still be produced.
         if (signal) {
-          if (signal.aborted) record.aborted = true;
-          else signal.addEventListener('abort', function () { record.aborted = true; });
+          if (signal.aborted) {
+            if (!record.aborted) {
+              record.aborted = true;
+              state.capEvents.push({ type: 'aborted', id: id, token: token });
+              window.__c07Lifecycle.push('capability-aborted:id=' + id);
+            }
+          } else {
+            signal.addEventListener('abort', function () {
+              if (!record.aborted) {
+                record.aborted = true;
+                state.capEvents.push({ type: 'aborted', id: id, token: token });
+                window.__c07Lifecycle.push('capability-aborted:id=' + id);
+              }
+            });
+          }
         }
       });
     }
 
-    state.others.push({ path: path, method: options.method || 'GET', token: token });
+    state.others.push({
+      path: path,
+      method: options.method || 'GET',
+      token: token,
+      sessionToken: window.localStorage.getItem('pathome_auth_token')
+    });
     return Promise.resolve(jsonResponse(200, { items: [], totalCount: 0, page: 0, size: 20, totalPages: 0 }));
   };
 }
@@ -291,11 +591,12 @@ function installStub(storageEntries) {
  * ------------------------------------------------------------------ */
 
 const harnessSource = `
-import React, { Suspense, useEffect, useState, useTransition } from 'react';
+import React, { StrictMode, Suspense, useEffect, useState, useTransition } from 'react';
 import { createRoot } from 'react-dom/client';
-import { useOperationsCapability } from '${HOOK_MODULE}';
+import { resolveOperationsAuthorityView, useOperationsCapability } from '${HOOK_MODULE}';
 import { captureOperationsSession } from './src/utils/operationsSession';
 
+const STRICT_MODE = ${STRICT_MODE};
 const ENTRY_A = 'destination';
 const ENTRY_B = 'embedded:employee';
 
@@ -341,6 +642,17 @@ function Surface(props) {
   probe.authority = authority;
   probe.session = captureOperationsSession();
   const admitted = props.entry !== null && authority.state === 'granted' && authority.entryAdmitted;
+  const authorityView = resolveOperationsAuthorityView(authority);
+  useEffect(() => {
+    window.__c07Lifecycle.push('surface-effect-setup');
+    return () => window.__c07Lifecycle.push('surface-effect-cleanup');
+  }, []);
+  useEffect(() => {
+    if (!STRICT_MODE) return undefined;
+    window.__c07Lifecycle.push('strict-revalidation-setup');
+    authority.revalidate();
+    return () => window.__c07Lifecycle.push('strict-revalidation-cleanup');
+  }, []);
   useEffect(() => {
     probe.commits.push(props.entry);
     probe.admissions.push({ entry: props.entry, state: authority.state, admitted: admitted });
@@ -355,8 +667,12 @@ function Surface(props) {
   if (props.suspense && pendingGate.status !== 'ready') return <Suspender />;
   if (props.entry === null) return <div data-testid="closed" />;
   return (
-    <div data-testid="workspace" data-entry={String(props.entry)} data-admitted={String(admitted)}>
-      {admitted ? 'ADMITTED' : 'withheld'}
+    <div data-testid="workspace" data-entry={String(props.entry)} data-admitted={String(admitted)}
+      data-authority-view={authorityView}>
+      {authorityView === 'granted' ? 'ADMITTED' : authorityView}
+      {authorityView === 'unavailable' && (
+        <button type="button" onClick={authority.revalidate}>Retry access check</button>
+      )}
     </div>
   );
 }
@@ -383,7 +699,8 @@ function Root() {
   );
 }
 
-createRoot(document.getElementById('root')).render(<Root />);
+const root = createRoot(document.getElementById('root'));
+root.render(STRICT_MODE ? <StrictMode><Root /></StrictMode> : <Root />);
 `;
 
 const bundleHarness = async () => {
@@ -405,7 +722,7 @@ const bundleHarness = async () => {
     plugins: CONTROL === '' ? [] : controlPlugins[CONTROL](),
     define: {
       'import.meta.env': '{"VITE_API_BASE_URL":"/api/v1","VITE_OAUTH_BASE_URL":""}',
-      'process.env.NODE_ENV': '"production"'
+      'process.env.NODE_ENV': STRICT_MODE ? '"development"' : '"production"'
     }
   });
   return output.outputFiles[0].text;
@@ -459,12 +776,40 @@ const snapshot = (page) => page.evaluate(() => ({
   commits: window.__probe.commits.slice(),
   admissions: window.__probe.admissions.slice(),
   protectedReads: window.__probe.protectedReads.slice(),
-  capRequests: window.__stub.capRequests.map((record) => ({
-    token: record.token,
-    aborted: record.aborted,
-    released: record.released,
-    settled: record.settled
-  })),
+  capRequests: window.__stub.capRequests.map((record) => {
+    if (record.signal?.aborted && !record.aborted) {
+      record.aborted = true;
+      window.__stub.capEvents.push({ type: 'aborted', id: record.id, token: record.token });
+      window.__c07Lifecycle.push('capability-aborted:id=' + record.id);
+    }
+    return {
+      id: record.id,
+      token: record.token,
+      aborted: record.aborted,
+      released: record.released,
+      settled: record.settled,
+      settlement: record.settlement
+    };
+  }),
+  capEvents: window.__stub.capEvents.slice(),
+  lifecycle: window.__c07Lifecycle.slice(),
+  controlProbes: (window.__c07ControlProbes || []).slice(),
+  currentUser: JSON.parse(window.localStorage.getItem('pathome_user') || 'null'),
+  currentToken: window.localStorage.getItem('pathome_auth_token'),
+  capturedSession: window.__probe.session === null
+    ? null
+    : {
+      userId: window.__probe.session.userId,
+      role: window.__probe.session.role,
+      identity: window.__probe.session.identity,
+      generation: window.__probe.session.generation
+    },
+  renderAuthority: window.__probe.committedAuthority === null
+    ? null
+    : {
+      state: window.__probe.committedAuthority.state,
+      entryAdmitted: window.__probe.committedAuthority.entryAdmitted
+    },
   otherReads: window.__stub.others.slice(),
   timers: window.__timers.slice()
 }));
@@ -477,13 +822,35 @@ const capabilityCount = (page) => page.evaluate(() => window.__stub.capRequests.
  * no-op: the check that expected the request has already failed, and the scenario must keep reporting
  * clean, attributable failures rather than throwing.
  */
-const releaseCapability = (page, index, body) => page.evaluate(([position, responseBody]) => {
-  if (responseBody !== undefined) window.__stub.capabilityBody = responseBody;
+const releaseCapability = (page, index, body, status = 200) => page.evaluate(([position, responseBody, responseStatus]) => {
+  if (typeof responseBody === 'string') window.__stub.capabilityBody = responseBody;
   const record = window.__stub.capRequests[position];
   if (!record || typeof record.release !== 'function') return false;
-  record.release();
-  return true;
-}, [index, body]);
+  return record.release({
+    status: responseStatus,
+    body: typeof responseBody === 'string'
+      ? responseBody === 'deny' ? window.__stub.deny : window.__stub.grant
+      : responseBody
+  });
+}, [index, body, status]);
+
+const rejectCapability = (page, index, message) => page.evaluate(([position, failureMessage]) => {
+  const record = window.__stub.capRequests[position];
+  if (!record || typeof record.reject !== 'function') return false;
+  return record.reject(failureMessage);
+}, [index, message]);
+
+const stageAccountWithoutNotification = (page, token, user) => page.evaluate(([nextToken, nextUser]) => {
+  window.localStorage.setItem('pathome_auth_token', nextToken);
+  window.localStorage.setItem('pathome_role', 'EMPLOYEE');
+  window.localStorage.setItem('pathome_user', JSON.stringify(nextUser));
+  window.__c07Lifecycle.push('session-storage-staged');
+}, [token, user]);
+
+const notifyAccountChange = (page) => page.evaluate(() => {
+  window.__c07Lifecycle.push('session-auth-notification-dispatched');
+  window.dispatchEvent(new Event('pathome_auth_changed'));
+});
 
 const dispatchFocus = (page) => page.evaluate(() => window.dispatchEvent(new Event('focus')));
 const dispatchVisibilityChange = (page) =>
@@ -493,7 +860,11 @@ const committedWorkspaceNode = (page) => page.evaluate(() => {
   const node = document.querySelector('[data-testid="workspace"]');
   return node === null
     ? null
-    : { entry: node.getAttribute('data-entry'), admitted: node.getAttribute('data-admitted') };
+    : {
+      entry: node.getAttribute('data-entry'),
+      admitted: node.getAttribute('data-admitted'),
+      authorityView: node.getAttribute('data-authority-view')
+    };
 });
 
 const committedAdmission = (page) =>
@@ -513,18 +884,42 @@ const openPage = async (browser, options = {}) => {
   const context = await browser.newContext({ viewport: { width: 1100, height: 800 } });
   const page = await context.newPage();
   page.on('pageerror', (error) => { results.push('  ! page error: ' + error.message); });
-  await page.addInitScript(installStub, [
-    ['pathome_auth_token', TOKEN_A],
-    ['pathome_role', 'EMPLOYEE'],
-    ['pathome_user', USER_A]
-  ]);
+  await page.addInitScript(installStub, {
+    storageEntries: [
+      ['pathome_auth_token', TOKEN_A],
+      ['pathome_role', 'EMPLOYEE'],
+      ['pathome_user', USER_A]
+    ],
+    deferAbortNotification: options.deferAbortNotification === true
+  });
   await page.route(ORIGIN + '/**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: HARNESS_HTML });
   });
   await page.goto(ORIGIN + '/harness', { waitUntil: 'domcontentloaded' });
   await page.evaluate((entry) => { window.__OE_INITIAL_ENTRY = entry; }, initialEntry);
   await page.addScriptTag({ content: await bundleHarness() });
-  await waitFor(page, async () => (await page.evaluate(() => window.__stub.capRequests.length)) === 1);
+  const expectedInitialChecks = STRICT_MODE ? 2 : 1;
+  const initialChecks = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) >= expectedInitialChecks);
+  if (!initialChecks) {
+    const diagnostic = await page.evaluate(() => ({
+      requests: window.__stub.capRequests.map((record) => ({
+        id: record.id,
+        token: record.token,
+        aborted: record.aborted,
+        released: record.released
+      })),
+      events: window.__stub.capEvents.slice(),
+      lifecycle: window.__c07Lifecycle.slice(),
+      authority: window.__probe?.committedAuthority
+        ? {
+          state: window.__probe.committedAuthority.state,
+          entryAdmitted: window.__probe.committedAuthority.entryAdmitted
+        }
+        : null
+    }));
+    throw new Error('initial capability verification did not start as expected: ' + JSON.stringify(diagnostic));
+  }
   return { context, page };
 };
 
@@ -1074,6 +1469,380 @@ const scenarioCurrentCheckDeduplicationIsPreserved = async (browser) => {
   await context.close();
 };
 
+/* ------------------------------------------------------------------ *
+ * C07 rows 19 and focused discriminating controls
+ * ------------------------------------------------------------------ */
+
+const surfaceView = async (page) => {
+  const node = await committedWorkspaceNode(page);
+  return node === null ? null : node.authorityView;
+};
+
+/**
+ * Matrix row 19. This is a genuine React development build mounted under StrictMode, not a production
+ * build wrapped in the component. The first StrictMode effect generation owns a held capability
+ * transport; its cleanup aborts that transport; the replayed effect starts an independent replacement.
+ * The scenario then proves late old success, current failure, retry, late ignored finalizer, and a
+ * terminal restricted result for the current account.
+ */
+const scenarioDevelopmentStrictModeReplay = async (browser) => {
+  if (!STRICT_MODE) throw new Error('set OE_ENTRY_COMMIT_STRICT=1 for development StrictMode evidence');
+  const before = failures;
+  const { context, page } = await openPage(browser);
+
+  const initial = await snapshot(page);
+  const surfaceLifecycle = initial.lifecycle.filter((entry) => entry.startsWith('surface-effect-'));
+  const revalidationLifecycle = initial.lifecycle.filter((entry) => entry.startsWith('strict-revalidation-'));
+  checkEqual('development StrictMode surface effects run setup, cleanup, setup', surfaceLifecycle.join(','),
+    'surface-effect-setup,surface-effect-cleanup,surface-effect-setup');
+  checkEqual('development StrictMode revalidation effects run setup, cleanup, setup', revalidationLifecycle.join(','),
+    'strict-revalidation-setup,strict-revalidation-cleanup,strict-revalidation-setup');
+  check('the first StrictMode capability transport was retired by cleanup', initial.capRequests[0]?.aborted === true,
+    JSON.stringify(initial.capRequests));
+  checkEqual('the StrictMode replacement is an independent live transport', initial.capRequests[1]?.aborted, false);
+  checkEqual('the replacement carries the current account credential', initial.capRequests[1]?.token, TOKEN_A);
+  checkEqual('the replacement is still held pending', initial.capRequests[1]?.released, false);
+  checkEqual('StrictMode replay performs no protected read before a replacement verdict', initial.protectedReads.length, 0);
+  checkEqual('the current surface remains truthfully checking while the replacement is pending',
+    await surfaceView(page), 'checking');
+
+  // The retired request ignores abort and settles late with a grant. Its finalizer must not touch the
+  // replacement, admit the entry, or start protected work.
+  await releaseCapability(page, 0, 'grant');
+  await page.waitForTimeout(350);
+  const afterLateOldGrant = await snapshot(page);
+  checkEqual('the retired StrictMode success cannot admit the current entry',
+    await surfaceView(page), 'checking');
+  checkEqual('the retired StrictMode finalizer leaves the replacement transport live',
+    afterLateOldGrant.capRequests[1].released, false);
+  checkEqual('the retired StrictMode success starts no protected read',
+    afterLateOldGrant.protectedReads.length, 0);
+
+  // A current transport error reaches a recoverable terminal state rather than leaving checking stuck.
+  await releaseCapability(page, 1, {
+    status: 500,
+    error: 'Internal Server Error',
+    message: 'controlled current transport failure'
+  }, 500);
+  const unavailable = await waitFor(page, async () => (await surfaceView(page)) === 'unavailable', 2500);
+  check('the current StrictMode transport settles unavailable', unavailable);
+  checkEqual('unavailable exposes no protected routing content', (await snapshot(page)).protectedReads.length, 0);
+
+  // Retry starts a new owned request and reaches granted only after its own verdict.
+  await page.getByRole('button', { name: 'Retry access check' }).click();
+  const retried = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === 3, 2500);
+  check('Retry starts an independent current-account verification', retried);
+  const pendingRetry = await snapshot(page);
+  check('Retry remains fail closed while pending',
+    (await surfaceView(page)) !== 'granted' && (await dispatchGateOpen(page)) === false,
+    'view=' + String(await surfaceView(page)));
+  checkEqual('Retry performs no protected read before its verdict', pendingRetry.protectedReads.length, 0);
+  await releaseCapability(page, 2, 'grant');
+  const granted = await waitFor(page, async () => (await surfaceView(page)) === 'granted', 2500);
+  check('the current account receives the correct granted terminal verdict after replay', granted);
+  await waitFor(page, async () => (await page.evaluate(() => window.__probe.protectedReads.length)) === 1);
+  const grantedSnapshot = await snapshot(page);
+  checkEqual('exactly one protected read follows the current grant', grantedSnapshot.protectedReads.length, 1);
+  checkEqual('the protected read belongs to the current account',
+    grantedSnapshot.otherReads[0]?.sessionToken, TOKEN_A);
+  checkEqual('the newest finalizer leaves the surface dispatchable', await dispatchGateOpen(page), true);
+  checkEqual('the current authenticated user is preserved', grantedSnapshot.currentUser?.id, 11);
+
+  // A clean denial through the next current verification must render restricted. The broad-checking
+  // control maps this same settled denial back to checking and makes this exact assertion fail.
+  await page.evaluate(() => { window.__stub.capabilityBody = 'deny'; });
+  await dispatchFocus(page);
+  const deniedRequested = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === 4, 2500);
+  check('focus revalidation starts for the current strict-mode entry', deniedRequested);
+  await releaseCapability(page, 3, 'deny');
+  const restricted = await waitFor(page, async () => (await surfaceView(page)) === 'restricted', 2500);
+  check('the current denial renders explicit restricted instead of broad checking', restricted);
+  const final = await snapshot(page);
+  check('no stuck checking state remains after the current verdict', final.renderAuthority?.state === 'restricted');
+  check('the restricted finalizer leaves no dispatch authority', (await dispatchGateOpen(page)) === false);
+  if (failures > before) results.push('  \u00b7 final C07 row-19 probe: ' + JSON.stringify(final));
+  await context.close();
+};
+
+/**
+ * Executes one of the two remaining row-19 failure classes on a fresh real development Strict Mode
+ * mount. Request 1 is retired by cleanup and request 2 replaces it for Account A. Account B is then
+ * staged and its session notification is dispatched, which retires A's live request and starts B's
+ * independent request. Only after that notification does the retired Strict Mode request settle with
+ * a failure. Its late completion must not alter B's checking authority, erase B's request, admit
+ * protected work, or survive as an indefinite state.
+ */
+const scenarioLateRetiredFault = async (browser, mode) => {
+  if (!STRICT_MODE) throw new Error('set OE_ENTRY_COMMIT_STRICT=1 for development StrictMode evidence');
+  const before = failures;
+  const { context, page } = await openPage(browser, { deferAbortNotification: true });
+  const initial = await snapshot(page);
+  const retired = initial.capRequests[0];
+  const strictReplacement = initial.capRequests[1];
+
+  checkEqual(`${mode.caseId} development Strict Mode surface effect order`,
+    initial.lifecycle.filter((entry) => entry.startsWith('surface-effect-')).join(','),
+    'surface-effect-setup,surface-effect-cleanup,surface-effect-setup');
+  checkEqual(`${mode.caseId} development Strict Mode revalidation effect order`,
+    initial.lifecycle.filter((entry) => entry.startsWith('strict-revalidation-')).join(','),
+    'strict-revalidation-setup,strict-revalidation-cleanup,strict-revalidation-setup');
+  check(`${mode.caseId} retired A was actually aborted by cleanup`, retired?.aborted === true,
+    JSON.stringify(initial.capRequests));
+  check(`${mode.caseId} cleanup and replayed A requests have distinct identities`,
+    retired?.id !== undefined && strictReplacement?.id !== undefined && retired.id !== strictReplacement.id,
+    JSON.stringify(initial.capRequests));
+  checkEqual(`${mode.caseId} Strict replayed A request is independently live`, strictReplacement?.aborted, false);
+  checkEqual(`${mode.caseId} Strict replayed A request carries A's credential`, strictReplacement?.token, TOKEN_A);
+  checkEqual(`${mode.caseId} signed-in User remains Account A`, initial.currentUser?.id, 11);
+  checkEqual(`${mode.caseId} captured session remains Account A`, initial.capturedSession?.userId, 11);
+
+  const userB = { id: 12, role: 'EMPLOYEE', fullName: 'Entry B', email: 'b@example.test' };
+  await stageAccountWithoutNotification(page, 'token-entry-b', userB);
+  await notifyAccountChange(page);
+  const switched = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === 3, 2500);
+  check(`${mode.caseId} B notification starts a distinct current request`, switched);
+  const pendingB = await snapshot(page);
+  const replacement = pendingB.capRequests[2];
+  const strictReplacementAfterSwitch = pendingB.capRequests[1];
+
+  checkEqual(`${mode.caseId} B notification retires A's live Strict replay request`,
+    strictReplacementAfterSwitch?.aborted, true);
+  checkEqual(`${mode.caseId} B replacement is not accidentally aborted`, replacement?.aborted, false);
+  checkEqual(`${mode.caseId} B replacement is still held before the retired fault`, replacement?.released, false);
+  checkEqual(`${mode.caseId} B replacement carries B's credential`, replacement?.token, 'token-entry-b');
+  check(`${mode.caseId} retired A and B replacement have distinct request identities`,
+    retired?.id !== undefined && replacement?.id !== undefined && retired.id !== replacement.id,
+    JSON.stringify(pendingB.capRequests));
+  checkEqual(`${mode.caseId} current User is Account B`, pendingB.currentUser?.id, 12);
+  checkEqual(`${mode.caseId} captured session is Account B`, pendingB.capturedSession?.userId, 12);
+  checkEqual(`${mode.caseId} current surface remains checking while B is pending`,
+    await surfaceView(page), 'checking');
+  checkEqual(`${mode.caseId} no protected read occurs before B's verdict`, pendingB.protectedReads.length, 0);
+  check(`${mode.caseId} dispatch remains closed while B's replacement is pending`,
+    (await dispatchGateOpen(page)) === false);
+
+  const lifecycleIndex = (prefix) => pendingB.lifecycle.findIndex((entry) => entry.startsWith(prefix));
+  check(`${mode.caseId} session notification occurred after A retirement and before B issue`,
+    lifecycleIndex('capability-issued:id=' + retired?.id) < lifecycleIndex('capability-aborted:id=' + retired?.id)
+      && lifecycleIndex('capability-issued:id=' + strictReplacement?.id)
+        > lifecycleIndex('capability-aborted:id=' + retired?.id)
+      && lifecycleIndex('session-storage-staged') > lifecycleIndex('capability-issued:id=' + strictReplacement?.id)
+      && lifecycleIndex('session-auth-notification-dispatched') > lifecycleIndex('session-storage-staged')
+      && lifecycleIndex('capability-issued:id=' + replacement?.id)
+        > lifecycleIndex('session-auth-notification-dispatched'),
+    JSON.stringify(pendingB.lifecycle));
+
+  if (mode.fault === 'http') {
+    const released = await releaseCapability(page, 0, {
+      status: 500,
+      error: 'Internal Server Error',
+      message: 'controlled retired HTTP failure'
+    }, 500);
+    check(`${mode.caseId} retired HTTP failure was produced after cleanup`, released);
+  } else {
+    const rejected = await rejectCapability(page, 0, 'controlled retired network rejection');
+    check(`${mode.caseId} retired network rejection was produced after cleanup`, rejected);
+  }
+  await page.waitForTimeout(400);
+
+  const afterFault = await snapshot(page);
+  const replacementAfterFault = afterFault.capRequests[2];
+  const faultLifecycleIndex = afterFault.lifecycle.findIndex((entry) =>
+    entry.startsWith('capability-settled:id=' + retired?.id + ':'));
+  check(`${mode.caseId} retired fault settled after cleanup, notification and B replacement issue`,
+    lifecycleIndex('capability-aborted:id=' + retired?.id) >= 0
+      && faultLifecycleIndex > lifecycleIndex('session-auth-notification-dispatched')
+      && faultLifecycleIndex > lifecycleIndex('capability-issued:id=' + replacement?.id),
+    JSON.stringify(afterFault.lifecycle));
+  checkEqual(
+    `${mode.caseId} late retired fault cannot set checking to restricted, unavailable or granted`,
+    await surfaceView(page),
+    'checking'
+  );
+  check(`${mode.caseId} no committed replacement flash leaves checking after the retired fault`,
+    afterFault.admissions.every((entry) => entry.state === 'checking' && entry.admitted === false),
+    JSON.stringify(afterFault.admissions));
+  checkEqual(`${mode.caseId} retired finalizer leaves B's replacement held and live`,
+    `${String(replacementAfterFault?.released)}|${String(replacementAfterFault?.aborted)}`,
+    'false|false');
+  check(`${mode.caseId} retired finalizer cannot clear B's pending slot`,
+    (await dispatchGateOpen(page)) === false);
+  checkEqual(`${mode.caseId} late retired fault performs no protected read`, afterFault.protectedReads.length, 0);
+  checkEqual(`${mode.caseId} late retired fault cannot change the current User`, afterFault.currentUser?.id, 12);
+  checkEqual(`${mode.caseId} late retired fault cannot change the captured session`,
+    afterFault.capturedSession?.userId, 12);
+
+  // Overlapping B-session activity must still share the one B replacement transport.
+  await dispatchFocus(page);
+  await dispatchVisibilityChange(page);
+  await dispatchFocus(page);
+  await dispatchVisibilityChange(page);
+  await page.waitForTimeout(400);
+  const shared = await snapshot(page);
+  checkEqual(`${mode.caseId} duplicate B checks retain request sharing`, shared.capRequests.length, 3);
+  checkEqual(`${mode.caseId} sharing does not abort or settle B's replacement`,
+    `${String(shared.capRequests[2]?.released)}|${String(shared.capRequests[2]?.aborted)}`,
+    'false|false');
+  checkEqual(`${mode.caseId} no unauthorized A read occurs after B becomes current`,
+    shared.otherReads.length, 0);
+
+  const currentReleased = await releaseCapability(page, 2, 'grant');
+  check(`${mode.caseId} B replacement settles independently after the retired fault`, currentReleased);
+  const granted = await waitFor(page, async () => (await surfaceView(page)) === 'granted', 2500);
+  check(`${mode.caseId} B replacement reaches its expected granted terminal state`, granted);
+  await waitFor(page, async () => (await page.evaluate(() => window.__probe.protectedReads.length)) === 1);
+  const final = await snapshot(page);
+  checkEqual(`${mode.caseId} B terminal state is not indefinite checking`,
+    final.renderAuthority?.state, 'granted');
+  checkEqual(`${mode.caseId} exactly one authorized protected read follows the replacement grant`,
+    final.protectedReads.length, 1);
+  checkEqual(`${mode.caseId} protected read records the current Account B session`,
+    final.otherReads[0]?.sessionToken, 'token-entry-b');
+  checkEqual(`${mode.caseId} extended run ends with Account B authoritative`,
+    final.currentUser?.id, 12);
+  check(`${mode.caseId} replacement settlement opens the dispatch gate`, (await dispatchGateOpen(page)) === true);
+  checkEqual(`${mode.caseId} no duplicate request is issued through final settlement`, final.capRequests.length, 3);
+
+  results.push(`  \u00b7 ${mode.caseId} raw lifecycle: ` + JSON.stringify({
+    lifecycle: final.lifecycle,
+    requests: final.capRequests,
+    events: final.capEvents,
+    currentUser: final.currentUser,
+    capturedSession: final.capturedSession,
+    currentToken: final.currentToken,
+    authorityBeforeReplacementVerdict: afterFault.renderAuthority,
+    protectedReads: final.protectedReads,
+    protectedReadsBySession: final.otherReads.map((read) => ({
+      path: read.path,
+      token: read.token,
+      sessionToken: read.sessionToken
+    })),
+    controlProbes: final.controlProbes,
+    finalAuthority: final.renderAuthority
+  }));
+  if (failures > before) results.push(`  \u00b7 ${mode.caseId} final probe: ` + JSON.stringify(final));
+  await context.close();
+};
+
+const scenarioLateRetiredHttpFailure = (browser) =>
+  scenarioLateRetiredFault(browser, { caseId: 'R19-E1', fault: 'http' });
+
+const scenarioLateRetiredNetworkRejection = (browser) =>
+  scenarioLateRetiredFault(browser, { caseId: 'R19-E2', fault: 'network' });
+
+/**
+ * Discriminates the current-session/request fence. Account A's replacement transport settles late
+ * while Account B is current and B's own verification is pending. A's grant must not overwrite B's
+ * checking authority; the missing-fence control does exactly that.
+ */
+const scenarioCurrentSessionFence = async (browser) => {
+  const before = failures;
+  const { context, page } = await openPage(browser);
+  const initialCount = await page.evaluate(() => window.__stub.capRequests.length);
+  const currentIndex = initialCount - 1;
+  const userB = { id: 12, role: 'EMPLOYEE', fullName: 'Entry B', email: 'b@example.test' };
+
+  // Establish a recoverable A state so late A success would be visibly wrong if it crossed the fence.
+  await releaseCapability(page, currentIndex, {
+    status: 500,
+    error: 'Internal Server Error',
+    message: 'controlled A failure'
+  }, 500);
+  const aUnavailable = await waitFor(page, async () => (await surfaceView(page)) === 'unavailable', 2500);
+  check('A reaches unavailable before the late-session check', aUnavailable);
+
+  await page.getByRole('button', { name: 'Retry access check' }).click();
+  const aRetryStarted = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === currentIndex + 2, 2500);
+  check('A starts the delayed current-session retry', aRetryStarted);
+  const aRetryIndex = currentIndex + 1;
+
+  // Session storage now belongs to B, but its notification has not run. A's transport is neither
+  // retired nor aborted here: this isolates the guard that must reject A's late successful result.
+  await stageAccountWithoutNotification(page, 'token-entry-b', userB);
+  await releaseCapability(page, aRetryIndex, 'grant');
+  await page.waitForTimeout(400);
+  const afterLateA = await snapshot(page);
+  if (CONTROL === 'missing-session-request-fence') {
+    results.push('  \u00b7 session-fence diagnostic: ' + JSON.stringify({
+      authority: afterLateA.renderAuthority,
+      requests: afterLateA.capRequests,
+      events: afterLateA.capEvents,
+      controlProbes: afterLateA.controlProbes
+    }));
+  }
+  check(
+    'delayed previous-user success cannot overwrite current A recovery authority',
+    afterLateA.renderAuthority?.state === 'unavailable',
+    JSON.stringify({
+      authority: afterLateA.renderAuthority,
+      requests: afterLateA.capRequests,
+      events: afterLateA.capEvents
+    })
+  );
+  checkEqual('delayed previous-user success performs no protected read',
+    afterLateA.protectedReads.length, 0);
+  checkEqual('B remains the current authenticated user', afterLateA.currentUser?.id, 12);
+
+  // Publish the already-observed session replacement. B must obtain its own independently held check.
+  const bRequestIndex = aRetryIndex + 1;
+  await page.evaluate(() => window.dispatchEvent(new Event('pathome_auth_changed')));
+  const bCheckStarted = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === bRequestIndex + 1, 2500);
+  check('B starts its own verification after the session notification', bCheckStarted);
+  const bPending = await snapshot(page);
+  checkEqual('B\'s request carries B\'s credential', bPending.capRequests[bRequestIndex]?.token, 'token-entry-b');
+  await releaseCapability(page, bRequestIndex, 'deny');
+  const bRestricted = await waitFor(page, async () => (await surfaceView(page)) === 'restricted', 2500);
+  check('B\'s own denial is the accepted current terminal verdict', bRestricted);
+  const final = await snapshot(page);
+  check("only B's credential is used after the session transition",
+    final.otherReads.every((entry) => entry.sessionToken === 'token-entry-b'));
+  if (failures > before) results.push('  \u00b7 final current-session probe: ' + JSON.stringify(final));
+  await context.close();
+};
+
+/**
+ * Discriminates timeout settlement. The current held transport must reach unavailable by the defined
+ * 10-second bound. The control removes that timer and therefore leaves checking stuck.
+ */
+const scenarioDisabledTimeoutSettlement = async (browser) => {
+  const before = failures;
+  const { context, page } = await openPage(browser);
+  const currentIndex = (await page.evaluate(() => window.__stub.capRequests.length)) - 1;
+  const unavailable = await waitFor(page, async () => (await surfaceView(page)) === 'unavailable', 12_500);
+  const timedOut = await snapshot(page);
+  check('the current held request reaches unavailable by the defined timeout bound', unavailable,
+    JSON.stringify(timedOut.capRequests));
+  if (!unavailable) {
+    if (failures > before) results.push('  \u00b7 final timeout control probe: ' + JSON.stringify(timedOut));
+    await context.close();
+    return;
+  }
+  checkEqual('timeout aborts its owned current transport', timedOut.capRequests[currentIndex]?.aborted, true);
+  checkEqual('timeout exposes no protected read', timedOut.protectedReads.length, 0);
+
+  await page.getByRole('button', { name: 'Retry access check' }).click();
+  const retryStarted = await waitFor(page, async () =>
+    (await page.evaluate(() => window.__stub.capRequests.length)) === currentIndex + 2, 2500);
+  check('Retry starts a fresh transport after timeout', retryStarted);
+  await releaseCapability(page, currentIndex, 'grant');
+  await page.waitForTimeout(250);
+  check('late success from the timed-out transport cannot admit during Retry',
+    (await surfaceView(page)) !== 'granted' && (await dispatchGateOpen(page)) === false,
+    'view=' + String(await surfaceView(page)));
+  await releaseCapability(page, currentIndex + 1, 'grant');
+  const recovered = await waitFor(page, async () => (await surfaceView(page)) === 'granted', 2500);
+  check('the current Retry verdict restores granted authority', recovered);
+  const final = await snapshot(page);
+  checkEqual('a timed-out finalizer cannot authorize a protected read early', final.protectedReads.length, 1);
+  if (failures > before) results.push('  \u00b7 final timeout probe: ' + JSON.stringify(final));
+  await context.close();
+};
+
 const scenarios = [
   scenarioDiscardedRenderPreservesEntryA,
   scenarioCommittedEntryRetiresA,
@@ -1082,7 +1851,12 @@ const scenarios = [
   scenarioCommittedExitStopsWorkspaceRevalidation,
   scenarioSpeculativeOpenCannotActivateClosedWorkspace,
   scenarioRetiredCheckIsNeverReusedOnFocusRecovery,
-  scenarioCurrentCheckDeduplicationIsPreserved
+  scenarioCurrentCheckDeduplicationIsPreserved,
+  scenarioDevelopmentStrictModeReplay,
+  scenarioCurrentSessionFence,
+  scenarioDisabledTimeoutSettlement,
+  scenarioLateRetiredHttpFailure,
+  scenarioLateRetiredNetworkRejection
 ];
 
 /**
@@ -1093,7 +1867,7 @@ const selectedScenarios = () => {
   const raw = (process.env.OE_ENTRY_COMMIT_SCENARIOS ?? '').trim();
   if (raw === '') return scenarios;
   const wanted = raw.split(',').map((value) => value.trim()).filter((value) => value !== '');
-  const unknown = wanted.filter((value) => !/^[1-9]$/.test(value) || scenarios[Number(value) - 1] === undefined);
+  const unknown = wanted.filter((value) => !/^(?:[1-9]|1[0-3])$/.test(value) || scenarios[Number(value) - 1] === undefined);
   if (unknown.length > 0) throw new Error('unknown OE_ENTRY_COMMIT_SCENARIOS entry: ' + unknown.join(','));
   return wanted.map((value) => scenarios[Number(value) - 1]);
 };

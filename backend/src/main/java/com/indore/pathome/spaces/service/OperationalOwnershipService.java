@@ -1,11 +1,13 @@
 package com.indore.pathome.spaces.service;
 
 import com.indore.pathome.spaces.entity.OperatingTeam;
+import com.indore.pathome.spaces.entity.OperationalAuditEvent;
 import com.indore.pathome.spaces.entity.PropertyVisitRequest;
 import com.indore.pathome.spaces.entity.StaffCapability;
 import com.indore.pathome.spaces.entity.StaffScopeType;
 import com.indore.pathome.spaces.entity.SupportedCity;
 import com.indore.pathome.spaces.entity.User;
+import com.indore.pathome.spaces.entity.VisitRequestRoutingTask;
 import com.indore.pathome.spaces.entity.VisitRequestStatus;
 import com.indore.pathome.spaces.entity.VisitSession;
 import com.indore.pathome.spaces.entity.VisitSessionStatus;
@@ -13,10 +15,12 @@ import com.indore.pathome.spaces.exception.OperationalCommandUnavailableExceptio
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.LocalityRepository;
+import com.indore.pathome.spaces.repository.OperationalIntakeRoutingRepository;
 import com.indore.pathome.spaces.repository.OperatingTeamRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
+import com.indore.pathome.spaces.repository.VisitRequestRoutingTaskRepository;
 import com.indore.pathome.spaces.repository.VisitSessionRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
@@ -53,6 +57,8 @@ public class OperationalOwnershipService {
 
     private final PropertyVisitRequestRepository requests;
     private final VisitSessionRepository sessions;
+    private final VisitRequestRoutingTaskRepository routingTasks;
+    private final OperationalIntakeRoutingRepository intakeRouting;
     private final SupportedCityRepository cities;
     private final OperatingTeamRepository teams;
     private final LocalityRepository localities;
@@ -62,19 +68,25 @@ public class OperationalOwnershipService {
     private final OperationalSecurityGuards guards;
     private final OperationalAuditService audit;
     private final TransactionalCommandBounds commandBounds;
+    private final DatabaseClock databaseClock;
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
     private final TransactionTemplate transactions;
     private final TransactionTemplate requestRootTransactions;
 
     public OperationalOwnershipService(PropertyVisitRequestRepository requests, VisitSessionRepository sessions,
+            VisitRequestRoutingTaskRepository routingTasks,
+            OperationalIntakeRoutingRepository intakeRouting,
             SupportedCityRepository cities, OperatingTeamRepository teams, LocalityRepository localities,
             ListingRepository listings, UserRepository users,
             StaffAccessService access, OperationalSecurityGuards guards, OperationalAuditService audit,
-            TransactionalCommandBounds commandBounds, JdbcTemplate jdbc, EntityManager entityManager,
+            TransactionalCommandBounds commandBounds, DatabaseClock databaseClock,
+            JdbcTemplate jdbc, EntityManager entityManager,
             PlatformTransactionManager transactionManager) {
         this.requests = requests;
         this.sessions = sessions;
+        this.routingTasks = routingTasks;
+        this.intakeRouting = intakeRouting;
         this.cities = cities;
         this.teams = teams;
         this.localities = localities;
@@ -84,6 +96,7 @@ public class OperationalOwnershipService {
         this.guards = guards;
         this.audit = audit;
         this.commandBounds = commandBounds;
+        this.databaseClock = databaseClock;
         this.jdbc = jdbc;
         this.entityManager = entityManager;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -404,12 +417,13 @@ public class OperationalOwnershipService {
      * City never grants authority over the source Request.
      */
     public void routeInitialRequest(Long actorId, Long requestId, Long expectedRequestVersion, Long cityId,
-            Long expectedCityVersion, Long teamId, Long expectedTeamVersion, String reasonCode) {
+            Long expectedCityVersion, Long teamId, Long expectedTeamVersion,
+            Long expectedRoutingTaskVersion, String reasonCode) {
         validateActorAndReason(actorId, reasonCode);
         requireRoutingInputs(requestId, expectedRequestVersion, cityId, expectedCityVersion, teamId,
                 expectedTeamVersion);
         IntakeRoutingAuthority.Scope scope = IntakeRoutingAuthority.resolve(access, actorId);
-        Candidate candidate = requestCandidate(requestId);
+        RoutingCandidate candidate = routingCandidate(requestId);
         requireInitialRoutingVisibility(scope, candidate);
         try {
             // Bound this command's waits on the very transaction that will own the Request lock, the
@@ -417,7 +431,7 @@ public class OperationalOwnershipService {
             // lock itself - is taken.
             runRequestRoot(requestId, commandBounds::apply, root -> {
                 routeInitial(root, actorId, scope, expectedRequestVersion, cityId, expectedCityVersion,
-                        teamId, expectedTeamVersion, reasonCode);
+                        teamId, expectedTeamVersion, expectedRoutingTaskVersion, reasonCode);
                 return null;
             });
         } catch (RuntimeException failure) {
@@ -425,9 +439,12 @@ public class OperationalOwnershipService {
         }
     }
 
-    private void requireInitialRoutingVisibility(IntakeRoutingAuthority.Scope scope, Candidate candidate) {
+    private void requireInitialRoutingVisibility(IntakeRoutingAuthority.Scope scope,
+            RoutingCandidate candidate) {
         if (scope.global()) return;
-        if (candidate.cityId == null || !scope.cityIds().contains(candidate.cityId)) {
+        if (!scope.coversCanonicalSource(candidate.sourceCityId(), candidate.localityCityId())
+                || (!scope.hasBroadAuthority(candidate.sourceCityId())
+                && (!candidate.ready() || !candidate.enrolled()))) {
             // Concealed, not forbidden: an unadmitted City must be indistinguishable from a missing Request.
             throw new EntityNotFoundException("Visit Request not found");
         }
@@ -435,7 +452,7 @@ public class OperationalOwnershipService {
 
     private void routeInitial(Root root, Long actorId, IntakeRoutingAuthority.Scope scope,
             Long expectedRequestVersion, Long cityId, Long expectedCityVersion, Long teamId,
-            Long expectedTeamVersion, String reasonCode) {
+            Long expectedTeamVersion, Long expectedRoutingTaskVersion, String reasonCode) {
         if (root.session != null) {
             throw new VisitOperationsConflictException(
                     "A Request already linked to a Visit Session cannot be initially routed");
@@ -449,9 +466,22 @@ public class OperationalOwnershipService {
             throw new VisitOperationsConflictException("The Request is already routed or claimed");
         }
         Long sourceCityId = cityId(request);
+        RoutingCandidate initialEvidence = routingCandidate(request.getId());
+        VisitRequestRoutingTask routingTask = routingTasks.findByRequestId(request.getId()).orElse(null);
+        if (!scope.hasBroadAuthority(sourceCityId)) {
+            if (routingTask == null) throw new EntityNotFoundException("Visit Request not found");
+            routingTask = routingTasks.findLockedById(routingTask.getId())
+                    .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+            if (expectedRoutingTaskVersion == null
+                    || !Objects.equals(routingTask.getVersion(), expectedRoutingTaskVersion)) {
+                throw new VisitOperationsConflictException("Routing task version is stale; refresh and retry");
+            }
+        } else if (routingTask != null) {
+            routingTask = routingTasks.findLockedById(routingTask.getId()).orElse(null);
+        }
 
         // Recheck authority and concealment from live facts, before the guards are taken.
-        requireFreshRoutingAuthority(actorId, scope, sourceCityId, cityId);
+        requireFreshRoutingAuthority(actorId, scope, initialEvidence, cityId);
 
         // Established guard order: City -> Team -> actor profile/grant rows.
         guards.acquire(List.of(cityId), List.of(teamId), List.of(actorId));
@@ -464,9 +494,19 @@ public class OperationalOwnershipService {
         // Reuse the existing Listing lock and take one narrowly scoped canonical-locality row lock, so
         // the canonical evidence that this decision rests on cannot change before the mutation commits.
         Long localityCityId = lockSourceCanonicalLocality(request);
+        RoutingCandidate currentEvidence = routingCandidate(request.getId());
 
         // Recheck authority under the locks from live database facts.
-        requireFreshRoutingAuthority(actorId, scope, sourceCityId, cityId);
+        requireFreshRoutingAuthority(actorId, scope, currentEvidence, cityId);
+        if (routingTask != null) {
+            routingTask = routingTasks.findLockedById(routingTask.getId())
+                    .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+            if (!scope.hasBroadAuthority(sourceCityId)
+                    && (expectedRoutingTaskVersion == null
+                    || !Objects.equals(routingTask.getVersion(), expectedRoutingTaskVersion))) {
+                throw new VisitOperationsConflictException("Routing task version is stale; refresh and retry");
+            }
+        }
 
         if (!Objects.equals(request.getVersion(), expectedRequestVersion)) {
             throw new VisitOperationsConflictException("Visit Request version is stale; refresh and retry");
@@ -504,20 +544,35 @@ public class OperationalOwnershipService {
         }
 
         // Reuse the existing reconciliation mutation inside the transaction that owns the Request lock.
-        reconcile(root, actorId, null, expectedRequestVersion, null, cityId, teamId, null, true,
+        OperationalAuditEvent auditEvent = reconcile(root, actorId, null, expectedRequestVersion, null,
+                cityId, teamId, null, true,
                 expectedCityVersion, expectedTeamVersion, reasonCode,
                 new RoutingEvidence(expectedRequestVersion, expectedCityVersion, expectedTeamVersion,
-                        sourceCityId, unresolvedSource, cityId, teamId));
+                        sourceCityId, unresolvedSource, cityId, teamId, scope));
+        if (routingTask != null) {
+            routingTask.completeManual(selectedTeam, root.request.getVersion(), auditEvent.getId(),
+                    databaseClock.now());
+            entityManager.flush();
+        }
     }
 
-    private void requireFreshRoutingAuthority(Long actorId, IntakeRoutingAuthority.Scope scope, Long sourceCityId,
-            Long selectedCityId) {
+    private void requireFreshRoutingAuthority(Long actorId, IntakeRoutingAuthority.Scope scope,
+            RoutingCandidate evidence, Long selectedCityId) {
         if (scope.global()) {
             requireFresh(actorId, StaffCapability.STAFF_ADMIN, StaffScopeType.GLOBAL, null);
             return;
         }
-        if (sourceCityId == null || !scope.cityIds().contains(sourceCityId)
-                || !access.hasCapabilityAt(actorId, StaffCapability.CITY_TEAM_ADMIN, StaffScopeType.CITY, sourceCityId)) {
+        Long sourceCityId = evidence.sourceCityId();
+        if (!scope.coversCanonicalSource(sourceCityId, evidence.localityCityId())
+                || (!scope.hasBroadAuthority(sourceCityId)
+                && (!evidence.ready() || !evidence.enrolled()))) {
+            throw new EntityNotFoundException("Visit Request not found");
+        }
+        if (scope.hasBroadAuthority(sourceCityId)) {
+            requireFresh(actorId, StaffCapability.CITY_TEAM_ADMIN, StaffScopeType.CITY, sourceCityId);
+        } else if (!scope.hasRoutingAuthority(sourceCityId)
+                || !access.hasCapabilityAt(actorId, StaffCapability.OPS_ROUTING,
+                        StaffScopeType.CITY, sourceCityId)) {
             throw new EntityNotFoundException("Visit Request not found");
         }
         if (selectedCityId == null || !scope.cityIds().contains(selectedCityId)) {
@@ -624,14 +679,16 @@ public class OperationalOwnershipService {
         });
     }
 
-    private void reconcile(Root root, Long actorId, Long expectedSessionVersion, Long expectedRequestVersion,
+    private OperationalAuditEvent reconcile(Root root, Long actorId, Long expectedSessionVersion,
+            Long expectedRequestVersion,
             Map<Long, Long> expectedRequestVersions, Long cityId, Long teamId, Long coordinatorId,
             boolean scopeReady, Long expectedCityVersion, Long expectedTeamVersion, String reasonCode) {
-        reconcile(root, actorId, expectedSessionVersion, expectedRequestVersion, expectedRequestVersions,
+        return reconcile(root, actorId, expectedSessionVersion, expectedRequestVersion, expectedRequestVersions,
                 cityId, teamId, coordinatorId, scopeReady, expectedCityVersion, expectedTeamVersion, reasonCode, null);
     }
 
-    private void reconcile(Root root, Long actorId, Long expectedSessionVersion, Long expectedRequestVersion,
+    private OperationalAuditEvent reconcile(Root root, Long actorId, Long expectedSessionVersion,
+            Long expectedRequestVersion,
             Map<Long, Long> expectedRequestVersions, Long cityId, Long teamId, Long coordinatorId,
             boolean scopeReady, Long expectedCityVersion, Long expectedTeamVersion, String reasonCode,
             RoutingEvidence routing) {
@@ -655,7 +712,12 @@ public class OperationalOwnershipService {
                 .orElseThrow(() -> new EntityNotFoundException("Supported City not found"));
         team = teamId == null ? null : teams.findLockedById(teamId)
                 .orElseThrow(() -> new EntityNotFoundException("Operating Team not found"));
-        requireFreshAdminForReconciliation(actorId, oldCityId, cityId);
+        if (routing == null) {
+            requireFreshAdminForReconciliation(actorId, oldCityId, cityId);
+        } else {
+            requireFreshRoutingAuthority(actorId, routing.routingScope(),
+                    routingCandidate(root.request.getId()), routing.selectedCityId());
+        }
         requireRootVersions(root, expectedSessionVersion, expectedRequestVersion, expectedRequestVersions);
         if (team != null && !Objects.equals(team.getCity().getId(), cityId))
             throw new VisitOperationsConflictException("Team must belong to the selected canonical City");
@@ -686,7 +748,7 @@ public class OperationalOwnershipService {
             throw new VisitOperationsConflictException("Ready Team assignment requires an active scope");
         if (coordinatorId != null) requireCoordinatorTarget(coordinatorId, teamId);
         if (Objects.equals(oldCityId, cityId) && Objects.equals(oldTeamId, teamId)
-                && Objects.equals(coordinatorId(root), coordinatorId) && ready(root) == scopeReady) return;
+                && Objects.equals(coordinatorId(root), coordinatorId) && ready(root) == scopeReady) return null;
         setCity(root, city);
         setTeam(root, team);
         setCoordinator(root, coordinatorId == null ? null : users.getReferenceById(coordinatorId));
@@ -698,8 +760,7 @@ public class OperationalOwnershipService {
         details.put("operationalScopeReady", scopeReady);
         details.put("linkedRequestCount", (long) root.requests.size());
         if (routing == null) {
-            flushAndAudit(root, actorId, "OWNERSHIP_RECONCILED", reasonCode, details);
-            return;
+            return flushAndAudit(root, actorId, "OWNERSHIP_RECONCILED", reasonCode, details);
         }
         // The initial-routing entry point retains the OWNERSHIP_RECONCILED action and adds bounded
         // routing evidence. The resulting Request version only exists after the ownership flush.
@@ -709,7 +770,7 @@ public class OperationalOwnershipService {
         details.put("expectedTeamVersion", routing.expectedTeamVersion());
         if (routing.sourceCityId() != null) details.put("sourceCityId", routing.sourceCityId());
         details.put("unresolvedSource", routing.unresolvedSource());
-        flushAndAudit(root, actorId, "OWNERSHIP_RECONCILED", reasonCode, details,
+        return flushAndAudit(root, actorId, "OWNERSHIP_RECONCILED", reasonCode, details,
                 () -> Map.of("resultingRequestVersion", root.request.getVersion()));
     }
 
@@ -865,6 +926,13 @@ public class OperationalOwnershipService {
         return new Candidate(cityId(request), teamId(request), request.isOperationalScopeReady());
     }
 
+    private RoutingCandidate routingCandidate(Long requestId) {
+        var row = intakeRouting.findRoutingRow(requestId)
+                .orElseThrow(() -> new EntityNotFoundException("Visit Request not found"));
+        return new RoutingCandidate(row.getCityId(), row.getLocalityCityId(),
+                Boolean.TRUE.equals(row.getScopeReady()), routingTasks.existsByRequestId(requestId));
+    }
+
     private Candidate sessionCandidate(Long sessionId) {
         if (sessionId == null || sessionId <= 0) throw new IllegalArgumentException("Visit Session ID must be positive");
         VisitSession session = sessions.findById(sessionId)
@@ -952,8 +1020,9 @@ public class OperationalOwnershipService {
         throw new VisitOperationsConflictException("Operational work was claimed concurrently; refresh and retry");
     }
 
-    private void flushAndAudit(Root root, Long actorId, String action, String reasonCode, Map<String, Object> details) {
-        flushAndAudit(root, actorId, action, reasonCode, details, null);
+    private OperationalAuditEvent flushAndAudit(Root root, Long actorId, String action, String reasonCode,
+                                                Map<String, Object> details) {
+        return flushAndAudit(root, actorId, action, reasonCode, details, null);
     }
 
     /**
@@ -961,7 +1030,7 @@ public class OperationalOwnershipService {
      * details are evaluated after that flush because a resulting optimistic version only exists once the
      * mutation has actually been written.
      */
-    private void flushAndAudit(Root root, Long actorId, String action, String reasonCode,
+    private OperationalAuditEvent flushAndAudit(Root root, Long actorId, String action, String reasonCode,
             Map<String, Object> details, Supplier<Map<String, Object>> afterFlush) {
         entityManager.flush();
         User actor = users.findById(actorId).orElseThrow(() -> new AccessDeniedException("Authenticated User is unavailable"));
@@ -974,8 +1043,10 @@ public class OperationalOwnershipService {
             recorded = new LinkedHashMap<>(details);
             recorded.putAll(afterFlush.get());
         }
-        audit.recordUserEvent(actor, action, targetType, targetId, reasonCode, city, team, recorded);
+        OperationalAuditEvent event = audit.recordUserEvent(
+                actor, action, targetType, targetId, reasonCode, city, team, recorded);
         entityManager.flush();
+        return event;
     }
 
     private void setCity(Root root, SupportedCity city) {
@@ -1044,8 +1115,11 @@ public class OperationalOwnershipService {
 
     private record Root(VisitSession session, List<PropertyVisitRequest> requests, PropertyVisitRequest request) {}
     private record Candidate(Long cityId, Long teamId, boolean ready) {}
+    private record RoutingCandidate(Long sourceCityId, Long localityCityId, boolean ready,
+                                    boolean enrolled) {}
     private record RoutingEvidence(Long expectedRequestVersion, Long expectedCityVersion, Long expectedTeamVersion,
-            Long sourceCityId, boolean unresolvedSource, Long selectedCityId, Long selectedTeamId) {}
+            Long sourceCityId, boolean unresolvedSource, Long selectedCityId, Long selectedTeamId,
+            IntakeRoutingAuthority.Scope routingScope) {}
 
     private static final class RootChangedException extends RuntimeException {}
 }

@@ -14,15 +14,24 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Optional;
 
 @Repository
 public interface ListingRepository extends JpaRepository<Listing, Long> {
+    @Query("select listing.canonicalLocalityId from Listing listing where listing.id = :id")
+    Optional<Long> findCanonicalLocalityIdById(@Param("id") Long id);
+
     @Query(value = "select id from listings where id = :id for update", nativeQuery = true)
     Optional<Long> lockForSchedulingById(@Param("id") Long id);
 
+    @Query(value = "select id from listings where id in (:ids) order by id for update",
+            nativeQuery = true)
+    List<Long> lockAllByIdIn(@Param("ids") Collection<Long> ids);
+
     Optional<Listing> findByIdAndOwnerUserId(Long id, Long ownerUserId);
     Optional<Listing> findByIdAndStatus(Long id, ListingStatus status);
+    List<Listing> findAllByIdInAndStatus(Collection<Long> ids, ListingStatus status);
 
     @Query(value = "select id from listings where id = :id and owner_user_id = :ownerId for update", nativeQuery = true)
     Optional<Long> lockOwnedId(@Param("id") Long id, @Param("ownerId") Long ownerId);
@@ -143,7 +152,7 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             Pageable pageable);
 
     @Query(value = "select min(l.city) as city, min(l.sector) as locality, count(*) as \"resultCount\", " +
-            "max(similarity(lower(btrim(l.sector)), :candidate)) as similarity " +
+            "max(public.similarity(lower(btrim(l.sector)), cast(:candidate as text))) as similarity " +
             "from listings l join rental_details r on r.id = l.id " +
             "where l.status = 'ACTIVE' and l.listing_type = 'RENT' " +
             "and (:cityKey = '' or lower(btrim(l.city)) = :cityKey) " +
@@ -154,10 +163,10 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "upper(replace(replace(l.furnishing_status, '-', ' '), '_', ' ')) = replace(:furnishingKey, '_', ' ')) " +
             "and (:minRent is null or r.monthly_rent >= :minRent) " +
             "and (:maxRent is null or r.monthly_rent <= :maxRent) " +
-            "and lower(btrim(l.sector)) % :candidate " +
-            "and similarity(lower(btrim(l.sector)), :candidate) >= :minSimilarity " +
+            "and lower(btrim(l.sector)) OPERATOR(public.%) cast(:candidate as text) " +
+            "and public.similarity(lower(btrim(l.sector)), cast(:candidate as text)) >= :minSimilarity " +
             "group by lower(btrim(l.city)), lower(btrim(l.sector)) " +
-            "order by max(similarity(lower(btrim(l.sector)), :candidate)) desc, count(*) desc, min(l.sector)",
+            "order by max(public.similarity(lower(btrim(l.sector)), cast(:candidate as text))) desc, count(*) desc, min(l.sector)",
             nativeQuery = true)
     List<LocalitySuggestionRow> findPublicRentalFuzzyLocalities(
             @Param("cityKey") String cityKey,
@@ -182,10 +191,10 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
 
     @Query(value = "select min(city) as city, count(*) as \"resultCount\" " +
             "from listings where status = 'ACTIVE' and listing_type = 'RENT' " +
-            "and lower(btrim(city)) % :candidate " +
-            "and similarity(lower(btrim(city)), :candidate) >= :minSimilarity " +
+            "and lower(btrim(city)) OPERATOR(public.%) cast(:candidate as text) " +
+            "and public.similarity(lower(btrim(city)), cast(:candidate as text)) >= :minSimilarity " +
             "group by lower(btrim(city)) " +
-            "order by max(similarity(lower(btrim(city)), :candidate)) desc, count(*) desc, min(city)",
+            "order by max(public.similarity(lower(btrim(city)), cast(:candidate as text))) desc, count(*) desc, min(city)",
             nativeQuery = true)
     List<CitySuggestionRow> findPublicRentalFuzzyCities(
             @Param("candidate") String candidate,

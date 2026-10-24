@@ -79,12 +79,32 @@ oe_random_secret() {
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
 }
 
+oe_random_aes_key() {
+  dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n'
+}
+
 # Disposable credentials live only in the ephemeral run directory, never in the repository.
 # Every value is generated for this run: the bootstrap administrator, the shared staff password and
 # the JWT signing secret this environment signs its own tokens with. No secret here is ever reused
 # from `.env.local` or from another environment.
 oe_ensure_secret_line() { # <file> <key> <value>
   grep -q "^$2=" "$1" 2>/dev/null || printf '%s=%s\n' "$2" "$3" >> "$1"
+}
+
+oe_ensure_contact_encryption_identity() { # <secrets-file>
+  local file="$1"
+  local has_key=0 has_id=0
+  grep -q '^OE_CRM_CONTACT_ENCRYPTION_KEY=' "$file" 2>/dev/null && has_key=1
+  grep -q '^OE_CRM_CONTACT_ENCRYPTION_KEY_ID=' "$file" 2>/dev/null && has_id=1
+  if [ "$has_key" != "$has_id" ]; then
+    oe_die 'CRM contact encryption identity is partial; existing key material is never replaced automatically'
+  fi
+  if [ "$has_key" = 0 ]; then
+    {
+      printf 'OE_CRM_CONTACT_ENCRYPTION_KEY=%s\n' "$(oe_random_aes_key)"
+      printf 'OE_CRM_CONTACT_ENCRYPTION_KEY_ID=%s\n' 'primary'
+    } >> "$file"
+  fi
 }
 
 oe_ensure_secrets() {
@@ -104,9 +124,16 @@ oe_ensure_secrets() {
       printf 'OE_BOOTSTRAP_OPERATOR_REFERENCE=%s\n' 'CODEX_OE_INTEGRATION_ENV'
       printf 'OE_STAFF_PASSWORD=%s\n' "$(oe_random_secret)"
       printf 'OE_JWT_SECRET=%s\n' "$(oe_random_secret)"
+      if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+        printf 'PATHOME_OE_TEST_DB_PASSWORD=%s\n' "$(oe_random_secret)"
+        printf 'PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD=%s\n' "$(oe_random_secret)"
+      fi
       # Approval is validated before setup; copy literal media values from the approved private file.
-      cat "$PATHOME_OE_TEST_MEDIA_ENV_FILE"
-      printf '\n'
+      # Routing acceptance performs no provider operation and uses inert local identities instead.
+      if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" != 'routing-20261023' ]; then
+        cat "$PATHOME_OE_TEST_MEDIA_ENV_FILE"
+        printf '\n'
+      fi
       printf '# Optional: only for an explicitly approved disposable media account.\n'
       printf '# PATHOME_OE_TEST_MEDIA_MODE=disposable-account\n'
       printf '# PATHOME_OE_TEST_ALLOW_EXTERNAL_MEDIA_UPLOAD=true\n'
@@ -117,6 +144,11 @@ oe_ensure_secrets() {
   fi
   # Top up keys introduced after an earlier run so existing identities and grants stay valid.
   oe_ensure_secret_line "$secrets" 'OE_JWT_SECRET' "$(oe_random_secret)"
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    oe_ensure_secret_line "$secrets" 'PATHOME_OE_TEST_DB_PASSWORD' "$(oe_random_secret)"
+    oe_ensure_secret_line "$secrets" 'PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD' "$(oe_random_secret)"
+  fi
+  oe_ensure_contact_encryption_identity "$secrets"
   chmod 600 "$secrets"
   oe_runtime_load_secrets
 }
@@ -135,6 +167,13 @@ oe_psql_app() { # <database> <psql args...>
   shift
   oe_guard_assert_not_protected "$database" 'connection target'
   oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_APP_USER" "$@"
+}
+
+oe_psql_migrator() { # <database> <psql args...>
+  local database="$1"
+  shift
+  oe_guard_assert_not_protected "$database" 'connection target'
+  oe_guard_psql "$database" "$PATHOME_OE_TEST_DB_MIGRATOR_USER" "$@"
 }
 
 oe_database_exists() {
@@ -269,38 +308,88 @@ cmd_create() {
     oe_die "Disposable database '$PATHOME_OE_TEST_DB' already exists. Use 'recreate' for the guarded teardown+create cycle, or 'teardown' to remove it."
   fi
 
-  oe_log "creating disposable database '$PATHOME_OE_TEST_DB' (owner $PATHOME_OE_TEST_DB_APP_USER)"
-  oe_psql_admin postgres -c "CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\""
+  local create_owner="$PATHOME_OE_TEST_DB_APP_USER"
+  [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ] && create_owner="$PATHOME_OE_TEST_DB_ADMIN_USER"
+  oe_log "creating disposable database '$PATHOME_OE_TEST_DB' (owner $create_owner)"
+  oe_psql_admin postgres -c "CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$create_owner\""
   oe_runtime_checkpoint DATABASE_CREATED
   local previous="$PATHOME_OE_TEST_RUN_DIR/previous-runs/$(uuidgen | tr '[:upper:]' '[:lower:]')"
   mkdir -p "$previous"
   for artifact in run-id secrets.env; do
     if [ -f "$PATHOME_OE_TEST_RUN_DIR/$artifact" ]; then mv "$PATHOME_OE_TEST_RUN_DIR/$artifact" "$previous/$artifact"; fi
   done
-  uuidgen | tr '[:upper:]' '[:lower:]' > "$PATHOME_OE_TEST_RUN_DIR/run-id"
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    printf '%s\n' "$PATHOME_OE_TEST_RUN_ID" > "$PATHOME_OE_TEST_RUN_DIR/run-id"
+  else
+    uuidgen | tr '[:upper:]' '[:lower:]' > "$PATHOME_OE_TEST_RUN_DIR/run-id"
+  fi
   chmod 600 "$PATHOME_OE_TEST_RUN_DIR/run-id"
   # These are tool-owned ephemeral artifacts; a new database receives a new signing identity.
+
+  oe_ensure_secrets
 
   # Marker first: from this point on the database is positively identifiable as disposable.
   oe_apply_marker
   oe_runtime_checkpoint SENTINEL_WRITTEN
 
-  oe_log 'applying the supported legacy v1 baseline'
-  [ -f "$OE_LEGACY_BASELINE" ] || oe_die "Legacy baseline missing at $OE_LEGACY_BASELINE"
-  oe_psql_app "$PATHOME_OE_TEST_DB" -q -f "$OE_LEGACY_BASELINE" >/dev/null
-  oe_ensure_secrets
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    oe_routing_bootstrap_roles
+    oe_psql_admin "$PATHOME_OE_TEST_DB" -c \
+      "CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public" >/dev/null
+    oe_psql_admin "$PATHOME_OE_TEST_DB" -c \
+      "REVOKE CREATE ON DATABASE \"$PATHOME_OE_TEST_DB\" FROM \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\"" >/dev/null
+    oe_log 'applying the supported legacy v1 baseline through the migrator role'
+    [ -f "$OE_LEGACY_BASELINE" ] || oe_die "Legacy baseline missing at $OE_LEGACY_BASELINE"
+    oe_psql_migrator "$PATHOME_OE_TEST_DB" -q -f "$OE_LEGACY_BASELINE" >/dev/null
+  else
+    oe_log 'applying the supported legacy v1 baseline'
+    [ -f "$OE_LEGACY_BASELINE" ] || oe_die "Legacy baseline missing at $OE_LEGACY_BASELINE"
+    oe_psql_app "$PATHOME_OE_TEST_DB" -q -f "$OE_LEGACY_BASELINE" >/dev/null
+  fi
 
   oe_log 'creating canonical supported cities (migration-seeded, not hand-written fixtures)'
   oe_log "CREATE OK  $PATHOME_OE_TEST_DB ready; repository Flyway migrations run on first backend start"
 }
 
 oe_apply_marker() {
-  oe_psql_app "$PATHOME_OE_TEST_DB" \
+  local marker_user="$PATHOME_OE_TEST_DB_APP_USER"
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    marker_user="$PATHOME_OE_TEST_DB_ADMIN_USER"
+  fi
+  oe_guard_psql "$PATHOME_OE_TEST_DB" "$marker_user" \
     -q \
     -v "oe_database=$PATHOME_OE_TEST_DB" \
     -v "oe_guard_version=$OE_GUARD_VERSION" \
     -v "oe_run_id=$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")" \
     -f "$OE_MARKER_SQL" >/dev/null
+}
+
+oe_routing_bootstrap_roles() {
+  local roles_sql schema_sql grants_sql
+  roles_sql="CREATE ROLE \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\" LOGIN PASSWORD '$PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+CREATE ROLE \"$PATHOME_OE_TEST_DB_APP_USER\" LOGIN PASSWORD '$PATHOME_OE_TEST_DB_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;"
+  oe_psql_admin "$PATHOME_OE_TEST_DB" -c "$roles_sql" >/dev/null
+  schema_sql="REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE CREATE, TEMP ON DATABASE \"$PATHOME_OE_TEST_DB\" FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM \"$PATHOME_OE_TEST_DB_APP_USER\";
+GRANT CONNECT ON DATABASE \"$PATHOME_OE_TEST_DB\" TO \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\", \"$PATHOME_OE_TEST_DB_APP_USER\";
+GRANT CREATE ON DATABASE \"$PATHOME_OE_TEST_DB\" TO \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\";
+GRANT TEMP ON DATABASE \"$PATHOME_OE_TEST_DB\" TO \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\";
+GRANT USAGE ON SCHEMA public TO \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\", \"$PATHOME_OE_TEST_DB_APP_USER\";
+GRANT SELECT ON TABLE public.pathome_oe_test_env TO \"$PATHOME_OE_TEST_DB_APP_USER\";
+CREATE SCHEMA \"$PATHOME_OE_TEST_SCHEMA\" AUTHORIZATION \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\";
+REVOKE ALL ON SCHEMA \"$PATHOME_OE_TEST_SCHEMA\" FROM PUBLIC;
+GRANT USAGE ON SCHEMA \"$PATHOME_OE_TEST_SCHEMA\" TO \"$PATHOME_OE_TEST_DB_APP_USER\";
+ALTER ROLE \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\" IN DATABASE \"$PATHOME_OE_TEST_DB\" SET search_path = \"$PATHOME_OE_TEST_SCHEMA\", public;
+ALTER ROLE \"$PATHOME_OE_TEST_DB_APP_USER\" IN DATABASE \"$PATHOME_OE_TEST_DB\" SET search_path = \"$PATHOME_OE_TEST_SCHEMA\", public;"
+  oe_psql_admin "$PATHOME_OE_TEST_DB" -c "$schema_sql" >/dev/null
+  grants_sql="ALTER DEFAULT PRIVILEGES FOR ROLE \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\" IN SCHEMA \"$PATHOME_OE_TEST_SCHEMA\"
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO \"$PATHOME_OE_TEST_DB_APP_USER\";
+ALTER DEFAULT PRIVILEGES FOR ROLE \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\" IN SCHEMA \"$PATHOME_OE_TEST_SCHEMA\"
+  GRANT USAGE, SELECT ON SEQUENCES TO \"$PATHOME_OE_TEST_DB_APP_USER\";
+ALTER DEFAULT PRIVILEGES FOR ROLE \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\" IN SCHEMA \"$PATHOME_OE_TEST_SCHEMA\"
+  GRANT EXECUTE ON FUNCTIONS TO \"$PATHOME_OE_TEST_DB_APP_USER\";"
+  oe_psql_admin "$PATHOME_OE_TEST_DB" -c "$grants_sql" >/dev/null
 }
 
 cmd_recreate() {
@@ -330,14 +419,20 @@ cmd_teardown() {
   fi
 
   # Destructive path: the target must be provably disposable before anything is dropped.
-  oe_guard_check_live_identity "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
-  oe_guard_check_sentinel "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
+  local proof_user="$PATHOME_OE_TEST_DB_APP_USER"
+  [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ] && proof_user="$PATHOME_OE_TEST_DB_ADMIN_USER"
+  oe_guard_check_live_identity "$PATHOME_OE_TEST_DB" "$proof_user"
+  oe_guard_check_sentinel "$PATHOME_OE_TEST_DB" "$proof_user"
   oe_guard_require_run
   node "$OE_TOOL_DIR/lib/runtime.mjs" recover
   oe_runtime_checkpoint OWNED_BACKEND_STOPPED
 
   oe_log "dropping disposable database '$PATHOME_OE_TEST_DB' (marker verified)"
   oe_guard_drop
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    oe_psql_admin postgres -c "DROP ROLE IF EXISTS \"$PATHOME_OE_TEST_DB_APP_USER\"" >/dev/null
+    oe_psql_admin postgres -c "DROP ROLE IF EXISTS \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\"" >/dev/null
+  fi
   oe_runtime_checkpoint DATABASE_DROPPED
   oe_log "TEARDOWN OK  $PATHOME_OE_TEST_DB removed"
 }

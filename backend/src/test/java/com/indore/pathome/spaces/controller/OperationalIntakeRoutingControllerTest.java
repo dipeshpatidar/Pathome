@@ -63,13 +63,13 @@ class OperationalIntakeRoutingControllerTest {
     @Test
     void routeCommandForwardsEveryExplicitVersionAndReturnsNoContent() {
         var authentication = authentication(44L);
-        var command = new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, "INITIAL_ROUTING");
+        var command = new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, 4L, "INITIAL_ROUTING");
 
         ResponseEntity<Void> response = controller.route(authentication, "81", command);
 
         assertEquals(204, response.getStatusCode().value());
         assertTrue(String.valueOf(response.getHeaders().getCacheControl()).contains("no-store"));
-        verify(ownership).routeInitialRequest(44L, 81L, 3L, 7L, 1L, 12L, 0L, "INITIAL_ROUTING");
+        verify(ownership).routeInitialRequest(44L, 81L, 3L, 7L, 1L, 12L, 0L, 4L, "INITIAL_ROUTING");
     }
 
     @Test
@@ -89,7 +89,7 @@ class OperationalIntakeRoutingControllerTest {
         assertThrows(IllegalArgumentException.class, () -> controller.route(authentication, "81", null));
         assertThrows(IllegalArgumentException.class, () -> controller.route(
                 authentication, "not-a-number",
-                new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, "INITIAL_ROUTING")));
+                new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, null, "INITIAL_ROUTING")));
         verifyNoInteractions(ownership);
     }
 
@@ -101,7 +101,7 @@ class OperationalIntakeRoutingControllerTest {
         assertThrows(AccessDeniedException.class, () -> controller.listCandidates(authentication, "0", "20"));
         assertThrows(AccessDeniedException.class, () -> controller.readCandidates(authentication, "81", "7", "0", "20"));
         assertThrows(AccessDeniedException.class, () -> controller.route(authentication, "81",
-                new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, "INITIAL_ROUTING")));
+                new InitialVisitRequestRoutingCommand(3L, 7L, 1L, 12L, 0L, null, "INITIAL_ROUTING")));
         verifyNoInteractions(reads, ownership);
     }
 

@@ -25,6 +25,10 @@ public class OperationalAuditService {
             // Package 3B initial-routing evidence: bounded identifiers, version numbers and flags only.
             "routingMode", "expectedRequestVersion", "expectedTeamVersion", "resultingRequestVersion",
             "unresolvedSource",
+            "routingTaskId", "routingTaskVersion", "coverageId", "coverageVersion",
+            "selectedLocalityId", "routingProtocolVersion", "automaticRoutingControlVersion",
+            "controlEnabled", "controlVersion",
+            "localityCityId", "coverageActive",
             // Listing-review evidence: the workflow states either side of the decision, the optimistic
             // versions before and after it, and the canonical locality the action linked or rests on.
             // Bounded codes, version numbers and ids only - never a review note or other free text.
@@ -61,6 +65,20 @@ public class OperationalAuditService {
         OperationalAuditEvent event = new OperationalAuditEvent(databaseClock.now(),
                 AuditActorKind.DEPLOYMENT_OPERATOR, null, operatorReference, actionCode, targetType, targetId,
                 city, team, null, null, reasonCode, sanitizeDetails(details));
+        return events.save(event);
+    }
+
+    /**
+     * Records one internal autonomous decision. Callers cannot supply an actor identity or bypass flag;
+     * this method is only reachable from trusted server-side routing code.
+     */
+    public OperationalAuditEvent recordSystemEvent(String actionCode, String targetType, Long targetId,
+                                                    String reasonCode, SupportedCity city, OperatingTeam team,
+                                                    Map<String, Object> details) {
+        validateCodes(actionCode, targetType, reasonCode);
+        OperationalAuditEvent event = new OperationalAuditEvent(databaseClock.now(), AuditActorKind.SYSTEM,
+                null, null, actionCode, targetType, targetId, city, team, null, null, reasonCode,
+                sanitizeDetails(details));
         return events.save(event);
     }
 

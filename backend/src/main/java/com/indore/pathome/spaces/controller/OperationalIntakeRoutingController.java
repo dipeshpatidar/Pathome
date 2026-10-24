@@ -65,7 +65,7 @@ public class OperationalIntakeRoutingController {
         ownership.routeInitialRequest(StaffAuthentication.userId(authentication),
                 parseLong(requestId, "requestId"), command.expectedRequestVersion(), command.cityId(),
                 command.expectedCityVersion(), command.teamId(), command.expectedTeamVersion(),
-                command.reasonCode());
+                command.expectedRoutingTaskVersion(), command.reasonCode());
         return ResponseEntity.noContent().cacheControl(NO_STORE).build();
     }
 

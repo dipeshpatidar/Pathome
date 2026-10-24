@@ -2,9 +2,70 @@ import { readFileSync, writeFileSync, renameSync, lstatSync, existsSync, realpat
 import { execFileSync } from 'node:child_process';
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 
 export const PHASE2A_APPROVED_DB = 'pathome_oe_test_phase2a_20261015';
 export const PHASE2A_APPROVED_RUN_DIR = '/private/tmp/pathome-oe-phase2a-20261015';
+export const G10_APPROVED_DB = 'pathome_oe_test_g10_20261022';
+export const G10_APPROVED_RUN_DIR = '/private/tmp/pathome-oe-g10-20261022';
+export const ROUTING_ACCEPTANCE_ID = 'routing-20261023';
+export const ROUTING_ACCEPTANCE_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../routing-acceptance-target.env');
+const APPROVED_COORDINATES = new Map([
+  [PHASE2A_APPROVED_DB, PHASE2A_APPROVED_RUN_DIR],
+  [G10_APPROVED_DB, G10_APPROVED_RUN_DIR]
+]);
+const ROUTING_KEYS = new Set(['PATHOME_OE_TEST_ACCEPTANCE','PATHOME_OE_TEST_ALLOW_DISPOSABLE',
+  'PATHOME_OE_TEST_DB','PATHOME_OE_TEST_DB_HOST','PATHOME_OE_TEST_DB_PORT','PATHOME_OE_TEST_DB_ADMIN_USER',
+  'PATHOME_OE_TEST_DB_MIGRATOR_USER','PATHOME_OE_TEST_DB_APP_USER','PATHOME_OE_TEST_RUN_DIR',
+  'PATHOME_OE_TEST_RUN_ID','PATHOME_OE_TEST_SCHEMA','PATHOME_OE_TEST_FIXTURE_PREFIX']);
+export function routingAcceptanceTarget(env = process.env, file = env.PATHOME_OE_TEST_TARGET_FILE,
+  { requireRuntimeEnvironment = true } = {}) {
+  if (file !== ROUTING_ACCEPTANCE_FILE) throw Error('Unapproved routing acceptance target file');
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o077))
+    throw Error('Routing acceptance target file must be owner-only mode 600');
+  const values = {};
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line || line.startsWith('#')) continue;
+    const split = line.indexOf('=');
+    if (split < 1 || /[`$"';\\\r]/.test(line)) throw Error('Invalid routing acceptance target data');
+    const key = line.slice(0, split), value = line.slice(split + 1);
+    if (!ROUTING_KEYS.has(key) || key in values) throw Error('Unknown or duplicate routing acceptance key');
+    values[key] = value;
+  }
+  const expected = {
+    PATHOME_OE_TEST_ACCEPTANCE: ROUTING_ACCEPTANCE_ID,
+    PATHOME_OE_TEST_ALLOW_DISPOSABLE: 'true',
+    PATHOME_OE_TEST_DB: 'pathome_oe_test_c07_correction_20261024',
+    PATHOME_OE_TEST_DB_HOST: '127.0.0.1',
+    PATHOME_OE_TEST_DB_PORT: '5432',
+    PATHOME_OE_TEST_DB_ADMIN_USER: 'postgres',
+    PATHOME_OE_TEST_DB_MIGRATOR_USER: 'routing_c07_correction_20261024_01_migrator',
+    PATHOME_OE_TEST_DB_APP_USER: 'routing_c07_correction_20261024_01_app',
+    PATHOME_OE_TEST_RUN_DIR: '/private/tmp/pathome-routing-c07-correction-20261024-01',
+    PATHOME_OE_TEST_RUN_ID: 'routing-c07-correction-20261024-01',
+    PATHOME_OE_TEST_SCHEMA: 'routing_c07_correction_20261024_01',
+    PATHOME_OE_TEST_FIXTURE_PREFIX: 'routing_c07_correction_20261024_01_'
+  };
+  for (const [key,value] of Object.entries(expected)) if (values[key] !== value) throw Error('Routing acceptance target differs at '+key);
+  for (const [key,value] of Object.entries(expected)) if (env[key] !== value) throw Error('Effective routing acceptance value differs at '+key);
+  if (requireRuntimeEnvironment) {
+    if (env.SPRING_DATASOURCE_URL !== `jdbc:postgresql://${expected.PATHOME_OE_TEST_DB_HOST}:${expected.PATHOME_OE_TEST_DB_PORT}/${expected.PATHOME_OE_TEST_DB}`)
+      throw Error('Routing acceptance datasource mismatch');
+    if (env.SPRING_DATASOURCE_USERNAME !== expected.PATHOME_OE_TEST_DB_APP_USER
+        || env.SPRING_FLYWAY_USER !== expected.PATHOME_OE_TEST_DB_MIGRATOR_USER)
+      throw Error('Routing acceptance role mismatch');
+  }
+  return expected;
+}
+export const approvedIntegrationCoordinates = (database, root, env = process.env) => {
+  if (env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID) {
+    const target = routingAcceptanceTarget(env, env.PATHOME_OE_TEST_TARGET_FILE,
+      { requireRuntimeEnvironment: false });
+    return database === target.PATHOME_OE_TEST_DB && root === target.PATHOME_OE_TEST_RUN_DIR;
+  }
+  return APPROVED_COORDINATES.get(database) === root;
+};
 
 export const safePort = (value) => {
   if (!/^[1-9]\d{0,4}$/.test(String(value)) || Number(value) > 65535) throw Error('Invalid port');
@@ -78,18 +139,27 @@ export const verifyJwt = (token, secret, email) => {
 export const verifyBinding = (env = process.env, { requireAttestation = true,
   inspect = { processIdentity, listenerPid, descendant }, now = Date.now() } = {}) => {
   const root = env.PATHOME_OE_TEST_RUN_DIR;
-  if (env.PATHOME_OE_TEST_DB !== PHASE2A_APPROVED_DB) throw Error('Unapproved Phase 2A database');
-  if (!/^\/(private\/)?tmp\/pathome-oe-[A-Za-z0-9_/-]+$/.test(root ?? '') || root.includes('..')) throw Error('Unapproved run directory');
+  if (env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID) {
+    if (!approvedIntegrationCoordinates(env.PATHOME_OE_TEST_DB, root, env))
+      throw Error('Unapproved integration coordinates');
+    routingAcceptanceTarget(env, env.PATHOME_OE_TEST_TARGET_FILE, { requireRuntimeEnvironment: false });
+  } else {
+    if (!APPROVED_COORDINATES.has(env.PATHOME_OE_TEST_DB))
+      throw Error('Unapproved Phase 2A database');
+    if (!/^\/(private\/)?tmp\/pathome-oe-[A-Za-z0-9_/-]+$/.test(root ?? '') || root.includes('..'))
+      throw Error('Unapproved run directory');
+  }
   const canonical = realpathSync(root);
   if (canonical !== root && !(process.platform === 'darwin' && root.startsWith('/tmp/') && canonical === '/private' + root)) throw Error('Symlinked run directory');
   const binding = JSON.parse(dataFile(`${root}/backend-binding.json`));
   const runId = dataFile(`${root}/run-id`).trim();
   const secrets = readSecrets(root);
-  const mediaCloudName = validateMedia(secrets);
+  const mediaCloudName = env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID
+    ? 'routing-acceptance-disabled' : validateMedia(secrets);
   const origin = safeOrigin(env.P4_BACKEND_URL ?? binding.origin, env.PATHOME_OE_TEST_BACKEND_PORT ?? 8080);
   const age = now - Date.parse(binding.createdAt);
   if (binding.origin !== origin || binding.runId !== runId || secrets.OE_RUN_ID !== runId
-      || binding.database !== env.PATHOME_OE_TEST_DB || binding.database !== PHASE2A_APPROVED_DB
+      || binding.database !== env.PATHOME_OE_TEST_DB
       || binding.mediaCloudName !== mediaCloudName || !/^[a-z0-9-]{16,64}$/.test(runId)
       || !Number.isInteger(binding.parentPid) || !Number.isInteger(binding.listenerPid)
       || !Number.isFinite(age) || age < -5000 || age > 12 * 60 * 60 * 1000
@@ -224,7 +294,8 @@ async function main(command) {
     const parentIdentity = processIdentity(parentPid), listenerIdentity = processIdentity(pid);
     if (!parentIdentity.includes('mvn') && !parentIdentity.includes('java')) throw Error('Foreign parent process');
     const secrets = readSecrets(root), runId = dataFile(`${root}/run-id`).trim();
-    const mediaCloudName = validateMedia(secrets);
+    const mediaCloudName = env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID
+      ? 'routing-acceptance-disabled' : validateMedia(secrets);
     if (secrets.OE_RUN_ID !== runId) throw Error('Foreign secrets');
     const origin = `http://127.0.0.1:${port}`;
     // Process/listener ownership is proven before this authentication-only request.

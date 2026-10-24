@@ -19,27 +19,26 @@ record LeadAccessContext(
     }
 
     boolean canList() {
-        return globalAdmin || !visibleUnassignedCityIds().isEmpty()
+        return !visibleUnassignedCityIds().isEmpty()
                 || !ownedTeamIds.isEmpty() || !supervisedTeamIds.isEmpty();
     }
 
-    boolean canRead(LeadRoutingQueue lead) {
+    boolean canRead(LeadRoutingQueue lead, Long actorId) {
         if (lead.getLegacyProvenance() == com.indore.pathome.spaces.entity.LeadLegacyProvenance.LEGACY_UNVERIFIED) {
-            return globalAdmin;
+            return false;
         }
-        if (globalAdmin) return true;
         Long cityId = lead.getSupportedCity() == null ? null : lead.getSupportedCity().getId();
         Long teamId = lead.getOperatingTeam() == null ? null : lead.getOperatingTeam().getId();
         Long ownerId = lead.getOwner() == null ? null : lead.getOwner().getId();
         if (teamId != null) {
             return supervisedTeamIds.contains(teamId)
-                    || (ownedTeamIds.contains(teamId) && lead.getOwner() != null);
+                    || (ownedTeamIds.contains(teamId) && ownerId != null
+                        && ownerId.equals(actorId));
         }
         return cityId != null && ownerId == null && visibleUnassignedCityIds().contains(cityId);
     }
 
     boolean canEdit(LeadRoutingQueue lead, Long actorId) {
-        if (globalAdmin) return true;
         if (lead.getLegacyProvenance() == com.indore.pathome.spaces.entity.LeadLegacyProvenance.LEGACY_UNVERIFIED) {
             return false;
         }
@@ -61,11 +60,11 @@ record LeadAccessContext(
     }
 
     boolean canRoute(Long cityId) {
-        return cityId != null && (globalAdmin || routingCityIds.contains(cityId));
+        return cityId != null && routingCityIds.contains(cityId);
     }
 
     boolean canAssign(Long teamId) {
-        return teamId != null && (globalAdmin || supervisedTeamIds.contains(teamId));
+        return teamId != null && supervisedTeamIds.contains(teamId);
     }
 
     static RuntimeException hidden() {

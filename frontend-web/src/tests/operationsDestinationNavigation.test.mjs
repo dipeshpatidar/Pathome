@@ -24,9 +24,17 @@ const authorityHook = read('../hooks/useOperationsCapability.ts');
 
 /* 1. The dedicated destination ----------------------------------------------------- */
 
-test('a dedicated /operations destination hosts the existing workspace untouched', () => {
-  // The destination renders the same approved workspace component; no second implementation exists.
-  assert.match(destination, /<OperationsWorkspace authority=\{authority\} \/>/);
+test('a dedicated /operations destination hosts the existing workspace and routes City routing separately', () => {
+  // Ordinary Operations routes keep one shared frame. City routing is a distinct capability-gated
+  // destination, not a second global Admin application.
+  assert.match(destination, /routingRoute\s*\n\s*\? <OperationsRoutingWorkspace authority=\{authority\}/);
+  assert.match(destination, /<OperationsWorkspace\s*\n\s*authority=\{authority\}/);
+  assert.match(destination, /leadContent=\{leadRoute/);
+  assert.match(destination, /<OperationsLeadsWorkspace\s+authority=\{authority\}\s+embedded/);
+  assert.doesNotMatch(destination, /\{leadRoute\s*\?\s*<OperationsLeadsWorkspace/);
+  assert.match(workspace, /if \(leadSurface\) \{\s*\n\s*return pageFrame\(leadContent\);/);
+  assert.match(workspace, /className="oe-shell"/);
+  assert.match(workspace, /className="oe-tabbar"/);
   assert.equal(destination.includes('useOperationsCapability('), false);
   assert.match(home, /const operationsRoute = isOperationsPath\(normalizeRoutePathname\(location\.pathname\)\);/);
   assert.match(home, /\{operationsRoute && user && <OperationsDestination authority=\{operationsAuthority\} \/>\}/);
@@ -57,15 +65,16 @@ test('exactly one capability state machine drives the entry, the destination and
   const hookCalls = [home, navbar, dashboard, admin, destination]
     .reduce((total, source) => total + (source.match(/useOperationsCapability\(/g) ?? []).length, 0);
   assert.equal(hookCalls, 1);
-  assert.match(home, /useOperationsCapability\(\{ workspaceEntry: operationsSurface \}\)/);
+  assert.match(
+    home,
+    /useOperationsCapability\(\{\s*workspaceEntry: operationsSurface,\s*accessPolicy:/
+  );
   // The surface is *named* rather than reported as a boolean: an embedded console workspace and the
   // dedicated destination are two different entries, so a shared "open" flag could never distinguish
   // them. Every transition therefore re-verifies, and the runtime behaviour is proven by the
   // browser suite (`browser-verification/operations-destination/run.mjs`, scenarios 9-10).
-  assert.match(
-    home,
-    /const operationsSurface = operationsRoute\s*\n\s*\? 'destination'\s*\n\s*: embeddedOperationsOpen\s*\n\s*\? \(role === 'EMPLOYEE' \? 'embedded:employee' : 'embedded:admin'\)\s*\n\s*: null;/
-  );
+  assert.match(home, /operationsRoutingRoute\s*\n\s*\? 'destination:routing'/);
+  assert.match(home, /accessPolicy: operationsRoutingRoute\s*\n\s*\? 'routing'/);
   assert.match(workspace, /const accessGranted = authority\.state === 'granted' && authority\.entryAdmitted;/);
 
   // The consoles consume the shared authority and report their own surface upward, so the single
@@ -182,9 +191,13 @@ test('a cancelled mutation check is retired synchronously, by its own id, withou
   assert.match(authorityHook, /const detach = \(\): void => \{\s*\n\s*externalSignal\?\.removeEventListener\('abort', forwardAbort\);\s*\n\s*\};/);
   assert.match(authorityHook, /check\.detach\(\);\s*\n\s*pending\.delete\(id\);/);
   assert.match(authorityHook, /} finally \{\s*\n\s*detach\(\);/);
-  // A late result from a cancelled check can never establish authority: an aborted control is refused
-  // before any verdict is applied.
-  assert.match(authorityHook, /if \(!isCurrent\(\)\) return false;\s*\n\s*if \(control\.signal\.aborted\) return false;/);
+  // A late result from a cancelled check can never establish authority: exact request/session
+  // ownership is proved first, a current timeout is classified as unavailable, and any other aborted
+  // control is refused before a verdict can be applied.
+  assert.match(
+    authorityHook,
+    /if \(!isCurrent\(\)\) return false;\s*\n\s*if \(!isOperationsSessionActive\(session\)\) return false;\s*\n\s*if \(outcome\.kind === 'timeout'\) \{\s*\n\s*applyInvalidation\('unavailable'\);\s*\n\s*return false;\s*\n\s*\}\s*\n\s*if \(control\.signal\.aborted\) return false;/
+  );
 
   // The correction stays inside the one shared authority: no second hook or authority owner was added.
   assert.equal((authorityHook.match(/export const useOperationsCapability = \(/g) ?? []).length, 1);

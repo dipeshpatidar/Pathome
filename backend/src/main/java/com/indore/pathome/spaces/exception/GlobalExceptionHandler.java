@@ -118,6 +118,17 @@ public class GlobalExceptionHandler {
                 .body(error);
     }
 
+    @ExceptionHandler(LeadDataProtectionUnavailableException.class)
+    public ResponseEntity<ErrorResponseDTO> handleLeadDataProtectionUnavailable(
+            LeadDataProtectionUnavailableException ex, HttpServletRequest request) {
+        ErrorResponseDTO error = new ErrorResponseDTO(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "Service Unavailable", ex.getMessage(),
+                request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .cacheControl(CacheControl.noStore())
+                .body(error);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponseDTO> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         log.warn("Invalid Argument Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI());
@@ -241,10 +252,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex, HttpServletRequest request) {
         // Classify at the HTTP boundary, after the transaction interceptor has rolled back. This also
         // catches deferred audit/flush failures at commit, which a catch inside @Transactional cannot see.
-        // Keep the policy confined to review mutations and reuse the approved SQLSTATE-led classifier.
-        if ("POST".equals(request.getMethod())
-                && request.getRequestURI().startsWith("/api/v1/admin/lessor-review/")
-                && ex instanceof RuntimeException failure) {
+        // Keep the policy confined to the approved review and C05 query commands; reuse the SQLSTATE-led classifier.
+        boolean boundedQueryCommand = "POST".equals(request.getMethod())
+                && (request.getRequestURI().startsWith("/api/v1/admin/lessor-review/")
+                    || "/api/v1/operations/leads/duplicate-candidates"
+                            .equals(request.getRequestURI()));
+        if (boundedQueryCommand && ex instanceof RuntimeException failure) {
             RuntimeException translated = OperationalCommandUnavailableException.translate(failure);
             if (translated instanceof OperationalCommandUnavailableException unavailable) {
                 return handleOperationalCommandUnavailable(unavailable, request);

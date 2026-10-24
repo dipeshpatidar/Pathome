@@ -214,7 +214,7 @@ export const NotificationCenterDrawer: React.FC = () => {
                       role="tab"
                       aria-selected={isActive}
                       onClick={() => setSelectedCategory(cat)}
-                      className={`min-h-9 px-3 py-1 rounded-xl text-[10px] font-mono font-bold transition-all cursor-pointer whitespace-nowrap border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                      className={`min-h-11 px-3 py-1 rounded-xl text-[10px] font-mono font-bold transition-all cursor-pointer whitespace-nowrap border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                         isActive
                           ? 'bg-emerald-950 text-emerald-300 border-emerald-500/60 font-black shadow-sm'
                           : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200'
@@ -238,7 +238,7 @@ export const NotificationCenterDrawer: React.FC = () => {
                   type="button"
                   onClick={clearMarkReadError}
                   aria-label="Dismiss error"
-                  className="p-1 rounded-lg hover:bg-rose-900/60 text-rose-300"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg p-1 hover:bg-rose-900/60 text-rose-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"
                 >
                   <X className="w-4 h-4" />
                 </button>

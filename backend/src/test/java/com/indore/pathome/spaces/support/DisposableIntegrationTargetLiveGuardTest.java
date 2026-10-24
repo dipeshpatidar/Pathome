@@ -8,7 +8,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
-import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.APPROVED_DATABASE;
+import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.DESIGNATION_FLAG;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.SENTINEL_MARKER;
 import static com.indore.pathome.spaces.support.DisposableIntegrationTarget.SENTINEL_TABLE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,7 +26,7 @@ class DisposableIntegrationTargetLiveGuardTest {
     @Test
     void theDesignatedDisposableTargetPassesTheLiveGuardAndCarriesExactlyOneMarker() throws Exception {
         DisposableIntegrationTarget.Target target = DisposableIntegrationTarget.verifyFromEnvironment();
-        assertEquals(APPROVED_DATABASE, target.database());
+        assertEquals(System.getenv(DESIGNATION_FLAG), target.database());
         assertEquals(1, liveMarkerCount(target));
     }
 

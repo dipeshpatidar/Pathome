@@ -16,6 +16,7 @@ const { createProductionAvailabilityHarness } = await import(
 const { ApiRequestError } = await import('../services/apiError.ts');
 const p = h.presentation;
 const KOLKATA = 'Asia/Kolkata';
+const FIXTURE_NOW = new Date('2026-10-22T00:00:00Z');
 const firstTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const item = (overrides = {}) => ({
@@ -76,7 +77,12 @@ const attempt = (window, version = 6) => ({
 const createHarness = (before, options = {}) => {
   h.signIn({ id: 41, role: 'EMPLOYEE', token: 'local-test-only' });
   const session = h.session.captureOperationsSession();
-  return createProductionAvailabilityHarness(p, { before, session, ...options });
+  const harness = createProductionAvailabilityHarness(p, { before, session, ...options });
+  return {
+    ...harness,
+    save: (editorGeneration, window) =>
+      harness.save(editorGeneration, window, FIXTURE_NOW)
+  };
 };
 
 /* -------------------------------------------------------------------------- *

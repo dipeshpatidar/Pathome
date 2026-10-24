@@ -2,6 +2,7 @@ package com.indore.pathome.spaces.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.indore.pathome.spaces.service.MetaLeadEventFingerprint;
 import com.indore.pathome.spaces.service.MetaLeadInboxService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
@@ -20,7 +21,9 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -96,7 +99,7 @@ public class MetaLeadWebhookController {
             throw new IllegalArgumentException("Webhook entries are missing or exceed the bound");
         }
 
-        int accepted = 0;
+        List<LeadgenEvent> accepted = new ArrayList<>();
         for (JsonNode entry : entries) {
             if (!pageId.equals(entry.path("id").asText())) {
                 // Signed payloads can contain unrelated Page activity. Ignore it rather than treating
@@ -116,12 +119,18 @@ public class MetaLeadWebhookController {
                     return ResponseEntity.status(HttpStatus.FORBIDDEN).cacheControl(CacheControl.noStore())
                             .body("Webhook form identity does not match this application");
                 }
-                inbox.acceptMetaLead(pageId, leadgenId, formId, sha256(rawBody));
-                accepted++;
+                accepted.add(new LeadgenEvent(leadgenId,
+                        MetaLeadEventFingerprint.fingerprint(objectMapper, pageId, formId, leadgenId, value)));
             }
         }
-        if (accepted == 0) {
+        if (accepted.isEmpty()) {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body("EVENT_IGNORED");
+        }
+        // All semantic validation completes before the first durable mutation. A later retry can then
+        // progress through already committed events without turning a valid rebatch into a conflict.
+        for (LeadgenEvent event : accepted) {
+            inbox.acceptMetaLead(pageId, event.leadgenId(), formId, event.fingerprint(),
+                    MetaLeadEventFingerprint.VERSION);
         }
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body("EVENT_RECEIVED");
     }
@@ -135,14 +144,6 @@ public class MetaLeadWebhookController {
             return constantTimeEquals(expected, signature);
         } catch (Exception exception) {
             return false;
-        }
-    }
-
-    private static String sha256(byte[] rawBody) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(rawBody));
-        } catch (Exception exception) {
-            throw new IllegalStateException("SHA-256 is unavailable");
         }
     }
 
@@ -162,4 +163,6 @@ public class MetaLeadWebhookController {
                 .header(HttpHeaders.RETRY_AFTER, "60")
                 .body("Meta leadgen intake is not configured");
     }
+
+    private record LeadgenEvent(String leadgenId, String fingerprint) {}
 }

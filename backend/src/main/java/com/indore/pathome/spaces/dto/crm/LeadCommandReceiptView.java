@@ -4,6 +4,7 @@ import java.time.Instant;
 
 public record LeadCommandReceiptView(
         String state,
-        Long resultLeadId,
+        String action,
+        String resultReference,
         Instant recordedAt) {
 }

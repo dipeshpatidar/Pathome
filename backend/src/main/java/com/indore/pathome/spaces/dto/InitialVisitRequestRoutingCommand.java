@@ -14,5 +14,6 @@ public record InitialVisitRequestRoutingCommand(
         Long expectedCityVersion,
         Long teamId,
         Long expectedTeamVersion,
+        Long expectedRoutingTaskVersion,
         String reasonCode) {
 }

@@ -69,6 +69,17 @@ public interface OperationalIntakeRoutingRepository extends JpaRepository<Proper
               AND loc.supported_city_id = r.supported_city_id
             """;
 
+    String ROUTING_ENROLLED = """
+              AND EXISTS (
+                  SELECT 1
+                  FROM visit_request_routing_tasks task
+                  WHERE task.request_id = r.id
+                    AND task.state IN ('PENDING', 'RETRY', 'NEEDS_REVIEW')
+              )
+            """;
+
+    String OPERATIONALLY_READY = " AND r.operational_scope_ready = TRUE";
+
     String GROUP_ORDER = " ORDER BY r.created_at DESC, r.id DESC";
 
     /** Global Staff Admin discovery: every eligible standalone Request, unresolved intake included. */
@@ -89,6 +100,55 @@ public interface OperationalIntakeRoutingRepository extends JpaRepository<Proper
                     + ELIGIBLE + CITY_SCOPED,
             nativeQuery = true)
     Page<RoutingRow> findEligibleCityScopedRequestPage(@Param("cityIds") List<Long> cityIds, Pageable pageable);
+
+    /**
+     * Routing-only staff discover only durably enrolled new intake. Historical Requests and ordinary
+     * unenrolled manual-reconciliation rows never become visible through this capability.
+     */
+    @Query(value = SELECT_COLUMNS + ELIGIBLE + CITY_SCOPED + OPERATIONALLY_READY
+                    + ROUTING_ENROLLED + GROUP_ORDER,
+            countQuery = "SELECT count(*) FROM property_visit_requests r "
+                    + "JOIN listings l ON l.id = r.listing_id "
+                    + "LEFT JOIN localities loc ON loc.id = l.canonical_locality_id "
+                    + ELIGIBLE + CITY_SCOPED + OPERATIONALLY_READY + ROUTING_ENROLLED,
+            nativeQuery = true)
+    Page<RoutingRow> findEligibleRoutingOnlyRequestPage(@Param("cityIds") List<Long> cityIds,
+                                                        Pageable pageable);
+
+    /** One combined scope where broad Cities retain history reads but routing-only Cities do not. */
+    @Query(value = SELECT_COLUMNS + ELIGIBLE + """
+              AND loc.supported_city_id = r.supported_city_id
+              AND (
+                  r.supported_city_id IN (:broadCityIds)
+                  OR (r.supported_city_id IN (:routingCityIds)
+                      AND r.operational_scope_ready = TRUE
+                      AND EXISTS (
+                      SELECT 1 FROM visit_request_routing_tasks task
+                      WHERE task.request_id = r.id
+                        AND task.state IN ('PENDING', 'RETRY', 'NEEDS_REVIEW')
+                  ))
+              )
+            """ + GROUP_ORDER,
+            countQuery = "SELECT count(*) FROM property_visit_requests r "
+                    + "JOIN listings l ON l.id = r.listing_id "
+                    + "LEFT JOIN localities loc ON loc.id = l.canonical_locality_id "
+                    + ELIGIBLE + """
+              AND loc.supported_city_id = r.supported_city_id
+              AND (
+                  r.supported_city_id IN (:broadCityIds)
+                  OR (r.supported_city_id IN (:routingCityIds)
+                      AND r.operational_scope_ready = TRUE
+                      AND EXISTS (
+                      SELECT 1 FROM visit_request_routing_tasks task
+                      WHERE task.request_id = r.id
+                        AND task.state IN ('PENDING', 'RETRY', 'NEEDS_REVIEW')
+                  ))
+              )
+            """,
+            nativeQuery = true)
+    Page<RoutingRow> findEligibleMixedRequestPage(@Param("broadCityIds") List<Long> broadCityIds,
+                                                  @Param("routingCityIds") List<Long> routingCityIds,
+                                                  Pageable pageable);
 
     /**
      * Authoritative snapshot of one Request regardless of current eligibility, so a caller can read the

@@ -3,6 +3,7 @@ package com.indore.pathome.spaces.security;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.indore.pathome.spaces.controller.MetaLeadWebhookController;
 import com.indore.pathome.spaces.service.MetaLeadInboxService;
+import com.indore.pathome.spaces.service.MetaLeadEventFingerprint;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
 
@@ -15,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 class MetaWebhookSignatureTest {
@@ -35,7 +37,11 @@ class MetaWebhookSignatureTest {
                 signature(BODY), BODY.getBytes(StandardCharsets.UTF_8));
 
         assertEquals(200, response.getStatusCode().value());
-        verify(inbox).acceptMetaLead("page-101", "lead-303", "form-202", sha256(BODY));
+        String fingerprint = MetaLeadEventFingerprint.fingerprint(new ObjectMapper(),
+                PAGE_ID, FORM_ID, "lead-303", new ObjectMapper().readTree(BODY)
+                        .path("entry").get(0).path("changes").get(0).path("value"));
+        verify(inbox).acceptMetaLead("page-101", "lead-303", "form-202", fingerprint,
+                MetaLeadEventFingerprint.VERSION);
     }
 
     @Test
@@ -47,7 +53,7 @@ class MetaWebhookSignatureTest {
                 null, BODY.getBytes(StandardCharsets.UTF_8)).getStatusCode().value());
         assertEquals(403, controller.handleIncomingMetaLead(
                 signature(BODY), (BODY + " ").getBytes(StandardCharsets.UTF_8)).getStatusCode().value());
-        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString());
+        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -79,7 +85,7 @@ class MetaWebhookSignatureTest {
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals("EVENT_IGNORED", response.getBody());
-        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString());
+        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -90,7 +96,31 @@ class MetaWebhookSignatureTest {
 
         assertEquals(403, controller.handleIncomingMetaLead(
                 signature(wrongForm), wrongForm.getBytes(StandardCharsets.UTF_8)).getStatusCode().value());
-        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString());
+        verify(inbox, never()).acceptMetaLead(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void rebatchedUnchangedLeadUsesAnEventFingerprintIndependentOfTheEnvelope() throws Exception {
+        MetaLeadInboxService inbox = mock(MetaLeadInboxService.class);
+        MetaLeadWebhookController controller = controller(inbox);
+        String a = event("lead-a", 100);
+        String b = event("lead-b", 200);
+        String batch = "{\"object\":\"page\",\"entry\":[{\"id\":\"page-101\",\"changes\":["
+                + a + "," + b + "]}]}";
+
+        assertEquals(200, controller.handleIncomingMetaLead(
+                signature(batch), batch.getBytes(StandardCharsets.UTF_8)).getStatusCode().value());
+        String aAlone = "{\"entry\":[{\"changes\":[" + a
+                + "],\"id\":\"page-101\"}],\"object\":\"page\"}";
+        assertEquals(200, controller.handleIncomingMetaLead(
+                signature(aAlone), aAlone.getBytes(StandardCharsets.UTF_8)).getStatusCode().value());
+
+        String expectedFingerprint = MetaLeadEventFingerprint.fingerprint(new ObjectMapper(),
+                PAGE_ID, FORM_ID, "lead-a", new ObjectMapper().readTree(
+                        "{\"leadgen_id\":\"lead-a\",\"form_id\":\"form-202\","
+                                + "\"ad_id\":100,\"field_data\":[]}"));
+        verify(inbox, times(2)).acceptMetaLead("page-101", "lead-a", "form-202",
+                expectedFingerprint, MetaLeadEventFingerprint.VERSION);
     }
 
     private static MetaLeadWebhookController controller(MetaLeadInboxService inbox) {
@@ -106,5 +136,11 @@ class MetaWebhookSignatureTest {
     private static String sha256(String body) throws Exception {
         java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
         return HexFormat.of().formatHex(digest.digest(body.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static String event(String leadgenId, int adId) {
+        return "{\"value\":{\"leadgen_id\":\"" + leadgenId
+                + "\",\"form_id\":\"form-202\",\"ad_id\":" + adId
+                + ",\"field_data\":[]},\"field\":\"leadgen\"}";
     }
 }

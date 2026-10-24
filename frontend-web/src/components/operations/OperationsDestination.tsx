@@ -1,6 +1,9 @@
-import React from 'react';
+import React, { useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import type { OperationsAuthority } from '../../hooks/useOperationsCapability';
 import { OperationsWorkspace } from './OperationsWorkspace';
+import { OperationsLeadsWorkspace } from './OperationsLeadsWorkspace';
+import { OperationsRoutingWorkspace } from './OperationsRoutingWorkspace';
 
 interface OperationsDestinationProps {
   /**
@@ -27,13 +30,42 @@ interface OperationsDestinationProps {
  * restoration and roughly every 30 seconds, a revoked or expired grant withdraws the destination
  * without a reload, and a browser refresh always re-verifies before any work is shown.
  */
-export const OperationsDestination: React.FC<OperationsDestinationProps> = ({ authority }) => (
-  <div className="min-h-screen w-full bg-[#f8f7f4]">
-    <main
-      aria-label="Operations"
-      className="mx-auto w-full min-w-0 max-w-[1240px] px-2 pb-16 pt-3 sm:px-4 sm:pt-5 lg:px-6 lg:pt-6"
-    >
-      <OperationsWorkspace authority={authority} />
-    </main>
-  </div>
-);
+export const OperationsDestination: React.FC<OperationsDestinationProps> = ({ authority }) => {
+  const location = useLocation();
+  const leadRoute = location.pathname === '/operations/leads'
+    || location.pathname.startsWith('/operations/leads/');
+  const routingRoute = location.pathname === '/operations/routing';
+  const leadNavigationGuard = useRef<((leave: () => void) => void) | null>(null);
+  const setLeadNavigationGuard = useCallback(
+    (guard: ((leave: () => void) => void) | null) => {
+      leadNavigationGuard.current = guard;
+    },
+    []
+  );
+  return (
+    <div className="min-h-screen w-full bg-[#f8f7f4]">
+      <main
+        aria-label="Operations"
+        className="w-full min-w-0"
+      >
+        {routingRoute
+          ? <OperationsRoutingWorkspace authority={authority} />
+          : (
+            <OperationsWorkspace
+              authority={authority}
+              leadNavigationGuard={leadNavigationGuard}
+              leadContent={leadRoute
+                ? (
+                  <OperationsLeadsWorkspace
+                    authority={authority}
+                    embedded
+                    onShellNavigationGuardChange={setLeadNavigationGuard}
+                  />
+                )
+                : undefined}
+            />
+          )}
+      </main>
+    </div>
+  );
+};

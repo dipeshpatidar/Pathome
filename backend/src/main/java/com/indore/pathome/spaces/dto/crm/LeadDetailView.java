@@ -25,6 +25,10 @@ public record LeadDetailView(
         Boolean liftRequired,
         String floorRequirement,
         List<Long> preferredLocalityIds,
+        List<LeadSourceAttributionView> sourceAttributions,
+        List<String> communicationPrerequisites,
+        List<String> conversionPrerequisites,
         boolean linkedCustomerAccount,
-        LeadLegacyProvenance provenance) {
+        LeadLegacyProvenance provenance,
+        LeadCaptureOutcomeView captureOutcome) {
 }

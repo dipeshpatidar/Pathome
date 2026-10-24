@@ -52,6 +52,16 @@ OE_GUARD_ERR_PORT_NOT_APPROVED=21
 OE_GUARD_PACKAGE3_APPROVED_DB='pathome_oe_test_integration'
 OE_GUARD_PACKAGE3_APPROVED_PORT='5432'
 OE_GUARD_PACKAGE3_ENV_FILE="${PATHOME_OE_TEST_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/oe-test.env}"
+OE_GUARD_ROUTING_ACCEPTANCE='routing-20261023'
+OE_GUARD_ROUTING_DB='pathome_oe_test_c07_correction_20261024'
+OE_GUARD_ROUTING_HOST='127.0.0.1'
+OE_GUARD_ROUTING_PORT='5432'
+OE_GUARD_ROUTING_MIGRATOR='routing_c07_correction_20261024_01_migrator'
+OE_GUARD_ROUTING_RUNTIME='routing_c07_correction_20261024_01_app'
+OE_GUARD_ROUTING_RUN_DIR='/private/tmp/pathome-routing-c07-correction-20261024-01'
+OE_GUARD_ROUTING_RUN_ID='routing-c07-correction-20261024-01'
+OE_GUARD_ROUTING_SCHEMA='routing_c07_correction_20261024_01'
+OE_GUARD_ROUTING_FIXTURE_PREFIX='routing_c07_correction_20261024_01_'
 
 # Only names of this shape can ever be treated as a disposable integration database.
 OE_GUARD_NAME_PATTERN='^pathome_oe_test_[a-z0-9_]{1,40}$'
@@ -186,6 +196,23 @@ oe_guard_resolve() {
       "Database '$PATHOME_OE_TEST_DB' contains an environment token that makes its identity ambiguous."
   fi
 
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = "$OE_GUARD_ROUTING_ACCEPTANCE" ]; then
+    [ "$PATHOME_OE_TEST_DB" = "$OE_GUARD_ROUTING_DB" ] && \
+    [ "$PATHOME_OE_TEST_DB_HOST" = "$OE_GUARD_ROUTING_HOST" ] && \
+    [ "$PATHOME_OE_TEST_DB_PORT" = "$OE_GUARD_ROUTING_PORT" ] && \
+    [ "$PATHOME_OE_TEST_DB_MIGRATOR_USER" = "$OE_GUARD_ROUTING_MIGRATOR" ] && \
+    [ "$PATHOME_OE_TEST_DB_APP_USER" = "$OE_GUARD_ROUTING_RUNTIME" ] && \
+    [ "$PATHOME_OE_TEST_RUN_DIR" = "$OE_GUARD_ROUTING_RUN_DIR" ] && \
+    [ "$PATHOME_OE_TEST_RUN_ID" = "$OE_GUARD_ROUTING_RUN_ID" ] && \
+    [ "$PATHOME_OE_TEST_SCHEMA" = "$OE_GUARD_ROUTING_SCHEMA" ] && \
+    [ "$PATHOME_OE_TEST_FIXTURE_PREFIX" = "$OE_GUARD_ROUTING_FIXTURE_PREFIX" ] || \
+      oe_guard_refuse 13 'Routing acceptance identity differs from the sole approved target'
+    case "$PATHOME_OE_TEST_DB" in
+      pathome_oe_test_integration|pathome_oe_test_g10_*|pathome_oe_test_phase2a_*|pathome_oe_test_routing_20261023|pathome_oe_test_routing_closure_20261023_01a169a2)
+        oe_guard_refuse 14 'Historical and quarantined databases are refused for routing acceptance' ;;
+    esac
+  fi
+
   export PATHOME_OE_TEST_DB
   return 0
 }
@@ -256,13 +283,25 @@ oe_guard_psql() {
     case "$1" in -c|-Atc) ;; *) oe_guard_refuse 19 'Unapproved maintenance arguments' ;; esac
     local sql="$2"
     case "$sql" in
-      'select version()'|'select current_user'|"select string_agg(datname, ', ' order by datname) from pg_database"|"select count(*) from pg_database where datname = '$PATHOME_OE_TEST_DB'"|"CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\"") ;;
+      'select version()'|'select current_user'|"select string_agg(datname, ', ' order by datname) from pg_database"|"select count(*) from pg_database where datname = '$PATHOME_OE_TEST_DB'"|"CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_APP_USER\""|"CREATE DATABASE \"$PATHOME_OE_TEST_DB\" OWNER \"$PATHOME_OE_TEST_DB_ADMIN_USER\"") ;;
       "DROP DATABASE IF EXISTS \"$PATHOME_OE_TEST_DB\" WITH (FORCE)")
         oe_guard_verify --destructive || return $? ;;
+      "DROP ROLE IF EXISTS \"$PATHOME_OE_TEST_DB_APP_USER\""|"DROP ROLE IF EXISTS \"$PATHOME_OE_TEST_DB_MIGRATOR_USER\"")
+        [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ] || oe_guard_refuse 19 'Role cleanup is restricted to routing acceptance'
+        ;;
       *) oe_guard_refuse 19 'Unapproved maintenance operation' ;;
     esac
   fi
-  oe_runtime_exec psql psql -X -w -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" -U "$user" -d "$database" -v ON_ERROR_STOP=1 "$@"
+  local selected_password="${PATHOME_OE_TEST_DB_PASSWORD:-}"
+  if [ "$user" = "$PATHOME_OE_TEST_DB_ADMIN_USER" ]; then
+    selected_password="${PATHOME_OE_TEST_DB_ADMIN_PASSWORD:-}"
+  elif [ "$user" = "${PATHOME_OE_TEST_DB_MIGRATOR_USER:-}" ]; then
+    selected_password="${PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD:-}"
+  elif [ "$user" != "$PATHOME_OE_TEST_DB_APP_USER" ]; then
+    oe_guard_refuse 19 'Unapproved database role'
+  fi
+  PATHOME_OE_TEST_DB_PASSWORD="$selected_password" \
+    oe_runtime_exec psql psql -X -w -h "$PATHOME_OE_TEST_DB_HOST" -p "$PATHOME_OE_TEST_DB_PORT" -U "$user" -d "$database" -v ON_ERROR_STOP=1 "$@"
 }
 
 oe_guard_drop() { # mandatory live proofs; callers cannot turn a failed check into a soft assertion
@@ -272,10 +311,12 @@ oe_guard_drop() { # mandatory live proofs; callers cannot turn a failed check in
 
 oe_guard_require_run() {
   local run_id actual
+  local proof_user="$PATHOME_OE_TEST_DB_APP_USER"
+  [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ] && proof_user="$PATHOME_OE_TEST_DB_ADMIN_USER"
   [ -f "$PATHOME_OE_TEST_RUN_DIR/run-id" ] && [ ! -L "$PATHOME_OE_TEST_RUN_DIR/run-id" ] || oe_guard_refuse 17 'Run identity missing'
   run_id="$(< "$PATHOME_OE_TEST_RUN_DIR/run-id")"
   [[ "$run_id" =~ ^[a-z0-9-]{16,64}$ ]] || oe_guard_refuse 17 'Invalid run identity'
-  actual="$(oe_guard_psql "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER" -Atc "select run_id from pathome_oe_test_env where env_marker = 'DISPOSABLE' and db_name = current_database()")"
+  actual="$(oe_guard_psql "$PATHOME_OE_TEST_DB" "$proof_user" -Atc "select run_id from public.pathome_oe_test_env where env_marker = 'DISPOSABLE' and db_name = current_database()")"
   [ "$actual" = "$run_id" ] || oe_guard_refuse 17 'Database belongs to another run'
 }
 
@@ -316,9 +357,11 @@ oe_guard_verify() {
   done
 
   oe_guard_resolve
-  oe_guard_check_live_identity "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
+  local proof_user="$PATHOME_OE_TEST_DB_APP_USER"
+  [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ] && proof_user="$PATHOME_OE_TEST_DB_ADMIN_USER"
+  oe_guard_check_live_identity "$PATHOME_OE_TEST_DB" "$proof_user"
   if [ "$destructive" = 'true' ]; then
-    oe_guard_check_sentinel "$PATHOME_OE_TEST_DB" "$PATHOME_OE_TEST_DB_APP_USER"
+    oe_guard_check_sentinel "$PATHOME_OE_TEST_DB" "$proof_user"
   fi
   return 0
 }

@@ -38,6 +38,11 @@ public final class DisposableIntegrationTarget {
 
     /** The one approved Package 3A disposable database (see oe-test.env). */
     public static final String APPROVED_DATABASE = "pathome_oe_test_integration";
+    /** The separately approved G10 disposable database for the final fresh review environment. */
+    public static final String G10_APPROVED_DATABASE = "pathome_oe_test_g10_20261022";
+    public static final String ROUTING_APPROVED_DATABASE = RoutingAcceptanceContract.DATABASE;
+    public static final Set<String> APPROVED_DATABASES =
+            Set.of(APPROVED_DATABASE, G10_APPROVED_DATABASE, ROUTING_APPROVED_DATABASE);
     /** The one approved disposable port. A port is never defaulted. */
     public static final String APPROVED_PORT = "5432";
     /**
@@ -107,14 +112,22 @@ public final class DisposableIntegrationTarget {
     /** Full guard against the real environment: static rules, then live identity and marker. */
     public static Target verifyFromEnvironment() {
         Map<String, String> environment = System.getenv();
-        Target target = requireApprovedStaticTarget(environment);
+        if (ROUTING_APPROVED_DATABASE.equals(trimmed(environment.get(DESIGNATION_FLAG)))
+                || RoutingAcceptanceContract.ACCEPTANCE_ID.equals(
+                trimmed(environment.get(RoutingAcceptanceContract.ACCEPTANCE_FLAG)))) {
+            RoutingAcceptanceContract contract = RoutingAcceptanceContract.requireFromEnvironment();
+            contract.verifyLive();
+            return contract.runtimeTarget();
+        }
+        String approvedDatabase = approvedDatabase(environment);
+        Target target = requireApprovedStaticTarget(environment, approvedDatabase);
         requireLiveDisposableFacts(target, new JdbcLiveProbe());
         return target;
     }
 
     /** Full guard with an injectable live probe, so refusals can be proven without a connection. */
     public static Target verify(Map<String, String> environment, LiveProbe probe) {
-        Target target = requireApprovedStaticTarget(environment);
+        Target target = requireApprovedStaticTarget(environment, approvedDatabase(environment));
         requireLiveDisposableFacts(target, probe);
         return target;
     }
@@ -124,7 +137,13 @@ public final class DisposableIntegrationTarget {
      * server. Everything is explicit - nothing is defaulted, and the approved name and port are pinned.
      */
     public static Target requireApprovedStaticTarget(Map<String, String> environment) {
-        return requireApprovedStaticTarget(environment, APPROVED_DATABASE);
+        return requireApprovedStaticTarget(environment, approvedDatabase(environment));
+    }
+
+    private static String approvedDatabase(Map<String, String> environment) {
+        String designation = trimmed(environment.get(DESIGNATION_FLAG));
+        return designation != null && APPROVED_DATABASES.contains(designation)
+                ? designation : APPROVED_DATABASE;
     }
 
     /** Exact owner-approved R1 target; the older Package 3A policy remains unchanged. */
@@ -146,6 +165,14 @@ public final class DisposableIntegrationTarget {
         if (designation == null) {
             throw refuse(REFUSED_NO_DESIGNATION, "no disposable database is designated; set "
                     + DESIGNATION_FLAG + " to the exact approved target and never rely on a default.");
+        }
+        boolean routingAcceptance = RoutingAcceptanceContract.ACCEPTANCE_ID.equals(
+                trimmed(environment.get(RoutingAcceptanceContract.ACCEPTANCE_FLAG)));
+        if (routingAcceptance && !ROUTING_APPROVED_DATABASE.equals(designation)) {
+            throw refuse(REFUSED_NAME, "routing acceptance is pinned to its sole approved database.");
+        }
+        if (ROUTING_APPROVED_DATABASE.equals(designation) && !routingAcceptance) {
+            throw refuse(REFUSED_NAME, "the routing database requires the exact acceptance identity.");
         }
 
         String host = trimmed(environment.get(HOST_FLAG));
@@ -170,6 +197,10 @@ public final class DisposableIntegrationTarget {
         if (username == null) {
             throw refuse(REFUSED_NO_DESIGNATION, "no test datasource user is configured; set "
                     + DATASOURCE_USERNAME_FLAG + " explicitly.");
+        }
+        if (ROUTING_APPROVED_DATABASE.equals(approvedDatabase)
+                && !RoutingAcceptanceContract.RUNTIME_USER.equals(username)) {
+            throw refuse(REFUSED_NAME, "the routing acceptance datasource must use the exact restricted runtime role.");
         }
 
         requireConfiguredDatasource(configuredUrl, approvedDatabase);
@@ -239,12 +270,12 @@ public final class DisposableIntegrationTarget {
                     + "' on " + target.host() + ":" + target.port() + " could not be verified: "
                     + failure.getClass().getSimpleName() + ".");
         }
-        if (!APPROVED_DATABASE.equals(facts.currentDatabase())) {
+        if (!target.database().equals(facts.currentDatabase())) {
             throw refuse(REFUSED_LIVE_IDENTITY, "the connection resolved to database '" + facts.currentDatabase()
-                    + "' but '" + APPROVED_DATABASE + "' was designated.");
+                    + "' but '" + target.database() + "' was designated.");
         }
         if (facts.disposableMarkerCount() != 1) {
-            throw refuse(REFUSED_MISSING_MARKER, "database '" + APPROVED_DATABASE + "' does not carry exactly one "
+            throw refuse(REFUSED_MISSING_MARKER, "database '" + target.database() + "' does not carry exactly one "
                     + SENTINEL_MARKER + " marker in " + SENTINEL_TABLE + " (matches="
                     + facts.disposableMarkerCount() + "). It is not proven disposable.");
         }

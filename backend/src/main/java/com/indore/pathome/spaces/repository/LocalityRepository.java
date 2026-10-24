@@ -28,6 +28,7 @@ public interface LocalityRepository extends JpaRepository<Locality, Long> {
     List<Locality> findAllBySectorNameIgnoreCase(String sectorName);
     List<Locality> findTop8BySectorNameIgnoreCaseOrderByCityAsc(String sectorName);
     List<Locality> findByCityIgnoreCase(String city);
+    List<Locality> findBySupportedCityIdOrderBySectorNameAscIdAsc(Long supportedCityId);
     java.util.Optional<Locality> findFirstByCityIgnoreCaseOrderByCityAscIdAsc(String city);
 
     @Query("SELECT DISTINCT l.city FROM Locality l WHERE l.city IS NOT NULL")

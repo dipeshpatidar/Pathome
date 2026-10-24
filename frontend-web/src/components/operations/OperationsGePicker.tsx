@@ -51,7 +51,7 @@ type TabKey = 'recommended' | 'browse' | 'search';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'recommended', label: 'Recommended' },
-  { key: 'browse', label: 'Browse feasible GEs' },
+  { key: 'browse', label: 'Matching Ground Executives' },
   { key: 'search', label: 'Search' }
 ];
 
@@ -497,11 +497,11 @@ export const OperationsGePicker: React.FC<Props> = ({
           <Notice
             tone="warn"
             icon={<CircleAlert size={18} />}
-            title="These suggestions were evaluated for a different version of this session"
-            body="Nothing was selected or changed. Reload the session so the itinerary on screen is the one the server evaluated, then choose again."
+            title="This visit plan changed after these suggestions were checked"
+            body="Nothing was selected or changed. Refresh the visit plan so the properties on screen match the current plan, then choose again."
           >
             <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={onRefreshSession}>
-              Reload the session
+              Refresh visit plan
             </button>
           </Notice>
         ) : rankedError ? (
@@ -526,16 +526,16 @@ export const OperationsGePicker: React.FC<Props> = ({
         ) : (
           <Notice
             icon={<Inbox size={18} />}
-            title="No feasible suggestion was returned"
+            title="No matching visit time was found in this check"
             body={
               recommendationStatusHint(ranked?.status)
-              ?? 'You can still choose a Ground Executive from Browse all or Search. A reason will be required.'
+              ?? 'You can still choose a Ground Executive from Matching Ground Executives or Search. A reason will be required.'
             }
           />
         )}
         {ranked && ranked.candidateSearchTruncated ? (
           <p className="oe-footnote">
-            The server reported that its candidate search was truncated, so this is a bounded sample.
+            Pathome checked a limited set of matching Ground Executives, so this is not a full list.
           </p>
         ) : null}
       </div>
@@ -568,11 +568,11 @@ export const OperationsGePicker: React.FC<Props> = ({
           <Notice
             tone="warn"
             icon={<CircleAlert size={18} />}
-            title="These candidates were evaluated for a different version of this session"
-            body="Nothing was selected or changed. Reload the session so the itinerary on screen is the one the server evaluated, then browse again."
+            title="This visit plan changed after these matches were checked"
+            body="Nothing was selected or changed. Refresh the visit plan so the properties on screen match the current plan, then search again."
           >
             <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={onRefreshSession}>
-              Reload the session
+              Refresh visit plan
             </button>
           </Notice>
         ) : null}
@@ -599,8 +599,8 @@ export const OperationsGePicker: React.FC<Props> = ({
         {browseStarted.current && browse.status !== 'loading' && browse.status !== 'error' && browse.ended && browse.items.length === 0 ? (
           <Notice
             icon={<Inbox size={18} />}
-            title="No feasible matches found in this evaluation"
-            body="The server finished this bounded evaluation without returning a feasible Ground Executive. This does not mean no employee exists in the organization."
+            title="No matching visit time was found in this check"
+            body="Pathome checked the available Ground Executives without finding a match for this visit plan. This does not mean no employee exists."
           />
         ) : null}
 
@@ -630,7 +630,7 @@ export const OperationsGePicker: React.FC<Props> = ({
               <>
                 {browse.lastAdded === 0 ? (
                   <p className="oe-ppanel-note">
-                    No feasible Ground Executives were on that page. More records remain to check.
+                    No matching Ground Executives were on that page. More records remain to check.
                   </p>
                 ) : null}
                 <button type="button" className="oe-btn oe-btn--secondary oe-btn--md" onClick={() => void loadBrowse(false)} disabled={blocked}>
@@ -721,11 +721,11 @@ export const OperationsGePicker: React.FC<Props> = ({
               <Notice
                 tone="warn"
                 icon={<CircleAlert size={18} />}
-                title="This search was evaluated for a different version of this session"
-                body="Nothing was selected or changed. Reload the session so the itinerary on screen is the one the server evaluated, then search again."
+                title="This visit plan changed after this search"
+                body="Nothing was selected or changed. Refresh the visit plan so the properties on screen match the current plan, then search again."
               >
                 <button type="button" className="oe-btn oe-btn--secondary oe-btn--sm" onClick={onRefreshSession}>
-                  Reload the session
+                  Refresh visit plan
                 </button>
               </Notice>
             ) : null}
@@ -757,14 +757,14 @@ export const OperationsGePicker: React.FC<Props> = ({
             ) : search.mismatch || search.cursorRejected ? null : search.nextCursor ? (
               <Notice
                 icon={<Inbox size={18} />}
-                title={`No feasible matches yet for “${search.ran}”`}
-                body="That page returned no feasible Ground Executive. More records remain to check, so load more to keep looking."
+                title={`No matching visit time yet for “${search.ran}”`}
+                body="That page returned no matching Ground Executive. More records remain to check, so load more to keep looking."
               />
             ) : (
               <Notice
                 icon={<Inbox size={18} />}
-                title="No feasible matches found in this evaluation"
-                body={`The bounded evaluation finished without a feasible match for “${search.ran}”. Check the spelling or exact user ID. This does not mean no employee exists in the organization.`}
+                title="No matching visit time was found in this check"
+                body={`The search finished without a match for “${search.ran}”. Check the spelling or exact user ID. This does not mean no employee exists.`}
               />
             )}
             {search.more === 'error' ? (

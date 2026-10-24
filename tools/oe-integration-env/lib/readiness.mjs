@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { dataFile, validateMedia, safePort, writePrivate, PHASE2A_APPROVED_DB, PHASE2A_APPROVED_RUN_DIR } from './runtime.mjs';
+import { dataFile, validateMedia, safePort, writePrivate, approvedIntegrationCoordinates,
+  routingAcceptanceTarget, ROUTING_ACCEPTANCE_ID } from './runtime.mjs';
 import { privateDirectory } from './lifecycle.mjs';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -37,6 +38,13 @@ const inputPaths = () => ['backend/pom.xml','backend/src/main','frontend-web/src
   .map(p => repo + p);
 const target = env => ({ database: env.PATHOME_OE_TEST_DB, host: env.PATHOME_OE_TEST_DB_HOST,
   port: env.PATHOME_OE_TEST_DB_PORT, adminUser: env.PATHOME_OE_TEST_DB_ADMIN_USER, appUser: env.PATHOME_OE_TEST_DB_APP_USER,
+  ...(env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID ? {
+    acceptance: env.PATHOME_OE_TEST_ACCEPTANCE, runId: env.PATHOME_OE_TEST_RUN_ID,
+    schema: env.PATHOME_OE_TEST_SCHEMA,
+    migratorUser: env.PATHOME_OE_TEST_DB_MIGRATOR_USER,
+    fixturePrefix: env.PATHOME_OE_TEST_FIXTURE_PREFIX,
+    targetFile: env.PATHOME_OE_TEST_TARGET_FILE
+  } : {}),
   backendPort: safePort(env.PATHOME_OE_TEST_BACKEND_PORT ?? 8080), root: env.PATHOME_OE_TEST_RUN_DIR });
 const systemEnv = { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' };
 export function vacantPort(port, inspect = (p) => {
@@ -46,20 +54,28 @@ export function vacantPort(port, inspect = (p) => {
 
 export function precheck(env = process.env) {
   const facts = target(env);
-  if (facts.database !== PHASE2A_APPROVED_DB || facts.root !== PHASE2A_APPROVED_RUN_DIR
+  if (!approvedIntegrationCoordinates(facts.database, facts.root, env)
       || !['localhost','127.0.0.1'].includes(facts.host) || facts.port !== '5432') throw Error('Unapproved integration coordinates');
+  if (env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID)
+    routingAcceptanceTarget(env, env.PATHOME_OE_TEST_TARGET_FILE, { requireRuntimeEnvironment: false });
   const root = privateDirectory(facts.root);
   for (const file of ['backend.pid','backend-binding.json','backend-startup.json']) if (existsSync(join(root, file))) throw Error('Runtime artifacts require explicit recover before setup');
   vacantPort(facts.backendPort);
   accessSync(root, constants.W_OK);
   for (const file of ['secrets.env','secrets.previous.env']) if (existsSync(join(root,file))) dataFile(join(root,file));
-  const media = mediaConfiguration(env.PATHOME_OE_TEST_MEDIA_ENV_FILE);
-  const image = env.PATHOME_OE_TEST_MEDIA_FILE ?? repo + 'sample_upload_media/interior_living.jpg';
-  const stat = lstatSync(image), bytes = readFileSync(image);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 4 || stat.size > 10 * 1024 * 1024
-      || !(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9)) throw Error('Harmless local JPEG fixture required (maximum 10 MiB)');
+  const routing = env.PATHOME_OE_TEST_ACCEPTANCE === ROUTING_ACCEPTANCE_ID;
+  const media = routing ? {} : mediaConfiguration(env.PATHOME_OE_TEST_MEDIA_ENV_FILE);
+  const image = routing ? 'routing-acceptance-no-media' :
+    (env.PATHOME_OE_TEST_MEDIA_FILE ?? repo + 'sample_upload_media/interior_living.jpg');
+  let bytes = Buffer.from(image);
+  if (!routing) {
+    const stat = lstatSync(image); bytes = readFileSync(image);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 4 || stat.size > 10 * 1024 * 1024
+        || !(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9)) throw Error('Harmless local JPEG fixture required (maximum 10 MiB)');
+  }
   for (const file of ['.mvn','backend/.mvn','.npmrc','frontend-web/.npmrc']) if (existsSync(repo + file)) throw Error('Unreviewed project runtime configuration');
-  return { ...facts, image, imageHash: digest(bytes), mediaHash: digest(JSON.stringify(media)), sourceHash: treeDigest(inputPaths()) };
+  return { ...facts, image, imageHash: digest(bytes), mediaHash: digest(JSON.stringify(media)),
+    sourceHash: treeDigest([...inputPaths(), repo + 'tools/oe-integration-env/routing-acceptance-target.env']) };
 }
 export async function browserPrerequisite() {
   const playwright = await import('/opt/homebrew/lib/node_modules/playwright/index.js');

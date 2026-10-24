@@ -33,7 +33,7 @@ OE_ISO_ERR_REFUSED=90
 # Keys that name a database, an object store, a media CDN, a token signing secret or an external
 # service. None of them may be inherited.
 OE_ISO_DB_KEYS='SPRING_DATASOURCE_URL SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD'
-OE_ISO_TOKEN_KEYS='JWT_SECRET'
+OE_ISO_TOKEN_KEYS='JWT_SECRET PATHOME_CRM_CONTACT_ENCRYPTION_KEY PATHOME_CRM_CONTACT_ENCRYPTION_KEY_ID'
 OE_ISO_MEDIA_KEYS='CLOUDINARY_CLOUD_NAME CLOUDINARY_API_KEY CLOUDINARY_API_SECRET'
 # Keys that would silently change *which* configuration and behaviour the application loads. An
 # inherited production profile would change storage, cache and media behaviour, so it is neutralised too.
@@ -182,10 +182,22 @@ oe_iso_pin_disposable_destinations() { # <jdbc-url>
   # never reused, so a token minted here cannot be honoured anywhere else.
   export JWT_SECRET="$OE_JWT_SECRET"
   export APP_JWT_SECRET="$OE_JWT_SECRET"
+  export PATHOME_CRM_CONTACT_ENCRYPTION_KEY="$OE_CRM_CONTACT_ENCRYPTION_KEY"
+  export PATHOME_CRM_CONTACT_ENCRYPTION_KEY_ID="$OE_CRM_CONTACT_ENCRYPTION_KEY_ID"
   export SPRING_DATASOURCE_HIKARI_JDBC_URL="$jdbc_url"
   export SPRING_FLYWAY_URL="$jdbc_url"
-  export SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_APP_USER"
-  export SPRING_FLYWAY_PASSWORD="${PATHOME_OE_TEST_DB_PASSWORD:-}"
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    [ -n "${PATHOME_OE_TEST_DB_MIGRATOR_USER:-}" ] && \
+    [ -n "${PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD:-}" ] || \
+      oe_iso_refuse 'routing acceptance requires a distinct migrator identity'
+    [ "$PATHOME_OE_TEST_DB_MIGRATOR_USER" != "$PATHOME_OE_TEST_DB_APP_USER" ] || \
+      oe_iso_refuse 'routing acceptance migrator and runtime roles must differ'
+    export SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_MIGRATOR_USER"
+    export SPRING_FLYWAY_PASSWORD="$PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD"
+  else
+    export SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_APP_USER"
+    export SPRING_FLYWAY_PASSWORD="${PATHOME_OE_TEST_DB_PASSWORD:-}"
+  fi
   export SPRING_CONFIG_LOCATION='classpath:/application.yml'
   export SPRING_PROFILES_ACTIVE='oe-disposable'
   export SPRING_PROFILES_INCLUDE=''
@@ -197,6 +209,16 @@ oe_iso_pin_disposable_destinations() { # <jdbc-url>
 # shipped production cloud name is refused.
 oe_iso_pin_media_destination() {
   local mode="${PATHOME_OE_TEST_MEDIA_MODE:-fail-closed}" name
+
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    # Routing acceptance performs no media operation. Pin inert synthetic provider identities so
+    # inherited or real media credentials can never reach the application.
+    export CLOUDINARY_CLOUD_NAME='synthetic-routing-acceptance'
+    export CLOUDINARY_API_KEY='synthetic-routing-acceptance-key'
+    export CLOUDINARY_API_SECRET='synthetic-routing-acceptance-secret'
+    oe_iso_log 'media      disabled with inert synthetic routing-acceptance identities'
+    return 0
+  fi
 
   if [ "$mode" != 'disposable-account' ]; then
     oe_iso_refuse "media destination is not approved (PATHOME_OE_TEST_MEDIA_MODE=$mode). The application cannot start without a media provider, and the only provider configured in this repository is a real external Cloudinary account. A run therefore requires an approved disposable media account: set PATHOME_OE_TEST_MEDIA_MODE=disposable-account, PATHOME_OE_TEST_ALLOW_EXTERNAL_MEDIA_UPLOAD=true and OE_TEST_CLOUDINARY_CLOUD_NAME / OE_TEST_CLOUDINARY_API_KEY / OE_TEST_CLOUDINARY_API_SECRET to that throwaway account."
@@ -252,6 +274,8 @@ oe_iso_apply_test_env() { # <jdbc-url>
   oe_runtime_load_secrets
   oe_iso_pin_media_destination
   export JWT_SECRET="$OE_JWT_SECRET" APP_JWT_SECRET="$OE_JWT_SECRET"
+  export PATHOME_CRM_CONTACT_ENCRYPTION_KEY="$OE_CRM_CONTACT_ENCRYPTION_KEY"
+  export PATHOME_CRM_CONTACT_ENCRYPTION_KEY_ID="$OE_CRM_CONTACT_ENCRYPTION_KEY_ID"
   unset APP_BOOTSTRAP_ADMIN_EMAIL APP_BOOTSTRAP_ADMIN_PASSWORD APP_BOOTSTRAP_OPERATOR_REFERENCE
   export APP_FIRST_ADMIN_PROVISIONING_ENABLED=false
   export SERVER_ADDRESS=127.0.0.1 SERVER_PORT=0
@@ -261,9 +285,17 @@ oe_iso_apply_test_env() { # <jdbc-url>
   export SPRING_DATASOURCE_USERNAME="$PATHOME_OE_TEST_DB_APP_USER"
   export SPRING_DATASOURCE_PASSWORD="${PATHOME_OE_TEST_DB_PASSWORD:-}"
   export SPRING_JPA_HIBERNATE_DDL_AUTO=none
-  export SPRING_DATASOURCE_HIKARI_JDBC_URL="$jdbc_url"
-  export SPRING_FLYWAY_URL="$jdbc_url" SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_APP_USER"
-  export SPRING_FLYWAY_PASSWORD="${PATHOME_OE_TEST_DB_PASSWORD:-}"
+  # Tests construct their own connection boundary from the verified target and exact run-owned
+  # schema. Never forward the unqualified Hikari URL: it outranks the schema-qualified test URL.
+  unset SPRING_DATASOURCE_HIKARI_JDBC_URL
+  export SPRING_FLYWAY_URL="$jdbc_url"
+  if [ "${PATHOME_OE_TEST_ACCEPTANCE:-}" = 'routing-20261023' ]; then
+    export SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_MIGRATOR_USER"
+    export SPRING_FLYWAY_PASSWORD="$PATHOME_OE_TEST_DB_MIGRATOR_PASSWORD"
+  else
+    export SPRING_FLYWAY_USER="$PATHOME_OE_TEST_DB_APP_USER"
+    export SPRING_FLYWAY_PASSWORD="${PATHOME_OE_TEST_DB_PASSWORD:-}"
+  fi
   export SPRING_CONFIG_LOCATION='classpath:/application.yml'
   export SPRING_PROFILES_ACTIVE='oe-disposable' SPRING_PROFILES_INCLUDE=''
   export PATHOME_STAGING_LOCAL_PATH="$PATHOME_OE_TEST_RUN_DIR/media-staging"
@@ -342,6 +374,8 @@ oe_iso_selftest() {
 
   expect_classification 'the datasource URL is a destination' 'database' 'SPRING_DATASOURCE_URL'
   expect_classification 'the JWT signing secret is a destination' 'token-signing' 'JWT_SECRET'
+  expect_classification 'the CRM encryption key is a destination' 'token-signing' \
+    'PATHOME_CRM_CONTACT_ENCRYPTION_KEY'
   expect_classification 'Cloudinary credentials are a destination' 'media-cdn' 'CLOUDINARY_API_KEY'
   expect_classification 'the staging bucket is a destination' 'object-storage' 'PATHOME_STAGING_S3_BUCKET'
   expect_classification 'draft staging credentials are a destination' 'object-storage' 'PATHOME_DRAFT_STAGING_S3_SECRET_KEY'
@@ -349,6 +383,10 @@ oe_iso_selftest() {
   expect_classification 'an SMS provider key is a destination' 'external-service' 'MSG91_AUTH_KEY'
   expect_classification 'a map provider key is a destination' 'external-service' 'MAPTILER_API_KEY'
   expect_classification 'an inherited activation profile is neutralised' 'application-profile' 'SPRING_PROFILES_ACTIVE'
+  expect_classification 'the bare Hikari datasource is neutralised' 'application-profile' \
+    'SPRING_DATASOURCE_HIKARI_JDBC_URL'
+  expect_classification 'a Spring JSON override is neutralised' 'application-profile' \
+    'SPRING_APPLICATION_JSON'
   expect_classification 'a visit threshold is not a destination' 'other' 'PATHOME_VISIT_MIN_CONTACT_ATTEMPTS'
   expect_classification 'the disposable password is not a destination' 'other' 'PATHOME_OE_TEST_DB_PASSWORD'
 
@@ -371,9 +409,10 @@ oe_iso_selftest() {
   # The neutralisation must actually clear a destination that is present in the environment.
   actual="$(env SPRING_DATASOURCE_URL='jdbc:postgresql://localhost:5432/pathome_db' \
     CLOUDINARY_API_KEY='real' SMTP_HOST='smtp.example.com' SPRING_PROFILES_ACTIVE='prod' \
+    PATHOME_CRM_CONTACT_ENCRYPTION_KEY='inherited' \
     bash -c "source '$OE_ISO_SELF'; oe_iso_neutralise_environment >/dev/null; \
-      printf '%s %s %s %s' \"\${SPRING_DATASOURCE_URL:-unset}\" \"\${CLOUDINARY_API_KEY:-unset}\" \"\${SMTP_HOST:-unset}\" \"\${SPRING_PROFILES_ACTIVE:-unset}\"")"
-  if [ "$actual" = 'unset unset unset unset' ]; then
+      printf '%s %s %s %s %s' \"\${SPRING_DATASOURCE_URL:-unset}\" \"\${CLOUDINARY_API_KEY:-unset}\" \"\${SMTP_HOST:-unset}\" \"\${SPRING_PROFILES_ACTIVE:-unset}\" \"\${PATHOME_CRM_CONTACT_ENCRYPTION_KEY:-unset}\"")"
+  if [ "$actual" = 'unset unset unset unset unset' ]; then
     printf 'PASS  %s -> %s\n' 'neutralisation clears inherited destinations' "$actual"
   else
     printf 'FAIL  %s -> %s\n' 'neutralisation clears inherited destinations' "$actual"
@@ -400,6 +439,37 @@ oe_iso_selftest() {
     failures=$((failures + 1))
   fi
   rm -rf "$tmp_dir"
+
+  if ! declare -f oe_iso_apply_test_env | grep -q 'unset SPRING_DATASOURCE_HIKARI_JDBC_URL'; then
+    printf 'FAIL  %s\n' 'test execution must never forward the unqualified Hikari URL'
+    failures=$((failures + 1))
+  elif declare -f oe_iso_apply_test_env | grep -q 'export SPRING_DATASOURCE_HIKARI_JDBC_URL'; then
+    printf 'FAIL  %s\n' 'test execution still exports an unsafe Hikari override'
+    failures=$((failures + 1))
+  else
+    printf 'PASS  %s\n' 'test execution cannot forward the unqualified Hikari URL'
+  fi
+
+  local valid_key='MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='
+  actual="$(env -u OE_CRM_CONTACT_ENCRYPTION_KEY -u OE_CRM_CONTACT_ENCRYPTION_KEY_ID \
+    bash -c "source '$OE_ISO_SELF'; oe_runtime_validate_contact_encryption_identity" >/dev/null 2>&1; printf '%s' "$?")"
+  [ "$actual" = "$OE_ISO_ERR_REFUSED" ] && printf 'PASS  %s\n' 'missing CRM encryption identity is refused' \
+    || { printf 'FAIL  %s\n' 'missing CRM encryption identity is refused'; failures=$((failures + 1)); }
+  actual="$(env OE_CRM_CONTACT_ENCRYPTION_KEY='not-base64' \
+    OE_CRM_CONTACT_ENCRYPTION_KEY_ID='primary' \
+    bash -c "source '$OE_ISO_SELF'; oe_runtime_validate_contact_encryption_identity" >/dev/null 2>&1; printf '%s' "$?")"
+  [ "$actual" = "$OE_ISO_ERR_REFUSED" ] && printf 'PASS  %s\n' 'malformed CRM encryption key is refused' \
+    || { printf 'FAIL  %s\n' 'malformed CRM encryption key is refused'; failures=$((failures + 1)); }
+  actual="$(env OE_CRM_CONTACT_ENCRYPTION_KEY="$valid_key" \
+    OE_CRM_CONTACT_ENCRYPTION_KEY_ID='an-invalid-key-id-that-is-too-long' \
+    bash -c "source '$OE_ISO_SELF'; oe_runtime_validate_contact_encryption_identity" >/dev/null 2>&1; printf '%s' "$?")"
+  [ "$actual" = "$OE_ISO_ERR_REFUSED" ] && printf 'PASS  %s\n' 'invalid CRM encryption key ID is refused' \
+    || { printf 'FAIL  %s\n' 'invalid CRM encryption key ID is refused'; failures=$((failures + 1)); }
+  actual="$(env OE_CRM_CONTACT_ENCRYPTION_KEY="$valid_key" \
+    OE_CRM_CONTACT_ENCRYPTION_KEY_ID='primary' \
+    bash -c "source '$OE_ISO_SELF'; oe_runtime_validate_contact_encryption_identity" >/dev/null 2>&1; printf '%s' "$?")"
+  [ "$actual" = '0' ] && printf 'PASS  %s\n' 'valid AES-256 CRM key identity is accepted' \
+    || { printf 'FAIL  %s\n' 'valid AES-256 CRM key identity is accepted'; failures=$((failures + 1)); }
 
   return "$failures"
 }

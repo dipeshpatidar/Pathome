@@ -51,7 +51,8 @@ const VALID_ADMIN_TABS = new Set([
   'failed-uploads',
   'visit-repairs',
   'visit-outcomes',
-  'operations'
+  'operations',
+  'staff-permissions'
 ]);
 
 type PropertyVisitLookup = {
@@ -89,6 +90,12 @@ export const Home: React.FC = () => {
    * navigation instead of the employee console.
    */
   const operationsRoute = isOperationsPath(normalizeRoutePathname(location.pathname));
+  const normalizedCurrentPath = normalizeRoutePathname(location.pathname);
+  const operationsLeadRoute = normalizedCurrentPath === '/operations/leads'
+    || normalizedCurrentPath.startsWith('/operations/leads/');
+  const operationsLeadDiagnosticsRoute =
+    normalizedCurrentPath === '/operations/leads/source-exceptions';
+  const operationsRoutingRoute = normalizedCurrentPath === '/operations/routing';
   /**
    * True while an embedded console tab is showing the same workspace. It is reported up rather than
    * owned locally so the one shared authority keeps its focus, visibility and cadence revalidation
@@ -116,7 +123,13 @@ export const Home: React.FC = () => {
    * shared authority treat every such transition as a new entry, while a closed workspace stays null.
    */
   const operationsSurface = operationsRoute
-    ? 'destination'
+    ? operationsRoutingRoute
+      ? 'destination:routing'
+      : operationsLeadDiagnosticsRoute
+        ? 'destination:lead-diagnostics'
+        : operationsLeadRoute
+          ? 'destination:leads'
+          : 'destination'
     : embeddedOperationsOpen
       ? (role === 'EMPLOYEE' ? 'embedded:employee' : 'embedded:admin')
       : null;
@@ -127,7 +140,16 @@ export const Home: React.FC = () => {
    * previous account can never establish authority for the next one, and a verdict earned by one entry
    * can never admit another.
    */
-  const operationsAuthority = useOperationsCapability({ workspaceEntry: operationsSurface });
+  const operationsAuthority = useOperationsCapability({
+    workspaceEntry: operationsSurface,
+    accessPolicy: operationsRoutingRoute
+      ? 'routing'
+      : operationsLeadDiagnosticsRoute
+        ? 'lead-diagnostics'
+        : operationsLeadRoute
+          ? 'lead-workspace'
+          : 'operations'
+  });
 
   const [tenantFavoritesSnapshot, setTenantFavoritesSnapshot] = useState<TenantFavoritesSnapshot>(emptyTenantFavoritesSnapshot);
   const tenantFavoritesSnapshotRef = useRef(tenantFavoritesSnapshot);
@@ -897,7 +919,7 @@ export const Home: React.FC = () => {
           role={role}
           hasLessorCapability={hasLessorCapability}
           operationsAuthority={operationsAuthority}
-          onOpenOperations={() => navigate('/operations')}
+          onOpenOperations={() => navigate(operationsRoutingRoute ? '/operations/routing' : '/operations')}
           draftCount={currentDraftCount}
           draftState={currentDraftState}
           onOpenDrafts={openDrafts}
