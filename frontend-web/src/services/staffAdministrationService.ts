@@ -171,7 +171,8 @@ const send = async (
 export const staffAdministrationService = {
   async capabilities(context: StaffRequestContext = {}): Promise<{
     staffActive: boolean;
-    capabilities: Array<{ capability: string; scopeType: string }>;
+    capabilities: Array<{ capability: string; scopeType: string; cityId: number | null;
+      cityDisplayName: string | null; teamId: number | null; teamDisplayName: string | null }>;
     serverTime: string | null;
   }> {
     const captured = context.session ?? session();
@@ -180,7 +181,14 @@ export const staffAdministrationService = {
     ));
     const capabilities = Array.isArray(value?.capabilities)
       ? value.capabilities.map(record).filter((entry): entry is Record<string, unknown> => entry !== null)
-        .map((entry) => ({ capability: text(entry.capability) ?? '', scopeType: text(entry.scopeType) ?? '' }))
+        .map((entry) => ({
+          capability: text(entry.capability) ?? '',
+          scopeType: text(entry.scopeType) ?? '',
+          cityId: integer(entry.cityId),
+          cityDisplayName: text(entry.cityDisplayName),
+          teamId: integer(entry.teamId),
+          teamDisplayName: text(entry.teamDisplayName)
+        }))
         .filter((entry) => entry.capability && entry.scopeType)
       : [];
     return {

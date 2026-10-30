@@ -140,4 +140,25 @@ public interface StaffAccessGrantRepository extends JpaRepository<StaffAccessGra
     List<StaffAccessGrant> findLockedByUserIdsOrderById(@Param("userIds") Collection<Long> userIds);
 
     List<StaffAccessGrant> findAllByUserIdOrderByCreatedAtDesc(Long userId);
+
+    @Query(value = """
+            SELECT g.*
+            FROM staff_access_grants g
+            JOIN employee_profiles p ON p.user_id = g.user_id AND p.staff_active = TRUE
+            JOIN supported_cities c ON c.id = g.city_id
+            CROSS JOIN (SELECT clock_timestamp() AS db_now) clock
+            WHERE g.user_id = :userId
+              AND g.capability = :capability
+              AND g.scope_type = 'CITY'
+              AND g.city_id = :cityId
+              AND c.active = TRUE
+              AND g.revoked_at IS NULL
+              AND g.effective_at <= clock.db_now
+              AND (g.expires_at IS NULL OR clock.db_now < g.expires_at)
+            ORDER BY g.id
+            FOR SHARE OF g
+            """, nativeQuery = true)
+    List<StaffAccessGrant> findEffectiveCityCapabilityShared(@Param("userId") Long userId,
+                                                             @Param("capability") String capability,
+                                                             @Param("cityId") Long cityId);
 }

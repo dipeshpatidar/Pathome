@@ -40,6 +40,7 @@ public class ListingGalleryConcurrencyTest {
                 });
         controller = new PropertyController(
                 listingRepository,
+                mock(com.indore.pathome.spaces.service.PublicPropertyReadService.class),
                 mock(com.indore.pathome.spaces.repository.PropertyMediaAssetRepository.class),
                 mock(com.indore.pathome.spaces.service.CloudinaryService.class),
                 mock(com.indore.pathome.spaces.service.FailedUploadService.class),
@@ -50,7 +51,8 @@ public class ListingGalleryConcurrencyTest {
                 null,
                 mock(com.indore.pathome.spaces.repository.UserRepository.class),
                 mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class),
-                authority
+                authority,
+                mock(com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService.class)
         );
     }
 

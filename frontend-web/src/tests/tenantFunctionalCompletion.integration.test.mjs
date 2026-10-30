@@ -17,7 +17,9 @@ test('Explore, Quick View, and Property Detail reach the real idempotent request
   assert.doesNotMatch(home, /visitRequestStatusIncomplete/);
   assert.match(detail, /onRequestVisit\(property\)/);
   assert.doesNotMatch(detail, /visitRequestStatusIncomplete/);
-  assert.match(requestModal, /propertyService\.createVisitRequest\(property\.id/);
+  assert.match(requestModal, /canUseCanonicalTenantVisitCommand\(/);
+  assert.match(requestModal, /handoffContext,\s*associateEnquiry:/);
+  assert.match(requestModal, /leadAssistanceService\.createOwnVisitRequest\(/);
   assert.match(requestModal, /tenantVisitAcknowledgement\(result\.status, result\.created\)/);
 });
 

@@ -78,6 +78,20 @@ export type AuthenticationOutcome =
   | { ok: false; reason: AuthenticationRejection };
 
 /**
+ * Canonical role mapping for navigation and presentation. Persisted backend authorization remains
+ * authoritative; these values never grant access by themselves.
+ */
+export function normalizeUserRole(rawRole: unknown): UserRole {
+  if (typeof rawRole !== 'string' || rawRole.trim().length === 0) return 'GUEST';
+  const clean = rawRole.trim().toUpperCase().replace(/^ROLE_/, '');
+  if (clean === 'ADMIN') return 'ADMIN';
+  if (clean === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+  if (clean === 'SUB_ADMIN' || clean === 'MANAGER') return 'SUB_ADMIN';
+  if (clean === 'EMPLOYEE' || clean === 'STAFF' || clean === 'GROUND_BOY') return 'EMPLOYEE';
+  return 'TENANT';
+}
+
+/**
  * Validates an authentication response and, only when every required field is valid, persists the
  * session token. A rejected response writes nothing at all, so the client stays unauthenticated and
  * no account-scoped request can be authorised from it.

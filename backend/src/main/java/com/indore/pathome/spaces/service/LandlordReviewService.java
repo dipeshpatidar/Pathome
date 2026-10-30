@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 /**
  * The landlord listing review and publication workflow.
@@ -65,6 +67,7 @@ public class LandlordReviewService {
     /** Bounded reason codes for the two review families; the action code carries the precise operation. */
     private static final String LISTING_REVIEW_REASON = "ADMIN_REVIEW_DECISION";
     private static final String REVISION_REVIEW_REASON = "ADMIN_REVISION_DECISION";
+    private static final ZoneId INDIA_ZONE = ZoneId.of("Asia/Kolkata");
 
     private final ListingRepository listings;
     private final PropertyUploadDraftRepository drafts;
@@ -80,6 +83,9 @@ public class LandlordReviewService {
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private LessorWorkflowNotificationService workflowNotifications;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private PropertyPublicationHistoryRecorder publicationHistory;
 
     public void setWorkflowNotifications(LessorWorkflowNotificationService workflowNotifications) {
         this.workflowNotifications = workflowNotifications;
@@ -165,7 +171,7 @@ public class LandlordReviewService {
         var items = rows.stream().map(row -> new LandlordMediaItem(row.getMediaId(), row.getOriginalFilename(),
                 row.getContentType(), row.getCloudinaryUrl(), row.getUploadStatus(),
                 Boolean.TRUE.equals(row.getIsCover()), row.getSortOrder() == null ? 0 : row.getSortOrder(),
-                RoomTag.fromStored(row.getRoomTag()))).toList();
+                RoomTag.fromStored(row.getRoomTag()), row.getCaption())).toList();
         return new LandlordReviewDetail(draftId, draft.getPublishedPropertyId(), draft.getStatus(),
                 draft.getReviewNote(), draftService.readData(draft), items);
     }
@@ -199,12 +205,23 @@ public class LandlordReviewService {
         }
         ListingWorkflowStatus fromStatus = listing.getWorkflowStatus();
         long previousVersion = versionOf(listing);
+        Map<String, Object> publicationBefore = target == ListingWorkflowStatus.PUBLISHED
+                && publicationHistory != null ? publicationHistory.snapshot(listing) : null;
         try { workflow.transition(listing, target, ListingWorkflowService.Actor.ADMIN); }
         catch (IllegalStateException ex) {
             throw new DraftConflictException(String.valueOf(listingId), 0, "Property status changed. Reload the review queue.");
         }
+        if (target == ListingWorkflowStatus.PUBLISHED) {
+            listing.setLastContentPublishedAt(LocalDateTime.now(INDIA_ZONE));
+        }
         listing.setReviewNote(reviewNote);
         Listing saved = listings.saveAndFlush(listing);
+        if (target == ListingWorkflowStatus.PUBLISHED && publicationHistory != null) {
+            publicationHistory.record(saved, publicationBefore,
+                    "legacy-listing-" + saved.getId() + "-v" + saved.getVersion(),
+                    "ADMIN_LISTING_PUBLICATION", actor.getId(),
+                    Map.of("capability", "LISTING_REVIEW", "scopeType", "GLOBAL"));
+        }
         audit.recordUserEvent(actor, listingActionCode(target), "LISTING", saved.getId(), LISTING_REVIEW_REASON,
                 null, null, listingDecisionDetails(fromStatus, saved, previousVersion));
         if (workflowNotifications != null) {
@@ -291,14 +308,18 @@ public class LandlordReviewService {
     public LandlordListingAction approveRevision(String draftId, Reviewer reviewer) {
         commandBounds.apply();
         reviewAuthority.holdAuthorityEvidence(reviewer);
-        PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
+        PropertyUploadDraft observedDraft = drafts.findByDraftId(draftId)
                 .filter(row -> row.getLandlordUserId() != null && row.getPublishedPropertyId() != null)
+                .orElseThrow(() -> new EntityNotFoundException("Revision not found"));
+        listings.lockOwnedId(observedDraft.getPublishedPropertyId(), observedDraft.getLandlordUserId())
+                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
+                .filter(row -> observedDraft.getLandlordUserId().equals(row.getLandlordUserId())
+                        && observedDraft.getPublishedPropertyId().equals(row.getPublishedPropertyId()))
                 .orElseThrow(() -> new EntityNotFoundException("Revision not found"));
         if (!"REVIEW".equals(draft.getStatus())) {
             throw new DraftConflictException(draftId, draft.getVersion(), "Revision is no longer awaiting review.");
         }
-        listings.lockOwnedId(draft.getPublishedPropertyId(), draft.getLandlordUserId())
-                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
         // Decided under the owner-scoped property lock, before any revision state can be flushed. Approving
         // a revision stays ROLE_ADMIN-only, so the narrower legacy rule applies here too.
         reviewAuthority.revalidateLegacyAdministrator(reviewer);
@@ -316,8 +337,16 @@ public class LandlordReviewService {
         submissions.requireCompleteRevision(data, rows);
         Locality locality = locations.requireMatchingLocality(data.location().city(), data.location().canonicalLocalityId());
         long previousVersion = versionOf(owned);
+        Map<String, Object> publicationBefore = publicationHistory == null
+                ? null : publicationHistory.snapshot(listing);
         submissions.applyRevision(listing, data, rows, locality);
+        listing.setLastContentPublishedAt(LocalDateTime.now(INDIA_ZONE));
         Listing saved = listings.saveAndFlush(listing);
+        if (publicationHistory != null) {
+            publicationHistory.record(saved, publicationBefore, draftId,
+                    "ADMIN_REVISION_PUBLICATION", actor.getId(),
+                    Map.of("capability", "REVISION_APPROVAL", "scopeType", "GLOBAL"));
+        }
         draft.setStatus("APPROVED");
         draft.setReviewNote(null);
         drafts.save(draft);
@@ -342,8 +371,14 @@ public class LandlordReviewService {
     public LandlordReviewItem requestRevisionChanges(String draftId, String note, Reviewer reviewer) {
         commandBounds.apply();
         reviewAuthority.holdAuthorityEvidence(reviewer);
-        PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
+        PropertyUploadDraft observedDraft = drafts.findByDraftId(draftId)
                 .filter(row -> row.getLandlordUserId() != null && row.getPublishedPropertyId() != null)
+                .orElseThrow(() -> new EntityNotFoundException("Revision not found"));
+        listings.lockOwnedId(observedDraft.getPublishedPropertyId(), observedDraft.getLandlordUserId())
+                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        PropertyUploadDraft draft = drafts.findByDraftIdForUpdate(draftId)
+                .filter(row -> observedDraft.getLandlordUserId().equals(row.getLandlordUserId())
+                        && observedDraft.getPublishedPropertyId().equals(row.getPublishedPropertyId()))
                 .orElseThrow(() -> new EntityNotFoundException("Revision not found"));
         if (!"REVIEW".equals(draft.getStatus())) {
             throw new DraftConflictException(draftId, draft.getVersion(), "Revision is no longer awaiting review.");
@@ -351,6 +386,14 @@ public class LandlordReviewService {
         // Decided under the locked draft row, before any revision state can be flushed. Requesting revision
         // changes stays ROLE_ADMIN-only, so the narrower legacy rule applies here too.
         reviewAuthority.revalidateLegacyAdministrator(reviewer);
+        Listing parent = listings.findByIdAndOwnerUserId(
+                        draft.getPublishedPropertyId(), draft.getLandlordUserId())
+                .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        if (!List.of(ListingWorkflowStatus.PUBLISHED, ListingWorkflowStatus.PAUSED)
+                .contains(parent.getWorkflowStatus())) {
+            throw new DraftConflictException(draftId, draft.getVersion(),
+                    "The property lifecycle changed before revision changes could be requested.");
+        }
         User actor = reviewAuthority.attributableActor(reviewer);
         long previousDraftVersion = draft.getVersion() == null ? 0L : draft.getVersion();
         draft.setReviewNote(requireNote(note));

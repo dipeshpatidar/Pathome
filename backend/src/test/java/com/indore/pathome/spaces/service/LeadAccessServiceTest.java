@@ -83,6 +83,52 @@ class LeadAccessServiceTest {
     }
 
     @Test
+    void cityIntakeEditAuthorityDoesNotAdmitCustomerContactOrSharing() {
+        LeadAccessContext intake = new LeadAccessContext(false, List.of(5L), List.of(),
+                List.of(), List.of());
+        LeadRoutingQueue unassigned = lead(
+                10L, null, null, LeadLegacyProvenance.VERIFIED_MANUAL);
+        SupportedCity cityFive = city(5L);
+        when(unassigned.getSupportedCity()).thenReturn(cityFive);
+        LeadAccessContext owner = new LeadAccessContext(false, List.of(), List.of(),
+                List.of(9L), List.of());
+        LeadRoutingQueue owned = lead(11L, 9L, 7L, LeadLegacyProvenance.VERIFIED_MANUAL);
+
+        assertTrue(intake.canEdit(unassigned, 7L));
+        assertFalse(intake.canRevealContact(unassigned, 7L));
+        assertThrows(LeadAccessContext.hidden().getClass(),
+                () -> leads.requireContactOwner(intake, unassigned, 7L));
+
+        assertTrue(owner.canEdit(owned, 7L));
+        assertTrue(owner.canRevealContact(owned, 7L));
+        leads.requireContactOwner(owner, owned, 7L);
+    }
+
+    @Test
+    void partialAdministrativeAndIntakeGrantsAreNotUnionedIntoContactAuthority() {
+        LeadRoutingQueue unassigned = lead(
+                10L, null, null, LeadLegacyProvenance.VERIFIED_MANUAL);
+        SupportedCity cityFive = city(5L);
+        when(unassigned.getSupportedCity()).thenReturn(cityFive);
+        LeadRoutingQueue foreignOwner = lead(
+                11L, 9L, 44L, LeadLegacyProvenance.VERIFIED_MANUAL);
+        LeadRoutingQueue ownerInOtherTeam = lead(
+                12L, 8L, 7L, LeadLegacyProvenance.VERIFIED_MANUAL);
+
+        for (LeadAccessContext context : List.of(
+                new LeadAccessContext(true, List.of(5L), List.of(), List.of(), List.of(9L)),
+                new LeadAccessContext(false, List.of(5L), List.of(), List.of(9L), List.of()),
+                new LeadAccessContext(false, List.of(5L), List.of(6L), List.of(), List.of(9L)))) {
+            assertFalse(context.canRevealContact(unassigned, 7L));
+            assertFalse(context.canRevealContact(foreignOwner, 7L));
+            assertFalse(context.canRevealContact(ownerInOtherTeam, 7L));
+        }
+        LeadAccessContext matchingOwnerTeam = new LeadAccessContext(
+                false, List.of(5L), List.of(6L), List.of(8L), List.of(9L));
+        assertTrue(matchingOwnerTeam.canRevealContact(ownerInOtherTeam, 7L));
+    }
+
+    @Test
     void legacyUnverifiedRowsAreGlobalDiagnosticsOnly() {
         LeadAccessContext intake = new LeadAccessContext(false, List.of(5L), List.of(),
                 List.of(), List.of());

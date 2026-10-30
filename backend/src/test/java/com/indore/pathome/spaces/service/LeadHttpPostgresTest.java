@@ -32,9 +32,12 @@ import com.indore.pathome.spaces.repository.StaffAccessGrantRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.security.JwtUtils;
+import com.indore.pathome.spaces.support.DbA01BrowserProcess;
+import com.indore.pathome.spaces.support.DbA01BrowserLauncher;
 import com.indore.pathome.spaces.support.DisposableIntegrationTarget;
 import com.indore.pathome.spaces.support.RunOwnedSchemaDataSource;
 import com.indore.pathome.spaces.support.OwnedTestSchemaRole;
+import com.sun.net.httpserver.HttpServer;
 import org.flywaydb.core.Flyway;
 import org.hibernate.resource.jdbc.spi.StatementInspector;
 import org.junit.jupiter.api.AfterAll;
@@ -3825,41 +3828,95 @@ class LeadHttpPostgresTest {
                 ? workingDirectory.getParent() : workingDirectory;
         Path script = repository.resolve(
                 "frontend-web/browser-verification/operations-leads/run.mjs");
-        Path evidence = repository.resolve(
-                "tools/oe-integration-env/evidence/"
-                        + "p1-whatsapp-final-activation-20261022/genuine-browser");
+        Path evidence = repository.resolve("tools/oe-integration-env/evidence")
+                .resolve("lead-g10-browser-" + UUID.randomUUID());
+        evidence = DbA01BrowserProcess.requireFreshEvidencePath(
+                repository, evidence.toString());
         assertTrue(script.toFile().isFile(), "production browser verification script is missing");
-        Files.createDirectories(evidence);
-        Path browserLog = evidence.resolve("browser-run.log");
 
-        ProcessBuilder builder = new ProcessBuilder("node", script.toString());
-        builder.directory(repository.toFile());
-        builder.redirectErrorStream(true);
-        builder.redirectOutput(browserLog.toFile());
-        builder.environment().put("PATHOME_BROWSER_BACKEND_PORT", String.valueOf(port));
-        builder.environment().put("PATHOME_BROWSER_OWNER_TOKEN", owner.token());
-        builder.environment().put("PATHOME_BROWSER_OWNER_ID", String.valueOf(owner.user().getId()));
-        builder.environment().put("PATHOME_BROWSER_PEER_TOKEN", peer.token());
-        builder.environment().put("PATHOME_BROWSER_PEER_ID", String.valueOf(peer.user().getId()));
-        builder.environment().put("PATHOME_BROWSER_SUPERVISOR_TOKEN", supervisor.token());
-        builder.environment().put("PATHOME_BROWSER_SUPERVISOR_ID",
-                String.valueOf(supervisor.user().getId()));
-        builder.environment().put("PATHOME_BROWSER_ADMIN_TOKEN", admin.token());
-        builder.environment().put("PATHOME_BROWSER_ADMIN_ID", String.valueOf(admin.user().getId()));
-        builder.environment().put("PATHOME_BROWSER_EXPECTED_PROPERTY_ID",
-                String.valueOf(publicProperty.getId()));
-        builder.environment().put("PATHOME_BROWSER_EVIDENCE_DIR", evidence.toString());
+        String grantRevokeToken = UUID.randomUUID().toString();
+        HttpServer grantRevokeControl = startBrowserGrantRevokeControl(
+                owner.grants().get(0).getId(), admin.user().getId(), grantRevokeToken);
+        boolean controlOwnershipTransferred = false;
+        try {
+            Map<String, String> fixtureEnvironment = new LinkedHashMap<>();
+            fixtureEnvironment.put("PATHOME_BROWSER_BACKEND_PORT", String.valueOf(port));
+            fixtureEnvironment.put("PATHOME_BROWSER_OWNER_TOKEN", owner.token());
+            fixtureEnvironment.put("PATHOME_BROWSER_OWNER_ID",
+                    String.valueOf(owner.user().getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_OWNER_GRANT_ID",
+                    String.valueOf(owner.grants().get(0).getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_GRANT_REVOKE_URL",
+                    "http://127.0.0.1:" + grantRevokeControl.getAddress().getPort()
+                            + "/revoke-owner-grant");
+            fixtureEnvironment.put("PATHOME_BROWSER_GRANT_REVOKE_TOKEN", grantRevokeToken);
+            fixtureEnvironment.put("PATHOME_BROWSER_PEER_TOKEN", peer.token());
+            fixtureEnvironment.put("PATHOME_BROWSER_PEER_ID",
+                    String.valueOf(peer.user().getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_SUPERVISOR_TOKEN", supervisor.token());
+            fixtureEnvironment.put("PATHOME_BROWSER_SUPERVISOR_ID",
+                    String.valueOf(supervisor.user().getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_ADMIN_TOKEN", admin.token());
+            fixtureEnvironment.put("PATHOME_BROWSER_ADMIN_ID",
+                    String.valueOf(admin.user().getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_EXPECTED_PROPERTY_ID",
+                    String.valueOf(publicProperty.getId()));
+            fixtureEnvironment.put("PATHOME_BROWSER_EVIDENCE_DIR", evidence.toString());
 
-        Process process = builder.start();
-        boolean exited = process.waitFor(180, TimeUnit.SECONDS);
-        if (!exited) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
+            controlOwnershipTransferred = true;
+            DbA01BrowserProcess.Result process = DbA01BrowserLauncher.launch(
+                    repository, script, fixtureEnvironment, () -> grantRevokeControl.stop(0),
+                    Duration.ofSeconds(180));
+            assertFalse(process.timedOut(),
+                    "genuine browser verification exceeded the bounded 180-second window");
+            String browserOutput = Files.readString(process.log());
+            assertEquals(0, process.exitCode(),
+                    "genuine browser verification failed:\n" + browserOutput);
+        } finally {
+            if (!controlOwnershipTransferred) grantRevokeControl.stop(0);
         }
-        assertTrue(exited, "genuine browser verification exceeded the bounded 180-second window");
-        String browserOutput = Files.readString(browserLog);
-        assertEquals(0, process.exitValue(),
-                "genuine browser verification failed:\n" + browserOutput);
+    }
+
+    private HttpServer startBrowserGrantRevokeControl(
+            long grantId,
+            long adminId,
+            String expectedToken
+    ) throws Exception {
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            server.createContext("/revoke-owner-grant", exchange -> {
+                try {
+                    if (!"POST".equals(exchange.getRequestMethod())
+                            || !expectedToken.equals(exchange.getRequestHeaders()
+                            .getFirst("X-Pathome-Test-Control"))) {
+                        exchange.sendResponseHeaders(403, -1);
+                        return;
+                    }
+                    int updated = jdbc.update(
+                            "update staff_access_grants "
+                                    + "set revoked_at=clock_timestamp(),revoked_by_user_id=?,"
+                                    + "revoke_reason_code='DB_C3_BROWSER_GRANT_LOSS' "
+                                    + "where id=? and revoked_at is null",
+                            adminId, grantId);
+                    byte[] body = ("{\"updated\":" + updated + "}")
+                            .getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set(
+                            "Content-Type", "application/json; charset=utf-8");
+                    exchange.sendResponseHeaders(updated == 1 ? 200 : 409, body.length);
+                    exchange.getResponseBody().write(body);
+                } catch (Exception exception) {
+                    exchange.sendResponseHeaders(500, -1);
+                } finally {
+                    exchange.close();
+                }
+            });
+            server.start();
+            return server;
+        } catch (RuntimeException | Error failure) {
+            server.stop(0);
+            throw failure;
+        }
     }
 
     @Test
@@ -4065,7 +4122,7 @@ class LeadHttpPostgresTest {
         JsonNode share = mapper.readTree(current.body());
         assertEquals(20, share.path("publicLinks").size());
         assertTrue(share.path("previewText").asText().contains(currentTitle));
-        assertTrue(share.path("previewText").asText().contains("INR 21999.00 / month"));
+        assertTrue(share.path("previewText").asText().contains("INR 21,999 / month"));
         assertEquals(1L, jdbc.queryForObject(
                 "select count(*) from lead_shares where lead_id = ?", Long.class, lead.getId()));
     }

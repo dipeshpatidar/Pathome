@@ -76,6 +76,14 @@ public class LeadAccessService {
         if (!context.canEdit(lead, actorId)) throw LeadAccessContext.hidden();
     }
 
+    /**
+     * Customer contact preferences, consent, and property sharing require the current Lead owner,
+     * not merely City intake edit authority over an unassigned Lead.
+     */
+    void requireContactOwner(LeadAccessContext context, LeadRoutingQueue lead, Long actorId) {
+        if (!context.canRevealContact(lead, actorId)) throw LeadAccessContext.hidden();
+    }
+
     void requireFetchableCardinality(Long value, String field) {
         if (value == null || value <= 0) throw new IllegalArgumentException(field + " is required");
     }

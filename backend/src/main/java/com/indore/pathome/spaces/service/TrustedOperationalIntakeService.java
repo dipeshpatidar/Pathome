@@ -1,14 +1,21 @@
 package com.indore.pathome.spaces.service;
 
+import com.indore.pathome.spaces.exception.DraftConflictException;
 import com.indore.pathome.spaces.entity.Locality;
+import com.indore.pathome.spaces.entity.Listing;
+import com.indore.pathome.spaces.entity.ListingStatus;
+import com.indore.pathome.spaces.entity.ListingWorkflowStatus;
 import com.indore.pathome.spaces.entity.PropertyVisitRequest;
 import com.indore.pathome.spaces.entity.SupportedCity;
 import com.indore.pathome.spaces.entity.VisitRequestRoutingTask;
 import com.indore.pathome.spaces.repository.LocalityRepository;
+import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import com.indore.pathome.spaces.repository.SupportedCityRepository;
 import com.indore.pathome.spaces.repository.VisitRequestRoutingTaskRepository;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +31,9 @@ public class TrustedOperationalIntakeService {
     private final VisitRequestRoutingTaskRepository routingTasks;
     private final DatabaseClock databaseClock;
     private final EntityManager entityManager;
+
+    @Autowired(required = false)
+    private ListingRepository listings;
 
     public TrustedOperationalIntakeService(LocalityRepository localities, PropertyVisitRequestRepository requests,
             SupportedCityRepository cities, OperationalSecurityGuards guards,
@@ -67,6 +77,24 @@ public class TrustedOperationalIntakeService {
                 request.setSupportedCity(currentCity);
                 request.setOperationalScopeReady(currentCity != null && guards.cityIsActive(cityId));
             }
+        }
+        if (listings != null) {
+            Long listingId = request.getListing().getId();
+            if (listingId == null) throw new DraftConflictException("listing", 0,
+                    "This property is no longer accepting visit requests.");
+            listings.lockForSchedulingById(listingId)
+                    .orElseThrow(() -> new DraftConflictException("listing", 0,
+                            "This property is no longer accepting visit requests."));
+            Listing current = listings.findById(listingId)
+                    .orElseThrow(() -> new DraftConflictException("listing", 0,
+                            "This property is no longer accepting visit requests."));
+            entityManager.refresh(current, LockModeType.PESSIMISTIC_WRITE);
+            if (current.getStatus() != ListingStatus.ACTIVE
+                    || current.getWorkflowStatus() != ListingWorkflowStatus.PUBLISHED) {
+                throw new DraftConflictException("listing", 0,
+                        "This property is no longer accepting visit requests.");
+            }
+            request.setListing(current);
         }
         PropertyVisitRequest persisted = requests.saveAndFlush(request);
         if (enrollRouting) {

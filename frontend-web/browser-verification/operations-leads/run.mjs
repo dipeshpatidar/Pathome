@@ -1,20 +1,27 @@
 /**
  * D-B G10 genuine browser integration.
  *
- * This script is launched by LeadHttpPostgresTest only after that test has seeded a real
- * Staff/City/Team/public-listing fixture in the approved disposable PostgreSQL schema. It serves
- * the production Vite build in-process, proxies every /api request verbatim to that random-port
- * Spring Boot instance, and drives the app with real authentication tokens and persisted APIs.
+ * Approved genuine browser tests launch this script only after seeding real Staff/City/Team/public-
+ * listing fixtures in the designated PostgreSQL target. It serves the production Vite build
+ * in-process, proxies every /api request verbatim to that random-port Spring Boot instance, and
+ * drives the app with real authentication tokens and persisted APIs.
  *
- * No API response is fabricated. The only network interception is the final navigation to wa.me:
- * its destination is fulfilled locally so this verification never contacts WhatsApp.
+ * Controlled mode may delay pass-through API requests for deterministic ordering checks. Strict
+ * genuine mode registers no API interception. Both modes fulfill only the final wa.me navigation
+ * locally, so verification never contacts WhatsApp.
  */
 import { accessSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createServer, request as proxyRequest } from 'node:http';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import playwright from '/opt/homebrew/lib/node_modules/playwright/index.js';
+import { claimEvidenceDirectory } from './evidence-directory.mjs';
+import {
+  allowsApiInterception,
+  browserTransportMode,
+  installTransportRoutes
+} from './browser-transport-mode.mjs';
 
 const { chromium } = playwright;
 const DIST = fileURLToPath(new URL('../../dist/', import.meta.url));
@@ -35,17 +42,31 @@ const ADMIN = {
   token: process.env.PATHOME_BROWSER_ADMIN_TOKEN,
   id: Number(process.env.PATHOME_BROWSER_ADMIN_ID)
 };
+const INTAKE = {
+  token: process.env.PATHOME_BROWSER_INTAKE_TOKEN,
+  id: Number(process.env.PATHOME_BROWSER_INTAKE_ID)
+};
+const INTAKE_LEAD_ID = Number(process.env.PATHOME_BROWSER_INTAKE_LEAD_ID);
+const INTAKE_ENABLED = Boolean(INTAKE.token) && Number.isSafeInteger(INTAKE.id)
+  && Number.isSafeInteger(INTAKE_LEAD_ID) && INTAKE_LEAD_ID > 0;
+const OWNER_GRANT_ID = Number(process.env.PATHOME_BROWSER_OWNER_GRANT_ID);
+const GRANT_REVOKE_URL = process.env.PATHOME_BROWSER_GRANT_REVOKE_URL;
+const GRANT_REVOKE_TOKEN = process.env.PATHOME_BROWSER_GRANT_REVOKE_TOKEN;
 const EVIDENCE = process.env.PATHOME_BROWSER_EVIDENCE_DIR;
 const EXPECTED_PROPERTY_ID = Number(process.env.PATHOME_BROWSER_EXPECTED_PROPERTY_ID);
+const TRANSPORT_MODE = browserTransportMode(process.env);
+const API_INTERCEPTION_ENABLED = allowsApiInterception(TRANSPORT_MODE);
 
 if (!Number.isSafeInteger(BACKEND_PORT) || BACKEND_PORT <= 0
   || !OWNER.token || !PEER.token || !SUPERVISOR.token || !ADMIN.token
   || !Number.isSafeInteger(OWNER.id) || !Number.isSafeInteger(PEER.id)
   || !Number.isSafeInteger(SUPERVISOR.id) || !Number.isSafeInteger(ADMIN.id)
+  || !Number.isSafeInteger(OWNER_GRANT_ID) || OWNER_GRANT_ID <= 0
+  || !GRANT_REVOKE_URL || !GRANT_REVOKE_TOKEN
   || !EVIDENCE || !Number.isSafeInteger(EXPECTED_PROPERTY_ID)) {
   throw new Error('genuine browser fixture environment is incomplete');
 }
-await mkdir(EVIDENCE, { recursive: true });
+await claimEvidenceDirectory(EVIDENCE);
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -63,6 +84,8 @@ let holdNextDiscoveryPage = false;
 let heldDiscoveryPage = null;
 let holdNextDuplicateLookup = false;
 let heldDuplicateLookup = null;
+let holdNextGrantLossCommand = false;
+let heldGrantLossCommand = null;
 const networkTrace = [];
 const waNavigations = [];
 
@@ -81,7 +104,8 @@ const server = createServer(async (incoming, outgoing) => {
         outgoing.writeHead(upstream.statusCode || 502, upstream.headers);
         upstream.pipe(outgoing);
       };
-      if (holdNextDetail && /^\/api\/v1\/operations\/leads\/\d+$/.test(url.pathname)) {
+      if (API_INTERCEPTION_ENABLED && holdNextDetail
+        && /^\/api\/v1\/operations\/leads\/\d+$/.test(url.pathname)) {
         holdNextDetail = false;
         heldDetailResponses.push(send);
       } else {
@@ -212,36 +236,59 @@ await page.addInitScript((entries) => {
     entries.forEach(([key, value]) => window.localStorage.setItem(key, value));
   }
 }, identityStorage(OWNER, 'Owner'));
-await context.route('https://wa.me/**', (route) => {
-  waNavigations.push(route.request().url());
-  return route.fulfill({
-    status: 200,
-    contentType: 'text/html',
-    body: '<!doctype html><title>Controlled WhatsApp destination</title><p>No WhatsApp network call was made.</p>'
-  });
-});
-await page.route('**/api/v1/properties?*', async (route) => {
-  const url = new URL(route.request().url());
-  if (holdNextDiscoveryPage && url.searchParams.get('page') === '1') {
-    holdNextDiscoveryPage = false;
+const apiRoutes = [];
+if (API_INTERCEPTION_ENABLED) {
+  apiRoutes.push(['**/api/v1/properties?*', async (route) => {
+    const url = new URL(route.request().url());
+    if (holdNextDiscoveryPage && url.searchParams.get('page') === '1') {
+      holdNextDiscoveryPage = false;
+      const gate = new Promise((resolve) => {
+        heldDiscoveryPage = { route, release: resolve };
+      });
+      await gate;
+    }
+    await route.continue();
+  }]);
+  apiRoutes.push(['**/api/v1/operations/leads/duplicate-candidates', async (route) => {
+    if (!holdNextDuplicateLookup) {
+      await route.continue();
+      return;
+    }
+    holdNextDuplicateLookup = false;
     const gate = new Promise((resolve) => {
-      heldDiscoveryPage = { route, release: resolve };
+      heldDuplicateLookup = { route, release: resolve };
     });
     await gate;
-  }
-  await route.continue();
-});
-await page.route('**/api/v1/operations/leads/duplicate-candidates', async (route) => {
-  if (!holdNextDuplicateLookup) {
     await route.continue();
-    return;
+  }]);
+  apiRoutes.push(['**/api/v1/operations/leads/*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!holdNextGrantLossCommand || route.request().method() !== 'PATCH'
+      || !/^\/api\/v1\/operations\/leads\/\d+$/.test(url.pathname)) {
+      await route.fallback();
+      return;
+    }
+    holdNextGrantLossCommand = false;
+    const gate = new Promise((resolve) => {
+      heldGrantLossCommand = { route, release: resolve };
+    });
+    await gate;
+    await route.continue();
+  }]);
+}
+const installedApiRoutes = await installTransportRoutes({
+  mode: TRANSPORT_MODE,
+  page,
+  context,
+  apiRoutes,
+  whatsappHandler: (route) => {
+    waNavigations.push(route.request().url());
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!doctype html><title>Controlled WhatsApp destination</title><p>No WhatsApp network call was made.</p>'
+    });
   }
-  holdNextDuplicateLookup = false;
-  const gate = new Promise((resolve) => {
-    heldDuplicateLookup = { route, release: resolve };
-  });
-  await gate;
-  await route.continue();
 });
 
 let leadId = null;
@@ -315,29 +362,46 @@ try {
 
   await page.getByRole('button', { name: 'Share properties' }).click();
   await page.waitForURL((url) => /^\/operations\/leads\/\d+\/share$/.test(url.pathname));
-  await page.getByText(/G10 genuine public home/).first().waitFor();
-  holdNextDiscoveryPage = true;
-  await page.getByRole('button', { name: 'Load more public homes' }).click();
-  for (let attempt = 0; attempt < 50 && heldDiscoveryPage === null; attempt += 1) {
-    await page.waitForTimeout(50);
+  const expectedPropertyCard = page.locator('.ld-property-card').filter({
+    has: page.locator(`a[href="/property/${EXPECTED_PROPERTY_ID}"]`)
+  });
+  await expectedPropertyCard.waitFor();
+  if (API_INTERCEPTION_ENABLED) {
+    holdNextDiscoveryPage = true;
+    await page.getByRole('button', { name: 'Load more public homes' }).click();
+    for (let attempt = 0; attempt < 50 && heldDiscoveryPage === null; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    check('controlled Smart Search held one old pagination response', heldDiscoveryPage !== null);
+    await page.getByLabel('Locality or property').fill('controlled no-match query');
+    await page.getByText('No public rentals match', { exact: true }).waitFor();
+    heldDiscoveryPage?.release();
+    await page.waitForTimeout(300);
+    heldDiscoveryPage = null;
+    check('held old pagination cannot append results to the new Smart Search',
+      await page.locator('.ld-property-card').count() === 0);
+  } else {
+    const nextPage = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/v1/properties'
+        && url.searchParams.get('page') === '1'
+        && response.request().method() === 'GET';
+    });
+    await page.getByRole('button', { name: 'Load more public homes' }).click();
+    check('strict genuine Smart Search pagination uses the real backend',
+      (await nextPage).ok());
   }
-  check('controlled Smart Search held one old pagination response', heldDiscoveryPage !== null);
   await page.getByLabel('Locality or property').fill('controlled no-match query');
   await page.getByText('No public rentals match', { exact: true }).waitFor();
-  heldDiscoveryPage?.release();
-  await page.waitForTimeout(300);
-  heldDiscoveryPage = null;
-  check('held old pagination cannot append results to the new Smart Search',
-    await page.locator('.ld-property-card').count() === 0);
   await page.getByRole('button', { name: 'Clear filters' }).click();
-  await page.getByText(/G10 genuine public home/).first().waitFor();
+  await expectedPropertyCard.waitFor();
   await page.getByLabel('BHK').selectOption('4');
   await page.getByRole('button', { name: 'Search public homes' }).click();
   await page.getByText('No public rentals match', { exact: true }).waitFor();
   check('zero eligible property results use a truthful empty state', true);
   await page.getByRole('button', { name: 'Clear filters' }).click();
-  await page.getByText(/G10 genuine public home/).first().waitFor();
-  const addProperty = page.getByRole('button', { name: 'Add', exact: true }).first();
+  await expectedPropertyCard.waitFor();
+  const addProperty = expectedPropertyCard.getByRole('button', { name: 'Add', exact: true });
   await addProperty.click();
   await page.getByRole('button', { name: 'Save shortlist and continue' }).click();
   await page.getByRole('heading', { name: 'Confirm the customer’s WhatsApp number' }).waitFor();
@@ -357,7 +421,7 @@ try {
   await page.getByRole('heading', { name: 'Open WhatsApp and send it yourself' }).waitFor();
   const snapshot = await page.locator('.ld-snapshot pre').textContent();
   check('server-authoritative prepared snapshot is displayed',
-    snapshot?.includes('G10 genuine public home') && snapshot.includes('https://pathome.test/property/'));
+    snapshot?.includes(`https://pathome.test/property/${EXPECTED_PROPERTY_ID}`));
 
   await page.getByRole('button', { name: 'Copy message' }).click();
   await page.getByText(/Prepared message copied and the successful copy was recorded/).waitFor();
@@ -513,21 +577,57 @@ try {
     && await page.getByRole('button', { name: 'Share properties' }).count() === 0);
 
   await setIdentity(page, OWNER, 'Owner', leadPath);
-  holdNextDetail = true;
-  await page.goto(`${BASE}${leadPath}`);
-  for (let attempt = 0; attempt < 50 && heldDetailResponses.length === 0; attempt += 1) {
-    await page.waitForTimeout(50);
+  if (API_INTERCEPTION_ENABLED) {
+    holdNextDetail = true;
+    await page.goto(`${BASE}${leadPath}`);
+    for (let attempt = 0; attempt < 50 && heldDetailResponses.length === 0; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    check('late-read control captured one held Lead detail', heldDetailResponses.length === 1);
+    await setIdentity(page, PEER, 'Peer', '/operations/leads');
+    heldDetailResponses.splice(0).forEach((release) => release());
+    await page.waitForTimeout(500);
+    check('late foreign-owner response cannot populate the new account',
+      !(await page.locator('body').innerText()).includes('G10 Browser Customer'));
+  } else {
+    await page.goto(`${BASE}${leadPath}`);
+    await page.getByRole('heading', { name: 'G10 Browser Customer' }).waitFor();
+    await setIdentity(page, PEER, 'Peer', '/operations/leads');
   }
-  check('late-read control captured one held Lead detail', heldDetailResponses.length === 1);
-  await setIdentity(page, PEER, 'Peer', '/operations/leads');
-  heldDetailResponses.splice(0).forEach((release) => release());
-  await page.waitForTimeout(500);
-  check('late foreign-owner response cannot populate the new account',
-    !(await page.locator('body').innerText()).includes('G10 Browser Customer'));
 
   await page.goto(`${BASE}${leadPath}`);
   await page.getByText('This Lead isn’t available', { exact: true }).waitFor();
   check('same-Team peer receives generic Lead concealment', true);
+
+  if (INTAKE_ENABLED) {
+    const intakeLeadPath = `/operations/leads/${INTAKE_LEAD_ID}`;
+    await setIdentity(page, INTAKE, 'City intake', intakeLeadPath);
+    await page.getByRole('heading', { name: 'G10 Browser Customer' }).waitFor();
+    check('City intake can read the legitimate unassigned Lead without owner-only actions',
+      await page.getByRole('button', { name: 'Show phone number' }).count() === 0
+      && await page.getByRole('button', { name: 'Share properties' }).count() === 0);
+    const directDenial = await fetch(
+      `${BASE}/api/v1/operations/leads/${INTAKE_LEAD_ID}/contact-preferences`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${INTAKE.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          expectedLeadVersion: 0,
+          expectedPreferenceRevision: 0,
+          channel: 'WHATSAPP',
+          destinationChoice: 'SAME',
+          consentStatus: 'GRANTED',
+          consentWordingVersion: 'property-sharing-v1',
+          evidenceMethod: 'CUSTOMER_VERBAL'
+        })
+      }
+    );
+    check('City intake direct consent command is denied by current-owner authority',
+      directDenial.status === 404, `status=${directDenial.status}`);
+  }
 
   await setIdentity(page, ADMIN, 'Staff Admin', '/operations/leads/source-exceptions');
   await page.getByRole('heading', { name: 'Import issues', exact: true }).waitFor();
@@ -543,24 +643,26 @@ try {
   await page.getByRole('heading', { name: 'Capture an enquiry' }).waitFor();
   await page.getByLabel('Phone number').fill('+91 98811 22447');
   await page.getByLabel(/Source/).fill('Phone call');
-  const capturesBeforeRace = networkTrace.filter((entry) =>
-    entry.method === 'POST' && entry.path === '/api/v1/operations/leads').length;
-  holdNextDuplicateLookup = true;
-  await page.getByRole('button', { name: 'Review and save enquiry' }).click();
-  for (let attempt = 0; attempt < 50 && heldDuplicateLookup === null; attempt += 1) {
-    await page.waitForTimeout(50);
+  if (API_INTERCEPTION_ENABLED) {
+    const capturesBeforeRace = networkTrace.filter((entry) =>
+      entry.method === 'POST' && entry.path === '/api/v1/operations/leads').length;
+    holdNextDuplicateLookup = true;
+    await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+    for (let attempt = 0; attempt < 50 && heldDuplicateLookup === null; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    check('controlled duplicate lookup was held before Clear', heldDuplicateLookup !== null);
+    await page.getByRole('button', { name: 'Clear form' }).click();
+    heldDuplicateLookup?.release();
+    await page.waitForTimeout(500);
+    heldDuplicateLookup = null;
+    const capturesAfterRace = networkTrace.filter((entry) =>
+      entry.method === 'POST' && entry.path === '/api/v1/operations/leads').length;
+    check('Clear during duplicate lookup sends zero stale capture and clears the draft',
+      capturesAfterRace === capturesBeforeRace
+      && await page.getByLabel('Phone number').inputValue() === ''
+      && await page.getByLabel(/Source/).inputValue() === '');
   }
-  check('controlled duplicate lookup was held before Clear', heldDuplicateLookup !== null);
-  await page.getByRole('button', { name: 'Clear form' }).click();
-  heldDuplicateLookup?.release();
-  await page.waitForTimeout(500);
-  heldDuplicateLookup = null;
-  const capturesAfterRace = networkTrace.filter((entry) =>
-    entry.method === 'POST' && entry.path === '/api/v1/operations/leads').length;
-  check('Clear during duplicate lookup sends zero stale capture and clears the draft',
-    capturesAfterRace === capturesBeforeRace
-    && await page.getByLabel('Phone number').inputValue() === ''
-    && await page.getByLabel(/Source/).inputValue() === '');
 
   await page.goto(`${BASE}/operations/leads`);
   await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
@@ -611,6 +713,131 @@ try {
     }
   }
 
+  await setIdentity(page, OWNER, 'Owner', leadPath);
+  await page.getByRole('heading', { name: 'G10 Browser Customer' }).waitFor();
+  if (API_INTERCEPTION_ENABLED) {
+    holdNextDetail = true;
+    const reloadAcrossLogout = page.reload({ waitUntil: 'domcontentloaded' });
+    for (let attempt = 0; attempt < 50 && heldDetailResponses.length === 0; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    check('logout witness captured one authenticated held detail response',
+      heldDetailResponses.length === 1);
+    await page.evaluate(() => {
+      window.localStorage.clear();
+      window.dispatchEvent(new Event('pathome_auth_changed'));
+    });
+    heldDetailResponses.splice(0).forEach((release) => release());
+    await reloadAcrossLogout.catch(() => {});
+    await page.waitForTimeout(300);
+  } else {
+    await page.evaluate(() => {
+      window.localStorage.clear();
+      window.dispatchEvent(new Event('pathome_auth_changed'));
+    });
+  }
+  check('logged-out browser discards the late owner detail and retains no account token',
+    await page.evaluate(() => window.localStorage.getItem('pathome_auth_token') === null)
+      && !(await page.locator('body').innerText()).includes('G10 Browser Customer'));
+
+  await setIdentity(page, OWNER, 'Owner', leadPath);
+  await page.getByRole('heading', { name: 'G10 Browser Customer' }).waitFor();
+  const staleBrowserEdit = await fetch(
+    `${BASE}/api/v1/operations/leads/${leadId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${OWNER.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        expectedVersion: -1,
+        changes: { tenantProfile: 'Stale browser command' }
+      })
+    }
+  );
+  const foreignDetail = await fetch(
+    `${BASE}/api/v1/operations/leads/${leadId}`,
+    { headers: { Authorization: `Bearer ${PEER.token}` } }
+  );
+  const missingAuthDetail = await fetch(
+    `${BASE}/api/v1/operations/leads/${leadId}`
+  );
+  check('browser-observed status boundaries distinguish stale, foreign and unauthenticated reads',
+    staleBrowserEdit.status === 409
+      && foreignDetail.status === 404
+      && missingAuthDetail.status === 401,
+    `stale=${staleBrowserEdit.status} foreign=${foreignDetail.status} unauth=${missingAuthDetail.status}`);
+
+  if (API_INTERCEPTION_ENABLED) {
+    const activitiesBeforeGrantLoss = await fetch(
+      `${BASE}/api/v1/operations/leads/${leadId}/activities?page=0&size=20`,
+      { headers: { Authorization: `Bearer ${SUPERVISOR.token}` } }
+    ).then((response) => response.json());
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await page.getByLabel('Tenant profile').fill('Grant-loss blocked edit');
+    holdNextGrantLossCommand = true;
+    const heldEditResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/operations/leads/${leadId}`
+        && response.request().method() === 'PATCH',
+    { timeout: 15_000 });
+    await page.getByRole('button', { name: /Save version/ }).click();
+    for (let attempt = 0; attempt < 50 && heldGrantLossCommand === null; attempt += 1) {
+      await page.waitForTimeout(50);
+    }
+    check('one browser edit command is held before upstream while the owner grant is current',
+      heldGrantLossCommand !== null);
+    const revokeGrant = await fetch(GRANT_REVOKE_URL, {
+      method: 'POST',
+      headers: { 'X-Pathome-Test-Control': GRANT_REVOKE_TOKEN }
+    });
+    const revokeGrantBody = await revokeGrant.json();
+    heldGrantLossCommand?.release();
+    const deniedHeldEdit = await heldEditResponse;
+    heldGrantLossCommand = null;
+    check('test-controlled migrator revoked exactly the owner grant while the edit remained held',
+      revokeGrant.status === 200 && revokeGrantBody.updated === 1
+        && OWNER_GRANT_ID > 0,
+      `status=${revokeGrant.status} updated=${revokeGrantBody.updated}`);
+    check('held browser edit denied after grant loss without opening a private destination',
+      deniedHeldEdit.status() === 403
+        && waNavigations.length === 1,
+      `status=${deniedHeldEdit.status()} navigations=${waNavigations.length}`);
+
+    const ownerAfterGrantLoss = await fetch(
+      `${BASE}/api/v1/operations/leads/${leadId}`,
+      { headers: { Authorization: `Bearer ${OWNER.token}` } }
+    );
+    check('fresh owner readback reports current authority loss', ownerAfterGrantLoss.status === 403,
+      `status=${ownerAfterGrantLoss.status}`);
+    const supervisorDetailAfterGrantLoss = await fetch(
+      `${BASE}/api/v1/operations/leads/${leadId}`,
+      { headers: { Authorization: `Bearer ${SUPERVISOR.token}` } }
+    ).then((response) => response.text());
+    const activitiesAfterGrantLoss = await fetch(
+      `${BASE}/api/v1/operations/leads/${leadId}/activities?page=0&size=20`,
+      { headers: { Authorization: `Bearer ${SUPERVISOR.token}` } }
+    ).then((response) => response.json());
+    check('denied held edit changed neither the Lead facts nor its activity history',
+      supervisorDetailAfterGrantLoss.includes('Working professionals')
+        && !supervisorDetailAfterGrantLoss.includes('Grant-loss blocked edit')
+        && activitiesAfterGrantLoss.totalElements === activitiesBeforeGrantLoss.totalElements);
+    const shareAuthorityAfterGrantLoss = await fetch(
+      `${BASE}/api/v1/operations/leads/${leadId}/shares?page=0&size=10`,
+      { headers: { Authorization: `Bearer ${SUPERVISOR.token}` } }
+    ).then((response) => response.json());
+    check('share history reports current owner authority absent after the grant-loss race',
+      shareAuthorityAfterGrantLoss.items.every((item) => item.currentAuthorityMatches === false
+        && item.actionReady === false));
+
+    await setIdentity(page, PEER, 'Peer', '/operations/leads');
+    await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+    await setIdentity(page, OWNER, 'Owner', leadPath);
+    await page.getByText('You don’t have access to these Leads', { exact: true }).waitFor();
+    check('A to B to A after grant loss retains the current denied state and no private Lead content',
+      !(await page.locator('body').innerText()).includes('G10 Browser Customer'));
+  }
+
   check('no browser console or page exception occurred', browserErrors.length === 0, browserErrors.join(' | '));
   check('no real API request returned an unexpected server error',
     unexpectedServerErrors.length === 0, unexpectedServerErrors.join(' | '));
@@ -623,6 +850,9 @@ try {
     JSON.stringify(networkTrace, null, 2));
   await writeFile(join(EVIDENCE, 'browser-results.json'), JSON.stringify({
     executedAt: new Date().toISOString(),
+    transportMode: TRANSPORT_MODE,
+    apiInterceptionEnabled: API_INTERCEPTION_ENABLED,
+    installedApiRoutes,
     backendPort: BACKEND_PORT,
     leadId,
     leadPath,

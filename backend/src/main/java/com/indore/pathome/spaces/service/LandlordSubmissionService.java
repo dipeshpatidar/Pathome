@@ -18,8 +18,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.time.LocalDateTime;
+import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 
 @Service
@@ -102,6 +106,13 @@ public class LandlordSubmissionService {
     @Transactional
     public LandlordSubmission submit(String email, String draftId) {
         Long ownerId = capabilities.requireOnboardingUserId(email);
+        PropertyUploadDraft observed = drafts.findByDraftIdAndLandlordUserId(draftId, ownerId)
+                .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
+        if (observed.getPublishedPropertyId() != null) {
+            // Property-root lock precedes the shared revision row for every existing-property writer.
+            listings.lockOwnedId(observed.getPublishedPropertyId(), ownerId)
+                    .orElseThrow(() -> new EntityNotFoundException("Property not found"));
+        }
         PropertyUploadDraft draft = drafts.findLandlordDraftForUpdate(draftId, ownerId)
                 .orElseThrow(() -> new EntityNotFoundException("Draft not found"));
         if (!"DRAFT".equals(draft.getStatus())) {
@@ -139,8 +150,6 @@ public class LandlordSubmissionService {
         String selectedName = locality == null ? data.location().localityInput().trim() : locality.getSectorName();
         String selectedCity = locality == null ? CityRegistry.canonicalCityName(data.location().city()) : locality.getCity();
         if (draft.getPublishedPropertyId() != null) {
-            listings.lockOwnedId(draft.getPublishedPropertyId(), ownerId)
-                    .orElseThrow(() -> new EntityNotFoundException("Property not found"));
             Listing target = listings.findByIdAndOwnerUserId(draft.getPublishedPropertyId(), ownerId)
                     .orElseThrow(() -> new EntityNotFoundException("Property not found"));
             if (!(target instanceof RentalDetails rental) || draft.getRevisionBaseVersion() == null
@@ -177,6 +186,7 @@ public class LandlordSubmissionService {
         }
         RentalDetails listing = new RentalDetails();
         listing.setTitle(title(data, selectedName));
+        listing.setTitleProvenance("GENERATED");
         listing.setPropertyType(data.basics().propertyType());
         listing.setBhkCount(data.basics().bhkCount());
         listing.setCity(selectedCity);
@@ -255,17 +265,26 @@ public class LandlordSubmissionService {
         listing.setMonthlyRent(data.pricing().monthlyRent());
         listing.setSecurityDeposit(data.pricing().securityDeposit());
         listing.setAvailableFrom(data.details().availableFrom().atStartOfDay());
-        List<PropertyMediaAsset> previous = assets.findByListingIdOrderByUploadedAtDesc(listing.getId());
-        assets.deleteAll(previous);
-        assets.flush();
-        List<PropertyMediaAsset> replacement = new ArrayList<>();
+        Map<Long, PropertyMediaAsset> previous = assets.findByListingIdOrderByUploadedAtDesc(listing.getId())
+                .stream().collect(Collectors.toMap(PropertyMediaAsset::getId, asset -> asset));
+        Set<Long> retained = new HashSet<>();
+        List<PropertyMediaAsset> changed = new ArrayList<>();
         int sortOrder = 0;
         for (PropertyDraftMedia row : rows.stream().filter(item -> "UPLOADED".equals(item.getUploadStatus()))
                 .sorted(Comparator.comparing(PropertyDraftMedia::getSortOrder)).toList()) {
             boolean video = row.getContentType().startsWith("video/");
-            PropertyMediaAsset asset = new PropertyMediaAsset(listing.getId(), row.getCloudinaryUrl(),
-                    video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.fromStored(row.getRoomTag()),
-                    video ? "Property video" : "Property photo");
+            PropertyMediaAsset asset = row.getSourceMediaAssetId() == null ? null
+                    : previous.get(row.getSourceMediaAssetId());
+            if (asset == null) {
+                asset = new PropertyMediaAsset(listing.getId(), row.getCloudinaryUrl(),
+                        video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE, RoomTag.fromStored(row.getRoomTag()),
+                        row.getCaption() == null ? (video ? "Property video" : "Property photo") : row.getCaption());
+            }
+            if (asset.getId() != null) retained.add(asset.getId());
+            asset.setRetiredAt(null);
+            asset.setMediaType(video ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE);
+            asset.setRoomTag(RoomTag.fromStored(row.getRoomTag()));
+            asset.setCaption(row.getCaption());
             asset.setCloudinaryPublicId(row.getCloudinaryPublicId());
             asset.setUploadRequestId(row.getMediaId());
             asset.setIsPrimaryCover(Boolean.TRUE.equals(row.getIsCover()) && !video);
@@ -273,9 +292,15 @@ public class LandlordSubmissionService {
             asset.setCity(selectedCity);
             asset.setSector(selectedName);
             asset.setPriceTag("₹" + data.pricing().monthlyRent().toPlainString() + " / month");
-            replacement.add(asset);
+            changed.add(asset);
         }
-        assets.saveAll(replacement);
+        LocalDateTime retiredAt = LocalDateTime.now();
+        previous.values().stream().filter(asset -> !retained.contains(asset.getId()))
+                .forEach(asset -> {
+                    asset.setRetiredAt(retiredAt);
+                    changed.add(asset);
+                });
+        assets.saveAll(changed);
     }
 
     private List<String> missing(LandlordDraftData data, List<PropertyDraftMedia> rows,

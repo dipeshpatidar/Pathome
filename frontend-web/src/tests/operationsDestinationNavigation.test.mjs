@@ -50,7 +50,7 @@ test('the destination admits an account on capability alone, never on a role lab
   // A direct link or a refresh on /operations is treated as a protected destination.
   assert.match(
     home,
-    /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\);/
+    /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\) \|\| path\.startsWith\('\/backoffice\/properties'\);/
   );
 
   // Signing in from an expired session returns the visitor to the destination they chose. Restoring

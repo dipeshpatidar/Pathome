@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile } from '../types';
 import { X, Mail, Lock, User, AlertCircle } from 'lucide-react';
 import { API_ROOT_URL, GOOGLE_OAUTH_URL } from '../config/endpoints';
 import {
@@ -10,7 +10,8 @@ import {
 } from '../utils/authRecovery';
 import {
   authenticationRejectionMessage,
-  establishAuthenticatedSession
+  establishAuthenticatedSession,
+  normalizeUserRole
 } from '../utils/authIdentity';
 
 interface AuthModalProps {
@@ -19,16 +20,6 @@ interface AuthModalProps {
   onSuccess: (user: UserProfile) => void;
   lessorContext?: 'submit' | 'save' | null;
 }
-
-const normalizeRole = (rawRole: string): UserRole => {
-  if (!rawRole) return 'GUEST';
-  const clean = rawRole.toUpperCase().replace('ROLE_', '');
-  
-  if (clean === 'EMPLOYEE' || clean === 'STAFF' || clean === 'GROUND_BOY') return 'EMPLOYEE';
-  if (clean === 'SUB_ADMIN' || clean === 'MANAGER') return 'SUB_ADMIN';
-  if (clean === 'SUPER_ADMIN' || clean === 'ADMIN') return 'SUPER_ADMIN';
-  return 'TENANT';
-};
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess, lessorContext = null }) => {
   const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
@@ -107,7 +98,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           id: established.userId,
           email: established.email,
           fullName: established.fullName,
-          role: normalizeRole(established.role),
+          role: normalizeUserRole(established.role),
           freeVisitsUsed: 0,
           walletBalance: 0,
           hasLessorProfile: established.hasLessorProfile,

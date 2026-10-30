@@ -8,6 +8,7 @@ import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
 import com.indore.pathome.spaces.repository.*;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.LockModeType;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -296,6 +297,13 @@ public class VisitOperationsService {
         if (requestedSession != null) requireSameTenant(request, requestedSession);
 
         Listing requestedListing = request.getListing();
+        listings.lockForSchedulingById(requestedListing.getId())
+                .orElseThrow(() -> new VisitOperationsConflictException(
+                        "The requested property is no longer active"));
+        requestedListing = listings.findById(requestedListing.getId())
+                .orElseThrow(() -> new VisitOperationsConflictException(
+                        "The requested property is no longer active"));
+        entityManager.refresh(requestedListing, LockModeType.PESSIMISTIC_WRITE);
         if (requestedListing.getStatus() != ListingStatus.ACTIVE)
             throw new VisitOperationsConflictException("The requested property is no longer active");
         requireOperationalScopeActive(request.getSupportedCity(), request.getOperatingTeam());
@@ -427,8 +435,11 @@ public class VisitOperationsService {
                 && originRequest.getStatusValue() != VisitRequestStatus.UNAVAILABLE)
             throw new VisitOperationsConflictException("Originating request is not available for itinerary assembly");
 
+        listings.lockForSchedulingById(command.listingId())
+                .orElseThrow(() -> new EntityNotFoundException("Active listing not found"));
         Listing listing = listings.findByIdAndStatus(command.listingId(), ListingStatus.ACTIVE)
                 .orElseThrow(() -> new EntityNotFoundException("Active listing not found"));
+        entityManager.refresh(listing, LockModeType.PESSIMISTIC_WRITE);
         LocationSnapshot location = resolveLocation(listing);
         requireSameCity(location.city(), session.getCity());
         if (items.existsBySessionIdAndListingId(sessionId, listing.getId()))

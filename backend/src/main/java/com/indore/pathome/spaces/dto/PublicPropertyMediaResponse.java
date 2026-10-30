@@ -11,5 +11,7 @@ public record PublicPropertyMediaResponse(
         String mediaUrl,
         MediaType mediaType,
         RoomTag roomTag,
-        boolean primaryCover
+        boolean primaryCover,
+        String caption,
+        Integer sortOrder
 ) {}

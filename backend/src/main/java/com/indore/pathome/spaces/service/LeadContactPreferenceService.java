@@ -106,11 +106,13 @@ public class LeadContactPreferenceService {
                 : receipts.findByActorIdAndOperationIdAndAction(
                         actorId, operationId, COMMAND_ACTION).orElse(null);
         if (existingReceipt != null) {
+            // Bind the stored preference to the already authorized, locked Lead before conflict disclosure.
+            LeadContactPreferenceView replay = replay(lead, existingReceipt);
             if (!existingReceipt.getPayloadHash().equals(payloadHash)) {
                 throw new VisitOperationsConflictException(
                         "This idempotency key was already used with a different consent request");
             }
-            return replay(lead, existingReceipt);
+            return replay;
         }
         requireVersion(lead, command.expectedLeadVersion());
         requireActiveLifecycle(lead);
@@ -208,6 +210,7 @@ public class LeadContactPreferenceService {
                 teamId == null ? List.of() : List.of(teamId), List.of(actorId));
         LeadAccessContext context = leadAccess.context(actorId);
         leadAccess.requireEditable(context, lead, actorId);
+        leadAccess.requireContactOwner(context, lead, actorId);
         return lead;
     }
 

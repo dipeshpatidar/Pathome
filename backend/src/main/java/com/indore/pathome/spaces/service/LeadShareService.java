@@ -12,6 +12,7 @@ import com.indore.pathome.spaces.dto.crm.LeadShareView;
 import com.indore.pathome.spaces.entity.LeadActivity;
 import com.indore.pathome.spaces.entity.LeadCommandReceipt;
 import com.indore.pathome.spaces.entity.LeadConsentStatus;
+import com.indore.pathome.spaces.entity.LeadContactChannel;
 import com.indore.pathome.spaces.entity.LeadContactPreference;
 import com.indore.pathome.spaces.entity.LeadDestinationChoice;
 import com.indore.pathome.spaces.entity.LeadRoutingQueue;
@@ -41,17 +42,20 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.net.URI;
 import java.security.MessageDigest;
+import java.text.NumberFormat;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 public class LeadShareService {
+    private static final String PROPERTY_SHARING_PURPOSE = "PROPERTY_SHARING";
     private final LeadRoutingQueueRepository leads;
     private final LeadShortlistRepository shortlists;
     private final LeadShortlistItemRepository shortlistItems;
@@ -117,24 +121,21 @@ public class LeadShareService {
         validate(command);
         String payloadHash = payloadHash(leadId, command);
         lockOperation(actorId, command.operationId());
+        LeadRoutingQueue lead = leads.findLockedById(leadId)
+                .orElseThrow(() -> new EntityNotFoundException("Lead not found"));
+        authorize(actorId, lead);
         LeadCommandReceipt receipt = receipts.findByActorIdAndOperationIdAndAction(
                 actorId, command.operationId(), "LEAD_SHARE_PREPARE").orElse(null);
         if (receipt != null) {
+            LeadShare existing = requireReceiptShare(lead, receipt);
             if (!receipt.getPayloadHash().equals(payloadHash)) {
                 throw new VisitOperationsConflictException(
                         "This idempotency key was already used with a different share request");
             }
-            LeadShare existing = shares.findById(UUID.fromString(receipt.getResultReference()))
-                    .orElseThrow(() -> new EntityNotFoundException("Prepared share not found"));
-            LeadRoutingQueue lead = leads.findLockedById(leadId)
-                    .orElseThrow(() -> new EntityNotFoundException("Lead not found"));
-            authorize(actorId, lead);
             revalidateReplay(lead, existing);
             return view(existing);
         }
 
-        LeadRoutingQueue lead = leads.findLockedById(leadId)
-                .orElseThrow(() -> new EntityNotFoundException("Lead not found"));
         LeadShortlist shortlist = shortlists.findLockedById(command.shortlistId())
                 .orElseThrow(() -> new EntityNotFoundException("Shortlist not found"));
         if (!shortlist.getLead().getId().equals(leadId)) {
@@ -149,22 +150,20 @@ public class LeadShareService {
         }
 
         LeadContactPreference preference = currentGrantedPreference(
-                leadId, command.contactPreferenceRevision());
-        if (command.mode() == LeadShareMode.MANUAL_BUSINESS_HANDOFF
-                && preference.getDestinationChoice() == LeadDestinationChoice.NONE) {
-            throw new VisitOperationsConflictException(
-                    "A business-channel handoff requires an agreed current destination");
-        }
+                leadId, command.contactPreferenceRevision(), command.mode());
 
         List<Long> listingIds = shortlistItems
                 .findAllByShortlist_IdOrderByPositionAsc(shortlist.getId()).stream()
                 .map(LeadShortlistItem::getListingId).toList();
         List<LeadPublicPropertyService.EligibleProperty> eligible =
-                publicProperties.requireCurrentPublicProperties(lead, listingIds);
+                publicProperties.requireCurrentPublicPropertiesForUpdate(lead, listingIds);
         if (eligible.isEmpty()) {
             throw new VisitOperationsConflictException(
                     "At least one current public property is required before sharing");
         }
+        // The initial check protects replay/conflict disclosure; this second fresh check is the
+        // definitive admission after every listing-readiness lock has been acquired.
+        authorizeCurrentRelationship(actorId, lead);
         String origin = publicOrigin();
         List<String> publicLinks = eligible.stream()
                 .map(property -> origin + "/property/" + property.listingId()).toList();
@@ -208,8 +207,8 @@ public class LeadShareService {
         }
         LeadShareEvent existing = shareEvents.findById(command.eventId()).orElse(null);
         if (existing != null) {
-            if (!existing.getShare().getId().equals(shareId)
-                    || existing.getEventType() != command.type()
+            if (!existing.getShare().getId().equals(shareId)) throw LeadAccessContext.hidden();
+            if (existing.getEventType() != command.type()
                     || !existing.getActorId().equals(actorId)) {
                 throw new VisitOperationsConflictException(
                         "This event ID was already used for a different share fact");
@@ -254,12 +253,7 @@ public class LeadShareService {
                     "The shortlist changed after this share was prepared; prepare a refreshed share");
         }
         LeadContactPreference preference = currentGrantedPreference(
-                lead.getId(), share.getContactPreferenceRevision());
-        if (share.getMode() == LeadShareMode.MANUAL_BUSINESS_HANDOFF
-                && preference.getDestinationChoice() == LeadDestinationChoice.NONE) {
-            throw new VisitOperationsConflictException(
-                    "The current destination no longer permits a WhatsApp handoff");
-        }
+                lead.getId(), share.getContactPreferenceRevision(), share.getMode());
         if (!currentDestinationMatches(share, preference)) {
             throw new VisitOperationsConflictException(
                     "The confirmed destination changed after this share was prepared");
@@ -291,7 +285,7 @@ public class LeadShareService {
         }
         LeadRoutingQueue lead = readableLeads.requireReadableLead(actorId, leadId);
         LeadAccessContext access = leadAccess.context(actorId);
-        boolean authorityMatches = access.canEdit(lead, actorId) && activeLifecycle(lead);
+        boolean authorityMatches = access.canRevealContact(lead, actorId) && activeLifecycle(lead);
         Page<LeadShare> sharesPage = shares.findAllByLead_IdOrderByRecordedAtDescIdDesc(
                 leadId, PageRequest.of(page, size));
         List<UUID> shareIds = sharesPage.getContent().stream().map(LeadShare::getId).toList();
@@ -336,6 +330,7 @@ public class LeadShareService {
     private void authorizeCurrentRelationship(Long actorId, LeadRoutingQueue lead) {
         LeadAccessContext context = leadAccess.context(actorId);
         leadAccess.requireEditable(context, lead, actorId);
+        leadAccess.requireContactOwner(context, lead, actorId);
     }
 
     private String mask(LeadContactPreference preference) {
@@ -344,7 +339,8 @@ public class LeadShareService {
                 preference.getDestinationIv(), preference.getDestinationKeyVersion()));
     }
 
-    private LeadContactPreference currentGrantedPreference(Long leadId, Long revision) {
+    private LeadContactPreference currentGrantedPreference(Long leadId, Long revision,
+                                                           LeadShareMode mode) {
         LeadContactPreference latest = preferences.findFirstByLead_IdOrderByRevisionDesc(leadId)
                 .orElseThrow(() -> new VisitOperationsConflictException(
                         "Current PROPERTY_SHARING customer agreement is required"));
@@ -356,7 +352,27 @@ public class LeadShareService {
             throw new VisitOperationsConflictException(
                     "Current PROPERTY_SHARING customer agreement is required");
         }
+        if (!PROPERTY_SHARING_PURPOSE.equals(latest.getConsentPurpose())) {
+            throw new VisitOperationsConflictException(
+                    "Current PROPERTY_SHARING customer agreement is required");
+        }
+        if (mode == LeadShareMode.MANUAL_BUSINESS_HANDOFF
+                && (latest.getChannel() != LeadContactChannel.WHATSAPP
+                || latest.getDestinationChoice() == LeadDestinationChoice.NONE
+                || !hasProtectedDestination(latest))) {
+            throw new VisitOperationsConflictException(
+                    "A current WhatsApp channel (WHATSAPP) customer agreement with a usable destination is required");
+        }
         return latest;
+    }
+
+    private LeadShare requireReceiptShare(LeadRoutingQueue lead, LeadCommandReceipt receipt) {
+        UUID shareId = LeadService.parseStoredShareReference(receipt.getResultReference());
+        // Do not acquire receipt Lead A's locks while holding request Lead B's locks/guards.
+        return shares.findById(shareId)
+                .filter(value -> value.getLead() != null
+                        && lead.getId().equals(value.getLead().getId()))
+                .orElseThrow(LeadAccessContext::hidden);
     }
 
     private void revalidateReplay(LeadRoutingQueue lead, LeadShare existing) {
@@ -369,12 +385,7 @@ public class LeadShareService {
                     "The shortlist changed after this share was prepared; prepare a refreshed share");
         }
         LeadContactPreference currentPreference = currentGrantedPreference(
-                lead.getId(), existing.getContactPreferenceRevision());
-        if (currentPreference.getDestinationChoice() == LeadDestinationChoice.NONE
-                && existing.getMode() != LeadShareMode.COPY_LINKS) {
-            throw new VisitOperationsConflictException(
-                    "The current destination no longer supports this prepared share");
-        }
+                lead.getId(), existing.getContactPreferenceRevision(), existing.getMode());
         if (currentPreference.getDestinationCiphertext() != null
                 && !LeadDataProtection.mask(protection.reveal(
                         currentPreference.getDestinationCiphertext(),
@@ -404,39 +415,52 @@ public class LeadShareService {
     }
 
     private String publicOrigin() {
-        if (configuredOrigin == null || configuredOrigin.isBlank()) {
-            throw new LeadDataProtectionUnavailableException(
-                    "A canonical public property origin is not configured");
-        }
         try {
-            URI uri = URI.create(configuredOrigin.trim());
-            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
-                    || uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null
-                    || (uri.getPath() != null && !uri.getPath().isEmpty() && !"/".equals(uri.getPath()))) {
-                throw new IllegalArgumentException();
-            }
-            return uri.getScheme().toLowerCase() + "://" + uri.getHost()
-                    + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
+            return PublicPropertyOrigin.canonical(configuredOrigin);
         } catch (RuntimeException exception) {
             throw new LeadDataProtectionUnavailableException(
-                    "The configured public property origin is invalid");
+                    exception instanceof IllegalArgumentException
+                            ? exception.getMessage()
+                            : "The configured public property origin is invalid");
         }
     }
 
     private static String preview(List<LeadPublicPropertyService.EligibleProperty> properties,
                                   List<String> links) {
-        StringBuilder text = new StringBuilder("Pathome property options\n");
+        StringBuilder text = new StringBuilder(properties.size() == 1
+                ? "🏡 Your shortlisted home from Pathome\n"
+                : "🏡 Your shortlisted homes from Pathome\n");
         for (int index = 0; index < properties.size(); index++) {
             LeadPublicPropertyService.EligibleProperty property = properties.get(index);
-            text.append(index + 1).append(". ").append(property.title());
-            if (property.location() != null) text.append(" - ").append(property.location());
-            if (property.bhk() != null) text.append(" - ").append(property.bhk());
+            if (properties.size() > 1) text.append(index + 1).append(". ");
+            text.append(property.title()).append('\n');
+            if (property.location() != null) text.append(property.location()).append('\n');
+            List<String> facts = new ArrayList<>(3);
             if (property.monthlyRent() != null) {
-                text.append(" - INR ").append(property.monthlyRent().toPlainString()).append(" / month");
+                facts.add("Rent: INR " + formatNumber(property.monthlyRent()) + " / month");
             }
-            text.append('\n').append(links.get(index)).append('\n');
+            if (property.bhk() != null) facts.add(property.bhk());
+            if (property.totalAreaSqFt() != null
+                    && Double.isFinite(property.totalAreaSqFt())
+                    && property.totalAreaSqFt() > 0) {
+                facts.add(formatNumber(property.totalAreaSqFt()) + " sq ft");
+            }
+            if (!facts.isEmpty()) text.append(String.join(" · ", facts)).append('\n');
+            text.append("View property details: ").append(links.get(index));
+            if (index + 1 < properties.size()) text.append("\n\n");
         }
-        return text.toString().trim();
+        text.append(properties.size() > 1 ? "\n\n" : "\n")
+                .append("Interested? Open Pathome to request a visit.\n")
+                .append("Pathome — Your Dreams, Our Efforts.");
+        return text.toString();
+    }
+
+    private static String formatNumber(Number value) {
+        NumberFormat format = NumberFormat.getNumberInstance(Locale.forLanguageTag("en-IN"));
+        format.setMinimumFractionDigits(0);
+        format.setMaximumFractionDigits(2);
+        format.setGroupingUsed(true);
+        return format.format(value);
     }
 
     private LeadShareView view(LeadShare share) {
@@ -486,7 +510,8 @@ public class LeadShareService {
     private boolean currentConsentMatches(LeadShare share, LeadContactPreference latestPreference) {
         return latestPreference != null
                 && latestPreference.getRevision().equals(share.getContactPreferenceRevision())
-                && latestPreference.getConsentStatus() == LeadConsentStatus.GRANTED;
+                && latestPreference.getConsentStatus() == LeadConsentStatus.GRANTED
+                && PROPERTY_SHARING_PURPOSE.equals(latestPreference.getConsentPurpose());
     }
 
     private boolean currentDestinationMatches(LeadShare share,
@@ -495,7 +520,12 @@ public class LeadShareService {
         if (latestPreference.getDestinationChoice() == LeadDestinationChoice.NONE) {
             return share.getMode() == LeadShareMode.COPY_LINKS;
         }
-        if (latestPreference.getDestinationCiphertext() == null) return false;
+        if (share.getMode() == LeadShareMode.MANUAL_BUSINESS_HANDOFF
+                && (latestPreference.getChannel() != LeadContactChannel.WHATSAPP
+                || !hasProtectedDestination(latestPreference))) {
+            return false;
+        }
+        if (!hasProtectedDestination(latestPreference)) return false;
         try {
             String destination = protection.reveal(latestPreference.getDestinationCiphertext(),
                     latestPreference.getDestinationIv(), latestPreference.getDestinationKeyVersion());
@@ -546,6 +576,15 @@ public class LeadShareService {
             throw new IllegalArgumentException(
                     "Operation ID, Lead/shortlist versions, preference revision and mode are required");
         }
+    }
+
+    private static boolean hasProtectedDestination(LeadContactPreference preference) {
+        return preference.getDestinationCiphertext() != null
+                && !preference.getDestinationCiphertext().isBlank()
+                && preference.getDestinationIv() != null
+                && !preference.getDestinationIv().isBlank()
+                && preference.getDestinationKeyVersion() != null
+                && !preference.getDestinationKeyVersion().isBlank();
     }
 
     private static void requireVersion(LeadRoutingQueue lead, Long expected) {

@@ -5,6 +5,7 @@ import { NotificationProvider } from './context/NotificationContext';
 import { NotificationToastContainer } from './components/NotificationToastContainer';
 import { NotificationCenterDrawer } from './components/NotificationCenterDrawer';
 import { AppErrorDialog } from './components/AppErrorDialog';
+import { EnquiryPhoneVerificationPage } from './components/EnquiryPhoneVerificationPage';
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
         <NotificationCenterDrawer />
         <AppErrorDialog />
         <Routes>
+          <Route path="/verify-enquiry-phone" element={<EnquiryPhoneVerificationPage />} />
           <Route path="/*" element={<Home />} />
         </Routes>
       </Router>

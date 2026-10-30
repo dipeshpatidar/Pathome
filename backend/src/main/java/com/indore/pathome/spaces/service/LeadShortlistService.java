@@ -79,20 +79,23 @@ public class LeadShortlistService {
         UUID operationId = operationId(operationKey);
         String payloadHash = payloadHash(leadId, command);
         lockOperation(actorId, operationId);
+        requireReceiptReadable(actorId, leadId);
         LeadCommandReceipt existingReceipt = receipts.findByActorIdAndOperationIdAndAction(
                 actorId, operationId, "LEAD_SHORTLIST_CREATE").orElse(null);
         if (existingReceipt != null) {
+            long shortlistId = requireStoredReceiptReadable(actorId, operationId, existingReceipt);
             if (!existingReceipt.getPayloadHash().equals(payloadHash)) {
                 throw new VisitOperationsConflictException(
                         "This idempotency key was already used with a different shortlist request");
             }
-            return get(actorId, leadId, Long.parseLong(existingReceipt.getResultReference()));
+            return get(actorId, leadId, shortlistId);
         }
         LeadRoutingQueue lead = lockAndAuthorize(actorId, leadId);
         requireVersion(lead, command.expectedLeadVersion());
         requireActiveLifecycle(lead);
         List<Long> listingIds = exactListingIds(command);
-        publicProperties.requireCurrentPublicProperties(lead, listingIds);
+        publicProperties.requireCurrentPublicPropertiesForUpdate(lead, listingIds);
+        requireFreshEditable(actorId, lead);
 
         Instant now = databaseClock.now();
         LeadShortlist shortlist = shortlists.saveAndFlush(new LeadShortlist(lead, now));
@@ -130,7 +133,8 @@ public class LeadShortlistService {
         }
         requireActiveLifecycle(lead);
         List<Long> listingIds = exactListingIds(command);
-        publicProperties.requireCurrentPublicProperties(lead, listingIds);
+        publicProperties.requireCurrentPublicPropertiesForUpdate(lead, listingIds);
+        requireFreshEditable(actorId, lead);
 
         Instant now = databaseClock.now();
         items.deleteAllByShortlist_Id(shortlistId);
@@ -181,6 +185,37 @@ public class LeadShortlistService {
         LeadAccessContext context = leadAccess.context(actorId);
         leadAccess.requireEditable(context, lead, actorId);
         return lead;
+    }
+
+    private void requireReceiptReadable(Long actorId, Long leadId) {
+        if (leadId == null || leadId <= 0) throw new IllegalArgumentException("Lead ID is required");
+        LeadRoutingQueue lead = leads.findById(leadId)
+                .orElseThrow(() -> new EntityNotFoundException("Lead not found"));
+        LeadAccessContext context = leadAccess.context(actorId);
+        leadAccess.requireReadable(context, lead, actorId);
+    }
+
+    /** Resolve the persisted result before inspecting any receipt content or conflict. Ordinary
+     * replay reads take no additional domain locks, so a B request cannot invert A/B lock order. */
+    private long requireStoredReceiptReadable(Long actorId, UUID operationId,
+                                              LeadCommandReceipt receipt) {
+        if (!operationId.equals(receipt.getOperationId())
+                || !"LEAD_SHORTLIST_CREATE".equals(receipt.getAction())) {
+            throw LeadAccessContext.hidden();
+        }
+        long shortlistId = LeadService.parseLeadReference(receipt.getResultReference());
+        LeadShortlist stored = shortlists.findById(shortlistId)
+                .orElseThrow(LeadAccessContext::hidden);
+        if (stored.getLead() == null || stored.getLead().getId() == null) {
+            throw LeadAccessContext.hidden();
+        }
+        requireReceiptReadable(actorId, stored.getLead().getId());
+        return shortlistId;
+    }
+
+    private void requireFreshEditable(Long actorId, LeadRoutingQueue lead) {
+        LeadAccessContext context = leadAccess.context(actorId);
+        leadAccess.requireEditable(context, lead, actorId);
     }
 
     private static void validate(LeadShortlistCommand command) {

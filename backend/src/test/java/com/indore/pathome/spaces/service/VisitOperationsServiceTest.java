@@ -68,6 +68,10 @@ class VisitOperationsServiceTest {
         when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
         when(users.findLockedById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
         when(users.findById(anyLong())).thenAnswer(invocation -> Optional.of(user(invocation.getArgument(0), Role.ROLE_GROUND_BOY)));
+        lenient().when(listings.lockForSchedulingById(anyLong()))
+                .thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
+        lenient().when(listings.findById(anyLong()))
+                .thenAnswer(invocation -> Optional.of(listing(invocation.getArgument(0), "Example City")));
         when(authorization.requireGroundExecutiveTarget(anyLong())).thenAnswer(invocation -> user(invocation.getArgument(0), Role.ROLE_GROUND_BOY));
         VisitPolicy policy = new VisitPolicy();
         when(visitPolicies.findById(VisitPolicy.SINGLETON_ID)).thenReturn(Optional.of(policy));
@@ -282,7 +286,7 @@ class VisitOperationsServiceTest {
             assertNull(created.get().getSourceRequest());
             assertSame(source, created.get().getDerivedFromRequest());
             assertEquals(origin, created.get().getOrigin());
-            reset(sessions, requests, listings, items);
+            reset(sessions, requests, items);
             when(authorization.requireOperations(9L)).thenReturn(user(9L, Role.ROLE_ADMIN));
             stubOwnershipVersionSnapshot(0L);
         }

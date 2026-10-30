@@ -30,5 +30,6 @@ public record LeadDetailView(
         List<String> conversionPrerequisites,
         boolean linkedCustomerAccount,
         LeadLegacyProvenance provenance,
-        LeadCaptureOutcomeView captureOutcome) {
+        LeadCaptureOutcomeView captureOutcome,
+        Long contactPhoneRevision) {
 }

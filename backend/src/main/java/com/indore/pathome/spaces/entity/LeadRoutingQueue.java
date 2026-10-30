@@ -55,6 +55,9 @@ public class LeadRoutingQueue {
     @Column(name = "contact_phone_normalized", length = 16)
     private String contactPhoneNormalized;
 
+    @Column(name = "contact_phone_revision", nullable = false)
+    private Long contactPhoneRevision = 0L;
+
     @Column(name = "customer_said", columnDefinition = "text")
     private String customerSaid;
 
@@ -157,6 +160,8 @@ public class LeadRoutingQueue {
     public void setBudget(BigDecimal budget) { this.budget = budget; }
     public String getContactPhoneNormalized() { return contactPhoneNormalized; }
     public void setContactPhoneNormalized(String value) { this.contactPhoneNormalized = value; }
+    public Long getContactPhoneRevision() { return contactPhoneRevision; }
+    public void setContactPhoneRevision(Long value) { this.contactPhoneRevision = value == null ? 0L : value; }
     public String getCustomerSaid() { return customerSaid; }
     public void setCustomerSaid(String customerSaid) { this.customerSaid = customerSaid; }
     public LeadStatus getStatus() { return status; }

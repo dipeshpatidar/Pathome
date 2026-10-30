@@ -11,6 +11,7 @@ import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
@@ -18,6 +19,8 @@ import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
 import com.indore.pathome.spaces.service.TrustedOperationalIntakeService;
+import com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService;
+import com.indore.pathome.spaces.service.PublicPropertyReadService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -44,6 +47,7 @@ class PublicPropertySecurityTest {
     private MockMvc mockMvc;
 
     @MockBean private ListingRepository listingRepository;
+    @MockBean private PublicPropertyReadService publicPropertyReadService;
     @MockBean private PropertyMediaAssetRepository mediaAssetRepository;
     @MockBean private CloudinaryService cloudinaryService;
     @MockBean private FailedUploadService failedUploadService;
@@ -51,10 +55,12 @@ class PublicPropertySecurityTest {
     @MockBean private ParserLearningService parserLearningService;
     @MockBean private ParserLearningCaptureService parserLearningCaptureService;
     @MockBean private BatchPropertyPublishingService batchPropertyPublishingService;
+    @MockBean private BackOfficePropertyAuthority backOfficePropertyAuthority;
     // PropertyController gained this required collaborator after this test was written, so the slice
     // context could no longer be created (the test failed to load, not to assert). Mocked here so the
     // public-property authorization rules it actually guards keep running.
     @MockBean private TrustedOperationalIntakeService trustedOperationalIntakeService;
+    @MockBean private PropertyVisitRequestApplicationService requestApplicationService;
     @MockBean @Qualifier("mediaStagingService") private MediaStagingService mediaStagingService;
     @MockBean private UserRepository userRepository;
     @MockBean private PropertyVisitRequestRepository propertyVisitRequestRepository;
@@ -77,6 +83,9 @@ class PublicPropertySecurityTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void adminTaggedMediaIsAllowed() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setStatus(ListingStatus.ACTIVE);
+        when(listingRepository.findById(7L)).thenReturn(Optional.of(listing));
         when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(7L)).thenReturn(List.of());
         mockMvc.perform(get("/api/v1/properties/7/tagged-media"))
                 .andExpect(status().isOk());
@@ -85,6 +94,9 @@ class PublicPropertySecurityTest {
     @Test
     @WithMockUser(roles = "SUB_ADMIN")
     void subAdminTaggedMediaIsAllowed() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setStatus(ListingStatus.ACTIVE);
+        when(listingRepository.findById(7L)).thenReturn(Optional.of(listing));
         when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(7L)).thenReturn(List.of());
         mockMvc.perform(get("/api/v1/properties/7/tagged-media"))
                 .andExpect(status().isOk());

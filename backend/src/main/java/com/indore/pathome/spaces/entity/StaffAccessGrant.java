@@ -92,6 +92,8 @@ public class StaffAccessGrant {
             case STAFF_ADMIN -> scopeType == StaffScopeType.GLOBAL && expiresAt == null;
             case CITY_TEAM_ADMIN, OPS_INTAKE, OPS_ROUTING -> scopeType == StaffScopeType.CITY;
             case OPS_COORDINATE, OPS_SUPERVISE -> scopeType == StaffScopeType.TEAM;
+            case PROPERTY_EDIT_PUBLISH, PROPERTY_AUDIT_READ, PROPERTY_LIFECYCLE ->
+                    scopeType == StaffScopeType.CITY;
         };
         if (!shapeValid || !capabilityValid) {
             throw new IllegalArgumentException("Staff capability and scope shape are incompatible");

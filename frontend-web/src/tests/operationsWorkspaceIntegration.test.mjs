@@ -1028,9 +1028,10 @@ test('the existing employee workspace tabs and panels are preserved', () => {
 });
 
 test('the Operations destination is a capability-gated path inside the single-route shell', () => {
-  // The approved Package 2 change keeps the route table itself untouched: the shell still mounts one
-  // route and dispatches on the pathname, so no new router entry or role gate was introduced.
-  assert.equal((app.match(/<Route /g) ?? []).length, 1);
+  // The approved enquiry-phone page is the only dedicated route. The application shell still mounts
+  // one wildcard route and dispatches workspace destinations on the pathname.
+  assert.equal((app.match(/<Route /g) ?? []).length, 2);
+  assert.match(app, /<Route path="\/verify-enquiry-phone" element=\{<EnquiryPhoneVerificationPage \/>\} \/>/);
   assert.match(app, /path="\/\*"/);
   assert.equal(app.includes('role'), false, 'the route table must not branch on a role label');
 
@@ -1038,7 +1039,7 @@ test('the Operations destination is a capability-gated path inside the single-ro
   // that a staff capability - never a role label - decides admission.
   assert.match(home, /const operationsRoute = isOperationsPath\(normalizeRoutePathname\(location\.pathname\)\);/);
   assert.match(home, /if \(operationsRoute\) return;/);
-  assert.match(home, /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\);/);
+  assert.match(home, /const isProtectedRoute = path === '\/tenant' \|\| path === '\/admin' \|\| path === '\/crm'\s*\n\s*\|\| isOperationsPath\(path\) \|\| path\.startsWith\('\/backoffice\/properties'\);/);
 
   // Existing role destinations are preserved exactly as they were.
   assert.match(home, /role === 'EMPLOYEE' && path !== '\/crm'/);

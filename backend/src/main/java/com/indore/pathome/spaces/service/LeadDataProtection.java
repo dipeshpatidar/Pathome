@@ -95,12 +95,24 @@ public class LeadDataProtection {
     }
 
     public String fingerprint(String normalizedValue) {
+        return keyedDigest("CRM_DESTINATION", normalizedValue);
+    }
+
+    /**
+     * Keyed digest for secrets and public-safe equality tokens in an explicitly bounded namespace.
+     * The namespace prevents a digest from one purpose being replayed as another.
+     */
+    public String keyedDigest(String namespace, String normalizedValue) {
         requireConfigured();
+        if (namespace == null || !namespace.matches("[A-Z][A-Z0-9_]{0,63}")
+                || normalizedValue == null || normalizedValue.isBlank()) {
+            throw new IllegalArgumentException("A bounded digest namespace and value are required");
+        }
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(key, "HmacSHA256"));
             return HexFormat.of().formatHex(mac.doFinal(
-                    ("CRM_DESTINATION:" + normalizedValue).getBytes(StandardCharsets.UTF_8)));
+                    (namespace + ":" + normalizedValue).getBytes(StandardCharsets.UTF_8)));
         } catch (GeneralSecurityException exception) {
             throw new LeadDataProtectionUnavailableException(
                     "CRM contact protection could not fingerprint the value", exception);

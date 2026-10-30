@@ -59,10 +59,23 @@ public class SecurityConfig {
      * on the success response before any service work runs.
      */
     private static final Pattern NO_STORE_PROTECTED_PATH = Pattern.compile(
-            "^/api/v1/(?:(?:admin/(?:drafts|failed-uploads)(?:/.*)?)"
-                    + "|operations/(?:(?:visit-requests|visit-sessions)/[^/]+/tenant-contact"
-                    + "|visit-sessions/[^/]+/oe-ge-availability"
-                    + "|leads(?:/.*)?|lead-commands/.*))$");
+            "^/api/v1/(?:"
+                    + "backoffice(?:/.*)?"
+                    + "|lessor/properties/[^/]+/removal-requests(?:/.*)?"
+                    + "|admin/property-removal-requests(?:/.*)?"
+                    + "|admin/(?:drafts|failed-uploads)(?:/.*)?"
+                    + "|operations/(?:"
+                        + "(?:visit-requests|visit-sessions)/[^/]+/tenant-contact"
+                        + "|visit-sessions/[^/]+/oe-ge-availability"
+                        + "|leads(?:/.*)?"
+                        + "|lead-commands/.*"
+                        + "|lead-assistance-commands/.*"
+                        + "|lead-contact-anomalies"
+                    + ")"
+                    + "|lead-phone-verifications/.*"
+                    + "|lead-visit-handoffs/.*"
+                    + "|tenant/(?:property-visit-commands|lead-visit-proposals(?:/.*)?)"
+                    + ")$");
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler,
@@ -88,13 +101,18 @@ public class SecurityConfig {
             }))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.GET, "/property/*").permitAll()
+                .requestMatchers(HttpMethod.HEAD, "/property/*").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/v1/lessor/guest/drafts/*/claim").authenticated()
                 .requestMatchers(HttpMethod.GET, "/api/v1/tenant/visit-requests").hasRole("TENANT")
                 .requestMatchers(HttpMethod.GET, "/api/v1/tenant/visit-entitlement").hasRole("TENANT")
+                .requestMatchers("/api/v1/tenant/property-visit-commands/**").hasRole("TENANT")
+                .requestMatchers("/api/v1/tenant/lead-visit-proposals/**").hasRole("TENANT")
                 .requestMatchers("/api/v1/tenant/visit-sessions/**").hasRole("TENANT")
                 .requestMatchers("/api/v1/ground/visit-sessions/**").hasRole("GROUND_BOY")
                 .requestMatchers("/api/v1/operations/**", "/api/v1/ground/visit-sessions/**").authenticated()
                 .requestMatchers("/api/v1/staff/**").authenticated()
+                .requestMatchers("/api/v1/backoffice/**").authenticated()
                 .requestMatchers("/api/v1/favorites/**").hasRole("TENANT")
                 .requestMatchers(HttpMethod.GET, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()
                 .requestMatchers(HttpMethod.PUT, "/api/v1/notifications", "/api/v1/notifications/**").authenticated()
@@ -103,6 +121,8 @@ public class SecurityConfig {
                 .requestMatchers(
                     "/api/v1/auth/**",
                     "/api/v1/lessor/guest/**",
+                    "/api/v1/lead-phone-verifications/**",
+                    "/api/v1/lead-visit-handoffs/**",
                     "/api/v1/webhooks/**",
                     "/login/oauth2/**",
                     "/oauth2/**",

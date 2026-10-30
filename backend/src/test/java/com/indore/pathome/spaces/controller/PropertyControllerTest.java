@@ -13,6 +13,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
+import com.indore.pathome.spaces.entity.ListingWorkflowStatus;
+import com.indore.pathome.spaces.entity.Locality;
 import com.indore.pathome.spaces.entity.ParserInputSource;
 import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.entity.PropertyMediaAsset;
@@ -20,6 +22,7 @@ import com.indore.pathome.spaces.entity.PropertyVisitRequest;
 import com.indore.pathome.spaces.entity.MediaType;
 import com.indore.pathome.spaces.entity.Role;
 import com.indore.pathome.spaces.entity.RoomTag;
+import com.indore.pathome.spaces.entity.SupportedCity;
 import com.indore.pathome.spaces.entity.User;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
@@ -32,6 +35,7 @@ import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import com.indore.pathome.spaces.service.PublicPropertyReadService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
@@ -60,6 +64,9 @@ public class PropertyControllerTest {
 
     @Mock
     private ListingRepository listingRepository;
+
+    @Mock
+    private PublicPropertyReadService publicPropertyReadService;
 
     @Mock
     private PropertyMediaAssetRepository mediaAssetRepository;
@@ -100,6 +107,9 @@ public class PropertyControllerTest {
     @Mock
     private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
 
+    @Mock
+    private com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService requestApplicationService;
+
     @InjectMocks
     private PropertyController propertyController;
 
@@ -109,6 +119,22 @@ public class PropertyControllerTest {
         propertyController.setDraftRepository(draftRepository);
         propertyController.setLocalityRepository(localityRepository);
         propertyController.setTrustedOperationalIntakeService(trustedOperationalIntakeService);
+        lenient().when(localityRepository.findById(anyLong()))
+                .thenAnswer(invocation -> Optional.of(canonicalLocality(
+                        invocation.getArgument(0))));
+        lenient().when(localityRepository.findAllById(any()))
+                .thenAnswer(invocation -> {
+                    Iterable<Long> ids = invocation.getArgument(0);
+                    java.util.ArrayList<Locality> rows = new java.util.ArrayList<>();
+                    ids.forEach(id -> rows.add(canonicalLocality(id)));
+                    return rows;
+                });
+        lenient().when(cloudinaryService.isTrustedPublicMediaAsset(
+                        anyString(), any(), any()))
+                .thenAnswer(invocation -> com.indore.pathome.spaces.service
+                        .PublicPropertyDisclosurePolicy.safeOwnedMediaUrl(
+                                invocation.getArgument(0), invocation.getArgument(1),
+                                invocation.getArgument(2), "demo") != null);
         BackOfficePropertyAuthority.Actor actor = new BackOfficePropertyAuthority.Actor(
                 new UsernamePasswordAuthenticationToken("admin@pathome.in", null,
                         List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))),
@@ -170,6 +196,7 @@ public class PropertyControllerTest {
         rental.setBhkCount("2 BHK");
         rental.setMonthlyRent(BigDecimal.valueOf(25000));
         rental.setStatus(ListingStatus.ACTIVE);
+        rental.setCanonicalLocalityId(70L);
         // Paginated discovery: page 0, size 6, no next page
         when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
                 .thenReturn(new SliceImpl<Listing>(List.of(rental), PageRequest.of(0, 6), false));
@@ -256,6 +283,7 @@ public class PropertyControllerTest {
         r1.setBhkCount("2 BHK");
         r1.setCity("Indore");
         r1.setSector("Vijay Nagar");
+        r1.setCanonicalLocalityId(70L);
 
         RentalDetails r2 = new RentalDetails();
         r2.setId(102L);
@@ -264,16 +292,19 @@ public class PropertyControllerTest {
         r2.setBhkCount("3 BHK");
         r2.setCity("Indore");
         r2.setSector("Palasia");
+        r2.setCanonicalLocalityId(70L);
 
         PropertyMediaAsset a1 = new PropertyMediaAsset();
         a1.setListingId(101L);
         a1.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v1/prop101.webp");
+        a1.setCloudinaryPublicId("prop101");
         a1.setMediaType(MediaType.IMAGE);
         a1.setIsPrimaryCover(true);
 
         PropertyMediaAsset a2 = new PropertyMediaAsset();
         a2.setListingId(102L);
         a2.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v1/prop102.webp");
+        a2.setCloudinaryPublicId("prop102");
         a2.setMediaType(MediaType.IMAGE);
         a2.setIsPrimaryCover(true);
 
@@ -300,6 +331,7 @@ public class PropertyControllerTest {
         listing.setStatus(ListingStatus.ACTIVE);
         listing.setBhkCount("2 BHK");
         listing.setCity("Indore");
+        listing.setCanonicalLocalityId(70L);
         listing.setSector("Nanda Nagar");
         when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
                 .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
@@ -317,41 +349,49 @@ public class PropertyControllerTest {
         listing.setId(18L);
         listing.setStatus(ListingStatus.ACTIVE);
         listing.setCity("Indore");
+        listing.setCanonicalLocalityId(70L);
         PropertyMediaAsset first = new PropertyMediaAsset();
-        first.setMediaUrl("https://cdn.example/first.webp");
+        first.setMediaUrl("https://res.cloudinary.com/demo/image/upload/first.webp");
+        first.setCloudinaryPublicId("first");
+        first.setListingId(18L);
         first.setMediaType(MediaType.IMAGE);
         first.setRoomTag(RoomTag.KITCHEN);
         PropertyMediaAsset primary = new PropertyMediaAsset();
-        primary.setMediaUrl("https://cdn.example/cover.webp");
+        primary.setMediaUrl("https://res.cloudinary.com/demo/image/upload/cover.webp");
+        primary.setCloudinaryPublicId("cover");
+        primary.setListingId(18L);
         primary.setMediaType(MediaType.IMAGE);
         primary.setRoomTag(RoomTag.LIVING_ROOM);
         primary.setIsPrimaryCover(true);
         when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
                 .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
-        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(18L)).thenReturn(List.of(first, primary));
+        when(mediaAssetRepository.findByListingIdInOrderByUploadedAtDesc(List.of(18L)))
+                .thenReturn(List.of(first, primary));
 
         PublicDiscoveryResponse item = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
 
-        assertEquals("https://cdn.example/cover.webp", item.coverImageUrl());
+        assertEquals("https://res.cloudinary.com/demo/image/upload/w_800,c_limit,f_auto,q_auto/cover.webp",
+                item.coverImageUrl());
         assertEquals(RoomTag.LIVING_ROOM, item.coverRoomTag());
         assertEquals(2, item.mediaCount());
-        verify(mediaAssetRepository, times(1)).findByListingIdOrderByUploadedAtDesc(18L);
+        verify(mediaAssetRepository, never()).findByListingIdOrderByUploadedAtDesc(18L);
     }
 
     @Test
-    public void publicDiscoveryLegacyGalleryDoesNotInventCoverTag() {
+    public void publicDiscoveryNeverRevivesLegacyGalleryWithoutAssetProvenance() {
         RentalDetails listing = new RentalDetails();
         listing.setId(19L);
         listing.setStatus(ListingStatus.ACTIVE);
-        listing.setMediaGalleryUrls("https://cdn.example/legacy.webp");
+        listing.setMediaGalleryUrls("https://res.cloudinary.com/demo/image/upload/legacy.webp");
         when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
                 .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
         when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(19L)).thenReturn(List.of());
 
         PublicDiscoveryResponse item = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
 
-        assertEquals("https://cdn.example/legacy.webp", item.coverImageUrl());
+        assertNull(item.coverImageUrl());
         assertNull(item.coverRoomTag());
+        assertEquals(0, item.mediaCount());
     }
 
     @Test
@@ -403,18 +443,13 @@ public class PropertyControllerTest {
         RentalDetails listing = new RentalDetails();
         listing.setId(77L);
         listing.setStatus(ListingStatus.ACTIVE);
-        User tenant = new User();
-        tenant.setId(8L);
-        tenant.setEmail("tenant@example.com");
-        tenant.setRole(Role.ROLE_TENANT);
-        when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
-        when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
-        when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.empty());
-        when(trustedOperationalIntakeService.admitNewTenantIntakeAndSave(any())).thenAnswer(invocation -> {
-            var saved = invocation.getArgument(0, com.indore.pathome.spaces.entity.PropertyVisitRequest.class);
-            saved.setId(15L);
-            return saved;
-        });
+        var acknowledgement = new com.indore.pathome.spaces.dto.PropertyVisitRequestAcknowledgement(
+                15L, 77L, "RECEIVED",
+                "Visit request received. We'll check availability before confirming your Visit Session.",
+                java.time.LocalDateTime.of(2026, 10, 27, 10, 0));
+        when(requestApplicationService.requestLegacy(eq(8L), eq(77L), any()))
+                .thenReturn(new com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService
+                        .LegacyRequestResult(acknowledgement, true));
 
         var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
                 BigDecimal.valueOf(20000), BigDecimal.valueOf(28000), "Vijay Nagar", "Within a month",
@@ -425,15 +460,8 @@ public class PropertyControllerTest {
                 authenticatedAs(8L, "different-name@example.test"));
 
         assertEquals(201, response.getStatusCode().value());
-        assertEquals("RECEIVED", response.getBody().status());
-        assertTrue(response.getBody().message().contains("before confirming"));
-        var saved = org.mockito.ArgumentCaptor.forClass(PropertyVisitRequest.class);
-        verify(trustedOperationalIntakeService).admitNewTenantIntakeAndSave(saved.capture());
-        assertEquals(8L, saved.getValue().getTenant().getId());
-        assertEquals(java.time.Instant.parse("2099-10-02T07:30:00Z"), saved.getValue().getAvailabilityStartAt());
-        assertEquals(java.time.Instant.parse("2099-10-02T08:30:00Z"), saved.getValue().getPreferredAt());
-        assertNull(saved.getValue().getSession());
-        verify(userRepository, never()).findByEmail(anyString());
+        assertEquals(acknowledgement, response.getBody());
+        verify(requestApplicationService).requestLegacy(eq(8L), eq(77L), any());
     }
 
     @Test
@@ -448,9 +476,13 @@ public class PropertyControllerTest {
         existing.setId(15L);
         existing.setListing(listing);
         existing.setTenant(tenant);
-        when(listingRepository.findById(77L)).thenReturn(Optional.of(listing));
-        when(userRepository.findById(8L)).thenReturn(Optional.of(tenant));
-        when(propertyVisitRequestRepository.findByTenantIdAndListingId(8L, 77L)).thenReturn(Optional.of(existing));
+        var acknowledgement = new com.indore.pathome.spaces.dto.PropertyVisitRequestAcknowledgement(
+                15L, 77L, "RECEIVED",
+                "Your existing Visit Request was retained.",
+                java.time.LocalDateTime.of(2026, 10, 27, 10, 0));
+        when(requestApplicationService.requestLegacy(eq(8L), eq(77L), any()))
+                .thenReturn(new com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService
+                        .LegacyRequestResult(acknowledgement, false));
 
         var response = propertyController.requestVisit(77L, new CreatePropertyVisitRequest(
                 null, null, null, null, "Saturday afternoon", null),
@@ -458,7 +490,15 @@ public class PropertyControllerTest {
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(15L, response.getBody().requestId());
-        verify(propertyVisitRequestRepository, never()).saveAndFlush(any());
+        verify(requestApplicationService).requestLegacy(eq(8L), eq(77L), any());
+    }
+
+    private static Locality canonicalLocality(Long id) {
+        SupportedCity city = new SupportedCity("indore", "Indore", true);
+        Locality locality = new Locality("Indore", "Vijay Nagar", null, 1, null);
+        locality.setId(id == null ? 70L : id);
+        locality.setSupportedCity(city);
+        return locality;
     }
 
     private static UsernamePasswordAuthenticationToken authenticatedAs(Long userId, String name) {
@@ -477,15 +517,29 @@ public class PropertyControllerTest {
         listing.setCity("Indore");
         listing.setSector("Vijay Nagar");
         listing.setAmenities("Balcony, Lift");
+        listing.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        listing.setCanonicalLocalityId(70L);
         PropertyMediaAsset image = new PropertyMediaAsset();
         image.setMediaUrl("https://res.cloudinary.com/demo/image/upload/v12345/prop.webp");
+        image.setCloudinaryPublicId("prop");
+        image.setListingId(31L);
         image.setMediaType(MediaType.IMAGE);
         image.setIsPrimaryCover(true);
         image.setRoomTag(RoomTag.BALCONY);
         when(listingRepository.findByStatusOrderByIdDesc(eq(ListingStatus.ACTIVE), any()))
                 .thenReturn(new SliceImpl<Listing>(List.of(listing), PageRequest.of(0, 6), false));
         when(listingRepository.findById(31L)).thenReturn(Optional.of(listing));
-        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(31L)).thenReturn(List.of(image));
+        when(mediaAssetRepository.findByListingIdInOrderByUploadedAtDesc(List.of(31L)))
+                .thenReturn(List.of(image));
+        PublicPropertyResponse expectedDetail = new PublicPropertyResponse(
+                31L, "2 BHK Flat in Vijay Nagar, Indore", null, null, null,
+                "Indore", "Vijay Nagar", "2 BHK", null, null, "Balcony, Lift",
+                null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null,
+                List.of(new com.indore.pathome.spaces.dto.PublicPropertyMediaResponse(
+                        image.getMediaUrl(), MediaType.IMAGE, RoomTag.BALCONY, true, null, null)));
+        when(publicPropertyReadService.findPublicProperty(31L))
+                .thenReturn(Optional.of(expectedDetail));
 
         PublicDiscoveryResponse listItem = propertyController.getAllActiveProperties(null, null, 0).getBody().properties().get(0);
         PublicPropertyResponse detailResponse = propertyController.getPropertyById(31L).getBody();
@@ -504,6 +558,81 @@ public class PropertyControllerTest {
         String serializedDetail = new ObjectMapper().writeValueAsString(detailResponse);
         assertFalse(serializedDetail.contains("uploadRequestId"));
         assertFalse(serializedDetail.contains("cloudinaryPublicId"));
+    }
+
+    @Test
+    public void publicPropertyDetailNeverSerializesPrivatePresentationAddress() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(73L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setTitle("Safe public title");
+        listing.setCity("Indore");
+        listing.setSector("Vijay Nagar");
+        listing.setAddress("PRIVATE-STREET-SENTINEL");
+        listing.setLandmark("PRIVATE-LANDMARK-SENTINEL");
+        listing.setColony("PRIVATE-COLONY-SENTINEL");
+        listing.setPincode("452010");
+        listing.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        listing.setCanonicalLocalityId(70L);
+        when(listingRepository.findById(73L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(73L)).thenReturn(List.of());
+        when(publicPropertyReadService.findPublicProperty(73L)).thenReturn(Optional.of(
+                new PublicPropertyResponse(73L, "2 BHK Flat in Vijay Nagar, Indore", null,
+                        null, null, "Indore", "Vijay Nagar", "2 BHK", null, null, null,
+                        null, null, null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, List.of())));
+
+        PublicPropertyResponse response = propertyController.getPropertyById(73L).getBody();
+        String serialized = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
+
+        assertEquals("Indore", response.city());
+        assertEquals("Vijay Nagar", response.sector());
+        assertFalse(serialized.contains("PRIVATE-STREET-SENTINEL"));
+        assertFalse(serialized.contains("PRIVATE-LANDMARK-SENTINEL"));
+        assertFalse(serialized.contains("PRIVATE-COLONY-SENTINEL"));
+        assertFalse(serialized.contains("452010"));
+        assertTrue(Arrays.stream(PublicPropertyResponse.class.getRecordComponents())
+                .map(component -> component.getName().toLowerCase(Locale.ROOT))
+                .noneMatch(name -> List.of("address", "landmark", "colony", "pincode", "postcode")
+                        .contains(name)));
+    }
+
+    @Test
+    public void publicProjectionOmitsUnsafeAuthoredContentAndPrivateMediaMetadata() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(74L);
+        listing.setStatus(ListingStatus.ACTIVE);
+        listing.setBhkCount("2 BHK");
+        listing.setPropertyType(com.indore.pathome.spaces.entity.PropertyType.FLAT);
+        listing.setCity("Indore");
+        listing.setSector("Vijay Nagar");
+        listing.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+        listing.setCanonicalLocalityId(70L);
+        listing.setTitle("Call owner Ramesh +91 98765 43210");
+        listing.setDescription("Private address sentinel and owner phone +91 98765 43210");
+        listing.setAmenities("Balcony, Call Ramesh +91 98765 43210");
+        PropertyMediaAsset unsafe = new PropertyMediaAsset();
+        unsafe.setMediaUrl("https://res.cloudinary.com/demo/private/owner.webp");
+        unsafe.setMediaType(MediaType.IMAGE);
+        unsafe.setCaption("Owner mobile +91 98765 43210");
+        when(listingRepository.findById(74L)).thenReturn(Optional.of(listing));
+        when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(74L)).thenReturn(List.of(unsafe));
+        when(publicPropertyReadService.findPublicProperty(74L)).thenReturn(Optional.of(
+                new PublicPropertyResponse(74L, "2 BHK Flat in Vijay Nagar, Indore", null,
+                        null, null, "Indore", "Vijay Nagar", "2 BHK", null, null, "Balcony",
+                        null, null, null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, List.of())));
+
+        PublicPropertyResponse response = propertyController.getPropertyById(74L).getBody();
+        String serialized = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
+
+        assertEquals("2 BHK Flat in Vijay Nagar, Indore", response.title());
+        assertEquals("Balcony", response.amenities());
+        assertNull(response.description());
+        assertTrue(response.media().isEmpty());
+        assertFalse(serialized.contains("Ramesh"));
+        assertFalse(serialized.contains("98765"));
+        assertFalse(serialized.contains("/private/"));
     }
 
     @Test

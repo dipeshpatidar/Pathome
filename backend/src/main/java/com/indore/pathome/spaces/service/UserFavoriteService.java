@@ -120,7 +120,7 @@ public class UserFavoriteService {
                 rental == null ? null : rental.getSecurityDeposit(), rental == null ? null : rental.getMaintenanceCharge(),
                 rental == null ? null : rental.getBachelorAllowed(), rental == null ? null : rental.getPreferredTenant(),
                 rental == null ? null : rental.getAvailableFrom(), coverUrl, coverTag, mediaCount, hasVideo, hasMore,
-                updatedInstant);
+                updatedInstant, listing.getVersion(), listing.getLastContentPublishedAt());
     }
 
     @Transactional

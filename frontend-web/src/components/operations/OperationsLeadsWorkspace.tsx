@@ -86,6 +86,21 @@ import {
   readPendingConsentOperation,
   type PendingConsentOperation
 } from '../../utils/operationsConsentRecovery';
+import {
+  commandStatusIsUncertain,
+  forgetPendingCapture,
+  forgetPendingShareEvent,
+  forgetPendingShortlistCreation,
+  preservePendingCapture,
+  preservePendingShareEvent,
+  preservePendingShortlistCreation,
+  readPendingCapture,
+  readPendingShareEvent,
+  readPendingShortlistCreation,
+  type CommandRecoveryBlockReason,
+  type PendingShareEventCommand,
+  type PendingShortlistCreationCommand
+} from '../../utils/operationsCommandRecovery';
 import { createOperationId } from '../../utils/operationsOperationId';
 import { classifySharePrepareFailure } from '../../utils/operationsSharePreparation';
 import {
@@ -103,6 +118,10 @@ import {
   StateMessage,
   focusWorkspaceTitle
 } from './OperationsWorkspacePrimitives';
+import { LeadPhoneVerificationPanel } from './LeadPhoneVerificationPanel';
+import { LeadLessorAvailabilityPanel } from './LeadLessorAvailabilityPanel';
+import { LeadVisitInvitationPanel } from './LeadVisitInvitationPanel';
+import { LeadSharePreviewCard } from './LeadSharePreviewCard';
 import './operationsWorkspace.css';
 import './operationsLeads.css';
 
@@ -186,6 +205,25 @@ const failureMessage = (cause: unknown, fallback: string): string =>
     : cause instanceof Error && cause.message
       ? cause.message
       : fallback;
+
+const recoveryBlockedMessage = (
+  reason: 'EXPIRED' | 'CORRUPT' | 'INVALID_TIME' | 'STORAGE_UNAVAILABLE' | 'SESSION_CHANGED',
+  commandLabel: string
+): string => {
+  if (reason === 'EXPIRED') {
+    return `An earlier ${commandLabel} is outside the 24-hour recovery window, but its outcome is still unknown. Do not create another command. An authorised operator must resolve this browser state.`;
+  }
+  if (reason === 'INVALID_TIME') {
+    return `The saved ${commandLabel} has an invalid timestamp, so its outcome cannot be treated as absent. Do not create another command. An authorised operator must resolve this browser state.`;
+  }
+  if (reason === 'STORAGE_UNAVAILABLE') {
+    return `This browser could not read the saved ${commandLabel} state. Do not create another command until its outcome is recovered.`;
+  }
+  if (reason === 'SESSION_CHANGED') {
+    return `Your session changed before the saved ${commandLabel} could be checked.`;
+  }
+  return `The saved ${commandLabel} is unreadable, but its outcome is still unknown. Do not create another command. An authorised operator must resolve this browser state.`;
+};
 
 const consentOutcomeIsUnconfirmed = (status: number | undefined): boolean =>
   status === undefined
@@ -1001,6 +1039,8 @@ const LeadCaptureScreen: React.FC<{
   const [draft, setDraft] = useState<CaptureDraft>(EMPTY_CAPTURE);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [phase, setPhase] = useState<'edit' | 'checking-duplicates' | 'duplicates' | 'saving' | 'uncertain' | 'checking'>('edit');
+  const [captureRecoveryBlocked, setCaptureRecoveryBlocked] =
+    useState<CommandRecoveryBlockReason | null>(null);
   const [duplicateCandidates, setDuplicateCandidates] = useState<LeadDuplicateCandidate[]>([]);
   const [existingAccountMatch, setExistingAccountMatch] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
@@ -1028,6 +1068,20 @@ const LeadCaptureScreen: React.FC<{
 
   useEffect(() => {
     mounted.current = true;
+    const session = captureOperationsSession();
+    if (session) {
+      const pending = readPendingCapture(session);
+      if (pending.state === 'PENDING') {
+        operationId.current = pending.command.operationId;
+        setPhase('uncertain');
+        setNotice(
+          'A previous enquiry command is still unconfirmed. Check its saved result before creating another enquiry.'
+        );
+      } else if (pending.state === 'BLOCKED') {
+        setCaptureRecoveryBlocked(pending.reason);
+        setNotice(recoveryBlockedMessage(pending.reason, 'enquiry command'));
+      }
+    }
     const unsubscribe = subscribeOperationsSession(() => {
       draftGeneration.current += 1;
       duplicateController.current?.abort();
@@ -1035,6 +1089,7 @@ const LeadCaptureScreen: React.FC<{
       inFlight.current = false;
       operationId.current = null;
       allowNavigation.current = true;
+      setCaptureRecoveryBlocked(null);
       setDraft(EMPTY_CAPTURE);
       setErrors({});
       setDuplicateCandidates([]);
@@ -1241,7 +1296,38 @@ const LeadCaptureScreen: React.FC<{
       setNotice('Your session has ended. Sign in again before saving this enquiry.');
       return;
     }
-    operationId.current ??= requestId();
+    if (captureRecoveryBlocked) {
+      setNotice(recoveryBlockedMessage(captureRecoveryBlocked, 'enquiry command'));
+      return;
+    }
+    const recovered = readPendingCapture(session);
+    if (recovered.state === 'PENDING') {
+      operationId.current = recovered.command.operationId;
+      setPhase('uncertain');
+      setNotice(
+        'A previous enquiry command is still unconfirmed. Check its saved result before creating another enquiry.'
+      );
+      return;
+    }
+    if (recovered.state === 'BLOCKED') {
+      setCaptureRecoveryBlocked(recovered.reason);
+      setPhase('edit');
+      setNotice(recoveryBlockedMessage(recovered.reason, 'enquiry command'));
+      return;
+    }
+    const nextOperationId = requestId();
+    try {
+      preservePendingCapture(session, nextOperationId);
+      operationId.current = nextOperationId;
+    } catch (cause) {
+      operationId.current = null;
+      setPhase('edit');
+      setNotice(failureMessage(
+        cause,
+        'This browser could not keep the enquiry command. Nothing was sent.'
+      ));
+      return;
+    }
     dispatched.current = false;
     inFlight.current = true;
     setPhase('saving');
@@ -1257,16 +1343,21 @@ const LeadCaptureScreen: React.FC<{
       );
       if (!mounted.current || !isOperationsSessionActive(session)) return;
       completed.current = true;
+      forgetPendingCapture(session, operationId.current);
       operationId.current = null;
       onCreated(lead);
     } catch (cause) {
       if (!mounted.current || isOperationsSessionChangedError(cause)
         || !isOperationsSessionActive(session)) return;
       const status = failureStatus(cause);
-      if (dispatched.current && (status === undefined || status >= 500)) {
+      if (dispatched.current && commandStatusIsUncertain(status)) {
         setPhase('uncertain');
         setNotice('We couldn’t confirm the save. Check the same request before trying again.');
       } else {
+        if (operationId.current) {
+          forgetPendingCapture(session, operationId.current);
+          operationId.current = null;
+        }
         setPhase(duplicateCandidates.length ? 'duplicates' : 'edit');
         setNotice(failureMessage(cause, 'The enquiry was not saved. Your entries are still here.'));
       }
@@ -1276,7 +1367,7 @@ const LeadCaptureScreen: React.FC<{
   };
 
   const checkSaved = async () => {
-    if (!operationId.current || inFlight.current) return;
+    if (captureRecoveryBlocked || !operationId.current || inFlight.current) return;
     const session = captureOperationsSession();
     if (!session) {
       setNotice('Your session has ended.');
@@ -1298,12 +1389,15 @@ const LeadCaptureScreen: React.FC<{
         }
         const lead = await operationsLeadService.detail(leadId, { session });
         if (!mounted.current || !isOperationsSessionActive(session)) return;
+        forgetPendingCapture(session, operationId.current);
         operationId.current = null;
         onCreated(lead);
         return;
       }
-      setPhase('duplicates');
-      setNotice('No saved result exists for this request. You can safely submit the same enquiry again.');
+      setPhase('uncertain');
+      setNotice(
+        'No saved result is visible yet. That does not prove the earlier command failed; check again rather than creating a second enquiry.'
+      );
     } catch (cause) {
       if (!mounted.current || isOperationsSessionChangedError(cause)
         || !isOperationsSessionActive(session)) return;
@@ -1325,6 +1419,7 @@ const LeadCaptureScreen: React.FC<{
   };
 
   const clearForm = () => {
+    if (captureRecoveryBlocked) return;
     retireLookup();
     operationId.current = null;
     dispatched.current = false;
@@ -1476,7 +1571,7 @@ const LeadCaptureScreen: React.FC<{
             </button>
           </div>
         </section>
-      ) : phase === 'uncertain' || phase === 'checking' ? (
+      ) : !captureRecoveryBlocked && (phase === 'uncertain' || phase === 'checking') ? (
         <Notice
           tone="warn"
           live
@@ -1506,7 +1601,11 @@ const LeadCaptureScreen: React.FC<{
           void checkDuplicates();
         }}
       >
-        <fieldset className="ld-fieldset" disabled={phase === 'saving' || phase === 'uncertain' || phase === 'checking'}>
+        <fieldset
+          className="ld-fieldset"
+          disabled={captureRecoveryBlocked !== null
+            || phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
+        >
           <legend>City and team</legend>
           {opportunities.length > 1 ? (
             <label className="oe-field-stack">
@@ -1536,7 +1635,11 @@ const LeadCaptureScreen: React.FC<{
           {errors.scope ? <p className="oe-add-err" role="alert">{errors.scope}</p> : null}
         </fieldset>
 
-        <fieldset className="ld-fieldset" disabled={phase === 'saving' || phase === 'uncertain' || phase === 'checking'}>
+        <fieldset
+          className="ld-fieldset"
+          disabled={captureRecoveryBlocked !== null
+            || phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
+        >
           <legend>Customer and source</legend>
           <div className="ld-grid">
             <label className="oe-field-stack">
@@ -1595,7 +1698,11 @@ const LeadCaptureScreen: React.FC<{
           </div>
         </fieldset>
 
-        <fieldset className="ld-fieldset" disabled={phase === 'saving' || phase === 'uncertain' || phase === 'checking'}>
+        <fieldset
+          className="ld-fieldset"
+          disabled={captureRecoveryBlocked !== null
+            || phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
+        >
           <legend>Requirements</legend>
           <div className="ld-grid">
             <label className="oe-field-stack">
@@ -1706,7 +1813,9 @@ const LeadCaptureScreen: React.FC<{
           <button
             type="submit"
             className="oe-btn oe-btn--primary oe-btn--md"
-            disabled={phase === 'checking-duplicates' || phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
+            disabled={captureRecoveryBlocked !== null
+              || phase === 'checking-duplicates' || phase === 'saving'
+              || phase === 'uncertain' || phase === 'checking'}
           >
             {phase === 'checking-duplicates'
               ? 'Checking duplicates…'
@@ -1717,7 +1826,8 @@ const LeadCaptureScreen: React.FC<{
           <button
             type="button"
             className="oe-btn oe-btn--secondary oe-btn--md"
-            disabled={phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
+            disabled={captureRecoveryBlocked !== null
+              || phase === 'saving' || phase === 'uncertain' || phase === 'checking'}
             onClick={clearForm}
           >
             Clear form
@@ -2096,6 +2206,11 @@ const LeadDetailScreen: React.FC<{
             )}
             <p className="oe-footnote">The full number appears only in the reveal dialog and is cleared when the dialog closes.</p>
           </section>
+
+          <LeadPhoneVerificationPanel
+            lead={lead}
+            onChanged={() => void load(true)}
+          />
 
           <section className="ld-card" aria-labelledby="ld-sharing-summary">
             <h2 id="ld-sharing-summary">Property sharing</h2>
@@ -2702,6 +2817,7 @@ const LeadShareScreen: React.FC<{
     setMessage('');
     try {
       let pendingPreparation: PendingSharePrepareOperation | null = null;
+      let pendingShareEvent: PendingShareEventCommand | null = null;
       let pendingReadMessage = '';
       try {
         pendingPreparation = readPendingSharePreparation(session, leadId);
@@ -2709,6 +2825,15 @@ const LeadShareScreen: React.FC<{
         pendingReadMessage = failureMessage(
           cause,
           'The earlier property message could not be checked in this browser.'
+        );
+      }
+      const pendingEventRead = readPendingShareEvent(session, leadId);
+      if (pendingEventRead.state === 'PENDING') {
+        pendingShareEvent = pendingEventRead.command;
+      } else if (pendingEventRead.state === 'BLOCKED') {
+        pendingReadMessage = recoveryBlockedMessage(
+          pendingEventRead.reason,
+          'share action'
         );
       }
       const shortlistIdToLoad = shortlistIdFromRoute ?? pendingPreparation?.shortlistId ?? null;
@@ -2732,6 +2857,21 @@ const LeadShareScreen: React.FC<{
           if (!isConcealed(cause)) throw cause;
         }
       }
+      let pendingShare: LeadShare | null = null;
+      if (pendingShareEvent) {
+        try {
+          const item = await operationsLeadService.preparedShareHistoryFromHistory(
+            leadId,
+            pendingShareEvent.shareId,
+            { session, signal: next.signal }
+          );
+          pendingShare = item ? leadShareFromHistoryItem(item, leadId) : null;
+        } catch (cause) {
+          if (!isConcealed(cause) && !(cause instanceof ShareHistoryBoundReachedError)) {
+            throw cause;
+          }
+        }
+      }
       if (!mounted.current || next.signal.aborted || sequence !== requestNumber.current
         || !isOperationsSessionActive(session)) return null;
       setLead(detail);
@@ -2740,7 +2880,16 @@ const LeadShareScreen: React.FC<{
       setHistoryPage(0);
       setShortlist(currentShortlist);
       setState('ready');
-      if (pendingPreparation
+      if (pendingShareEvent) {
+        if (pendingShare) {
+          setPreparedShare(pendingShare);
+          setStep('handoff');
+        } else {
+          setMessage(
+            'An earlier share action is still unconfirmed, but its saved message is not visible in the available history. No action was repeated.'
+          );
+        }
+      } else if (pendingPreparation
         && currentShortlist?.id === pendingPreparation.shortlistId) {
         setStep('prepare');
       }
@@ -3005,10 +3154,15 @@ const ShareHandoffStep: React.FC<{
   const [waUrl, setWaUrl] = useState<string | null>(null);
   const [copyFallback, setCopyFallback] = useState(false);
   const [pendingEvent, setPendingEvent] = useState<string | null>(null);
+  const [eventRecoveryBlocked, setEventRecoveryBlocked] =
+    useState<CommandRecoveryBlockReason | null>(null);
   const [launchVerifying, setLaunchVerifying] = useState(false);
   const eventId = useRef<string | null>(null);
   const eventKind = useRef<LeadShareEventType | null>(null);
+  const eventShareId = useRef<string | null>(null);
   const dispatched = useRef(false);
+  const actionInFlight = useRef(false);
+  const recordInFlight = useRef(false);
   const mounted = useRef(true);
   const activationGeneration = useRef(0);
   const activationInFlight = useRef(false);
@@ -3027,6 +3181,24 @@ const ShareHandoffStep: React.FC<{
 
   useEffect(() => {
     mounted.current = true;
+    const session = captureOperationsSession();
+    if (session) {
+      const pending = readPendingShareEvent(session, lead.id);
+      if (pending.state === 'PENDING') {
+          eventId.current = pending.command.operationId;
+          eventKind.current = pending.command.eventType;
+          eventShareId.current = pending.command.shareId;
+          setPendingEvent(pending.command.operationId);
+          setMessage(
+            pending.command.shareId === share.id
+              ? 'An earlier share action is still unconfirmed. Check saved history before copying or opening WhatsApp again.'
+              : 'An earlier share action on another saved message is still unconfirmed. Resolve it before recording this action.'
+          );
+      } else if (pending.state === 'BLOCKED') {
+        setEventRecoveryBlocked(pending.reason);
+        setMessage(recoveryBlockedMessage(pending.reason, 'share action'));
+      }
+    }
     return () => {
       mounted.current = false;
       activationGeneration.current += 1;
@@ -3037,6 +3209,12 @@ const ShareHandoffStep: React.FC<{
   useEffect(() => subscribeOperationsSession(() => {
     activationGeneration.current += 1;
     activationInFlight.current = false;
+    recordInFlight.current = false;
+    eventId.current = null;
+    eventKind.current = null;
+    eventShareId.current = null;
+    setPendingEvent(null);
+    setEventRecoveryBlocked(null);
     closeReservedTarget();
     setConfirmOpen(false);
     setFullDestination(null);
@@ -3062,20 +3240,27 @@ const ShareHandoffStep: React.FC<{
     if (found) setCurrent(found);
   }, [history, share.id]);
 
-  const refreshCurrent = async (session: OperationsSession): Promise<LeadShareHistoryItem | null> => {
+  const refreshCurrent = async (
+    session: OperationsSession,
+    savedShareId = share.id
+  ): Promise<LeadShareHistoryItem | null> => {
     const item = await operationsLeadService.preparedShareHistoryFromHistory(
       lead.id,
-      share.id,
+      savedShareId,
       { session }
     );
     if (!mounted.current || !isOperationsSessionActive(session)) return null;
-    setCurrent(item);
+    if (savedShareId === share.id) setCurrent(item);
     return item;
   };
 
   const preflight = async (
     expectedSession?: OperationsSession
   ): Promise<LeadShareHistoryItem | null> => {
+    if (eventRecoveryBlocked) {
+      setMessage(recoveryBlockedMessage(eventRecoveryBlocked, 'share action'));
+      return null;
+    }
     if (pendingEvent) {
       setMessage('An earlier share event is unconfirmed. Check history before any new copy or handoff.');
       return null;
@@ -3140,24 +3325,75 @@ const ShareHandoffStep: React.FC<{
 
   type EventWriteOutcome = 'recorded' | 'recovered' | null;
 
-  const record = async (
+  const clearEventIdentity = (): void => {
+    eventId.current = null;
+    eventKind.current = null;
+    eventShareId.current = null;
+    setPendingEvent(null);
+  };
+
+  const abandonUnstartedReservation = (operationId: string): void => {
+    const session = captureOperationsSession();
+    if (!session || !isOperationsSessionActive(session)) return;
+    if (!forgetPendingShareEvent(session, lead.id, operationId)) {
+      setEventRecoveryBlocked('STORAGE_UNAVAILABLE');
+      setPendingEvent(operationId);
+      setMessage(
+        'The browser could not clear an unused action reference. No external action was opened, but further sharing is blocked until this browser state is recovered.'
+      );
+      return;
+    }
+    if (eventId.current === operationId) clearEventIdentity();
+  };
+
+  const reserveEvent = (
     type: LeadShareEventType,
-    expectedSession?: OperationsSession
+    session: OperationsSession
+  ): boolean => {
+    if (eventRecoveryBlocked) {
+      setMessage(recoveryBlockedMessage(eventRecoveryBlocked, 'share action'));
+      return false;
+    }
+    if (eventId.current) {
+      if (eventKind.current !== type) {
+        setMessage('An earlier share action is still unconfirmed. Check history before recording a different outcome.');
+        return false;
+      }
+      if (eventShareId.current !== share.id) {
+        setMessage('An earlier share action belongs to another saved message. Resolve it before recording this action.');
+        return false;
+      }
+      return true;
+    }
+    const operationId = requestId();
+    try {
+      preservePendingShareEvent(session, {
+        operationId,
+        leadId: lead.id,
+        shareId: share.id,
+        eventType: type
+      });
+    } catch (cause) {
+      setMessage(failureMessage(
+        cause,
+        'This browser could not keep the share action reference. No external action was opened.'
+      ));
+      return false;
+    }
+    eventId.current = operationId;
+    eventKind.current = type;
+    eventShareId.current = share.id;
+    setPendingEvent(operationId);
+    return true;
+  };
+
+  const submitReservedEvent = async (
+    type: LeadShareEventType,
+    session: OperationsSession
   ): Promise<EventWriteOutcome> => {
-    if (pendingEvent) {
-      setMessage('An earlier action is still unconfirmed. Check the saved history before copying or opening WhatsApp again.');
-      return null;
-    }
-    const session = expectedSession ?? captureOperationsSession();
-    if (!session || !isOperationsSessionActive(session)) {
-      setMessage('Your session has ended.');
-      return null;
-    }
-    if (!eventId.current) {
-      eventId.current = requestId();
-      eventKind.current = type;
-    } else if (eventKind.current !== type) {
-      setMessage('An earlier share action is still unconfirmed. Check history before recording a different outcome.');
+    const pendingId = eventId.current;
+    if (!pendingId || eventKind.current !== type || eventShareId.current !== share.id) {
+      setMessage('The saved share action no longer matches this message. Nothing was recorded.');
       return null;
     }
     dispatched.current = false;
@@ -3165,7 +3401,7 @@ const ShareHandoffStep: React.FC<{
       const recorded = await operationsLeadService.recordShareEvent(
         lead.id,
         share.id,
-        eventId.current,
+        pendingId,
         type,
         {
           session,
@@ -3173,33 +3409,42 @@ const ShareHandoffStep: React.FC<{
         }
       );
       if (!mounted.current || !isOperationsSessionActive(session)) return null;
-      eventId.current = null;
-      eventKind.current = null;
-      setPendingEvent(null);
-      setCurrent((existing) => existing ? {
-        ...existing,
-        events: existing.events.some((event) => event.eventId === recorded.id)
-          ? existing.events
-          : [...existing.events, {
-              eventId: recorded.id,
-              type: recorded.type,
-              occurredAt: recorded.occurredAt
-            }]
-      } : existing);
+      const cleared = forgetPendingShareEvent(session, lead.id, pendingId);
+      if (cleared) {
+        clearEventIdentity();
+        setCurrent((existing) => existing ? {
+          ...existing,
+          events: existing.events.some((event) => event.eventId === recorded.id)
+            ? existing.events
+            : [...existing.events, {
+                eventId: recorded.id,
+                type: recorded.type,
+                occurredAt: recorded.occurredAt
+              }]
+        } : existing);
+      } else {
+        setEventRecoveryBlocked('STORAGE_UNAVAILABLE');
+        setPendingEvent(pendingId);
+        setMessage(
+          'The share action was recorded, but this browser could not clear its recovery marker. Further sharing is blocked until the browser state is recovered.'
+        );
+      }
       void onHistoryRefresh();
       return 'recorded';
     } catch (cause) {
       if (!mounted.current || isOperationsSessionChangedError(cause)
         || !isOperationsSessionActive(session)) return null;
       const status = failureStatus(cause);
-      if (dispatched.current && (status === undefined || status >= 500)) {
-        const pendingId = eventId.current;
+      if (dispatched.current && commandStatusIsUncertain(status)) {
         setPendingEvent(pendingId);
         if (await reconcilePendingEvent(session)) return 'recovered';
       } else {
-        eventId.current = null;
-        eventKind.current = null;
-        setPendingEvent(null);
+        const cleared = forgetPendingShareEvent(session, lead.id, pendingId);
+        if (cleared) clearEventIdentity();
+        else {
+          setEventRecoveryBlocked('STORAGE_UNAVAILABLE');
+          setPendingEvent(pendingId);
+        }
         setMessage(failureMessage(cause, 'The share event could not be recorded.'));
         if (status === 409
             && (type === 'HANDOFF_ATTEMPTED' || type === 'CLIPBOARD_COPIED')) {
@@ -3210,18 +3455,59 @@ const ShareHandoffStep: React.FC<{
     }
   };
 
+  const writeRecord = async (
+    type: LeadShareEventType,
+    expectedSession?: OperationsSession
+  ): Promise<EventWriteOutcome> => {
+    if (pendingEvent || eventRecoveryBlocked) {
+      setMessage('An earlier action is still unconfirmed. Check the saved history before copying or opening WhatsApp again.');
+      return null;
+    }
+    const session = expectedSession ?? captureOperationsSession();
+    if (!session || !isOperationsSessionActive(session)) {
+      setMessage('Your session has ended.');
+      return null;
+    }
+    if (!reserveEvent(type, session)) return null;
+    return submitReservedEvent(type, session);
+  };
+
+  const record = async (
+    type: LeadShareEventType,
+    expectedSession?: OperationsSession
+  ): Promise<EventWriteOutcome> => {
+    if (recordInFlight.current) return null;
+    recordInFlight.current = true;
+    try {
+      return await writeRecord(type, expectedSession);
+    } finally {
+      recordInFlight.current = false;
+    }
+  };
+
   const reconcilePendingEvent = async (session: OperationsSession): Promise<boolean> => {
     const pendingId = eventId.current;
     if (!pendingId) return true;
+    const savedShareId = eventShareId.current;
+    if (!savedShareId) {
+      setMessage('The saved share reference is missing. Further sharing is blocked.');
+      return false;
+    }
     setBusy(true);
     try {
-      const item = await refreshCurrent(session);
+      const item = await refreshCurrent(session, savedShareId);
       if (!mounted.current || !isOperationsSessionActive(session)) return false;
       const recovered = item?.events.find((event) => event.eventId === pendingId) ?? null;
       if (recovered) {
-        eventId.current = null;
-        eventKind.current = null;
-        setPendingEvent(null);
+        if (!forgetPendingShareEvent(session, lead.id, pendingId)) {
+          setEventRecoveryBlocked('STORAGE_UNAVAILABLE');
+          setPendingEvent(pendingId);
+          setMessage(
+            'Share history confirmed the earlier action, but this browser could not clear its recovery marker. Further sharing is blocked until the browser state is recovered.'
+          );
+          return true;
+        }
+        clearEventIdentity();
         setMessage(`Share history confirmed ${eventMeta(recovered.type).label.toLowerCase()}. No action was repeated.`);
         void onHistoryRefresh();
         return true;
@@ -3243,7 +3529,7 @@ const ShareHandoffStep: React.FC<{
   };
 
   const openWhatsAppConfirmation = async () => {
-    if (busy || pendingEvent) return;
+    if (busy || eventRecoveryBlocked || pendingEvent) return;
     activationGeneration.current += 1;
     setMessage(null);
     setFullDestination(null);
@@ -3251,13 +3537,16 @@ const ShareHandoffStep: React.FC<{
     setConfirmOpen(true);
   };
 
-  const copyPreparedText = async (kind: 'message' | 'links') => {
-    if (busy || pendingEvent) return;
+  const performCopy = async (kind: 'message' | 'links') => {
+    if (busy || eventRecoveryBlocked || pendingEvent) return;
     const session = captureOperationsSession();
     if (!session || !isOperationsSessionActive(session)) return;
     const item = await preflight(session);
     if (!item) return;
     if (!isOperationsSessionActive(session)) return;
+    if (!reserveEvent('CLIPBOARD_COPIED', session)) return;
+    const reservedId = eventId.current;
+    if (!reservedId) return;
     const currentShare = leadShareFromHistoryItem(item, lead.id);
     const text = kind === 'message'
       ? currentShare.previewText
@@ -3265,18 +3554,29 @@ const ShareHandoffStep: React.FC<{
     try {
       await navigator.clipboard.writeText(text);
     } catch {
+      abandonUnstartedReservation(reservedId);
       setCopyFallback(true);
       setMessage('Clipboard access failed. The prepared text is shown below so you can select and copy it manually.');
       return;
     }
     if (!mounted.current) return;
     setCopyFallback(false);
-    const recorded = await record('CLIPBOARD_COPIED', session);
+    const recorded = await submitReservedEvent('CLIPBOARD_COPIED', session);
     setMessage(recorded === 'recorded'
       ? `${kind === 'message' ? 'Prepared message' : 'Public links'} copied and the successful copy was recorded.`
       : recorded === 'recovered'
         ? `${kind === 'message' ? 'Prepared message' : 'Public links'} copied once; saved history confirmed the earlier event without another copy.`
         : 'The clipboard operation succeeded, but its history event is not yet confirmed.');
+  };
+
+  const copyPreparedText = async (kind: 'message' | 'links') => {
+    if (actionInFlight.current || busy || eventRecoveryBlocked || pendingEvent) return;
+    actionInFlight.current = true;
+    try {
+      await performCopy(kind);
+    } finally {
+      actionInFlight.current = false;
+    }
   };
 
   const closeConfirmation = () => {
@@ -3288,7 +3588,7 @@ const ShareHandoffStep: React.FC<{
   };
 
   const verifyLaunch = async () => {
-    if (busy || pendingEvent) return;
+    if (busy || eventRecoveryBlocked || pendingEvent) return;
     const generation = activationGeneration.current;
     const session = captureOperationsSession();
     if (!session) {
@@ -3328,7 +3628,7 @@ const ShareHandoffStep: React.FC<{
   };
 
   const launch = async () => {
-    if (activationInFlight.current || busy || pendingEvent) return;
+    if (activationInFlight.current || busy || eventRecoveryBlocked || pendingEvent) return;
     activationInFlight.current = true;
     const generation = activationGeneration.current + 1;
     activationGeneration.current = generation;
@@ -3338,8 +3638,26 @@ const ShareHandoffStep: React.FC<{
       setMessage('Your session has ended.');
       return;
     }
-    const target = window.open('', '_blank');
+    if (!reserveEvent('HANDOFF_ATTEMPTED', session)) {
+      activationInFlight.current = false;
+      return;
+    }
+    const reservedId = eventId.current;
+    if (!reservedId) {
+      activationInFlight.current = false;
+      return;
+    }
+    let target: Window | null;
+    try {
+      target = window.open('', '_blank');
+    } catch {
+      abandonUnstartedReservation(reservedId);
+      activationInFlight.current = false;
+      setMessage('The browser could not reserve a WhatsApp tab. Nothing was opened.');
+      return;
+    }
     if (!target) {
+      abandonUnstartedReservation(reservedId);
       activationInFlight.current = false;
       setMessage('The browser blocked the empty WhatsApp tab. Allow pop-ups for Pathome and try again.');
       return;
@@ -3349,6 +3667,7 @@ const ShareHandoffStep: React.FC<{
       target.opener = null;
     } catch {
       closeReservedTarget();
+      abandonUnstartedReservation(reservedId);
       activationInFlight.current = false;
       setMessage('The browser could not isolate the reserved WhatsApp tab. Nothing was opened.');
       return;
@@ -3357,7 +3676,7 @@ const ShareHandoffStep: React.FC<{
     setMessage(null);
     setHandoffNotice(null);
     try {
-      const outcome = await record('HANDOFF_ATTEMPTED', session);
+      const outcome = await submitReservedEvent('HANDOFF_ATTEMPTED', session);
       const stillCurrent = mounted.current
         && isOperationsSessionActive(session)
         && generation === activationGeneration.current
@@ -3425,6 +3744,15 @@ const ShareHandoffStep: React.FC<{
 
       {message ? <Notice tone="warn" live title={message} /> : null}
       {handoffNotice ? <Notice tone="warn" live title={handoffNotice} /> : null}
+      {eventRecoveryBlocked && !pendingEvent ? (
+        <Notice
+          tone="warn"
+          live
+          title="Saved share state must be recovered"
+        >
+          Copy, WhatsApp and status-report actions remain disabled. Checking the browser again cannot safely recreate the original event identity.
+        </Notice>
+      ) : null}
       {pendingEvent ? (
         <Notice
           tone="warn"
@@ -3468,6 +3796,19 @@ const ShareHandoffStep: React.FC<{
         </p>
       )}
 
+      {share.publicLinks[0] ? (
+        <LeadSharePreviewCard
+          key={share.publicLinks[0]}
+          link={share.publicLinks[0]}
+        />
+      ) : null}
+      {share.publicLinks.length > 1 ? (
+        <p className="oe-footnote">
+          This shows the first ordered property. All {share.publicLinks.length} selected public links
+          remain visible below in the exact order saved for sharing.
+        </p>
+      ) : null}
+
       <div className="ld-snapshot">
         <p className="oe-field-label">Saved message and links</p>
         <pre>{share.previewText}</pre>
@@ -3496,7 +3837,7 @@ const ShareHandoffStep: React.FC<{
             <button
               type="button"
               className="oe-btn oe-btn--primary oe-btn--md"
-              disabled={busy || pendingEvent !== null}
+              disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
               onClick={() => void record('OPERATOR_REPORTED_MANUAL_SEND').then((recorded) => {
                 if (recorded) setMessage('Saved: you reported sending the message. Pathome has not confirmed that WhatsApp delivered it.');
               })}
@@ -3506,7 +3847,7 @@ const ShareHandoffStep: React.FC<{
             <button
               type="button"
               className="oe-btn oe-btn--secondary oe-btn--md"
-              disabled={busy || pendingEvent !== null}
+              disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
               onClick={() => void record('HANDOFF_CANCELLED').then((recorded) => {
                 if (recorded) setMessage('Saved: you did not send this message.');
               })}
@@ -3538,7 +3879,7 @@ const ShareHandoffStep: React.FC<{
           <button
             type="button"
             className="oe-btn oe-btn--primary oe-btn--md ld-wa"
-            disabled={busy || pendingEvent !== null}
+            disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
             onClick={() => void openWhatsAppConfirmation()}
           >
             <MessageCircle size={18} aria-hidden="true" />{busy ? 'Checking…' : 'Open WhatsApp'}
@@ -3547,7 +3888,7 @@ const ShareHandoffStep: React.FC<{
         <button
           type="button"
           className={`oe-btn oe-btn--md ${isWhatsApp ? 'oe-btn--secondary' : 'oe-btn--primary'}`}
-          disabled={busy || pendingEvent !== null}
+          disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
           onClick={() => void copyPreparedText('message')}
         >
           <Copy size={16} aria-hidden="true" />Copy message
@@ -3555,7 +3896,7 @@ const ShareHandoffStep: React.FC<{
         <button
           type="button"
           className="oe-btn oe-btn--secondary oe-btn--md"
-          disabled={busy || pendingEvent !== null}
+          disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
           onClick={() => void copyPreparedText('links')}
         >
           <Copy size={16} aria-hidden="true" />Copy property links
@@ -3570,6 +3911,7 @@ const ShareHandoffStep: React.FC<{
         <button
           type="button"
           className="oe-btn oe-btn--danger-outline oe-btn--md"
+          disabled={busy || eventRecoveryBlocked !== null || pendingEvent !== null}
           onClick={() => {
             void record('HANDOFF_CANCELLED').then((recorded) => {
               if (recorded) onWrongRecipient();
@@ -3593,7 +3935,7 @@ const ShareHandoffStep: React.FC<{
                 <button
                   type="button"
                   className="oe-btn oe-btn--primary oe-btn--md"
-                  disabled={launchVerifying || pendingEvent !== null}
+                  disabled={launchVerifying || eventRecoveryBlocked !== null || pendingEvent !== null}
                   onClick={() => void launch()}
                 >
                   <MessageCircle size={16} aria-hidden="true" />
@@ -3603,7 +3945,8 @@ const ShareHandoffStep: React.FC<{
                 <button
                   type="button"
                   className="oe-btn oe-btn--primary oe-btn--md"
-                  disabled={busy || launchVerifying || pendingEvent !== null}
+                  disabled={busy || launchVerifying || eventRecoveryBlocked !== null
+                    || pendingEvent !== null}
                   onClick={() => void verifyLaunch()}
                 >
                   <ShieldAlert size={16} aria-hidden="true" />
@@ -3881,6 +4224,11 @@ const SharePropertiesStep: React.FC<{
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [checkingCreation, setCheckingCreation] = useState(false);
+  const [pendingCreation, setPendingCreation] =
+    useState<PendingShortlistCreationCommand | null>(null);
+  const [creationRecoveryBlocked, setCreationRecoveryBlocked] =
+    useState<CommandRecoveryBlockReason | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [searchAttempt, setSearchAttempt] = useState(0);
   const searchController = useRef<AbortController | null>(null);
@@ -3890,10 +4238,25 @@ const SharePropertiesStep: React.FC<{
   const loadMoreInFlight = useRef(false);
   const createOperationId = useRef<string | null>(null);
   const dispatched = useRef(false);
+  const saveInFlight = useRef(false);
   const mounted = useRef(true);
 
   useEffect(() => {
     mounted.current = true;
+    const session = captureOperationsSession();
+    if (session) {
+      const pending = readPendingShortlistCreation(session, lead.id);
+      if (pending.state === 'PENDING') {
+        createOperationId.current = pending.command.operationId;
+        setPendingCreation(pending.command);
+        setMessage(
+          'A previous shortlist save is still unconfirmed. Check its saved result before trying again.'
+        );
+      } else if (pending.state === 'BLOCKED') {
+        setCreationRecoveryBlocked(pending.reason);
+        setMessage(recoveryBlockedMessage(pending.reason, 'shortlist command'));
+      }
+    }
     return () => {
       mounted.current = false;
       searchController.current?.abort();
@@ -3924,7 +4287,7 @@ const SharePropertiesStep: React.FC<{
       setPage(0);
       setHasMore(false);
       setLoading(true);
-      setMessage(null);
+      if (!creationRecoveryBlocked) setMessage(null);
       propertyService.fetchDiscoveryPage(
         0,
         undefined,
@@ -3969,7 +4332,15 @@ const SharePropertiesStep: React.FC<{
         loadMoreController.current?.abort();
       }
     };
-  }, [lead.cityName, query, bhk, maxRent, furnishing, searchAttempt]);
+  }, [
+    creationRecoveryBlocked,
+    lead.cityName,
+    query,
+    bhk,
+    maxRent,
+    furnishing,
+    searchAttempt
+  ]);
 
   const loadMore = async () => {
     if (loading || loadMoreInFlight.current || !hasMore) return;
@@ -4049,10 +4420,96 @@ const SharePropertiesStep: React.FC<{
     });
   };
 
+  const checkPendingCreation = async () => {
+    if (!pendingCreation || checkingCreation || saving) return;
+    const session = captureOperationsSession();
+    if (!session) {
+      setMessage('Your session has ended. No shortlist was changed.');
+      return;
+    }
+    setCheckingCreation(true);
+    setMessage(null);
+    try {
+      const receipt = await operationsLeadService.commandReceipt(
+        pendingCreation.operationId,
+        'LEAD_SHORTLIST_CREATE',
+        { session }
+      );
+      if (!mounted.current || !isOperationsSessionActive(session)) return;
+      const shortlistId = Number(receipt.resultReference);
+      if (receipt.state !== 'RECORDED') {
+        setMessage(
+          'No saved shortlist is visible yet. That does not prove the earlier command failed; check again rather than creating another shortlist.'
+        );
+        return;
+      }
+      if (!Number.isSafeInteger(shortlistId) || shortlistId <= 0) {
+        setMessage('The saved shortlist reference is invalid. No shortlist was changed.');
+        return;
+      }
+      const recovered = await operationsLeadService.shortlist(
+        lead.id,
+        shortlistId,
+        { session }
+      );
+      if (!mounted.current || !isOperationsSessionActive(session)) return;
+      const cleared = forgetPendingShortlistCreation(
+        session,
+        lead.id,
+        pendingCreation.operationId
+      );
+      if (!cleared) {
+        setCreationRecoveryBlocked('STORAGE_UNAVAILABLE');
+        setMessage(
+          'The shortlist was confirmed, but this browser could not clear its recovery marker. Saving another shortlist is blocked until the browser state is recovered.'
+        );
+        return;
+      }
+      createOperationId.current = null;
+      setPendingCreation(null);
+      setCreationRecoveryBlocked(null);
+      onShortlist(recovered);
+      onContinue();
+    } catch (cause) {
+      if (mounted.current && !isOperationsSessionChangedError(cause)
+        && isOperationsSessionActive(session)) {
+        setMessage(failureMessage(
+          cause,
+          'The saved shortlist could not be checked. Do not create a second shortlist.'
+        ));
+      }
+    } finally {
+      if (mounted.current) setCheckingCreation(false);
+    }
+  };
+
   const saveAndContinue = async () => {
-    if (saving) return;
+    if (saveInFlight.current || saving || checkingCreation) return;
+    if (pendingCreation || creationRecoveryBlocked) {
+      setMessage('Check or resolve the earlier shortlist command before saving another shortlist.');
+      return;
+    }
     if (!selected.length) {
       setMessage('Add at least one current public rental property.');
+      return;
+    }
+    const session = captureOperationsSession();
+    if (!session) {
+      setMessage('Your session has ended.');
+      return;
+    }
+    const stored = readPendingShortlistCreation(session, lead.id);
+    if (stored.state === 'PENDING') {
+      createOperationId.current = stored.command.operationId;
+      setPendingCreation(stored.command);
+      setMessage(
+        'A previous shortlist save is still unconfirmed. Check its saved result before trying again.'
+      );
+      return;
+    }
+    if (stored.state === 'BLOCKED') {
+      setCreationRecoveryBlocked(stored.reason);
+      setMessage(recoveryBlockedMessage(stored.reason, 'shortlist command'));
       return;
     }
     if (shortlist
@@ -4061,14 +4518,11 @@ const SharePropertiesStep: React.FC<{
       onContinue();
       return;
     }
-    const session = captureOperationsSession();
-    if (!session) {
-      setMessage('Your session has ended.');
-      return;
-    }
+    saveInFlight.current = true;
     setSaving(true);
     setMessage(null);
     dispatched.current = false;
+    let creation: PendingShortlistCreationCommand | null = null;
     try {
       let saved: LeadShortlist;
       if (shortlist) {
@@ -4084,7 +4538,25 @@ const SharePropertiesStep: React.FC<{
           }
         );
       } else {
-        createOperationId.current ??= requestId();
+        if (createOperationId.current) {
+          setMessage('Check the earlier shortlist command before saving again.');
+          return;
+        }
+        const operationId = requestId();
+        try {
+          creation = preservePendingShortlistCreation(session, {
+            operationId,
+            leadId: lead.id
+          });
+        } catch (cause) {
+          setMessage(failureMessage(
+            cause,
+            'This browser could not keep the shortlist command. Nothing was sent.'
+          ));
+          return;
+        }
+        createOperationId.current = operationId;
+        setPendingCreation(creation);
         saved = await operationsLeadService.createShortlist(
           lead.id,
           lead.version,
@@ -4097,6 +4569,22 @@ const SharePropertiesStep: React.FC<{
         );
       }
       if (!mounted.current || !isOperationsSessionActive(session)) return;
+      if (creation) {
+        const cleared = forgetPendingShortlistCreation(
+          session,
+          lead.id,
+          creation.operationId
+        );
+        if (!cleared) {
+          setCreationRecoveryBlocked('STORAGE_UNAVAILABLE');
+          setMessage(
+            'The shortlist was saved, but this browser could not clear its recovery marker. Saving another shortlist is blocked until the browser state is recovered.'
+          );
+          onShortlist(saved);
+          return;
+        }
+        setPendingCreation(null);
+      }
       createOperationId.current = null;
       onShortlist(saved);
       onContinue();
@@ -4105,9 +4593,14 @@ const SharePropertiesStep: React.FC<{
         || !isOperationsSessionActive(session)) return;
       const status = failureStatus(cause);
       if (status === 409) {
+        if (creation) {
+          forgetPendingShortlistCreation(session, lead.id, creation.operationId);
+          setPendingCreation(null);
+        }
+        createOperationId.current = null;
         setMessage('The Lead or shortlist changed while you were saving. Reload the current Lead and review the ordered selection.');
         await onLeadChanged();
-      } else if (dispatched.current && (status === undefined || status >= 500)) {
+      } else if (dispatched.current && commandStatusIsUncertain(status)) {
         if (shortlist) {
           try {
             const current = await operationsLeadService.shortlist(lead.id, shortlist.id, { session });
@@ -4118,27 +4611,36 @@ const SharePropertiesStep: React.FC<{
               return;
             }
           } catch { /* Keep the explicit unknown outcome below. */ }
-        } else if (createOperationId.current) {
+        } else if (creation) {
           try {
             const receipt = await operationsLeadService.commandReceipt(
-              createOperationId.current,
+              creation.operationId,
               'LEAD_SHORTLIST_CREATE',
               { session }
             );
             const id = Number(receipt.resultReference);
             if (receipt.state === 'RECORDED' && Number.isSafeInteger(id) && id > 0) {
               const recovered = await operationsLeadService.shortlist(lead.id, id, { session });
+              forgetPendingShortlistCreation(session, lead.id, creation.operationId);
+              createOperationId.current = null;
+              setPendingCreation(null);
               onShortlist(recovered);
               onContinue();
               return;
             }
           } catch { /* Keep the explicit unknown outcome below. */ }
         }
-        setMessage('We couldn’t confirm the shortlist save. Refresh before trying again.');
+        setMessage('We couldn’t confirm the shortlist save. Check the saved result before trying again.');
       } else {
+        if (creation) {
+          forgetPendingShortlistCreation(session, lead.id, creation.operationId);
+          setPendingCreation(null);
+        }
+        createOperationId.current = null;
         setMessage(failureMessage(cause, 'The shortlist could not be saved.'));
       }
     } finally {
+      saveInFlight.current = false;
       if (mounted.current) setSaving(false);
     }
   };
@@ -4269,6 +4771,25 @@ const SharePropertiesStep: React.FC<{
           <h2 id="ld-shortlist-title">Ordered shortlist</h2>
           <span>{selected.length} / {SHORTLIST_MAX}</span>
         </header>
+        {pendingCreation ? (
+          <Notice
+            tone="warn"
+            live
+            title="The earlier shortlist save is not confirmed"
+            actions={(
+              <button
+                type="button"
+                className="oe-btn oe-btn--secondary oe-btn--sm"
+                disabled={checkingCreation || saving}
+                onClick={() => void checkPendingCreation()}
+              >
+                {checkingCreation ? 'Checking…' : 'Check saved shortlist'}
+              </button>
+            )}
+          >
+            Checking the saved result cannot create a second shortlist.
+          </Notice>
+        ) : null}
         <p className="oe-footnote">The server validates every selected listing again when this order is saved.</p>
         {selected.length ? (
           <ol className="ld-shortlist-list">
@@ -4298,10 +4819,27 @@ const SharePropertiesStep: React.FC<{
           </ol>
         ) : <p className="ld-empty-shortlist">No properties selected.</p>}
         <div className="ld-actions">
-          <button type="button" className="oe-btn oe-btn--primary oe-btn--md" disabled={saving || !selected.length} onClick={() => void saveAndContinue()}>
+          <button
+            type="button"
+            className="oe-btn oe-btn--primary oe-btn--md"
+            disabled={saving || checkingCreation || Boolean(pendingCreation)
+              || creationRecoveryBlocked !== null || !selected.length}
+            onClick={() => void saveAndContinue()}
+          >
             {saving ? 'Saving…' : 'Save shortlist and continue'}
           </button>
         </div>
+        {shortlist
+          && shortlist.listingIds.length === selected.length
+          && shortlist.listingIds.every((id, index) => id === selected[index]) ? (
+            <LeadLessorAvailabilityPanel
+              lead={{ ...lead, version: shortlist.leadVersion }}
+              shortlist={shortlist}
+              onLeadChanged={onLeadChanged}
+            />
+          ) : (
+            <p className="oe-footnote">Save the exact ordered shortlist before checking lessor availability.</p>
+          )}
       </aside>
     </div>
   );
@@ -5218,6 +5756,7 @@ const SharePrepareStep: React.FC<{
   };
 
   return (
+    <>
     <section className="ld-card" aria-labelledby="ld-prepare-title">
       <h2 id="ld-prepare-title" tabIndex={-1}>Prepare the property message</h2>
       <p className="oe-lede">
@@ -5286,6 +5825,15 @@ const SharePrepareStep: React.FC<{
         )}
       </div>
     </section>
+    {preference.consentStatus === 'GRANTED' ? (
+      <LeadVisitInvitationPanel
+        lead={lead}
+        shortlist={shortlist}
+        preference={preference}
+        onLeadChanged={onConflict}
+      />
+    ) : null}
+    </>
   );
 };
 

@@ -8,7 +8,6 @@ import com.indore.pathome.spaces.dto.ParsedPropertyDTO;
 import com.indore.pathome.spaces.dto.PropertyVisitRequestAcknowledgement;
 import com.indore.pathome.spaces.dto.PublicDiscoveryPage;
 import com.indore.pathome.spaces.dto.PublicDiscoveryResponse;
-import com.indore.pathome.spaces.dto.PublicPropertyMediaResponse;
 import com.indore.pathome.spaces.dto.PublicPropertyResponse;
 import com.indore.pathome.spaces.dto.PublicSearchSuggestion;
 import com.indore.pathome.spaces.dto.PublicSearchSuggestions;
@@ -28,6 +27,7 @@ import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import com.indore.pathome.spaces.service.PublicPropertyReadService;
 import com.indore.pathome.spaces.service.RentalSearchQuery;
 import com.indore.pathome.spaces.service.RentalLocationResolver;
 import com.indore.pathome.spaces.service.SearchLearningService;
@@ -115,6 +115,7 @@ public class PropertyController {
             Pattern.compile("(https://res\\.cloudinary\\.com/[^/]+/image/upload/)(?:v\\d+/)?(.*)");
 
     private final ListingRepository listingRepository;
+    private final PublicPropertyReadService publicPropertyReadService;
     private final RentalLocationResolver rentalLocationResolver;
     private final PropertyMediaAssetRepository mediaAssetRepository;
     private final CloudinaryService cloudinaryService;
@@ -127,6 +128,7 @@ public class PropertyController {
     private final UserRepository userRepository;
     private final PropertyVisitRequestRepository propertyVisitRequestRepository;
     private final BackOfficePropertyAuthority backOfficePropertyAuthority;
+    private final com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService requestApplicationService;
 
     @Autowired
     private com.indore.pathome.spaces.service.TrustedOperationalIntakeService trustedOperationalIntakeService;
@@ -154,6 +156,7 @@ public class PropertyController {
     @Autowired
     public PropertyController(
             ListingRepository listingRepository,
+            PublicPropertyReadService publicPropertyReadService,
             PropertyMediaAssetRepository mediaAssetRepository,
             CloudinaryService cloudinaryService,
             FailedUploadService failedUploadService,
@@ -164,8 +167,11 @@ public class PropertyController {
             @Qualifier("mediaStagingService") MediaStagingService mediaStagingService,
             UserRepository userRepository,
             PropertyVisitRequestRepository propertyVisitRequestRepository,
-            BackOfficePropertyAuthority backOfficePropertyAuthority) {
+            BackOfficePropertyAuthority backOfficePropertyAuthority,
+            com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService requestApplicationService) {
         this.listingRepository = Objects.requireNonNull(listingRepository, "ListingRepository must not be null");
+        this.publicPropertyReadService = Objects.requireNonNull(
+                publicPropertyReadService, "PublicPropertyReadService must not be null");
         this.rentalLocationResolver = new RentalLocationResolver(listingRepository);
         this.mediaAssetRepository = Objects.requireNonNull(mediaAssetRepository, "PropertyMediaAssetRepository must not be null");
         this.cloudinaryService = Objects.requireNonNull(cloudinaryService, "CloudinaryService must not be null");
@@ -182,6 +188,8 @@ public class PropertyController {
                 propertyVisitRequestRepository, "PropertyVisitRequestRepository must not be null");
         this.backOfficePropertyAuthority = Objects.requireNonNull(
                 backOfficePropertyAuthority, "BackOfficePropertyAuthority must not be null");
+        this.requestApplicationService = Objects.requireNonNull(
+                requestApplicationService, "PropertyVisitRequestApplicationService must not be null");
     }
 
     private RentalLocationResolver getRentalLocationResolver() {
@@ -306,16 +314,23 @@ public class PropertyController {
                 : mediaAssetRepository.findByListingIdInOrderByUploadedAtDesc(listingIds).stream()
                         .filter(a -> a.getListingId() != null)
                         .collect(Collectors.groupingBy(PropertyMediaAsset::getListingId));
+        List<Long> localityIds = slice.getContent().stream()
+                .map(Listing::getCanonicalLocalityId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<Long, Locality> localityById = localityIds.isEmpty() || localityRepository == null
+                ? Map.of()
+                : localityRepository.findAllById(localityIds).stream()
+                        .collect(Collectors.toMap(Locality::getId, value -> value));
 
         List<PublicDiscoveryResponse> items = slice.getContent().stream()
                 .map(listing -> {
                     List<PropertyMediaAsset> assets = assetsByListingId.get(listing.getId());
-                    if (assets == null) {
-                        assets = listing.getId() != null
-                                ? mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId())
-                                : List.of();
-                    }
-                    return toDiscoveryResponse(listing, assets, slice.hasNext());
+                    Locality locality = listing.getCanonicalLocalityId() == null
+                            ? null : localityById.get(listing.getCanonicalLocalityId());
+                    return toDiscoveryResponse(listing, assets == null ? List.of() : assets,
+                            locality, slice.hasNext());
                 })
                 .toList();
         return ResponseEntity.ok(new PublicDiscoveryPage(items, page, DISCOVERY_PAGE_SIZE, slice.hasNext()));
@@ -605,11 +620,9 @@ public class PropertyController {
      */
     @GetMapping("/{id}")
     public ResponseEntity<PublicPropertyResponse> getPropertyById(@PathVariable Long id) {
-        Listing listing = listingRepository.findById(id).orElse(null);
-        if (listing == null || listing.getStatus() != ListingStatus.ACTIVE) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(toPublicPropertyResponse(listing));
+        return publicPropertyReadService.findPublicProperty(id)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
@@ -623,55 +636,10 @@ public class PropertyController {
         if (authentication == null || !authentication.isAuthenticated()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        Listing listing = listingRepository.findById(id).orElse(null);
-        if (listing == null || listing.getStatus() != ListingStatus.ACTIVE) {
-            return ResponseEntity.notFound().build();
-        }
         Long tenantId = PathomeAuthenticationIdentity.requireUserId(authentication);
-        User tenant = userRepository.findById(tenantId)
-                .orElseThrow(() -> new AccessDeniedException("Tenant account is unavailable"));
-        if (tenant.getRole() != Role.ROLE_TENANT) {
-            throw new AccessDeniedException("Only tenant accounts can request a visit");
-        }
-        if (request == null) {
-            throw new IllegalArgumentException("Visit request details are required");
-        }
-        validateVisitRequest(request);
-        var availabilityWindow = SchedulingWindowValidator.optional(request.availabilityStartAt(),
-                request.availabilityEndAt(), request.availabilityZoneId(), request.preferredAt(),
-                java.time.Instant.now(), true);
-
-        Optional<PropertyVisitRequest> existing = propertyVisitRequestRepository
-                .findByTenantIdAndListingId(tenant.getId(), listing.getId());
-        if (existing.isPresent()) {
-            return ResponseEntity.ok(toVisitRequestAcknowledgement(existing.get()));
-        }
-
-        PropertyVisitRequest visitRequest = new PropertyVisitRequest();
-        visitRequest.setTenant(tenant);
-        visitRequest.setListing(listing);
-        visitRequest.setBudgetMin(request.budgetMin());
-        visitRequest.setBudgetMax(request.budgetMax());
-        visitRequest.setPreferredAreas(normalizeOptionalText(request.preferredAreas(), MAX_PREFERRED_AREAS_LENGTH, "Preferred areas"));
-        visitRequest.setMoveInTiming(normalizeOptionalText(request.moveInTiming(), MAX_MOVE_IN_TIMING_LENGTH, "Move-in timing"));
-        visitRequest.setPreferredVisitTiming(normalizeRequiredText(
-                request.preferredVisitTiming(), MAX_PREFERRED_VISIT_TIMING_LENGTH, "Preferred visit timing"));
-        availabilityWindow.ifPresent(window -> {
-            visitRequest.setAvailabilityStartAt(window.startsAt());
-            visitRequest.setAvailabilityEndAt(window.endsAt());
-            visitRequest.setAvailabilityZoneId(window.zoneId());
-            visitRequest.setPreferredAt(window.preferredAt());
-        });
-        visitRequest.setTenantNote(normalizeOptionalText(request.note(), MAX_VISIT_NOTE_LENGTH, "Additional note"));
-        try {
-            PropertyVisitRequest saved = trustedOperationalIntakeService.admitNewTenantIntakeAndSave(visitRequest);
-            return ResponseEntity.status(HttpStatus.CREATED).body(toVisitRequestAcknowledgement(saved));
-        } catch (DataIntegrityViolationException duplicate) {
-            PropertyVisitRequest saved = propertyVisitRequestRepository
-                    .findByTenantIdAndListingId(tenant.getId(), listing.getId())
-                    .orElseThrow(() -> duplicate);
-            return ResponseEntity.ok(toVisitRequestAcknowledgement(saved));
-        }
+        var result = requestApplicationService.requestLegacy(tenantId, id, request);
+        return (result.created() ? ResponseEntity.status(HttpStatus.CREATED)
+                : ResponseEntity.ok()).body(result.acknowledgement());
     }
 
     /**
@@ -1928,57 +1896,6 @@ public class PropertyController {
         return "₹" + rental.getMonthlyRent().toPlainString() + " / month";
     }
 
-    private PublicPropertyResponse toPublicPropertyResponse(Listing listing) {
-        RentalDetails rental = listing instanceof RentalDetails rentalDetails ? rentalDetails : null;
-        return new PublicPropertyResponse(
-                listing.getId(),
-                listing.getTitle(),
-                toPublicSafeDescription(listing.getDescription()),
-                listing.getListingType(),
-                listing.getPropertyType(),
-                listing.getCity(),
-                listing.getSector(),
-                listing.getBhkCount(),
-                listing.getFurnishingStatus(),
-                listing.getVastuFacing(),
-                listing.getAmenities(),
-                listing.getTotalAreaSqFt(),
-                listing.getBathroomCount(),
-                listing.getFloorNumber(),
-                listing.getTotalFloors(),
-                rental != null ? rental.getMonthlyRent() : null,
-                rental != null ? rental.getSecurityDeposit() : null,
-                rental != null ? rental.getMaintenanceCharge() : null,
-                rental != null ? rental.getBachelorAllowed() : null,
-                rental != null ? rental.getPreferredTenant() : null,
-                rental != null ? rental.getAvailableFrom() : null,
-                toPublicMedia(listing));
-    }
-
-    private List<PublicPropertyMediaResponse> toPublicMedia(Listing listing) {
-        List<PropertyMediaAsset> assets = mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId());
-        if (assets != null && !assets.isEmpty()) {
-            return assets.stream()
-                    .filter(asset -> asset.getMediaUrl() != null && !asset.getMediaUrl().isBlank())
-                    .map(asset -> new PublicPropertyMediaResponse(
-                            asset.getMediaUrl(), asset.getMediaType(), asset.getRoomTag(),
-                            Boolean.TRUE.equals(asset.getIsPrimaryCover())))
-                    .toList();
-        }
-        if (listing.getMediaGalleryUrls() == null || listing.getMediaGalleryUrls().isBlank()) {
-            return List.of();
-        }
-        return Arrays.stream(listing.getMediaGalleryUrls().split(","))
-                .map(String::trim)
-                .filter(url -> !url.isBlank())
-                .map(url -> new PublicPropertyMediaResponse(
-                        url,
-                        url.toLowerCase(Locale.ROOT).contains(".mp4") ? MediaType.VIDEO_WALKTHROUGH : MediaType.IMAGE,
-                        null,
-                        false))
-                .toList();
-    }
-
     /**
      * Builds the lightweight discovery card projection for one listing.
      * Only the single best cover image is included; the full gallery is omitted.
@@ -1987,29 +1904,38 @@ public class PropertyController {
         List<PropertyMediaAsset> assets = listing.getId() != null
                 ? mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(listing.getId())
                 : List.of();
-        return toDiscoveryResponse(listing, assets, hasMore);
+        Locality locality = localityRepository == null || listing.getCanonicalLocalityId() == null
+                ? null : localityRepository.findById(listing.getCanonicalLocalityId()).orElse(null);
+        return toDiscoveryResponse(listing, assets, locality, hasMore);
     }
 
-    private PublicDiscoveryResponse toDiscoveryResponse(Listing listing, List<PropertyMediaAsset> assets, boolean hasMore) {
+    private PublicDiscoveryResponse toDiscoveryResponse(Listing listing,
+                                                        List<PropertyMediaAsset> assets,
+                                                        Locality locality,
+                                                        boolean hasMore) {
         RentalDetails rental = listing instanceof RentalDetails rentalDetails ? rentalDetails : null;
         if (assets == null) {
             assets = List.of();
         }
+        SupportedCity city = locality == null ? null : locality.getSupportedCity();
 
-        // Resolve candidate image assets (permanent Cloudinary assets preferred; fall back to gallery).
         List<PropertyMediaAsset> imageAssets = assets == null ? List.of() :
                 assets.stream()
-                        .filter(a -> a.getMediaUrl() != null && !a.getMediaUrl().isBlank()
+                        .filter(a -> a.getRetiredAt() == null)
+                        .filter(this::hasTrustedPublicMediaProvenance)
+                        .filter(a -> com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy
+                                .safeMediaUrl(a.getMediaUrl()) != null
                                 && a.getMediaType() != MediaType.VIDEO_WALKTHROUGH)
                         .toList();
 
         int totalMedia = assets == null ? 0 : (int) assets.stream()
-                .filter(a -> a.getMediaUrl() != null && !a.getMediaUrl().isBlank()).count();
+                .filter(a -> a.getRetiredAt() == null)
+                .filter(this::hasTrustedPublicMediaProvenance).count();
         boolean hasVideo = assets != null && assets.stream()
                 .anyMatch(a -> a.getMediaType() == MediaType.VIDEO_WALKTHROUGH
-                        && a.getMediaUrl() != null && !a.getMediaUrl().isBlank());
+                        && a.getRetiredAt() == null
+                        && hasTrustedPublicMediaProvenance(a));
 
-        // If no tagged asset exists, check the legacy mediaGalleryUrls column.
         String coverUrl = null;
         RoomTag coverRoomTag = null;
         if (!imageAssets.isEmpty()) {
@@ -2018,46 +1944,47 @@ public class PropertyController {
                     .filter(a -> Boolean.TRUE.equals(a.getIsPrimaryCover()))
                     .findFirst()
                     .orElse(imageAssets.get(0));
-            coverUrl = toDiscoveryCoverUrl(cover.getMediaUrl());
+            coverUrl = toDiscoveryCoverUrl(
+                    com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy
+                            .safeMediaUrl(cover.getMediaUrl()));
             coverRoomTag = cover.getRoomTag();
-        } else if (assets != null && assets.isEmpty()
-                && listing.getMediaGalleryUrls() != null && !listing.getMediaGalleryUrls().isBlank()) {
-            // Legacy gallery fallback: pick first non-video URL.
-            coverUrl = Arrays.stream(listing.getMediaGalleryUrls().split(","))
-                    .map(String::trim)
-                    .filter(url -> !url.isBlank() && !url.toLowerCase(Locale.ROOT).contains(".mp4"))
-                    .findFirst()
-                    .map(this::toDiscoveryCoverUrl)
-                    .orElse(null);
-            if (totalMedia == 0 && listing.getMediaGalleryUrls() != null) {
-                totalMedia = (int) Arrays.stream(listing.getMediaGalleryUrls().split(","))
-                        .filter(u -> !u.isBlank()).count();
-            }
         }
 
         return new PublicDiscoveryResponse(
                 listing.getId(),
-                listing.getTitle(),
+                com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy.safeCanonicalTitle(
+                        listing, locality, city),
                 listing.getListingType(),
                 listing.getPropertyType(),
-                listing.getCity(),
-                listing.getSector(),
-                listing.getBhkCount(),
-                listing.getFurnishingStatus(),
-                listing.getVastuFacing(),
+                com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy
+                        .canonicalCityLabel(city, locality),
+                com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy
+                        .canonicalLocalityLabel(locality),
+                com.indore.pathome.spaces.service.PublicPropertyDisclosurePolicy.safeBhk(
+                        listing.getBhkCount()),
+                null,
+                null,
                 listing.getTotalAreaSqFt(),
                 rental != null ? rental.getMonthlyRent() : null,
                 rental != null ? rental.getSecurityDeposit() : null,
                 rental != null ? rental.getMaintenanceCharge() : null,
                 rental != null ? rental.getBachelorAllowed() : null,
-                rental != null ? rental.getPreferredTenant() : null,
+                null,
                 rental != null ? rental.getAvailableFrom() : null,
                 coverUrl,
                 coverRoomTag,
                 totalMedia,
                 hasVideo,
                 hasMore,
-                toInstant(listing.getUpdatedAt()));
+                toInstant(listing.getUpdatedAt()),
+                listing.getVersion(),
+                listing.getLastContentPublishedAt());
+    }
+
+    private boolean hasTrustedPublicMediaProvenance(PropertyMediaAsset asset) {
+        return asset != null && cloudinaryService.isTrustedPublicMediaAsset(
+                asset.getMediaUrl(), asset.getCloudinaryPublicId(),
+                asset.getUploadRequestId());
     }
 
     private static Instant toInstant(LocalDateTime localDateTime) {

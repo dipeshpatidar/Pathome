@@ -29,23 +29,38 @@ import java.util.Objects;
 public final class RunOwnedSchemaDataSource extends AbstractDataSource {
     private static final List<String> STATEMENT_FACTORIES =
             List.of("createStatement", "prepareStatement", "prepareCall");
+    private static final List<String> EXECUTION_METHODS =
+            List.of("execute", "executeQuery", "executeUpdate", "executeLargeUpdate", "addBatch");
 
     private final DataSource delegate;
     private final String expectedDatabase;
     private final String expectedSchema;
     private final boolean allowCatalogFallbackForFramework;
+    private final FreshIntegrationTarget.ConnectionPolicy strictPolicy;
 
     public RunOwnedSchemaDataSource(DataSource delegate, String expectedDatabase,
                                     String expectedSchema) {
-        this(delegate, expectedDatabase, expectedSchema, false);
+        this(delegate, expectedDatabase, expectedSchema, false, null);
+    }
+
+    /**
+     * Additive fresh-integration mode. Legacy constructors above retain their exact behavior so
+     * unrelated accepted callers do not inherit the new manifest and catalog checks.
+     */
+    public RunOwnedSchemaDataSource(DataSource delegate,
+                                    FreshIntegrationTarget.ConnectionPolicy strictPolicy) {
+        this(delegate, "guarded", "public", false,
+                Objects.requireNonNull(strictPolicy, "strictPolicy"));
     }
 
     private RunOwnedSchemaDataSource(DataSource delegate, String expectedDatabase,
-                                     String expectedSchema, boolean allowCatalogFallbackForFramework) {
+                                     String expectedSchema, boolean allowCatalogFallbackForFramework,
+                                     FreshIntegrationTarget.ConnectionPolicy strictPolicy) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.expectedDatabase = requireIdentifier(expectedDatabase, "database");
         this.expectedSchema = requireIdentifier(expectedSchema, "schema");
         this.allowCatalogFallbackForFramework = allowCatalogFallbackForFramework;
+        this.strictPolicy = strictPolicy;
     }
 
     /**
@@ -55,7 +70,8 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
      */
     public static RunOwnedSchemaDataSource forFrameworkBootstrap(
             DataSource delegate, String expectedDatabase, String expectedSchema) {
-        return new RunOwnedSchemaDataSource(delegate, expectedDatabase, expectedSchema, true);
+        return new RunOwnedSchemaDataSource(
+                delegate, expectedDatabase, expectedSchema, true, null);
     }
 
     @Override
@@ -65,6 +81,9 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
 
     @Override
     public Connection getConnection(String username, String password) throws SQLException {
+        if (strictPolicy != null) {
+            throw refuse("alternate credential acquisition is forbidden in fresh integration mode");
+        }
         return guarded(delegate.getConnection(username, password));
     }
 
@@ -82,13 +101,17 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
     private Connection guarded(Connection connection) throws SQLException {
         boolean ready = false;
         try {
-            connection.setSchema(expectedSchema);
-            if (allowCatalogFallbackForFramework) {
-                try (Statement statement = connection.createStatement()) {
-                    statement.execute("set search_path to \"" + expectedSchema + "\", public");
+            if (strictPolicy != null) {
+                strictPolicy.prepare(connection);
+            } else {
+                connection.setSchema(expectedSchema);
+                if (allowCatalogFallbackForFramework) {
+                    try (Statement statement = connection.createStatement()) {
+                        statement.execute("set search_path to \"" + expectedSchema + "\", public");
+                    }
                 }
+                verifyFacts(connection);
             }
-            verifyFacts(connection);
             Connection proxy = connectionProxy(connection);
             ready = true;
             return proxy;
@@ -157,7 +180,15 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
                         || !expectedSchema.equals(arguments[0])) {
                     throw refuse("the application attempted to change the run-owned schema");
                 }
+                if (strictPolicy != null) {
+                    Object result = invokeDelegate(method, arguments);
+                    strictPolicy.prepare(delegateConnection);
+                    return result;
+                }
                 return invokeDelegate(method, arguments);
+            }
+            if (strictPolicy != null && "setCatalog".equals(name)) {
+                throw refuse("catalog switching would bypass the fresh integration binding");
             }
             if ("isWrapperFor".equals(name)
                     && arguments != null && arguments.length == 1
@@ -173,12 +204,12 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
                 throw refuse("connection unwrapping would bypass the run-owned schema guard");
             }
             if (STATEMENT_FACTORIES.contains(name)) {
-                verifyFacts(delegateConnection);
+                verifyBeforeUse(delegateConnection);
                 Object created = invokeDelegate(method, arguments);
                 return statementProxy(created);
             }
             if ("getMetaData".equals(name)) {
-                verifyFacts(delegateConnection);
+                verifyBeforeUse(delegateConnection);
                 return metadataProxy((DatabaseMetaData) invokeDelegate(method, arguments));
             }
             return invokeDelegate(method, arguments);
@@ -225,7 +256,7 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
             if ("getConnection".equals(method.getName())) {
                 Connection connection = (Connection) invokeDelegateMethod(
                         delegateStatement, method, arguments);
-                verifyFacts(connection);
+                verifyBeforeUse(connection);
                 return connectionProxy(connection);
             }
             if ("isWrapperFor".equals(method.getName())
@@ -235,6 +266,12 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
             }
             if ("unwrap".equals(method.getName())) {
                 throw refuse("statement unwrapping would expose a raw JDBC statement");
+            }
+            if (strictPolicy != null && EXECUTION_METHODS.contains(method.getName())) {
+                Connection connection = (Connection) invokeDelegateMethod(
+                        delegateStatement, Statement.class.getMethod("getConnection"),
+                        new Object[0]);
+                verifyBeforeUse(connection);
             }
             Object result = invokeDelegateMethod(delegateStatement, method, arguments);
             return guardResult(result, (Statement) proxy);
@@ -325,7 +362,7 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
                     if ("getConnection".equals(method.getName())) {
                         Connection connection = (Connection) invokeDelegateMethod(
                                 metadata, method, arguments);
-                        verifyFacts(connection);
+                        verifyBeforeUse(connection);
                         return connectionProxy(connection);
                     }
                     if ("unwrap".equals(method.getName())) {
@@ -357,6 +394,14 @@ public final class RunOwnedSchemaDataSource extends AbstractDataSource {
             return method.invoke(target, arguments);
         } catch (InvocationTargetException exception) {
             throw exception.getCause();
+        }
+    }
+
+    private void verifyBeforeUse(Connection connection) throws SQLException {
+        if (strictPolicy != null) {
+            strictPolicy.beforeStatement(connection);
+        } else {
+            verifyFacts(connection);
         }
     }
 

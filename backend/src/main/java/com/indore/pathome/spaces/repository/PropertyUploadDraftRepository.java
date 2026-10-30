@@ -82,4 +82,17 @@ public interface PropertyUploadDraftRepository extends JpaRepository<PropertyUpl
             List<String> statuses, LocalDateTime cutoff, Pageable pageable);
 
     long deleteByDraftIdAndAdminId(String draftId, String adminId);
+
+    @Query("select d from PropertyUploadDraft d where d.publishedPropertyId = :listingId " +
+            "and d.status in :statuses order by d.id desc")
+    List<PropertyUploadDraft> findOpenRevisions(@Param("listingId") Long listingId,
+                                                 @Param("statuses") List<String> statuses);
+
+    List<PropertyUploadDraft> findByPublishedPropertyIdInAndStatusInOrderByIdDesc(
+            List<Long> listingIds, List<String> statuses);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select d from PropertyUploadDraft d where d.draftId = :draftId and d.staffMakerUserId = :userId")
+    Optional<PropertyUploadDraft> findStaffDraftForUpdate(@Param("draftId") String draftId,
+                                                           @Param("userId") Long userId);
 }

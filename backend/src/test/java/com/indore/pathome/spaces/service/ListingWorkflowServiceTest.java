@@ -41,14 +41,17 @@ class ListingWorkflowServiceTest {
     }
 
     @Test
-    void pauseAndArchiveRemovePublicVisibility() {
+    void pauseRemovesPublicVisibilityAndLandlordArchiveIsNoLongerPermitted() {
         RentalDetails listing = new RentalDetails();
         workflows.prepareSubmitted(listing, 4L, 8L);
         workflows.transition(listing, ListingWorkflowStatus.UNDER_REVIEW, ListingWorkflowService.Actor.ADMIN);
         workflows.transition(listing, ListingWorkflowStatus.PUBLISHED, ListingWorkflowService.Actor.ADMIN);
         workflows.transition(listing, ListingWorkflowStatus.PAUSED, ListingWorkflowService.Actor.LANDLORD);
         assertEquals(ListingStatus.CLOSED, listing.getStatus());
-        workflows.transition(listing, ListingWorkflowStatus.ARCHIVED, ListingWorkflowService.Actor.LANDLORD);
+        assertThrows(IllegalStateException.class,
+                () -> workflows.transition(listing, ListingWorkflowStatus.ARCHIVED,
+                        ListingWorkflowService.Actor.LANDLORD));
+        assertEquals(ListingWorkflowStatus.PAUSED, listing.getWorkflowStatus());
         assertEquals(ListingStatus.CLOSED, listing.getStatus());
     }
 

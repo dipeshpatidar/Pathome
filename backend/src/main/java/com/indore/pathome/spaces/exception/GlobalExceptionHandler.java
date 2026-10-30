@@ -14,6 +14,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -148,6 +149,19 @@ public class GlobalExceptionHandler {
                 HttpStatus.TOO_MANY_REQUESTS.value(), "Too Many Requests", ex.getMessage(), request.getRequestURI()));
     }
 
+    @ExceptionHandler(LeadPhoneVerificationRejectedException.class)
+    public ResponseEntity<ErrorResponseDTO> handleLeadPhoneVerificationRejected(
+            LeadPhoneVerificationRejectedException ex, HttpServletRequest request) {
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(ex.getStatus())
+                .cacheControl(CacheControl.noStore());
+        if (ex.getRetryAfterSeconds() > 0) {
+            response.header("Retry-After", Long.toString(ex.getRetryAfterSeconds()));
+        }
+        return response.body(new ErrorResponseDTO(
+                ex.getStatus().value(), ex.getStatus().getReasonPhrase(), ex.getMessage(),
+                request.getRequestURI()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponseDTO> handleValidationException(MethodArgumentNotValidException ex, HttpServletRequest request) {
         log.warn("Validation Exception: {} | Path: {}", ex.getMessage(), request.getRequestURI());
@@ -185,6 +199,15 @@ public class GlobalExceptionHandler {
                 "A required request header is missing: " + ex.getHeaderName(),
                 request.getRequestURI()
         );
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponseDTO> handleInvalidPathValue(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        ErrorResponseDTO error = new ErrorResponseDTO(HttpStatus.BAD_REQUEST.value(),
+                "Bad Request", "A path or query value has an invalid format.",
+                request.getRequestURI());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 

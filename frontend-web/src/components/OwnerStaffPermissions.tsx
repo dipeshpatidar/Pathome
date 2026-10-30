@@ -29,6 +29,9 @@ const CAPABILITIES = [
   { value: 'OPS_ROUTING', label: 'City routing and exceptions', scope: 'CITY' },
   { value: 'OPS_SUPERVISE', label: 'Team supervision', scope: 'TEAM' },
   { value: 'OPS_INTAKE', label: 'City intake reading', scope: 'CITY' },
+  { value: 'PROPERTY_EDIT_PUBLISH', label: 'Property edit and direct publication', scope: 'CITY' },
+  { value: 'PROPERTY_AUDIT_READ', label: 'Property audit history', scope: 'CITY' },
+  { value: 'PROPERTY_LIFECYCLE', label: 'Property pause and archive', scope: 'CITY' },
   { value: 'CITY_TEAM_ADMIN', label: 'City administration', scope: 'CITY' },
   { value: 'STAFF_ADMIN', label: 'Global staff administration', scope: 'GLOBAL' }
 ] as const;

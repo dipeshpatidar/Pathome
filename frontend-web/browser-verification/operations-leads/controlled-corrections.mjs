@@ -19,6 +19,8 @@ const EVIDENCE = process.env.PATHOME_FIDELITY_EVIDENCE_DIR
       '../../../tools/oe-integration-env/evidence/p1-v0-fidelity-20261022/', import.meta.url));
 const BASELINE_ANCHOR = process.env.PATHOME_P1_BASELINE_ANCHOR === 'true';
 const BYPASS_FINAL_GUARD = process.env.PATHOME_P1_BYPASS_FINAL_GUARD === 'true';
+const C2_12_ONLY = process.env.PATHOME_C2_12_ONLY === 'true';
+const C2_12_MUTATION = process.env.PATHOME_C2_12_MUTATION?.trim() ?? '';
 const BASE_IDENTITY = {
   token: 'controlled-owner-token',
   id: 90,
@@ -102,6 +104,16 @@ await context.route('https://wa.me/**', async (route) => {
     status: 200,
     contentType: 'text/html',
     body: '<!doctype html><title>Controlled WhatsApp destination</title><p>No provider request was made.</p>'
+  });
+});
+await context.route('https://res.cloudinary.com/**', async (route) => {
+  await route.fulfill({
+    status: 200,
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500">'
+      + '<rect width="800" height="500" fill="#dbe8df"/>'
+      + '<path d="M190 360V220l210-130 210 130v140z" fill="#315d43"/>'
+      + '<rect x="350" y="275" width="100" height="85" fill="#f7fbf8"/></svg>'
   });
 });
 const page = await context.newPage();
@@ -218,6 +230,11 @@ await page.addInitScript((entries) => {
     writable: true,
     value: 0
   });
+  Object.defineProperty(window, '__clipboardAttempts', {
+    configurable: true,
+    writable: true,
+    value: 0
+  });
   const clipboard = navigator.clipboard;
   if (!clipboard) return;
   const original = clipboard.writeText.bind(clipboard);
@@ -225,6 +242,12 @@ await page.addInitScript((entries) => {
     Object.defineProperty(clipboard, 'writeText', {
       configurable: true,
       value: async (text) => {
+        window.__clipboardAttempts += 1;
+        if (window.__pathomeClipboardGate) await window.__pathomeClipboardGate;
+        if (window.__pathomeRejectClipboard) {
+          window.__pathomeRejectClipboard = false;
+          throw new DOMException('Controlled clipboard denial', 'NotAllowedError');
+        }
         window.__clipboardWrites += 1;
         return original(text);
       }
@@ -261,6 +284,9 @@ let sharePrepareFailureBody = null;
 let sharePrepareDropAcknowledgement = false;
 let shareReceipts = new Map();
 let sharePrepareOperationIds = [];
+let heldPublicPreview = null;
+let publicPreview203Observed = false;
+let previewPropertyId = 201;
 let publicFlags = {
   currentFactsMatch: true,
   currentConsentMatches: true,
@@ -270,12 +296,29 @@ let publicFlags = {
 };
 let shareEvents = [];
 let lostEventAcknowledgement = false;
+let malformedEventSuccess = false;
 let duplicateGate = null;
 let discoveryGate = null;
 let capturePosts = 0;
 let capturePayloads = [];
+let captureDropAcknowledgement = false;
+let captureReceiptGets = 0;
+const captureReceipts = new Set();
+const captureOperationIds = [];
+let captureAcknowledgementMode = 'normal';
+let captureReceiptDeferred = false;
+const captureReceiptChecks = [];
+let shortlistPosts = 0;
+let shortlistDropAcknowledgement = false;
+let shortlistReceiptGets = 0;
+const shortlistReceipts = new Set();
+const shortlistOperationIds = [];
+let shortlistAcknowledgementMode = 'normal';
+let shortlistReceiptDeferred = false;
+const shortlistReceiptChecks = [];
 let manualAttached = false;
 let shareEventPosts = 0;
+const shareEventOperationIds = [];
 let handoffEventPosts = 0;
 let clipboardBefore = 0;
 let detailGate = null;
@@ -283,6 +326,12 @@ let eventGate = null;
 let eventGateReached = false;
 let eventFailureStatus = null;
 let eventNetworkFailure = false;
+let shareHistoryFailureStatus = null;
+let failHistoryAfterEventAcknowledgement = false;
+let shareHistoryFailuresServed = 0;
+let recoveryHistoryItem = null;
+const shareHistoryReads = [];
+let c2PrivacyEvidence = null;
 
 const summary = () => ({
   id: 41,
@@ -374,8 +423,14 @@ const share = () => ({
   shortlistVersion,
   contactPreferenceRevision: preferenceRevision,
   mode: destinationChoice === 'NONE' ? 'COPY_LINKS' : 'MANUAL_BUSINESS_HANDOFF',
-  publicLinks: ['https://pathome.test/property/201'],
-  previewText: 'Pathome property options\n1. Fresh public home - Bhopal\nhttps://pathome.test/property/201',
+  publicLinks: [`https://pathome.test/property/${previewPropertyId}`],
+  previewText: '🏡 Your shortlisted home from Pathome\n'
+    + 'Fresh public home\n'
+    + 'Arera Colony, Bhopal Municipal Central Residential Corridor\n'
+    + 'Rent: INR 1,23,45,678.99 / month · 2 BHK · 850 sq ft\n'
+    + `View property details: https://pathome.test/property/${previewPropertyId}\n`
+    + 'Interested? Open Pathome to request a visit.\n'
+    + 'Pathome — Your Dreams, Our Efforts.',
   maskedDestination: '********3210',
   recordedAt: '2026-10-22T10:07:00Z'
 });
@@ -417,10 +472,23 @@ const property = (id, title) => ({
   city: CITY.name,
   sector: 'Arera Colony',
   bhk: '2 BHK',
-  monthlyRent: 21000,
+  monthlyRent: 12345678.99,
   securityDeposit: 42000,
   coverImageUrl: null,
   furnishingStatus: 'SEMI_FURNISHED'
+});
+
+const publicPropertyDetail = () => ({
+  ...property(201, 'Fresh public home'),
+  totalAreaSqFt: 850,
+  media: [{
+    mediaUrl: 'https://res.cloudinary.com/pathome/image/upload/public-cover.jpg',
+    mediaType: 'IMAGE',
+    roomTag: 'EXTERIOR',
+    primaryCover: true,
+    caption: null,
+    sortOrder: 0
+  }]
 });
 
 await page.route('**/api/v1/**', async (route) => {
@@ -470,10 +538,31 @@ await page.route('**/api/v1/**', async (route) => {
     return json(route, 200, pageEnvelope([summary()]));
   }
   if (path === '/api/v1/operations/leads' && method === 'POST') {
+    const operationId = request.headers()['idempotency-key'];
+    if (!operationId) return json(route, 400, { message: 'Idempotency-Key is required' });
     capturePosts += 1;
     const body = request.postDataJSON();
+    captureOperationIds.push(operationId);
     capturePayloads.push(body);
     manualAttached = true;
+    if (!captureReceiptDeferred) captureReceipts.add(operationId);
+    if (captureDropAcknowledgement || captureAcknowledgementMode === 'drop') {
+      captureDropAcknowledgement = false;
+      captureAcknowledgementMode = 'normal';
+      return route.abort('failed');
+    }
+    if (captureAcknowledgementMode === 'malformed') {
+      captureAcknowledgementMode = 'normal';
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/plain',
+        body: 'capture-acknowledgement-not-json'
+      });
+    }
+    if (captureAcknowledgementMode === 'bodyless') {
+      captureAcknowledgementMode = 'normal';
+      return route.fulfill({ status: 204 });
+    }
     return json(route, 201, {
       ...detail(),
       captureOutcome: {
@@ -523,6 +612,35 @@ await page.route('**/api/v1/**', async (route) => {
         property(101 + index, `Initial public home ${index + 1}`)),
       hasMore: true,
       page: 0
+    });
+  }
+  if (/^\/api\/v1\/properties\/(?:201|203)$/.test(path) && method === 'GET') {
+    const requestedPropertyId = Number(path.split('/').pop());
+    if (requestedPropertyId === 203 && !publicPreview203Observed) {
+      publicPreview203Observed = true;
+      await new Promise((resolve) => {
+        heldPublicPreview = { route, resolve };
+      });
+      try {
+        return await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'expired preview attempt' })
+        });
+      } catch {
+        return undefined;
+      }
+    }
+    return json(route, 200, requestedPropertyId === 201
+      ? publicPropertyDetail()
+      : { ...publicPropertyDetail(), id: requestedPropertyId });
+  }
+  if (path === '/api/v1/properties/202' && method === 'GET') {
+    return json(route, 200, {
+      ...publicPropertyDetail(),
+      id: 202,
+      title: 'Second public home',
+      sector: 'Nipania'
     });
   }
   if (path === '/api/v1/operations/leads/41' && method === 'GET') {
@@ -584,6 +702,30 @@ await page.route('**/api/v1/**', async (route) => {
   if (path.startsWith('/api/v1/operations/lead-commands/') && method === 'GET') {
     const operationId = path.split('/').pop();
     const action = url.searchParams.get('action');
+    if (action === 'LEAD_CAPTURE') {
+      captureReceiptGets += 1;
+      captureReceiptChecks.push(operationId);
+      return json(route, 200, captureReceipts.has(operationId)
+        ? {
+            state: 'RECORDED',
+            action,
+            resultReference: '41',
+            recordedAt: '2026-10-22T10:00:00Z'
+          }
+        : { state: 'NOT_RECORDED', action, resultReference: null, recordedAt: null });
+    }
+    if (action === 'LEAD_SHORTLIST_CREATE') {
+      shortlistReceiptGets += 1;
+      shortlistReceiptChecks.push(operationId);
+      return json(route, 200, shortlistReceipts.has(operationId)
+        ? {
+            state: 'RECORDED',
+            action,
+            resultReference: '7',
+            recordedAt: '2026-10-22T10:06:00Z'
+          }
+        : { state: 'NOT_RECORDED', action, resultReference: null, recordedAt: null });
+    }
     if (action === 'LEAD_SHARE_PREPARE') {
       return json(route, 200, shareReceipts.get(operationId)
         ? {
@@ -614,9 +756,31 @@ await page.route('**/api/v1/**', async (route) => {
     });
   }
   if (path === '/api/v1/operations/leads/41/shortlists' && method === 'POST') {
+    const operationId = request.headers()['idempotency-key'];
+    if (!operationId) return json(route, 400, { message: 'Idempotency-Key is required' });
+    shortlistPosts += 1;
     const body = request.postDataJSON();
+    shortlistOperationIds.push(operationId);
     shortlistListingIds = body.listingIds;
     shortlistVersion = 0;
+    if (!shortlistReceiptDeferred) shortlistReceipts.add(operationId);
+    if (shortlistDropAcknowledgement || shortlistAcknowledgementMode === 'drop') {
+      shortlistDropAcknowledgement = false;
+      shortlistAcknowledgementMode = 'normal';
+      return route.abort('failed');
+    }
+    if (shortlistAcknowledgementMode === 'malformed') {
+      shortlistAcknowledgementMode = 'normal';
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/plain',
+        body: 'shortlist-acknowledgement-not-json'
+      });
+    }
+    if (shortlistAcknowledgementMode === 'bodyless') {
+      shortlistAcknowledgementMode = 'normal';
+      return route.fulfill({ status: 204 });
+    }
     return json(route, 201, shortlist());
   }
   if (path === '/api/v1/operations/leads/41/shortlists/7' && method === 'PUT') {
@@ -629,7 +793,19 @@ await page.route('**/api/v1/**', async (route) => {
     return json(route, 200, shortlist());
   }
   if (path === '/api/v1/operations/leads/41/shares' && method === 'GET') {
-    return json(route, 200, pageEnvelope(sharePrepared ? [historyItem()] : []));
+    shareHistoryReads.push(url.search);
+    if (shareHistoryFailureStatus) {
+      const status = shareHistoryFailureStatus;
+      shareHistoryFailureStatus = null;
+      shareHistoryFailuresServed += 1;
+      return json(route, status, {
+        message: `Controlled share history response ${status}`
+      });
+    }
+    return json(route, 200, pageEnvelope([
+      ...(sharePrepared ? [historyItem()] : []),
+      ...(recoveryHistoryItem ? [recoveryHistoryItem] : [])
+    ]));
   }
   if (path === '/api/v1/operations/leads/41/shares' && method === 'POST') {
     sharePreparePosts += 1;
@@ -655,6 +831,7 @@ await page.route('**/api/v1/**', async (route) => {
   if (path === `/api/v1/operations/leads/41/shares/${share().id}/events` && method === 'POST') {
     shareEventPosts += 1;
     const body = request.postDataJSON();
+    shareEventOperationIds.push(body.eventId);
     if (body.type === 'HANDOFF_ATTEMPTED') handoffEventPosts += 1;
     if (eventGate) {
       eventGateReached = true;
@@ -682,8 +859,20 @@ await page.route('**/api/v1/**', async (route) => {
       type: body.type,
       occurredAt: '2026-10-22T10:08:00Z'
     });
+    if (malformedEventSuccess) {
+      malformedEventSuccess = false;
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/plain',
+        body: 'not-json'
+      });
+    }
     if (lostEventAcknowledgement) {
       lostEventAcknowledgement = false;
+      if (failHistoryAfterEventAcknowledgement) {
+        failHistoryAfterEventAcknowledgement = false;
+        shareHistoryFailureStatus = 503;
+      }
       return json(route, 503, { message: 'Controlled lost event acknowledgement' });
     }
     return json(route, 200, {
@@ -697,7 +886,7 @@ await page.route('**/api/v1/**', async (route) => {
 });
 
 const openConsentForm = async () => {
-  await page.goto(`${BASE}/operations/leads/41/share?shortlist=7`);
+  await page.goto(`${BASE}/operations/leads/41/share`);
   await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
   await page.getByLabel('Locality or property').fill('fresh query');
   await page.getByRole('heading', { name: 'Fresh public home', exact: true }).waitFor();
@@ -814,10 +1003,619 @@ const resetHandoffFixture = async (choice = 'SAME') => {
     currentAuthorityMatches: true,
     actionReady: true
   };
+  await page.evaluate(() => {
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith('pathome_oe_command_recovery_v1:')) {
+        sessionStorage.removeItem(key);
+      }
+    }
+  });
   await runToHandoff(choice);
 };
 
+const commandRecoveryPrefix = (identity) => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < identity.token.length; index += 1) {
+    hash ^= identity.token.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `pathome_oe_command_recovery_v1:${identity.id}|${identity.role}|`
+    + hash.toString(16).padStart(8, '0');
+};
+const RECOVERY_PREFIX = commandRecoveryPrefix(BASE_IDENTITY);
+const recoveryKey = (suffix) => `${RECOVERY_PREFIX}:${suffix}`;
+
+const clearCommandRecovery = async () => {
+  await page.evaluate((prefix) => {
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith(`${prefix}:`)) sessionStorage.removeItem(key);
+    }
+  }, RECOVERY_PREFIX);
+};
+
+const seedRecovery = async (suffix, value) => {
+  const key = recoveryKey(suffix);
+  await page.evaluate(({ key, value }) => {
+    sessionStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+  }, { key, value });
+  return key;
+};
+
+const openNewCapture = async () => {
+  await page.goto(`${BASE}/operations/leads`);
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'New enquiry' }).click();
+  await page.getByRole('heading', { name: 'Capture an enquiry' }).waitFor();
+};
+
+const installIdentity = async (identity) => {
+  await page.evaluate(({ identity }) => {
+    window.localStorage.setItem('pathome_auth_token', identity.token);
+    window.localStorage.setItem('pathome_role', identity.role);
+    window.localStorage.setItem('pathome_user', JSON.stringify({
+      id: identity.id,
+      role: identity.role,
+      fullName: identity.name,
+      email: `controlled-${identity.id}@pathome.test`
+    }));
+    window.dispatchEvent(new Event('pathome_auth_changed'));
+  }, { identity });
+};
+
+const clearIdentity = async () => {
+  await page.evaluate(() => {
+    window.localStorage.removeItem('pathome_auth_token');
+    window.localStorage.removeItem('pathome_role');
+    window.localStorage.removeItem('pathome_user');
+    window.dispatchEvent(new Event('pathome_auth_changed'));
+    window.dispatchEvent(new Event('pathome_session_expired'));
+  });
+};
+
+const C2_12_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const C2_12_EVENT_TYPES = new Set([
+  'CLIPBOARD_COPIED',
+  'HANDOFF_ATTEMPTED',
+  'OPERATOR_REPORTED_MANUAL_SEND',
+  'HANDOFF_CANCELLED'
+]);
+const C2_12_SCHEMAS = Object.freeze({
+  LEAD_CAPTURE: {
+    keyPattern: /^capture$/,
+    keys: ['kind', 'operationId', 'savedAtEpochMs', 'version']
+  },
+  LEAD_SHORTLIST_CREATE: {
+    keyPattern: /^shortlist-create:([1-9]\d*)$/,
+    keys: ['kind', 'leadId', 'operationId', 'savedAtEpochMs', 'version']
+  },
+  LEAD_SHARE_EVENT: {
+    keyPattern: /^share-event:([1-9]\d*)$/,
+    keys: ['eventType', 'kind', 'leadId', 'operationId', 'savedAtEpochMs', 'shareId', 'version']
+  }
+});
+const C2_12_FIELD_MUTATIONS = Object.freeze({
+  name: { key: 'customerName', value: 'C2-12 Synthetic Customer' },
+  email: { key: 'email', value: 'c2-12@pathome.test' },
+  token: { key: 'authToken', value: 'c2-12-controlled-token' },
+  otp: { key: 'otp', value: '481516' },
+  'message-body': { key: 'messageBody', value: 'C2-12 controlled message body' },
+  'cross-schema': { key: 'leadId', value: 41 },
+  'wrong-type': { key: 'version', value: '1' },
+  nested: {
+    key: 'customerIdentity',
+    value: {
+      customerName: 'C2-12 Synthetic Customer',
+      email: 'c2-12@pathome.test',
+      token: 'c2-12-controlled-token',
+      otp: '481516',
+      messageBody: 'C2-12 controlled message body'
+    }
+  }
+});
+const C2_12_MUTATION_NAMES = new Set([
+  ...Object.keys(C2_12_FIELD_MUTATIONS),
+  'malformed'
+]);
+
+if (C2_12_ONLY && C2_12_MUTATION && !C2_12_MUTATION_NAMES.has(C2_12_MUTATION)) {
+  throw new Error(`Unsupported C2-12 mutation: ${C2_12_MUTATION}`);
+}
+
+const readC2RecoveryEntries = async () => page.evaluate((prefix) => {
+  const entries = [];
+  const keyPrefix = `${prefix}:`;
+  for (let index = 0; index < sessionStorage.length; index += 1) {
+    const key = sessionStorage.key(index);
+    if (!key?.startsWith(keyPrefix)) continue;
+    entries.push({ key, raw: sessionStorage.getItem(key) });
+  }
+  return entries;
+}, RECOVERY_PREFIX);
+
+const c2InspectionSideEffects = async () => ({
+  capturePosts,
+  shortlistPosts,
+  shareEventPosts,
+  clipboardAttempts: await page.evaluate(() => window.__clipboardAttempts),
+  clipboardWrites: await page.evaluate(() => window.__clipboardWrites),
+  whatsAppNavigations: waNavigations.length,
+  apiRequests: apiTrace.length
+});
+
+const assertNoC2InspectionSideEffects = async (label, before) => {
+  const after = await c2InspectionSideEffects();
+  check(`C2-12 ${label} inspection adds no POST, clipboard or WhatsApp action`,
+    JSON.stringify(after) === JSON.stringify(before),
+    `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
+};
+
+const installC2PersistenceMutation = async (mutation) => {
+  if (!mutation) return;
+  const injected = mutation === 'malformed'
+    ? { malformed: true }
+    : C2_12_FIELD_MUTATIONS[mutation];
+  await page.evaluate(({ prefix, injected }) => {
+    const original = Storage.prototype.setItem;
+    window.__pathomeC2OriginalSetItem = original;
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (this === window.sessionStorage && String(key).startsWith(`${prefix}:`)) {
+        if (injected.malformed) {
+          value = '{"version":1';
+        } else {
+          const record = JSON.parse(value);
+          record[injected.key] = injected.value;
+          value = JSON.stringify(record);
+        }
+      }
+      return original.call(this, key, value);
+    };
+  }, { prefix: RECOVERY_PREFIX, injected });
+};
+
+const restoreC2PersistenceMutation = async () => {
+  await page.evaluate(() => {
+    if (!window.__pathomeC2OriginalSetItem) return;
+    Storage.prototype.setItem = window.__pathomeC2OriginalSetItem;
+    delete window.__pathomeC2OriginalSetItem;
+  });
+};
+
+const inspectC2RecoveryEntries = (
+  entries,
+  {
+    mutation = '',
+    now = Date.now(),
+    expectedOperationIds,
+    requiredKinds
+  }
+) => {
+  const failures = [];
+  const counts = new Map();
+  const auditEntries = [];
+  const keyBodies = new Set(Object.values(C2_12_SCHEMAS).flatMap((schema) => schema.keys));
+
+  if (!entries.length) failures.push('no recovery entry was written by the mounted handler');
+
+  for (const entry of entries) {
+    const keyPrefix = `${RECOVERY_PREFIX}:`;
+    const suffix = entry.key.startsWith(keyPrefix)
+      ? entry.key.slice(keyPrefix.length)
+      : '<outside-session-prefix>';
+    let record;
+    try {
+      record = JSON.parse(entry.raw);
+    } catch {
+      failures.push(`${suffix}: malformed JSON`);
+      auditEntries.push({ keySuffix: suffix, parse: 'FAILED', keys: [], types: {} });
+      continue;
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)
+      || Object.getPrototypeOf(record) !== Object.prototype) {
+      failures.push(`${suffix}: record is not a plain object`);
+      auditEntries.push({
+        keySuffix: suffix,
+        parse: 'PARSED',
+        keys: [],
+        types: { record: Array.isArray(record) ? 'array' : typeof record }
+      });
+      continue;
+    }
+
+    const keys = Object.keys(record).sort();
+    const types = Object.fromEntries(keys.map((key) => [
+      key,
+      record[key] === null
+        ? 'null'
+        : Array.isArray(record[key])
+          ? 'array'
+          : typeof record[key]
+    ]));
+    const kind = record.kind;
+    const schema = C2_12_SCHEMAS[kind];
+    const audit = { keySuffix: suffix, kind: typeof kind === 'string' ? kind : null, keys, types };
+    auditEntries.push(audit);
+    if (!schema) {
+      failures.push(`${suffix}: unexpected kind ${String(kind)}`);
+      continue;
+    }
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+
+    const keyMatch = schema.keyPattern.exec(suffix);
+    if (!keyMatch) {
+      failures.push(`${suffix}: key does not match ${kind}`);
+    }
+    const expectedKeys = [...schema.keys].sort();
+    const unexpectedKeys = keys.filter((key) => !keyBodies.has(key));
+    const schemaExtras = keys.filter((key) => !expectedKeys.includes(key));
+    const missingKeys = expectedKeys.filter((key) => !keys.includes(key));
+    if (unexpectedKeys.length) {
+      failures.push(`${suffix}: unexpected property ${unexpectedKeys.join(', ')}`);
+    }
+    if (schemaExtras.length) {
+      failures.push(`${suffix}: property not allowed for ${kind}: ${schemaExtras.join(', ')}`);
+    }
+    if (missingKeys.length) {
+      failures.push(`${suffix}: missing property ${missingKeys.join(', ')}`);
+    }
+
+    if (record.version !== 1 || !Number.isSafeInteger(record.version)) {
+      failures.push(`${suffix}: version must be integer 1`);
+    }
+    if (typeof record.operationId !== 'string' || !C2_12_UUID.test(record.operationId)) {
+      failures.push(`${suffix}: operationId must be a UUID v4`);
+    } else if (record.operationId !== expectedOperationIds?.[kind]) {
+      failures.push(`${suffix}: operationId does not match the actual request header`);
+    }
+    if (!Number.isSafeInteger(record.savedAtEpochMs)
+      || record.savedAtEpochMs < now - (24 * 60 * 60 * 1000)
+      || record.savedAtEpochMs > now + (60 * 1000)) {
+      failures.push(`${suffix}: savedAtEpochMs is outside the 24-hour persisted bound`);
+    }
+
+    if (kind === 'LEAD_SHORTLIST_CREATE' || kind === 'LEAD_SHARE_EVENT') {
+      if (!Number.isSafeInteger(record.leadId) || record.leadId <= 0) {
+        failures.push(`${suffix}: leadId must be a positive safe integer`);
+      }
+      if (keyMatch && Number(keyMatch[1]) !== record.leadId) {
+        failures.push(`${suffix}: key leadId and persisted leadId differ`);
+      }
+    }
+    if (kind === 'LEAD_SHARE_EVENT') {
+      if (typeof record.shareId !== 'string' || !C2_12_UUID.test(record.shareId)) {
+        failures.push(`${suffix}: shareId must be a UUID v4`);
+      }
+      if (typeof record.eventType !== 'string' || !C2_12_EVENT_TYPES.has(record.eventType)) {
+        failures.push(`${suffix}: eventType is not an approved share-event value`);
+      }
+    }
+  }
+
+  for (const kind of requiredKinds) {
+    if (counts.get(kind) !== 1) {
+      failures.push(`expected exactly one ${kind} entry, observed ${counts.get(kind) ?? 0}`);
+    }
+  }
+
+  return {
+    passed: failures.length === 0,
+    detail: failures.join('; '),
+    entries: auditEntries,
+    allowedSchemas: Object.fromEntries(Object.entries(C2_12_SCHEMAS).map(([kind, schema]) => [
+      kind,
+      { keys: schema.keys, keyPattern: schema.keyPattern.source }
+    ])),
+    mutation: mutation || null
+  };
+};
+
+const runC2_12PrivacyOracle = async () => {
+  await page.goto(`${BASE}/operations/leads`);
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  await clearCommandRecovery();
+  const actualWrites = [];
+  const expectedOperationIds = {};
+  const requiredKinds = C2_12_MUTATION
+    ? ['LEAD_CAPTURE']
+    : ['LEAD_CAPTURE', 'LEAD_SHORTLIST_CREATE', 'LEAD_SHARE_EVENT'];
+
+  await openNewCapture();
+  await page.getByLabel('Customer name').fill('C2-12 Synthetic Customer');
+  await page.getByLabel(/Source/).fill('Direct call');
+  captureReceiptDeferred = true;
+  captureAcknowledgementMode = 'drop';
+  await installC2PersistenceMutation(C2_12_MUTATION);
+  await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+  await page.getByText(/couldn’t confirm the save/i).waitFor();
+  const captureBeforeInspection = await c2InspectionSideEffects();
+  expectedOperationIds.LEAD_CAPTURE = captureOperationIds.at(-1);
+  actualWrites.push(...await readC2RecoveryEntries());
+  await assertNoC2InspectionSideEffects('capture', captureBeforeInspection);
+  captureReceiptDeferred = false;
+  captureAcknowledgementMode = 'normal';
+  await restoreC2PersistenceMutation();
+  await clearCommandRecovery();
+
+  if (C2_12_MUTATION) {
+    c2PrivacyEvidence = inspectC2RecoveryEntries(actualWrites, {
+      mutation: C2_12_MUTATION,
+      expectedOperationIds,
+      requiredKinds
+    });
+    check(`C2-12 exact recovery schema rejects ${C2_12_MUTATION} injected at the mounted persistence boundary`,
+      c2PrivacyEvidence.passed, c2PrivacyEvidence.detail);
+    return;
+  }
+
+  await page.goto(`${BASE}/operations/leads/41/share`);
+  await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
+  if (await page.getByRole('button', { name: 'Added #1', exact: true }).count() === 0) {
+    await page.getByRole('button', { name: 'Add', exact: true }).first().click();
+  }
+  shortlistReceiptDeferred = true;
+  shortlistAcknowledgementMode = 'drop';
+  await page.getByRole('button', { name: 'Save shortlist and continue' }).click();
+  await page.getByText(/couldn’t confirm the shortlist save/i).waitFor();
+  const shortlistBeforeInspection = await c2InspectionSideEffects();
+  expectedOperationIds.LEAD_SHORTLIST_CREATE = shortlistOperationIds.at(-1);
+  actualWrites.push(...await readC2RecoveryEntries());
+  await assertNoC2InspectionSideEffects('shortlist', shortlistBeforeInspection);
+  shortlistReceiptDeferred = false;
+  shortlistAcknowledgementMode = 'normal';
+  await clearCommandRecovery();
+
+  await resetHandoffFixture('SAME');
+  await clearCommandRecovery();
+  lostEventAcknowledgement = true;
+  failHistoryAfterEventAcknowledgement = true;
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  await page.getByText(/history event is not yet confirmed/i).waitFor();
+  const shareEventBeforeInspection = await c2InspectionSideEffects();
+  expectedOperationIds.LEAD_SHARE_EVENT = shareEventOperationIds.at(-1);
+  actualWrites.push(...await readC2RecoveryEntries());
+  await assertNoC2InspectionSideEffects('share event', shareEventBeforeInspection);
+  await clearCommandRecovery();
+
+  c2PrivacyEvidence = inspectC2RecoveryEntries(actualWrites, {
+    expectedOperationIds,
+    requiredKinds
+  });
+  check('C2-12 mounted handlers persist only exact approved recovery schemas',
+    c2PrivacyEvidence.passed, c2PrivacyEvidence.detail);
+  check('C2-12 focused mounted run has no browser errors',
+    browserErrors.length === 0, browserErrors.join(' | '));
+};
+
 try {
+  if (C2_12_ONLY) {
+    await runC2_12PrivacyOracle();
+  } else {
+  await page.goto(`${BASE}/operations/leads`);
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  const expiredCaptureId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const expiredCaptureKey = await seedRecovery('capture', {
+    version: 1,
+    kind: 'LEAD_CAPTURE',
+    operationId: expiredCaptureId,
+    savedAtEpochMs: Date.now() - (24 * 60 * 60 * 1000) - 1
+  });
+  await openNewCapture();
+  await page.getByText(/outside the 24-hour recovery window/i).waitFor();
+  check('mounted capture treats an expired pending command as uncertain and blocks a replacement',
+    await page.getByLabel('Customer name').isDisabled()
+    && await page.getByText(/outcome is still unknown/i).isVisible()
+    && capturePosts === 0
+    && await page.evaluate((key) => sessionStorage.getItem(key) !== null, expiredCaptureKey));
+  await page.evaluate((key) => sessionStorage.removeItem(key), expiredCaptureKey);
+
+  for (const metadataCase of [
+    {
+      name: 'corrupt JSON',
+      value: '{broken',
+      copy: /unreadable.*unknown/i
+    },
+    {
+      name: 'null value',
+      value: 'null',
+      copy: /unreadable.*unknown/i
+    },
+    {
+      name: 'future timestamp',
+      value: {
+        version: 1,
+        kind: 'LEAD_CAPTURE',
+        operationId: 'abababab-abab-4bab-8bab-abababababab',
+        savedAtEpochMs: Date.now() + (10 * 60 * 1000)
+      },
+      copy: /invalid timestamp/i
+    }
+  ]) {
+    const blockedKey = await seedRecovery('capture', metadataCase.value);
+    await openNewCapture();
+    await page.getByText(metadataCase.copy).waitFor();
+    check(`mounted capture keeps ${metadataCase.name} metadata as a fail-closed blocker`,
+      capturePosts === 0
+      && await page.getByLabel('Customer name').isDisabled()
+      && await page.evaluate((key) => sessionStorage.getItem(key) !== null, blockedKey));
+    await page.evaluate((key) => sessionStorage.removeItem(key), blockedKey);
+  }
+
+  await openNewCapture();
+  await page.getByLabel('Customer name').fill('Dropped acknowledgement customer');
+  await page.getByLabel(/Source/).fill('Direct call');
+  captureReceiptDeferred = true;
+  captureAcknowledgementMode = 'drop';
+  await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+  await page.getByText(/couldn’t confirm the save/i).waitFor();
+  const originalCaptureId = captureOperationIds.at(-1);
+  await openNewCapture();
+  await page.getByText(/A previous enquiry command is still unconfirmed/i).waitFor();
+  await page.getByRole('button', { name: 'Check whether it was saved' }).click();
+  await page.getByText(/No saved result is visible yet/i).waitFor();
+  check('mounted capture remount preserves the original UUID while its receipt is temporarily absent',
+    originalCaptureId
+    && capturePosts === 1
+    && captureReceiptChecks.at(-1) === originalCaptureId
+    && await page.evaluate(({ key, expected }) => {
+      const metadata = JSON.parse(sessionStorage.getItem(key) ?? 'null');
+      return metadata?.operationId === expected;
+    }, { key: recoveryKey('capture'), expected: originalCaptureId }));
+  captureReceipts.add(originalCaptureId);
+  captureReceiptDeferred = false;
+  await page.getByRole('button', { name: 'Check whether it was saved' }).click();
+  await page.getByRole('dialog', { name: 'Leave this unsaved enquiry?' }).waitFor();
+  await page.getByRole('button', { name: 'Discard and leave' }).click();
+  await page.getByRole('heading', { name: 'Controlled Customer' }).waitFor();
+  check('mounted capture delayed completion recovers through the same UUID and never reposts',
+    capturePosts === 1
+    && captureReceiptGets === 2
+    && captureReceiptChecks.every((operationId) => operationId === originalCaptureId)
+    && await page.evaluate(() => Array.from({ length: sessionStorage.length },
+      (_, index) => sessionStorage.key(index))
+      .every((key) => !key?.startsWith('pathome_oe_command_recovery_v1:'))));
+  await page.goto(`${BASE}/operations/leads`);
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  capturePosts = 0;
+  capturePayloads = [];
+  captureReceiptGets = 0;
+  captureReceipts.clear();
+  manualAttached = false;
+  await page.getByRole('button', { name: 'New enquiry' }).click();
+  await page.getByRole('heading', { name: 'Capture an enquiry' }).waitFor();
+  const capacityKeys = await page.evaluate(({ identity }) => {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < identity.token.length; index += 1) {
+      hash ^= identity.token.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    const prefix = `pathome_oe_command_recovery_v1:${identity.id}|${identity.role}|`
+      + `${hash.toString(16).padStart(8, '0')}`;
+    const keys = [];
+    for (let leadId = 1; leadId <= 12; leadId += 1) {
+      const key = `${prefix}:shortlist-create:${leadId}`;
+      sessionStorage.setItem(key, JSON.stringify({
+        version: 1,
+        kind: 'LEAD_SHORTLIST_CREATE',
+        operationId: `cccccccc-cccc-4ccc-8ccc-${String(leadId).padStart(12, '0')}`,
+        leadId,
+        savedAtEpochMs: Date.now()
+      }));
+      keys.push(key);
+    }
+    return keys;
+  }, { identity: BASE_IDENTITY });
+  const capacityBefore = await page.evaluate((keys) =>
+    Object.fromEntries(keys.map((key) => [key, sessionStorage.getItem(key)])), capacityKeys);
+  const clipboardAttemptsBeforeCapacity = await page.evaluate(
+    () => window.__clipboardAttempts);
+  await page.getByLabel('Customer name').fill('Capacity blocked customer');
+  await page.getByLabel(/Source/).fill('Direct call');
+  await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+  await page.getByText(/Too many earlier commands/i).waitFor();
+  check('mounted capture refuses the thirteenth reservation without network or clipboard side effects',
+    capturePosts === 0
+    && await page.evaluate(({ keys, before }) =>
+      JSON.stringify(Object.fromEntries(
+        keys.map((key) => [key, sessionStorage.getItem(key)]))) === JSON.stringify(before),
+    { keys: capacityKeys, before: capacityBefore })
+    && await page.evaluate(() => window.__clipboardAttempts) === clipboardAttemptsBeforeCapacity);
+  await page.evaluate((keys) => {
+    keys.forEach((key) => sessionStorage.removeItem(key));
+  }, capacityKeys);
+
+  const readRefusalRecord = {
+    version: 1,
+    kind: 'LEAD_CAPTURE',
+    operationId: 'acacacac-acac-4cac-8cac-acacacacacac',
+    savedAtEpochMs: Date.now()
+  };
+  const readRefusalKey = await seedRecovery('capture', readRefusalRecord);
+  await page.goto(`${BASE}/operations/leads`);
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__pathomeOriginalStorageGetItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function getItem(key) {
+      if (String(key).startsWith('pathome_oe_command_recovery_v1:')) {
+        throw new DOMException('Controlled read refusal', 'SecurityError');
+      }
+      return window.__pathomeOriginalStorageGetItem.call(this, key);
+    };
+  });
+  capturePosts = 0;
+  captureOperationIds.length = 0;
+  await page.getByRole('button', { name: 'New enquiry' }).click();
+  await page.getByRole('heading', { name: 'Capture an enquiry' }).waitFor();
+  await page.getByText(/could not read the saved enquiry command state/i).waitFor();
+  check('mounted capture treats storage read refusal as blocked before dispatch',
+    capturePosts === 0
+    && await page.getByLabel('Customer name').isDisabled());
+  await page.evaluate(() => {
+    Storage.prototype.getItem = window.__pathomeOriginalStorageGetItem;
+    delete window.__pathomeOriginalStorageGetItem;
+  });
+  check('storage read refusal preserves the unresolved record byte-for-byte',
+    await page.evaluate(({ key, expected }) =>
+      sessionStorage.getItem(key) === expected,
+    { key: readRefusalKey, expected: JSON.stringify(readRefusalRecord) }));
+  await page.evaluate((key) => sessionStorage.removeItem(key), readRefusalKey);
+  await openNewCapture();
+  await page.getByLabel('Customer name').fill('Storage write blocked customer');
+  await page.getByLabel(/Source/).fill('Direct call');
+  await page.evaluate(() => {
+    window.__pathomeOriginalStorageSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (String(key).startsWith('pathome_oe_command_recovery_v1:')) {
+        throw new DOMException('Controlled write refusal', 'QuotaExceededError');
+      }
+      return window.__pathomeOriginalStorageSetItem.call(this, key, value);
+    };
+  });
+  await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+  await page.getByText(/could not keep the enquiry command\. Nothing was sent/i).waitFor();
+  check('mounted capture treats storage write refusal as blocked before dispatch',
+    capturePosts === 0
+    && await page.getByLabel('Customer name').inputValue() === 'Storage write blocked customer');
+  await page.evaluate(() => {
+    Storage.prototype.setItem = window.__pathomeOriginalStorageSetItem;
+    delete window.__pathomeOriginalStorageSetItem;
+  });
+
+  for (const acknowledgementMode of ['bodyless', 'malformed']) {
+    capturePosts = 0;
+    captureReceiptGets = 0;
+    captureReceipts.clear();
+    captureOperationIds.length = 0;
+    captureReceiptChecks.length = 0;
+    captureReceiptDeferred = false;
+    await openNewCapture();
+    await page.getByLabel('Customer name').fill(
+      `${acknowledgementMode} acknowledgement customer`);
+    await page.getByLabel(/Source/).fill('Direct call');
+    captureAcknowledgementMode = acknowledgementMode;
+    await page.getByRole('button', { name: 'Review and save enquiry' }).click();
+    await page.getByText(/couldn’t confirm the save/i).waitFor();
+    const originalId = captureOperationIds.at(-1);
+    await openNewCapture();
+    await page.getByRole('button', { name: 'Check whether it was saved' }).click();
+    await page.getByRole('dialog', { name: 'Leave this unsaved enquiry?' }).waitFor();
+    await page.getByRole('button', { name: 'Discard and leave' }).click();
+    await page.getByRole('heading', { name: 'Controlled Customer' }).waitFor();
+    check(`mounted capture keeps a ${acknowledgementMode} 2xx uncertain and recovers without replacement`,
+      originalId
+      && capturePosts === 1
+      && captureReceiptChecks.length === 1
+      && captureReceiptChecks[0] === originalId);
+  }
+
+  capturePosts = 0;
+  capturePayloads = [];
+  captureReceiptGets = 0;
+  captureReceipts.clear();
+  captureOperationIds.length = 0;
+  captureReceiptChecks.length = 0;
+  manualAttached = false;
   await page.goto(`${BASE}/operations/leads`);
   await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
   await page.getByRole('button', { name: 'New enquiry' }).click();
@@ -883,9 +1681,84 @@ try {
     && await page.getByText('Manual enquiry attached', { exact: true }).isVisible()
     && !/tomorrow|next week|auto.?follow/i.test(persistedGuidance));
 
+  await page.goto(`${BASE}/operations/leads/41/share`);
+  await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
+  if (await page.getByRole('button', { name: 'Added #1', exact: true }).count() === 0) {
+    await page.getByRole('button', { name: 'Add', exact: true }).first().click();
+  }
+  shortlistPosts = 0;
+  shortlistReceiptGets = 0;
+  shortlistReceipts.clear();
+  shortlistOperationIds.length = 0;
+  shortlistReceiptChecks.length = 0;
+  shortlistReceiptDeferred = true;
+  shortlistAcknowledgementMode = 'drop';
+  await page.getByRole('button', { name: 'Save shortlist and continue' }).click();
+  await page.getByText(/couldn’t confirm the shortlist save/i).waitFor();
+  const originalShortlistId = shortlistOperationIds.at(-1);
   await page.goto(`${BASE}/operations/leads/41/share?shortlist=7`);
   await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
-  await page.getByText('Initial public home 1', { exact: true }).waitFor();
+  await page.getByText(/A previous shortlist save is still unconfirmed/i).waitFor();
+  await page.getByRole('button', { name: 'Check saved shortlist' }).click();
+  await page.getByText(/No saved shortlist is visible yet/i).waitFor();
+  check('mounted shortlist remount preserves the original UUID while its receipt is temporarily absent',
+    originalShortlistId
+    && shortlistPosts === 1
+    && shortlistReceiptChecks.at(-1) === originalShortlistId
+    && await page.evaluate(({ key, expected }) => {
+      const metadata = JSON.parse(sessionStorage.getItem(key) ?? 'null');
+      return metadata?.operationId === expected;
+    }, { key: recoveryKey('shortlist-create:41'), expected: originalShortlistId }));
+  shortlistReceipts.add(originalShortlistId);
+  shortlistReceiptDeferred = false;
+  await page.getByRole('button', { name: 'Check saved shortlist' }).click();
+  await page.getByRole('heading', {
+    name: 'Confirm the customer’s WhatsApp number'
+  }).waitFor();
+  const shortlistMarkerRemaining = await page.evaluate(() =>
+    Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .some((key) => key?.startsWith('pathome_oe_command_recovery_v1:')));
+  check('mounted shortlist delayed completion recovers through the same UUID and never reposts',
+    shortlistPosts === 1
+    && shortlistReceiptGets >= 2
+    && shortlistReceiptChecks.every((operationId) => operationId === originalShortlistId)
+    && !shortlistMarkerRemaining,
+    `posts=${shortlistPosts} receipts=${shortlistReceiptGets} `
+      + `marker=${shortlistMarkerRemaining}`);
+  shortlistPosts = 0;
+  shortlistReceiptGets = 0;
+  shortlistReceipts.clear();
+
+  const expiredShortlistKey = await page.evaluate(({ identity, operationId }) => {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < identity.token.length; index += 1) {
+      hash ^= identity.token.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    const key = `pathome_oe_command_recovery_v1:${identity.id}|${identity.role}|`
+      + `${hash.toString(16).padStart(8, '0')}:shortlist-create:41`;
+    sessionStorage.setItem(key, JSON.stringify({
+      version: 1,
+      kind: 'LEAD_SHORTLIST_CREATE',
+      operationId,
+      leadId: 41,
+      savedAtEpochMs: Date.now() - (24 * 60 * 60 * 1000) - 1
+    }));
+    return key;
+  }, {
+    identity: BASE_IDENTITY,
+    operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  });
+  await page.goto(`${BASE}/operations/leads/41/share?shortlist=7`);
+  await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
+  await page.getByText(/outside the 24-hour recovery window/i).waitFor();
+  check('mounted shortlist creation treats an expired command as uncertain and sends no replacement',
+    await page.getByRole('button', { name: 'Save shortlist and continue' }).isDisabled()
+    && shortlistPosts === 0);
+  await page.evaluate((key) => sessionStorage.removeItem(key), expiredShortlistKey);
+  await page.goto(`${BASE}/operations/leads/41/share?shortlist=7`);
+  await page.getByRole('heading', { name: /Find current public rentals/ }).waitFor();
+  await page.getByRole('heading', { name: 'Initial public home 1', exact: true }).waitFor();
   let releaseDiscovery;
   discoveryGate = { promise: new Promise((resolve) => { releaseDiscovery = resolve; }) };
   await page.getByRole('button', { name: 'Load more public homes' }).click();
@@ -901,7 +1774,104 @@ try {
 
   await runToHandoff('SAME');
 
+  await clearCommandRecovery();
+  const deniedClipboardWrites = await page.evaluate(() => window.__clipboardWrites);
+  const deniedClipboardAttempts = await page.evaluate(() => window.__clipboardAttempts);
+  const deniedClipboardPosts = shareEventPosts;
+  await page.evaluate(() => { window.__pathomeRejectClipboard = true; });
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  await page.getByText(/Clipboard access failed/i).waitFor();
+  await page.waitForTimeout(350);
+  check('mounted clipboard denial removes its unused reservation and never retries automatically',
+    await page.evaluate(() => window.__clipboardAttempts) === deniedClipboardAttempts + 1
+    && await page.evaluate(() => window.__clipboardWrites) === deniedClipboardWrites
+    && shareEventPosts === deniedClipboardPosts
+    && await page.getByLabel('Message to copy').isVisible()
+    && await page.evaluate((prefix) =>
+      !Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+        .some((key) => key?.startsWith(`${prefix}:`)), RECOVERY_PREFIX));
+
+  await clearCommandRecovery();
+  const historyFailureClipboardWrites = await page.evaluate(() => window.__clipboardWrites);
+  const historyFailurePosts = shareEventPosts;
+  lostEventAcknowledgement = true;
+  failHistoryAfterEventAcknowledgement = true;
+  const historyFailureCountBefore = shareHistoryFailuresServed;
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  await page.getByText(/history event is not yet confirmed/i).waitFor();
+  check('a completed clipboard action with unavailable history remains truthful and unresolved',
+    await page.evaluate(() => window.__clipboardWrites) === historyFailureClipboardWrites + 1
+    && shareEventPosts === historyFailurePosts + 1
+    && shareHistoryFailuresServed === historyFailureCountBefore + 1
+    && await page.getByText(/Copy and WhatsApp stay disabled until/i).isVisible()
+    && await page.getByRole('button', { name: 'Copy message' }).isDisabled(),
+  `writes=${await page.evaluate(() => window.__clipboardWrites)} `
+    + `expectedWrites=${historyFailureClipboardWrites + 1} `
+    + `posts=${shareEventPosts} expectedPosts=${historyFailurePosts + 1} `
+    + `historyFailures=${shareHistoryFailuresServed} `
+    + `expectedHistoryFailures=${historyFailureCountBefore + 1}`);
+  await page.getByRole('button', { name: 'Check if it was recorded' }).click();
+  await page.getByText(/Share history confirmed .*No action was repeated/i).waitFor();
+  check('later history availability confirms the same clipboard event without recopying',
+    await page.evaluate(() => window.__clipboardWrites) === historyFailureClipboardWrites + 1
+    && shareEventPosts === historyFailurePosts + 1);
+
+  await clearCommandRecovery();
+  const interruptedAttempts = await page.evaluate(() => window.__clipboardAttempts);
+  const interruptedPosts = shareEventPosts;
+  await page.evaluate(() => {
+    window.__pathomeClipboardGate = new Promise((resolve) => {
+      window.__pathomeReleaseClipboard = resolve;
+    });
+  });
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  for (let attempt = 0;
+    attempt < 40 && await page.evaluate(() => window.__clipboardAttempts) === interruptedAttempts;
+    attempt += 1) {
+    await page.waitForTimeout(50);
+  }
+  await page.locator('.oe-sidebar-nav').getByRole('button', { name: 'Leads' }).click();
+  await page.getByRole('heading', { name: 'Leads', exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__pathomeReleaseClipboard?.();
+    delete window.__pathomeClipboardGate;
+    delete window.__pathomeReleaseClipboard;
+  });
+  await page.waitForTimeout(500);
+  const interruptedMarker = await page.evaluate((prefix) =>
+    Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .some((key) => key?.startsWith(`${prefix}:share-event:41`)), RECOVERY_PREFIX);
+  check('unmount after reservation interrupts history recording without a speculative event POST',
+    await page.evaluate(() => window.__clipboardAttempts) === interruptedAttempts + 1
+    && shareEventPosts === interruptedPosts
+    && interruptedMarker);
+
+  await clearCommandRecovery();
+  await runToHandoff('SAME');
+
+  await page.evaluate(() => {
+    window.__pathomeOriginalStorageSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (String(key).startsWith('pathome_oe_command_recovery_v1:')) {
+        throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+      }
+      return window.__pathomeOriginalStorageSetItem.call(this, key, value);
+    };
+  });
   clipboardBefore = await page.evaluate(() => window.__clipboardWrites);
+  const eventPostsBeforeDeniedReservation = shareEventPosts;
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  await page.getByText(/could not keep the share action reference/i).waitFor();
+  check('mounted clipboard action is not attempted when its event identity cannot be reserved',
+    await page.evaluate(() => window.__clipboardWrites) === clipboardBefore
+    && shareEventPosts === eventPostsBeforeDeniedReservation);
+  await page.evaluate(() => {
+    Storage.prototype.setItem = window.__pathomeOriginalStorageSetItem;
+    delete window.__pathomeOriginalStorageSetItem;
+  });
+
+  clipboardBefore = await page.evaluate(() => window.__clipboardWrites);
+  const staleConsentPostsBefore = shareEventPosts;
   publicFlags = {
     currentFactsMatch: true,
     currentConsentMatches: false,
@@ -913,11 +1883,11 @@ try {
   await page.waitForTimeout(300);
   check('stale ownership and consent produce zero clipboard action and zero event mutation',
     await page.evaluate(() => window.__clipboardWrites) === clipboardBefore
-    && shareEventPosts === 0);
+    && shareEventPosts === staleConsentPostsBefore);
   await page.getByRole('button', { name: 'Customer withdrew permission' }).click();
   await page.getByText(/Customer withdrawal saved/).waitFor();
   check('approved withdrawal behavior persists a new non-granted revision',
-    preferenceRevision === 2 && consentStatus === 'REVOKED'
+    preferenceRevision >= 2 && consentStatus === 'REVOKED'
     && destinationChoice === 'NONE');
 
   sharePrepared = false;
@@ -937,7 +1907,45 @@ try {
   };
   lostEventAcknowledgement = true;
   shareEventPosts = 0;
+  previewPropertyId = 203;
   await runToHandoff('DIFFERENT');
+  const publicPreview = page.locator('.ld-public-preview');
+  await publicPreview.getByRole('heading', {
+    name: 'The customer’s first shortlisted home'
+  }).waitFor();
+  await publicPreview.locator('.ld-public-preview-loading').waitFor();
+  const retryPreview = publicPreview.getByRole('button', { name: 'Retry preview' });
+  await retryPreview.waitFor({ timeout: 15_000 });
+  check('a hung public preview leaves loading for the existing retry state at the bounded deadline',
+    await retryPreview.isVisible()
+    && await publicPreview.locator('.ld-public-preview-loading').count() === 0
+    && await publicPreview.getByText(/could not be loaded/).isVisible());
+  heldPublicPreview?.resolve();
+  heldPublicPreview = null;
+  await page.waitForTimeout(150);
+  check('a late expired response cannot replace the recoverable timeout state',
+    await retryPreview.isVisible()
+    && await publicPreview.locator('.ld-public-preview-loading').count() === 0);
+  await retryPreview.click();
+  const previewImage = publicPreview.getByRole('img', {
+    name: /Public cover photo of Fresh public home/
+  });
+  await previewImage.waitFor();
+  check('handoff shows the genuine public primary cover and current approved facts',
+    await previewImage.getAttribute('alt')
+      === 'Public cover photo of Fresh public home in Arera Colony, '
+        + 'Bhopal Municipal Central Residential Corridor'
+    && await publicPreview.getByText(/₹1,23,45,678\.99/).isVisible()
+    && await publicPreview.getByText(/Arera Colony, Bhopal/).isVisible()
+    && await publicPreview.getByText(/850 sq ft/).isVisible()
+    && await page.getByText(/Rent: INR 1,23,45,678\.99 \/ month/).isVisible());
+  await page.setViewportSize({ width: 390, height: 844 });
+  await publicPreview.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: join(EVIDENCE, 'production-handoff-preview-390.png'),
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.screenshot({ path: join(EVIDENCE, 'production-handoff-1440.png'), fullPage: true });
   clipboardBefore = await page.evaluate(() => window.__clipboardWrites);
   await page.getByRole('button', { name: 'Copy message' }).click();
@@ -947,6 +1955,105 @@ try {
     && shareEventPosts === 1
     && destinationChoice === 'DIFFERENT'
     && await page.getByRole('button', { name: 'Copy message' }).isEnabled());
+
+  clipboardBefore = await page.evaluate(() => window.__clipboardWrites);
+  const malformedPostsBefore = shareEventPosts;
+  malformedEventSuccess = true;
+  await page.getByRole('button', { name: 'Copy message' }).click();
+  await page.getByText(/saved history confirmed the earlier event/i).waitFor();
+  check('a bodyless or malformed 2xx remains uncertain and reconciles the original event identity',
+    await page.evaluate(() => window.__clipboardWrites) === clipboardBefore + 1
+    && shareEventPosts === malformedPostsBefore + 1
+    && shareEvents.length === 2
+    && await page.getByRole('button', { name: 'Copy message' }).isEnabled());
+
+  await clearCommandRecovery();
+  const sharedMessageEventCount = shareEvents.length;
+  const sharedMessagePosts = shareEventPosts;
+  const sharedMessageClipboard = await page.evaluate(() => window.__clipboardWrites);
+  const recoveryShareId = '99999999-9999-4999-8999-999999999999';
+  const recoveryEventId = '98989898-9898-4898-8898-989898989898';
+  await seedRecovery('share-event:41', {
+    version: 1,
+    kind: 'LEAD_SHARE_EVENT',
+    operationId: recoveryEventId,
+    leadId: 41,
+    shareId: recoveryShareId,
+    eventType: 'CLIPBOARD_COPIED',
+    savedAtEpochMs: Date.now()
+  });
+  await page.getByRole('button', { name: 'Message history' }).click();
+  await page.getByRole('tab', { name: 'New message' }).click();
+  await page.getByRole('heading', {
+    name: 'Open WhatsApp and send it yourself'
+  }).waitFor();
+  await page.getByText(/another saved message is still unconfirmed/i).waitFor();
+  const recoveryHistoryReads = shareHistoryReads.length;
+  const recoveryHistoryFailures = shareHistoryFailuresServed;
+  shareHistoryFailureStatus = 503;
+  await page.getByRole('button', { name: 'Check if it was recorded' }).click();
+  await page.getByText(/We could not complete this request right now|Share history could not confirm/i)
+    .waitFor();
+  check('displayed share B never replaces saved share A when A history is unavailable',
+    shareEventPosts === sharedMessagePosts
+    && await page.evaluate(() => window.__clipboardWrites) === sharedMessageClipboard
+    && shareEvents.length === sharedMessageEventCount
+    && shareHistoryReads.length === recoveryHistoryReads + 1
+    && shareHistoryFailuresServed === recoveryHistoryFailures + 1
+    && await page.evaluate(({ key, expected }) => {
+      const metadata = JSON.parse(sessionStorage.getItem(key) ?? 'null');
+      return metadata?.shareId === expected;
+    }, { key: recoveryKey('share-event:41'), expected: recoveryShareId }));
+
+  recoveryHistoryItem = {
+    id: recoveryShareId,
+    shortlistId: 8,
+    shortlistVersion,
+    contactPreferenceRevision: preferenceRevision,
+    mode: 'MANUAL_BUSINESS_HANDOFF',
+    publicLinks: ['https://pathome.test/property/209'],
+    previewText: 'Saved share A message',
+    maskedDestination: '********3210',
+    recordedAt: '2026-10-22T10:04:00Z',
+    events: [{
+      eventId: recoveryEventId,
+      type: 'CLIPBOARD_COPIED',
+      occurredAt: '2026-10-22T10:08:30Z'
+    }],
+    ...publicFlags
+  };
+  await page.getByRole('button', { name: 'Check if it was recorded' }).click();
+  await page.getByText(/Share history confirmed .*No action was repeated/i).waitFor();
+  check('saved share A later confirms through A history while B remains displayed and unchanged',
+    shareEventPosts === sharedMessagePosts
+    && await page.evaluate(() => window.__clipboardWrites) === sharedMessageClipboard
+    && shareEvents.length === sharedMessageEventCount
+    && await page.evaluate((prefix) =>
+      !Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+        .some((key) => key?.startsWith(`${prefix}:`)), RECOVERY_PREFIX));
+
+  await seedRecovery('share-event:41', {
+    version: 1,
+    kind: 'LEAD_SHARE_EVENT',
+    operationId: '97979797-9797-4797-8797-979797979797',
+    leadId: 41,
+    shareId: recoveryShareId,
+    eventType: 'HANDOFF_ATTEMPTED',
+    savedAtEpochMs: Date.now()
+  });
+  await installIdentity({ ...BASE_IDENTITY, token: 'replacement-token' });
+  check('token replacement clears the prior authenticated-session recovery authority',
+    await page.evaluate((prefix) =>
+      !Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+        .some((key) => key?.startsWith(`${prefix}:`)), RECOVERY_PREFIX));
+  await clearIdentity();
+  check('logout clears every pending command and removes the old unresolved notice',
+    await page.evaluate((prefix) =>
+      !Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+        .some((key) => key?.startsWith(`${prefix}:`)), RECOVERY_PREFIX)
+    && await page.getByText(/another saved message is still unconfirmed/i).count() === 0);
+  await installIdentity(BASE_IDENTITY);
+  await resetHandoffFixture('SAME');
 
   const handoffCountBefore = handoffEventPosts;
   const waCountBefore = waNavigations.length;
@@ -1550,8 +2657,75 @@ try {
   check('same-mounted-page account switch discards the held prior-account Lead response',
     !(await page.locator('body').innerText()).includes('Controlled Customer'));
 
+  await page.goto(`${BASE}/property/201`);
+  await page.waitForFunction(() =>
+    document.title === 'Fresh public home | Pathome');
+  const propertyMetadata = async (path) => page.evaluate((expectedPath) => {
+    const tags = [...document.querySelectorAll('meta[data-pathome-public-metadata], '
+      + 'link[data-pathome-public-metadata]')];
+    const values = tags.map((tag) => ({
+      key: tag.getAttribute('property') || tag.getAttribute('name') || tag.getAttribute('rel'),
+      content: tag.getAttribute('content') || tag.getAttribute('href')
+    }));
+    return {
+      title: document.title,
+      path: window.location.pathname,
+      canonical: values.filter((item) => item.key === 'canonical').map((item) => item.content),
+      ogUrl: values.filter((item) => item.key === 'og:url').map((item) => item.content),
+      ogTitle: values.filter((item) => item.key === 'og:title').map((item) => item.content),
+      all: values,
+      expectedPath
+    };
+  }, path);
+  const firstMetadata = await propertyMetadata('/property/201');
+  check('client navigation synchronizes one property-specific canonical and OG set',
+    firstMetadata.canonical.length === 1
+    && firstMetadata.ogUrl.length === 1
+    && firstMetadata.ogTitle.length === 1
+    && firstMetadata.canonical[0] === `${BASE}/property/201`
+    && firstMetadata.ogUrl[0] === `${BASE}/property/201`
+    && firstMetadata.ogTitle[0] === 'Fresh public home');
+
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/property/202');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await page.waitForFunction(() => document.title === 'Second public home | Pathome');
+  const secondMetadata = await propertyMetadata('/property/202');
+  check('property A to B client navigation replaces all property-A metadata without duplicates',
+    secondMetadata.canonical.length === 1
+    && secondMetadata.ogUrl.length === 1
+    && secondMetadata.canonical[0] === `${BASE}/property/202`
+    && secondMetadata.ogTitle[0] === 'Second public home'
+    && !secondMetadata.all.some((item) => String(item.content).includes('/property/201')));
+
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await page.waitForFunction(() => document.title === 'Pathome | Your Dreams, Our Efforts');
+  const removedMetadata = await page.evaluate(() =>
+    document.querySelectorAll('meta[data-pathome-public-metadata], '
+      + 'link[data-pathome-public-metadata]').length);
+  check('property to another route removes every property metadata tag',
+    removedMetadata === 0);
+  await page.goBack();
+  await page.waitForFunction(() => document.title === 'Second public home | Pathome');
+  const historyRestored = await propertyMetadata('/property/202');
+  check('browser Back restores the current property metadata exactly once',
+    historyRestored.canonical.length === 1
+    && historyRestored.ogUrl[0] === `${BASE}/property/202`
+    && historyRestored.ogTitle[0] === 'Second public home');
+  await page.goForward();
+  await page.waitForFunction(() => document.title === 'Pathome | Your Dreams, Our Efforts');
+  check('browser Forward removes the property metadata again',
+    await page.evaluate(() =>
+      document.querySelectorAll('meta[data-pathome-public-metadata], '
+        + 'link[data-pathome-public-metadata]').length) === 0);
+
   check('controlled browser completed with no console or page exception',
     browserErrors.length === 0, browserErrors.join(' | '));
+  }
 } catch (error) {
   checks.push({ name: 'controlled journey completed', passed: false, detail: error.message });
   await page.screenshot({ path: join(EVIDENCE, 'controlled-failure.png'), fullPage: true }).catch(() => {});
@@ -1562,7 +2736,8 @@ try {
     evidenceType: 'controlled Chromium with synthetic API transport',
     checks,
     browserErrors,
-    apiTrace
+    apiTrace,
+    ...(c2PrivacyEvidence ? { c2Privacy: c2PrivacyEvidence } : {})
   }, null, 2));
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

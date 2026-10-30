@@ -22,6 +22,9 @@ public abstract class Listing {
     @Column(nullable = false)
     private String title;
 
+    @Column(name = "title_provenance", length = 24)
+    private String titleProvenance;
+
     @Column(columnDefinition = "TEXT")
     private String description;
 
@@ -73,6 +76,9 @@ public abstract class Listing {
 
     @Column(name = "published_at")
     private LocalDateTime publishedAt;
+
+    @Column(name = "last_content_published_at")
+    private LocalDateTime lastContentPublishedAt;
 
     @Column(name = "review_note", length = 1000)
     private String reviewNote;
@@ -156,6 +162,8 @@ public abstract class Listing {
 
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
+    public String getTitleProvenance() { return titleProvenance; }
+    public void setTitleProvenance(String titleProvenance) { this.titleProvenance = titleProvenance; }
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
@@ -198,6 +206,11 @@ public abstract class Listing {
 
     public LocalDateTime getPublishedAt() { return publishedAt; }
     public void setPublishedAt(LocalDateTime publishedAt) { this.publishedAt = publishedAt; }
+
+    public LocalDateTime getLastContentPublishedAt() { return lastContentPublishedAt; }
+    public void setLastContentPublishedAt(LocalDateTime lastContentPublishedAt) {
+        this.lastContentPublishedAt = lastContentPublishedAt;
+    }
 
     public String getReviewNote() { return reviewNote; }
     public void setReviewNote(String reviewNote) { this.reviewNote = reviewNote; }

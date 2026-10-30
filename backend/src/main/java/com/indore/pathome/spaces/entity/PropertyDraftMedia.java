@@ -33,6 +33,9 @@ public class PropertyDraftMedia {
     @Column(name = "guest_owned", nullable = false)
     private Boolean guestOwned = false;
 
+    @Column(name = "staff_maker_user_id")
+    private Long staffMakerUserId;
+
     @Column(name = "card_id", length = 64)
     private String cardId;
 
@@ -72,6 +75,12 @@ public class PropertyDraftMedia {
     @Column(name = "reused_from_listing", nullable = false)
     private Boolean reusedFromListing = false;
 
+    @Column(name = "source_media_asset_id")
+    private Long sourceMediaAssetId;
+
+    @Column(name = "caption", length = 255)
+    private String caption;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -94,6 +103,9 @@ public class PropertyDraftMedia {
 
     public Boolean getGuestOwned() { return guestOwned; }
     public void setGuestOwned(Boolean guestOwned) { this.guestOwned = Boolean.TRUE.equals(guestOwned); }
+
+    public Long getStaffMakerUserId() { return staffMakerUserId; }
+    public void setStaffMakerUserId(Long staffMakerUserId) { this.staffMakerUserId = staffMakerUserId; }
 
     public String getCardId() { return cardId; }
     public void setCardId(String cardId) { this.cardId = cardId; }
@@ -133,6 +145,12 @@ public class PropertyDraftMedia {
 
     public Boolean getReusedFromListing() { return reusedFromListing; }
     public void setReusedFromListing(Boolean reusedFromListing) { this.reusedFromListing = Boolean.TRUE.equals(reusedFromListing); }
+
+    public Long getSourceMediaAssetId() { return sourceMediaAssetId; }
+    public void setSourceMediaAssetId(Long sourceMediaAssetId) { this.sourceMediaAssetId = sourceMediaAssetId; }
+
+    public String getCaption() { return caption; }
+    public void setCaption(String caption) { this.caption = caption; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

@@ -24,6 +24,7 @@ import { useNotification } from '../context/NotificationContext';
 import { shouldShowMyProperties, shouldShowListYourProperty } from '../utils/navigationPolicy';
 import { DraftAccessButton, DraftAccessState } from './DraftAccessButton';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
+import type { PropertyWorkspaceCapability } from '../hooks/usePropertyWorkspaceCapability';
 import { isOperationsPath } from '../utils/operationsWorkspaceRoute';
 
 interface NavbarProps {
@@ -47,6 +48,7 @@ interface NavbarProps {
    * confirmed an effective OPS_COORDINATE Team grant, so it never appears on a role label alone.
    */
   operationsAuthority?: OperationsAuthority | null;
+  propertyWorkspaceCapability?: PropertyWorkspaceCapability | null;
   onOpenOperations?: () => void;
 }
 
@@ -165,6 +167,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenDrafts,
   onRetryDrafts,
   operationsAuthority = null,
+  propertyWorkspaceCapability = null,
   onOpenOperations
 }) => {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -526,6 +529,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                           >
                             <Briefcase className="h-4 w-4" aria-hidden="true" />
                             Operations
+                          </button>
+                        )}
+                        {propertyWorkspaceCapability?.canEnter && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProfileDropdownOpen(false);
+                              setMobileMenuOpen(false);
+                              navigate('/backoffice/properties');
+                            }}
+                            className={`flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3.5 text-left text-xs font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                              isConsumerHeader
+                                ? 'text-[#355c49] hover:bg-[#edf2ed]'
+                                : 'text-emerald-300 hover:bg-emerald-500/10'
+                            }`}
+                          >
+                            <Building2 className="h-4 w-4" aria-hidden="true" />
+                            Property workspace
                           </button>
                         )}
                         {isConsumerHeader && role === 'TENANT' && <button type="button" onClick={() => { setProfileDropdownOpen(false); navigate('/tenant#account'); }}

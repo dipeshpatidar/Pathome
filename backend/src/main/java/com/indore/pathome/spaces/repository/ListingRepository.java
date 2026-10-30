@@ -69,6 +69,20 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
     List<Listing> findByBhkCountAndStatus(String bhkCount, ListingStatus status);
     java.util.Optional<Listing> findByOriginDraftId(String originDraftId);
 
+    @Query("select r from RentalDetails r join Locality loc on loc.id = r.canonicalLocalityId " +
+            "where loc.supportedCity.id in :cityIds " +
+            "and (:queryKey = '' or lower(r.title) like concat('%', :queryKey, '%') " +
+            "  or lower(r.sector) like concat('%', :queryKey, '%') " +
+            "  or lower(r.city) like concat('%', :queryKey, '%')) " +
+            "order by r.updatedAt desc, r.id desc")
+    Slice<RentalDetails> findBackofficeInventory(@Param("cityIds") List<Long> cityIds,
+                                                  @Param("queryKey") String queryKey,
+                                                  Pageable pageable);
+
+    @Query("select loc.supportedCity.id from Listing l join Locality loc on loc.id = l.canonicalLocalityId " +
+            "where l.id = :listingId")
+    Optional<Long> findCanonicalSupportedCityId(@Param("listingId") Long listingId);
+
     @org.springframework.transaction.annotation.Transactional
     @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true)
     @org.springframework.data.jpa.repository.Query(
@@ -89,19 +103,41 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
     // publishedAt column. Listings are inserted exactly once at publication time and are
     // never recreated, so id DESC reliably surfaces the most recently published property first.
 
-    Slice<Listing> findByStatusOrderByIdDesc(ListingStatus status, Pageable pageable);
+    @Query("select l from Listing l where l.status = :status "
+            + "and l.workflowStatus = com.indore.pathome.spaces.entity.ListingWorkflowStatus.PUBLISHED "
+            + "and l.canonicalLocalityId is not null order by l.id desc")
+    Slice<Listing> findByStatusOrderByIdDesc(@Param("status") ListingStatus status,
+                                             Pageable pageable);
 
+    @Query("select l from Listing l where l.status = :status "
+            + "and l.workflowStatus = com.indore.pathome.spaces.entity.ListingWorkflowStatus.PUBLISHED "
+            + "and l.canonicalLocalityId is not null "
+            + "and lower(l.city) = lower(:city) order by l.id desc")
     Slice<Listing> findByStatusAndCityIgnoreCaseOrderByIdDesc(
-            ListingStatus status, String city, Pageable pageable);
+            @Param("status") ListingStatus status, @Param("city") String city,
+            Pageable pageable);
 
+    @Query("select l from Listing l where l.status = :status "
+            + "and l.workflowStatus = com.indore.pathome.spaces.entity.ListingWorkflowStatus.PUBLISHED "
+            + "and l.canonicalLocalityId is not null "
+            + "and lower(l.sector) = lower(:sector) order by l.id desc")
     Slice<Listing> findByStatusAndSectorIgnoreCaseOrderByIdDesc(
-            ListingStatus status, String sector, Pageable pageable);
+            @Param("status") ListingStatus status, @Param("sector") String sector,
+            Pageable pageable);
 
+    @Query("select l from Listing l where l.status = :status "
+            + "and l.workflowStatus = com.indore.pathome.spaces.entity.ListingWorkflowStatus.PUBLISHED "
+            + "and l.canonicalLocalityId is not null "
+            + "and lower(l.city) = lower(:city) and lower(l.sector) = lower(:sector) "
+            + "order by l.id desc")
     Slice<Listing> findByStatusAndCityIgnoreCaseAndSectorIgnoreCaseOrderByIdDesc(
-            ListingStatus status, String city, String sector, Pageable pageable);
+            @Param("status") ListingStatus status, @Param("city") String city,
+            @Param("sector") String sector, Pageable pageable);
 
     /** All search branches retain the same ACTIVE visibility rule as public discovery. */
     @Query("select l from RentalDetails l where l.status = :status and l.listingType = :listingType " +
+            "and l.workflowStatus = com.indore.pathome.spaces.entity.ListingWorkflowStatus.PUBLISHED " +
+            "and l.canonicalLocalityId is not null " +
             "and (:cityKey = '' or lower(trim(l.city)) = :cityKey) " +
             "and (:sectorKey = '' or lower(trim(l.sector)) = :sectorKey) " +
             "and (:prefix = '' or lower(trim(l.sector)) like concat(:prefix, '%')) " +
@@ -126,10 +162,13 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             @Param("maxRent") BigDecimal maxRent,
             Pageable pageable);
 
-    @Query(value = "select min(l.city) as city, min(l.sector) as locality, count(*) as \"resultCount\" " +
+    @Query(value = "select min(sc.display_name) as city, min(loc.sector_name) as locality, count(*) as \"resultCount\" " +
             "from listings l join rental_details r on r.id = l.id " +
+            "join localities loc on loc.id = l.canonical_locality_id " +
+            "join supported_cities sc on sc.id = loc.supported_city_id " +
             "where l.status = 'ACTIVE' and l.listing_type = 'RENT' " +
-            "and (:cityKey = '' or lower(btrim(l.city)) = :cityKey) " +
+            "and l.workflow_status = 'PUBLISHED' and l.canonical_locality_id is not null " +
+            "and (:cityKey = '' or lower(btrim(sc.display_name)) = :cityKey) " +
             "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey or (:bhkKey = '1RK' and upper(replace(l.bhk_count, ' ', '')) in ('1RK', '1RKSTUDIO'))) " +
             "and (:propertyTypeKey = '' or l.property_type = :propertyTypeKey) " +
             "and (:furnishingKey = '' or " +
@@ -138,8 +177,8 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "and (:minRent is null or r.monthly_rent >= :minRent) " +
             "and (:maxRent is null or r.monthly_rent <= :maxRent) " +
             "and lower(btrim(l.sector)) like concat(:prefix, '%') " +
-            "group by lower(btrim(l.city)), lower(btrim(l.sector)) " +
-            "order by case when lower(btrim(l.sector)) = :prefix then 0 else 1 end, count(*) desc, min(l.sector)",
+            "group by sc.id, lower(btrim(sc.display_name)), loc.id, lower(btrim(loc.sector_name)) " +
+            "order by case when lower(btrim(loc.sector_name)) = :prefix then 0 else 1 end, count(*) desc, min(loc.sector_name)",
             nativeQuery = true)
     List<LocalitySuggestionRow> findPublicRentalLocalitySuggestions(
             @Param("cityKey") String cityKey,
@@ -151,11 +190,14 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             @Param("prefix") String prefix,
             Pageable pageable);
 
-    @Query(value = "select min(l.city) as city, min(l.sector) as locality, count(*) as \"resultCount\", " +
-            "max(public.similarity(lower(btrim(l.sector)), cast(:candidate as text))) as similarity " +
+    @Query(value = "select min(sc.display_name) as city, min(loc.sector_name) as locality, count(*) as \"resultCount\", " +
+            "max(public.similarity(lower(btrim(loc.sector_name)), cast(:candidate as text))) as similarity " +
             "from listings l join rental_details r on r.id = l.id " +
+            "join localities loc on loc.id = l.canonical_locality_id " +
+            "join supported_cities sc on sc.id = loc.supported_city_id " +
             "where l.status = 'ACTIVE' and l.listing_type = 'RENT' " +
-            "and (:cityKey = '' or lower(btrim(l.city)) = :cityKey) " +
+            "and l.workflow_status = 'PUBLISHED' and l.canonical_locality_id is not null " +
+            "and (:cityKey = '' or lower(btrim(sc.display_name)) = :cityKey) " +
             "and (:bhkKey = '' or upper(replace(l.bhk_count, ' ', '')) = :bhkKey or (:bhkKey = '1RK' and upper(replace(l.bhk_count, ' ', '')) in ('1RK', '1RKSTUDIO'))) " +
             "and (:propertyTypeKey = '' or l.property_type = :propertyTypeKey) " +
             "and (:furnishingKey = '' or " +
@@ -163,10 +205,10 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             "upper(replace(replace(l.furnishing_status, '-', ' '), '_', ' ')) = replace(:furnishingKey, '_', ' ')) " +
             "and (:minRent is null or r.monthly_rent >= :minRent) " +
             "and (:maxRent is null or r.monthly_rent <= :maxRent) " +
-            "and lower(btrim(l.sector)) OPERATOR(public.%) cast(:candidate as text) " +
-            "and public.similarity(lower(btrim(l.sector)), cast(:candidate as text)) >= :minSimilarity " +
-            "group by lower(btrim(l.city)), lower(btrim(l.sector)) " +
-            "order by max(public.similarity(lower(btrim(l.sector)), cast(:candidate as text))) desc, count(*) desc, min(l.sector)",
+            "and lower(btrim(loc.sector_name)) OPERATOR(public.%) cast(:candidate as text) " +
+            "and public.similarity(lower(btrim(loc.sector_name)), cast(:candidate as text)) >= :minSimilarity " +
+            "group by sc.id, lower(btrim(sc.display_name)), loc.id, lower(btrim(loc.sector_name)) " +
+            "order by max(public.similarity(lower(btrim(loc.sector_name)), cast(:candidate as text))) desc, count(*) desc, min(loc.sector_name)",
             nativeQuery = true)
     List<LocalitySuggestionRow> findPublicRentalFuzzyLocalities(
             @Param("cityKey") String cityKey,
@@ -179,22 +221,28 @@ public interface ListingRepository extends JpaRepository<Listing, Long> {
             @Param("minSimilarity") double minSimilarity,
             Pageable pageable);
 
-    @Query(value = "select min(city) as city, count(*) as \"resultCount\" " +
-            "from listings where status = 'ACTIVE' and listing_type = 'RENT' " +
-            "and lower(btrim(city)) like concat(:prefix, '%') " +
-            "group by lower(btrim(city)) " +
-            "order by case when lower(btrim(city)) = :prefix then 0 else 1 end, count(*) desc, min(city)",
+    @Query(value = "select min(sc.display_name) as city, count(*) as \"resultCount\" " +
+            "from listings l join localities loc on loc.id = l.canonical_locality_id " +
+            "join supported_cities sc on sc.id = loc.supported_city_id " +
+            "where l.status = 'ACTIVE' and l.listing_type = 'RENT' "
+            + "and l.workflow_status = 'PUBLISHED' and l.canonical_locality_id is not null "
+            + "and lower(btrim(sc.display_name)) like concat(:prefix, '%') " +
+            "group by sc.id, lower(btrim(sc.display_name)) " +
+            "order by case when lower(btrim(sc.display_name)) = :prefix then 0 else 1 end, count(*) desc, min(sc.display_name)",
             nativeQuery = true)
     List<CitySuggestionRow> findPublicRentalCitySuggestions(
             @Param("prefix") String prefix,
             Pageable pageable);
 
-    @Query(value = "select min(city) as city, count(*) as \"resultCount\" " +
-            "from listings where status = 'ACTIVE' and listing_type = 'RENT' " +
-            "and lower(btrim(city)) OPERATOR(public.%) cast(:candidate as text) " +
-            "and public.similarity(lower(btrim(city)), cast(:candidate as text)) >= :minSimilarity " +
-            "group by lower(btrim(city)) " +
-            "order by max(public.similarity(lower(btrim(city)), cast(:candidate as text))) desc, count(*) desc, min(city)",
+    @Query(value = "select min(sc.display_name) as city, count(*) as \"resultCount\" " +
+            "from listings l join localities loc on loc.id = l.canonical_locality_id " +
+            "join supported_cities sc on sc.id = loc.supported_city_id " +
+            "where l.status = 'ACTIVE' and l.listing_type = 'RENT' "
+            + "and l.workflow_status = 'PUBLISHED' and l.canonical_locality_id is not null "
+            + "and lower(btrim(sc.display_name)) OPERATOR(public.%) cast(:candidate as text) " +
+            "and public.similarity(lower(btrim(sc.display_name)), cast(:candidate as text)) >= :minSimilarity " +
+            "group by sc.id, lower(btrim(sc.display_name)) " +
+            "order by max(public.similarity(lower(btrim(sc.display_name)), cast(:candidate as text))) desc, count(*) desc, min(sc.display_name)",
             nativeQuery = true)
     List<CitySuggestionRow> findPublicRentalFuzzyCities(
             @Param("candidate") String candidate,

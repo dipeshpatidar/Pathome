@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 import {
   ShieldCheck,
@@ -32,7 +33,8 @@ import {
   AlertCircle,
   Inbox,
   Wrench,
-  UserRoundCheck
+  UserRoundCheck,
+  Archive
 } from 'lucide-react';
 import { propertyService, createStableUploadRequestId } from '../services/propertyService';
 import { failedUploadService } from '../services/failedUploadService';
@@ -50,6 +52,9 @@ import { OperationsVisitOutcomePanel } from './OperationsVisitOutcomePanel';
 import { OperationsWorkspace } from './operations/OperationsWorkspace';
 import { OwnerStaffPermissions } from './OwnerStaffPermissions';
 import type { OperationsAuthority } from '../hooks/useOperationsCapability';
+import type { PropertyWorkspaceCapability } from '../hooks/usePropertyWorkspaceCapability';
+import type { PropertyRemovalAuthority } from '../hooks/usePropertyRemovalAuthority';
+import { PropertyRemovalQueue } from './backoffice/PropertyRemovalQueue';
 import { DraftManagementBar } from './DraftManagementBar';
 import {
   usePropertyDraft,
@@ -69,8 +74,12 @@ interface MasterAdminDashboardProps {
   setActiveAdminTab?: (tab: string) => void;
   canReviewVisitRepairs?: boolean;
   canReviewVisitOutcomes?: boolean;
+  canReviewPropertyRemoval?: boolean;
+  removalAuthority?: PropertyRemovalAuthority;
+  showRemovalAdmissionState?: boolean;
   /** The single application-wide capability state machine owned by the app shell. */
   operationsAuthority: OperationsAuthority;
+  propertyWorkspaceCapability?: PropertyWorkspaceCapability;
   /** Reports whether this console currently shows the Operations workspace, so its revalidation stays live. */
   onOperationsWorkspaceOpenChange?: (open: boolean) => void;
 }
@@ -84,7 +93,7 @@ interface MasterAdminDashboardProps {
  */
 const PERSISTED_ADMIN_TABS = new Set([
   'learning', 'media', 'failed-uploads', 'visit-repairs', 'visit-outcomes',
-  'operations', 'staff-permissions'
+  'operations', 'staff-permissions', 'property-removal'
 ]);
 
 const PRESET_PROMPTS = [
@@ -194,8 +203,9 @@ const cardVariants: Variants = {
   }
 };
 
-export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false, canReviewVisitOutcomes = false, operationsAuthority, onOperationsWorkspaceOpenChange }) => {
+export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ activeTab: externalActiveTab, setActiveAdminTab: externalSetActiveAdminTab, canReviewVisitRepairs = false, canReviewVisitOutcomes = false, canReviewPropertyRemoval = false, removalAuthority, showRemovalAdmissionState = false, operationsAuthority, propertyWorkspaceCapability, onOperationsWorkspaceOpenChange }) => {
   const { notifySuccess, notifyInfo, notifyWarning, notifyAiMagic, showErrorDialog } = useNotification();
+  const navigate = useNavigate();
 
   const [internalTab, setInternalTab] = useState<string>(() => {
     try {
@@ -207,9 +217,16 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   const activeTab = externalActiveTab || internalTab;
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileDrawerCloseRef = useRef<HTMLButtonElement>(null);
+  const mobileMenuWasOpenRef = useRef(false);
   const [activeAttributeTab, setActiveAttributeTab] = useState<'all' | 'location' | 'pricing' | 'specs'>('all');
 
   const handleTabSelect = (tabId: string) => {
+    if (tabId === 'property-workspace') {
+      navigate('/backoffice/properties');
+      return;
+    }
     setInternalTab(tabId);
     setIsMobileMenuOpen(false);
     try {
@@ -228,11 +245,27 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
   }, [activeTab, operationsAuthority.state]);
 
   useEffect(() => {
+    if (activeTab === 'property-removal' && !canReviewPropertyRemoval) {
+      handleTabSelect('media');
+    }
+  }, [activeTab, canReviewPropertyRemoval]);
+
+  useEffect(() => {
     onOperationsWorkspaceOpenChange?.(activeTab === 'operations');
     return () => onOperationsWorkspaceOpenChange?.(false);
   }, [activeTab, onOperationsWorkspaceOpenChange]);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isMobileMenuOpen) {
+      mobileMenuWasOpenRef.current = true;
+      window.requestAnimationFrame(() => mobileDrawerCloseRef.current?.focus());
+    } else if (mobileMenuWasOpenRef.current) {
+      mobileMenuWasOpenRef.current = false;
+      window.requestAnimationFrame(() => mobileMenuTriggerRef.current?.focus());
+    }
+  }, [isMobileMenuOpen]);
 
   const uploadConsoleRef = useRef<HTMLDivElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1883,6 +1916,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
 
   const adminNavItems = [
     { id: 'learning', label: 'Learning review', badge: 'Review', icon: ShieldCheck, color: 'text-emerald-600' },
+    ...(propertyWorkspaceCapability?.canEnter ? [{ id: 'property-workspace', label: 'Properties', badge: 'Backoffice', icon: FileText, color: 'text-emerald-600' }] : []),
+    ...(canReviewPropertyRemoval ? [{ id: 'property-removal', label: 'Removal requests', badge: 'Admin', icon: Archive, color: 'text-rose-600' }] : []),
     { id: 'staff-permissions', label: 'Staff permissions', badge: 'Owner', icon: UserRoundCheck, color: 'text-emerald-600' },
     ...(operationsAuthority.canEnter ? [{ id: 'operations', label: 'Operations workspace', badge: 'Operations', icon: Inbox, color: 'text-emerald-600' }] : []),
     ...(canReviewVisitRepairs ? [{ id: 'visit-repairs', label: 'Visit repairs', badge: 'Operations', icon: Wrench, color: 'text-amber-600' }] : []),
@@ -1907,8 +1942,13 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         </div>
 
         <button
+          ref={mobileMenuTriggerRef}
+          type="button"
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="p-2 rounded-xl bg-slate-800 text-emerald-300 hover:bg-slate-700 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer border border-slate-700"
+          aria-expanded={isMobileMenuOpen}
+          aria-controls="admin-mobile-navigation"
+          aria-label={isMobileMenuOpen ? "Close navigation" : "Open navigation"}
+          className="min-h-11 min-w-11 p-2 rounded-xl bg-slate-800 text-emerald-300 hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer border border-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
         >
           {isMobileMenuOpen ? <XCircle className="w-4 h-4 text-rose-400" /> : <Menu className="w-4 h-4 text-emerald-400" />}
           <span className="text-xs font-bold font-mono">{isMobileMenuOpen ? "Close" : "Menu"}</span>
@@ -1930,6 +1970,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
             />
             {/* Drawer Content */}
             <motion.div
+              id="admin-mobile-navigation"
+              role="navigation"
+              aria-label="Admin navigation"
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
@@ -1939,9 +1982,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
               <div className="flex items-center justify-between text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider mb-2">
                 <span>Select Navigation Panel:</span>
                 <button
+                  ref={mobileDrawerCloseRef}
                   type="button"
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className="text-slate-400 hover:text-white p-1"
+                  className="min-h-11 min-w-11 -m-2 grid place-items-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                   aria-label="Close menu"
                 >
                   <XCircle className="w-4 h-4" />
@@ -1954,6 +1998,8 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
                   return (
                     <motion.button
                       key={item.id}
+                      type="button"
+                      aria-current={isActive ? 'page' : undefined}
                       initial={{ opacity: 0, x: -14 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: index * 0.04, type: "spring", stiffness: 400, damping: 24 }}
@@ -1991,8 +2037,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       >
         {/* FLOATING SIDEBAR COLLAPSE CHEVRON TOGGLE PILL */}
         <button
+          type="button"
           onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-          className="absolute -right-3.5 top-6 z-40 w-7 h-7 rounded-full bg-white border border-slate-200/90 shadow-md flex items-center justify-center text-slate-600 hover:text-emerald-700 hover:border-emerald-300 hover:scale-110 active:scale-95 transition-all group"
+          aria-expanded={!isSidebarCollapsed}
+          aria-controls="admin-sidebar-navigation"
+          aria-label={isSidebarCollapsed ? "Expand sidebar navigation" : "Collapse sidebar navigation"}
+          className="absolute -right-[22px] top-3 z-40 h-11 w-11 rounded-full bg-white border border-slate-200/90 shadow-md flex items-center justify-center text-slate-600 hover:text-emerald-700 hover:border-emerald-300 hover:scale-105 active:scale-95 transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
           title={isSidebarCollapsed ? "Expand Sidebar Navigation" : "Collapse Sidebar Navigation"}
         >
           <motion.div animate={{ rotate: isSidebarCollapsed ? 180 : 0 }} transition={{ duration: 0.3 }}>
@@ -2025,13 +2075,15 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
           </div>
 
           {/* NAV ITEMS LIST WITH MAGNETIC LIQUID SLIDING TRANSITION */}
-          <nav className="space-y-1.5 relative">
+          <nav id="admin-sidebar-navigation" className="space-y-1.5 relative" aria-label="Admin navigation">
             {adminNavItems.map((item) => {
               const isActive = activeTab === item.id;
               const Icon = item.icon;
               return (
                 <motion.button
                   key={item.id}
+                  type="button"
+                  aria-current={isActive ? 'page' : undefined}
                   whileHover={!isActive ? { x: 5 } : { scale: 1.01 }}
                   whileTap={{ scale: 0.98 }}
                   transition={{ type: "spring", stiffness: 450, damping: 25 }}
@@ -2106,10 +2158,36 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
       {/* 2. MAIN ADMIN CONTENT CONTAINER */}
       <main className="flex-1 min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-6 w-full">
 
-        <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6`}>
-          <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Admin workspace</h1>
-          <p className="mt-1 text-sm text-slate-600">Manage property listings and available review queues.</p>
-        </div>
+        {showRemovalAdmissionState && (!removalAuthority || removalAuthority.state !== 'authorized') && (
+          <section role={removalAuthority?.state === 'unavailable' ? 'alert' : 'status'}
+            className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
+              <div>
+                <p className="font-semibold text-slate-900">
+                  {!removalAuthority || removalAuthority.state === 'checking'
+                    ? 'Checking Removal review access'
+                    : removalAuthority.state === 'unavailable'
+                      ? 'Removal review access could not be checked'
+                      : 'Removal review is not available for this account'}
+                </p>
+                <p className="mt-1 text-slate-600">
+                  {!removalAuthority || removalAuthority.state === 'checking'
+                    ? 'The protected request queue must admit this session before any request data is shown.'
+                    : removalAuthority.state === 'unavailable'
+                      ? 'No decision controls are available until the protected queue responds.'
+                      : 'The server did not grant the current persisted Admin authority required for removal decisions.'}
+                </p>
+              </div>
+            </div>
+            {removalAuthority?.state === 'unavailable' && (
+              <button type="button" onClick={removalAuthority.reload}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600">
+                <RefreshCw className="h-4 w-4" />Retry access check
+              </button>
+            )}
+          </section>
+        )}
 
         <div className={`${activeTab === 'media' ? 'hidden lg:block' : 'block'} rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6`}>
           <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Admin workspace</h1>
@@ -2120,6 +2198,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({ acti
         <AnimatePresence mode="wait">
 
           {activeTab === 'learning' && <ParserLearningReviewPanel />}
+          {canReviewPropertyRemoval && activeTab === 'property-removal' && (
+            <PropertyRemovalQueue initialAdmission={removalAuthority?.admissionQueue ?? null} />
+          )}
           {activeTab === 'staff-permissions' && <OwnerStaffPermissions />}
 
           {canReviewVisitRepairs && activeTab === 'visit-repairs' && <OperationsVisitRepairPanel />}

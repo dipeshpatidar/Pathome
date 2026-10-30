@@ -50,6 +50,19 @@ class LandlordReviewServiceTest {
 
     @BeforeEach
     void admitLegacyAdministrator() {
+        when(drafts.findByDraftId(anyString())).thenAnswer(call ->
+                drafts.findByDraftIdForUpdate(call.getArgument(0)));
+        when(listings.lockOwnedId(anyLong(), eq(5L))).thenAnswer(call ->
+                Optional.of(call.<Long>getArgument(0)));
+        when(listings.findByIdAndOwnerUserId(anyLong(), eq(5L))).thenAnswer(call -> {
+            RentalDetails row = new RentalDetails();
+            row.setId(call.<Long>getArgument(0));
+            row.setOwnerUserId(5L);
+            row.setVersion(1L);
+            row.setWorkflowStatus(ListingWorkflowStatus.PUBLISHED);
+            row.setStatus(ListingStatus.ACTIVE);
+            return Optional.of(row);
+        });
         when(propertyAuthority.require(eq(BackOfficePropertyAuthority.Action.LEGACY_REVIEW),
                 any(Authentication.class))).thenAnswer(call -> {
             Authentication credential = call.getArgument(1);

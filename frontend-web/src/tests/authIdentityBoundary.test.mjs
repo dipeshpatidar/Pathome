@@ -79,7 +79,7 @@ const resetClient = () => {
  * ------------------------------------------------------------------ */
 
 const identityModule = await import('../utils/authIdentity.ts');
-const { establishAuthenticatedSession, readAuthenticatedUserId } = identityModule;
+const { establishAuthenticatedSession, normalizeUserRole, readAuthenticatedUserId } = identityModule;
 const { readPersistedUser } = await import('../utils/authSession.ts');
 const { captureOperationsSession } = await import('../utils/operationsSession.ts');
 const { operationsWorkspaceService } = await import('../services/operationsWorkspaceService.ts');
@@ -217,4 +217,18 @@ test('a malformed response cannot start a protected read even after a rejected s
     (error) => error.status === 401
   );
   assert.equal(transmitted.length, 0);
+});
+
+test('persisted Admin and Super Admin remain distinct while malformed roles never gain admission', () => {
+  assert.equal(normalizeUserRole('ROLE_ADMIN'), 'ADMIN');
+  assert.equal(normalizeUserRole('ADMIN'), 'ADMIN');
+  assert.equal(normalizeUserRole('ROLE_SUPER_ADMIN'), 'SUPER_ADMIN');
+  assert.equal(normalizeUserRole('SUPER_ADMIN'), 'SUPER_ADMIN');
+  assert.equal(normalizeUserRole('ROLE_SUB_ADMIN'), 'SUB_ADMIN');
+  assert.equal(normalizeUserRole('ROLE_GROUND_BOY'), 'EMPLOYEE');
+  for (const malformed of [null, undefined, '', '   ', 'ROLE_', 'ROLE_ADMIN_EXTRA']) {
+    const normalized = normalizeUserRole(malformed);
+    assert.notEqual(normalized, 'ADMIN');
+    assert.notEqual(normalized, 'SUPER_ADMIN');
+  }
 });

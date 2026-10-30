@@ -6,6 +6,7 @@ import com.indore.pathome.spaces.exception.MediaUploadException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
@@ -22,9 +23,20 @@ public class CloudinaryService {
     private static final int VIDEO_CHUNK_BYTES = 6 * 1024 * 1024;
 
     private final Cloudinary cloudinary;
+    @Value("${cloudinary.cloud-name:}")
+    private String cloudName;
 
     public CloudinaryService(Cloudinary cloudinary) {
         this.cloudinary = Objects.requireNonNull(cloudinary, "Cloudinary must not be null");
+    }
+
+    public boolean isTrustedPublicMediaAsset(String url, String publicId, String uploadRequestId) {
+        return trustedPublicMediaUrl(url, publicId, uploadRequestId) != null;
+    }
+
+    public String trustedPublicMediaUrl(String url, String publicId, String uploadRequestId) {
+        return PublicPropertyDisclosurePolicy.safeOwnedMediaUrl(
+                url, publicId, uploadRequestId, cloudName);
     }
 
     /**

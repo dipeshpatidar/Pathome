@@ -79,4 +79,6 @@ public interface PropertyDraftMediaRepository extends JpaRepository<PropertyDraf
     int reassignUnassignedMediaToCard(@Param("draftId") String draftId, @Param("adminId") String adminId, @Param("cardId") String cardId);
 
     long deleteAllByDraftIdAndAdminId(String draftId, String adminId);
+
+    List<PropertyDraftMedia> findByDraftIdOrderBySortOrderAscIdAsc(String draftId);
 }

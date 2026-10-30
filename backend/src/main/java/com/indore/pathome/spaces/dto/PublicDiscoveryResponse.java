@@ -47,5 +47,9 @@ public record PublicDiscoveryResponse(
         boolean hasMore,
         /** Authoritative last-updated timestamp of the live published listing in UTC. */
         @JsonFormat(shape = JsonFormat.Shape.STRING)
-        Instant updatedAt
+        Instant updatedAt,
+        /** Additive current-property concurrency identity for refresh reconciliation. */
+        Long listingVersion,
+        /** Latest accepted content-publication instant; first publishedAt remains separate. */
+        LocalDateTime lastContentPublishedAt
 ) {}

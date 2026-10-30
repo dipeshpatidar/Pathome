@@ -48,11 +48,15 @@ public class LandlordManagementService {
                                               ListingWorkflowStatus target) {
         Long ownerId = capabilities.requireLandlordUserId(email);
         Listing listing = requireOwnedForUpdate(listingId, ownerId);
+        if (target == ListingWorkflowStatus.ARCHIVED) {
+            throw new DraftConflictException(String.valueOf(listingId), 0,
+                    "Property removal now requires an Admin-approved removal request.");
+        }
         if (expectedVersion == null || !expectedVersion.equals(listing.getVersion())) {
             throw new DraftConflictException(String.valueOf(listingId), 0, "Property changed in another session. Reload before trying again.");
         }
-        if (target != ListingWorkflowStatus.PAUSED && target != ListingWorkflowStatus.ARCHIVED
-                && target != ListingWorkflowStatus.SUBMITTED) throw new IllegalArgumentException("Action is not supported");
+        if (target != ListingWorkflowStatus.PAUSED && target != ListingWorkflowStatus.SUBMITTED)
+            throw new IllegalArgumentException("Action is not supported");
         try { workflow.transition(listing, target, ListingWorkflowService.Actor.LANDLORD); }
         catch (IllegalStateException ex) {
             throw new DraftConflictException(String.valueOf(listingId), 0, "This action is unavailable for the current property status.");
@@ -72,6 +76,13 @@ public class LandlordManagementService {
         }
         var existing = drafts.findFirstByPublishedPropertyIdAndLandlordUserIdAndStatusInOrderByIdDesc(
                 listingId, ownerId, List.of("DRAFT", "REVIEW", "CHANGES_REQUIRED"));
+        boolean staffDraftOwnsSlot = drafts.findOpenRevisions(listingId,
+                        List.of("DRAFT", "REVIEW", "CHANGES_REQUIRED"))
+                .stream().anyMatch(draft -> "STAFF_DIRECT".equals(draft.getRevisionMode()));
+        if (staffDraftOwnsSlot) {
+            throw new DraftConflictException(String.valueOf(listingId), 0,
+                    "A staff revision currently owns the property revision slot.");
+        }
         String carriedReviewNote = listing.getReviewNote();
         if (existing.isPresent()) {
             PropertyUploadDraft open = existing.get();
@@ -125,6 +136,9 @@ public class LandlordManagementService {
             row.setUploadStatus("UPLOADED");
             row.setSortOrder(order++);
             row.setIsCover(Boolean.TRUE.equals(asset.getIsPrimaryCover()) && asset.getMediaType() == MediaType.IMAGE);
+            row.setRoomTag(asset.getRoomTag() == null ? RoomTag.GENERAL.name() : asset.getRoomTag().name());
+            row.setCaption(asset.getCaption());
+            row.setSourceMediaAssetId(asset.getId());
             row.setReusedFromListing(true);
             media.save(row);
         }

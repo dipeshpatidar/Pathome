@@ -57,6 +57,7 @@ public class MediaUploadClaimConcurrencyTest {
 
         controller = new PropertyController(
                 listingRepository,
+                mock(PublicPropertyReadService.class),
                 mediaAssetRepository,
                 cloudinaryService,
                 failedUploadService,
@@ -67,7 +68,8 @@ public class MediaUploadClaimConcurrencyTest {
                 stagingService,
                 mock(com.indore.pathome.spaces.repository.UserRepository.class),
                 mock(com.indore.pathome.spaces.repository.PropertyVisitRequestRepository.class),
-                propertyAuthority
+                propertyAuthority,
+                mock(PropertyVisitRequestApplicationService.class)
         );
         controller.setMediaUploadClaimService(claimService);
 

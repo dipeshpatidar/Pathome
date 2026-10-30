@@ -17,6 +17,11 @@ import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface VisitSessionRepository extends JpaRepository<VisitSession, Long> {
+    interface AppointmentCountRow {
+        Long getListingId();
+        long getSessionCount();
+    }
+
     interface OwnershipVersionSnapshotRow {
         Long getVersion();
         String getLinkedRequestVersions();
@@ -165,5 +170,18 @@ public interface VisitSessionRepository extends JpaRepository<VisitSession, Long
             @Param("activeStatuses") Collection<VisitSessionStatus> activeStatuses,
             @Param("windowEnd") Instant windowEnd,
             @Param("excludedSessionId") Long excludedSessionId);
+
+    @Query("select count(distinct s.id) from VisitSession s join VisitSessionItem i on i.session.id = s.id " +
+            "where i.listing.id = :listingId and i.removedAt is null and s.status in :statuses")
+    long countAppointmentsForListing(@Param("listingId") Long listingId,
+                                     @Param("statuses") Collection<VisitSessionStatus> statuses);
+
+    @Query("select i.listing.id as listingId, count(distinct s.id) as sessionCount " +
+            "from VisitSession s join VisitSessionItem i on i.session.id = s.id " +
+            "where i.listing.id in :listingIds and i.removedAt is null and s.status in :statuses " +
+            "group by i.listing.id")
+    List<AppointmentCountRow> countAppointmentsForListings(
+            @Param("listingIds") Collection<Long> listingIds,
+            @Param("statuses") Collection<VisitSessionStatus> statuses);
 
 }

@@ -340,6 +340,8 @@ public class StaffAdministrationService {
             case STAFF_ADMIN -> command.scopeType() == StaffScopeType.GLOBAL;
             case CITY_TEAM_ADMIN, OPS_INTAKE, OPS_ROUTING -> command.scopeType() == StaffScopeType.CITY;
             case OPS_COORDINATE, OPS_SUPERVISE -> command.scopeType() == StaffScopeType.TEAM;
+            case PROPERTY_EDIT_PUBLISH, PROPERTY_AUDIT_READ, PROPERTY_LIFECYCLE ->
+                    command.scopeType() == StaffScopeType.CITY;
         };
         if (!shapeValid || !capabilityValid) {
             throw new IllegalArgumentException("Capability and scope type are incompatible");

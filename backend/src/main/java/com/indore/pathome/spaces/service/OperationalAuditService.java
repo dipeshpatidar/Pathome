@@ -32,8 +32,11 @@ public class OperationalAuditService {
             // Listing-review evidence: the workflow states either side of the decision, the optimistic
             // versions before and after it, and the canonical locality the action linked or rests on.
             // Bounded codes, version numbers and ids only - never a review note or other free text.
-            "fromStatus", "toStatus", "previousVersion", "resultingVersion", "revisionBaseVersion",
-            "draftVersion", "previousCanonicalLocalityId", "canonicalLocalityId");
+            "fromStatus", "toStatus", "previousVersion", "resultingVersion", "publicationVersion",
+            "revisionBaseVersion",
+            "draftVersion", "previousCanonicalLocalityId", "canonicalLocalityId",
+            "listingId", "lessorProfileId", "availabilityOutcome", "enquiryVersion",
+            "associationState", "requestId");
 
     private final OperationalAuditEventRepository events;
     private final DatabaseClock databaseClock;

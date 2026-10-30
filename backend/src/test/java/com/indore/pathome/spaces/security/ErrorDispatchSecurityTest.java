@@ -2,17 +2,21 @@ package com.indore.pathome.spaces.security;
 
 import com.indore.pathome.spaces.config.SecurityConfig;
 import com.indore.pathome.spaces.controller.PropertyController;
+import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.repository.ListingRepository;
 import com.indore.pathome.spaces.repository.PropertyMediaAssetRepository;
 import com.indore.pathome.spaces.repository.PropertyVisitRequestRepository;
 import com.indore.pathome.spaces.repository.UserRepository;
 import com.indore.pathome.spaces.service.BatchPropertyPublishingService;
+import com.indore.pathome.spaces.service.BackOfficePropertyAuthority;
 import com.indore.pathome.spaces.service.CloudinaryService;
 import com.indore.pathome.spaces.service.FailedUploadService;
 import com.indore.pathome.spaces.service.MediaStagingService;
 import com.indore.pathome.spaces.service.ParserLearningCaptureService;
 import com.indore.pathome.spaces.service.ParserLearningService;
 import com.indore.pathome.spaces.service.PropertyParserService;
+import com.indore.pathome.spaces.service.PropertyVisitRequestApplicationService;
+import com.indore.pathome.spaces.service.PublicPropertyReadService;
 import com.indore.pathome.spaces.service.TrustedOperationalIntakeService;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.RequestDispatcher;
@@ -52,6 +56,7 @@ class ErrorDispatchSecurityTest {
     private MockMvc mockMvc;
 
     @MockBean private ListingRepository listingRepository;
+    @MockBean private PublicPropertyReadService publicPropertyReadService;
     @MockBean private PropertyMediaAssetRepository mediaAssetRepository;
     @MockBean private CloudinaryService cloudinaryService;
     @MockBean private FailedUploadService failedUploadService;
@@ -59,6 +64,8 @@ class ErrorDispatchSecurityTest {
     @MockBean private ParserLearningService parserLearningService;
     @MockBean private ParserLearningCaptureService parserLearningCaptureService;
     @MockBean private BatchPropertyPublishingService batchPropertyPublishingService;
+    @MockBean private BackOfficePropertyAuthority backOfficePropertyAuthority;
+    @MockBean private PropertyVisitRequestApplicationService propertyVisitRequestApplicationService;
     @MockBean private TrustedOperationalIntakeService trustedOperationalIntakeService;
     @MockBean @Qualifier("mediaStagingService") private MediaStagingService mediaStagingService;
     @MockBean private UserRepository userRepository;
@@ -131,6 +138,9 @@ class ErrorDispatchSecurityTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void authenticatedCallerWithTheResourcePermissionIsAllowed() throws Exception {
+        RentalDetails listing = new RentalDetails();
+        listing.setId(7L);
+        when(listingRepository.findById(7L)).thenReturn(java.util.Optional.of(listing));
         when(mediaAssetRepository.findByListingIdOrderByUploadedAtDesc(7L)).thenReturn(List.of());
         mockMvc.perform(get("/api/v1/properties/7/tagged-media"))
                 .andExpect(status().isOk());

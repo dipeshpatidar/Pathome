@@ -1091,6 +1091,143 @@
   line-height: 1.5;
 }
 
+.ld-public-preview {
+  gap: 12px;
+  overflow: hidden;
+}
+
+.ld-public-preview .ld-card-head > svg {
+  flex: none;
+  color: var(--oe-pine);
+}
+
+.ld-public-preview h3 {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.ld-public-preview-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--oe-line);
+  border-radius: 12px;
+  background: var(--oe-soft);
+}
+
+.ld-public-preview-body > img,
+.ld-public-preview-fallback {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  place-items: center;
+  object-fit: cover;
+  background: var(--oe-hover);
+}
+
+.ld-public-preview-fallback {
+  align-content: center;
+  gap: 7px;
+  padding: 18px;
+  color: var(--oe-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.ld-public-preview-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  padding: 15px;
+}
+
+.ld-public-preview-copy h4 {
+  color: var(--oe-ink);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.ld-public-preview-copy > p {
+  color: var(--oe-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ld-public-preview-copy .ld-public-preview-location {
+  color: var(--oe-ink);
+  font-weight: 600;
+}
+
+.ld-public-preview-copy .ld-public-preview-rent {
+  color: var(--oe-ink);
+}
+
+.ld-public-preview-rent strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ld-public-preview-loading {
+  display: grid;
+  grid-template-columns: minmax(92px, 140px) minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--oe-soft);
+}
+
+.ld-public-preview-loading > .oe-skel {
+  width: 100%;
+  min-height: 92px;
+}
+
+.ld-public-preview-loading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.ld-public-preview-loading > div .oe-skel:first-child {
+  width: min(75%, 260px);
+}
+
+.ld-public-preview-loading > div .oe-skel:last-child {
+  width: min(48%, 180px);
+}
+
+.ld-public-preview-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  color: var(--oe-muted);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 680px) {
+  .ld-public-preview-body {
+    grid-template-columns: minmax(210px, 38%) minmax(0, 1fr);
+  }
+
+  .ld-public-preview-body > img,
+  .ld-public-preview-fallback {
+    height: 100%;
+    min-height: 190px;
+    aspect-ratio: auto;
+  }
+}
+
 .ld-snapshot {
   display: flex;
   flex-direction: column;
@@ -1405,6 +1542,90 @@
   gap: 8px;
   padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--oe-line);
+}
+
+.ld-phone-proof-state,
+.ld-contact-reveal,
+.ld-availability-outcome,
+.ld-phone-operator,
+.ld-invite-link {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--oe-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--oe-surface) 90%, var(--oe-soft));
+}
+
+.ld-phone-proof-state > *,
+.ld-contact-reveal > *,
+.ld-availability-outcome > *,
+.ld-phone-operator > *,
+.ld-invite-link > * {
+  min-width: 0;
+}
+
+.ld-invite-link code {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ld-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  margin-block: 10px;
+  padding: 10px 0;
+  color: var(--oe-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ld-check input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  accent-color: var(--oe-pine);
+}
+
+.ld-availability {
+  gap: 10px;
+}
+
+.ld-availability .oe-input,
+.ld-phone-operator .oe-input {
+  font-size: 16px;
+}
+
+.ld-form-error {
+  padding: 10px 12px;
+  border: 1px solid #e7b4b4;
+  border-radius: 10px;
+  background: #fff3f3;
+  color: #842d2d;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (min-width: 768px) {
+  .ld-availability-outcome,
+  .ld-phone-operator {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .ld-availability-outcome > :nth-child(2),
+  .ld-availability-outcome > :nth-child(3),
+  .ld-availability-outcome > :nth-child(4) {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (min-width: 768px) {

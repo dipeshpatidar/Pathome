@@ -238,6 +238,7 @@ class LandlordSubmissionServiceTest {
         nextDraft.setDraftId("d2");
         nextDraft.setLandlordUserId(5L);
         nextDraft.setStatus("DRAFT");
+        when(drafts.findByDraftIdAndLandlordUserId("d2", 5L)).thenReturn(Optional.of(nextDraft));
         when(drafts.findLandlordDraftForUpdate("d2", 5L)).thenReturn(Optional.of(nextDraft));
         when(draftData.readData(nextDraft)).thenReturn(validData());
         when(media.findByDraftIdAndLandlordUserIdOrderBySortOrderAscIdAsc("d2", 5L)).thenReturn(rows);

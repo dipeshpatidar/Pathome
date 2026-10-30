@@ -55,7 +55,7 @@ class LandlordManagementServiceTest {
     }
 
     @Test
-    void ownerCanPauseAndArchiveWithVersionWhileOtherOwnerCannot() {
+    void ownerCanPauseButRemovalRequiresApprovedWorkflowWhileOtherOwnerCannot() {
         assertThrows(EntityNotFoundException.class,
                 () -> service.changeStatus("other@example.com", 42L, 3L, ListingWorkflowStatus.PAUSED));
         assertThrows(DraftConflictException.class,
@@ -63,8 +63,9 @@ class LandlordManagementServiceTest {
         var paused = service.changeStatus("owner@example.com", 42L, 3L, ListingWorkflowStatus.PAUSED);
         assertEquals(ListingWorkflowStatus.PAUSED, paused.status());
         assertEquals(ListingStatus.CLOSED, listing.getStatus());
-        var archived = service.changeStatus("owner@example.com", 42L, 3L, ListingWorkflowStatus.ARCHIVED);
-        assertEquals(ListingWorkflowStatus.ARCHIVED, archived.status());
+        assertThrows(DraftConflictException.class,
+                () -> service.changeStatus("owner@example.com", 42L, 3L, ListingWorkflowStatus.ARCHIVED));
+        assertEquals(ListingWorkflowStatus.PAUSED, listing.getWorkflowStatus());
         assertThrows(DraftConflictException.class,
                 () -> service.changeStatus("owner@example.com", 42L, 3L, ListingWorkflowStatus.PAUSED));
     }

@@ -145,6 +145,19 @@ export const isOperationsSessionActive = (session: OperationsSession | null | un
 };
 
 /**
+ * Commits a fully parsed response only if the operation still owns the active credential. JSON
+ * parsing is asynchronous, so callers must pass through this boundary after `response.json()`.
+ */
+export const commitParsedSessionResponse = <T>(
+  session: OperationsSession,
+  parsed: T,
+  active: (candidate: OperationsSession) => boolean = isOperationsSessionActive
+): T => {
+  if (!active(session)) throw new OperationsSessionChangedError();
+  return parsed;
+};
+
+/**
  * Invalidate every captured session. Pending work is cancelled and its responses are dropped, so a
  * revoked or replaced session can never re-populate the workspace.
  */

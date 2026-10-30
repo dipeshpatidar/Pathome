@@ -57,6 +57,9 @@ public class PropertyMediaAsset {
 
     private LocalDateTime uploadedAt = LocalDateTime.now();
 
+    @Column(name = "retired_at")
+    private LocalDateTime retiredAt;
+
     public PropertyMediaAsset() {}
 
     public PropertyMediaAsset(Long listingId, String mediaUrl, MediaType mediaType, RoomTag roomTag, String caption) {
@@ -206,4 +209,7 @@ public class PropertyMediaAsset {
     public void setUploadedAt(LocalDateTime uploadedAt) {
         this.uploadedAt = uploadedAt;
     }
+
+    public LocalDateTime getRetiredAt() { return retiredAt; }
+    public void setRetiredAt(LocalDateTime retiredAt) { this.retiredAt = retiredAt; }
 }

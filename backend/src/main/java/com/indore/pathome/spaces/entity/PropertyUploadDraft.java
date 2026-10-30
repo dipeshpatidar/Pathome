@@ -31,6 +31,12 @@ public class PropertyUploadDraft {
     @Column(name = "lessor_profile_id")
     private Long lessorProfileId;
 
+    @Column(name = "staff_maker_user_id")
+    private Long staffMakerUserId;
+
+    @Column(name = "revision_mode", length = 32)
+    private String revisionMode;
+
     @Column(name = "guest_token_hash", length = 64)
     private String guestTokenHash;
 
@@ -87,6 +93,12 @@ public class PropertyUploadDraft {
 
     public Long getLessorProfileId() { return lessorProfileId; }
     public void setLessorProfileId(Long lessorProfileId) { this.lessorProfileId = lessorProfileId; }
+
+    public Long getStaffMakerUserId() { return staffMakerUserId; }
+    public void setStaffMakerUserId(Long staffMakerUserId) { this.staffMakerUserId = staffMakerUserId; }
+
+    public String getRevisionMode() { return revisionMode; }
+    public void setRevisionMode(String revisionMode) { this.revisionMode = revisionMode; }
 
     public String getGuestTokenHash() { return guestTokenHash; }
     public void setGuestTokenHash(String guestTokenHash) { this.guestTokenHash = guestTokenHash; }

@@ -46,6 +46,7 @@ import com.indore.pathome.spaces.repository.LeadActivityRepository;
 import com.indore.pathome.spaces.repository.LeadCommandReceiptRepository;
 import com.indore.pathome.spaces.repository.LeadContactPreferenceRepository;
 import com.indore.pathome.spaces.repository.LeadPreferredLocalityRepository;
+import com.indore.pathome.spaces.repository.LeadPhoneChallengeRepository;
 import com.indore.pathome.spaces.repository.LeadRoutingQueueRepository;
 import com.indore.pathome.spaces.repository.LeadSourceEventRepository;
 import com.indore.pathome.spaces.repository.LocalityRepository;
@@ -85,6 +86,7 @@ public class LeadService {
     private static final String MANUAL_ATTACHED_FINGERPRINT = "MANUAL_ATTACHED_V1";
     private static final String MANUAL_DISTINCT_FINGERPRINT = "MANUAL_DISTINCT_V1";
     private static final Pattern NON_DIGIT = Pattern.compile("\\D");
+    private static final Pattern STORED_LEAD_REFERENCE = Pattern.compile("[0-9]{1,19}");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
     private static final Pattern LEAD_REFERENCE =
             Pattern.compile("(?i)^(?:ld-|lead\\s*#?)(\\d{1,18})$");
@@ -98,6 +100,7 @@ public class LeadService {
 
     private final LeadRoutingQueueRepository leads;
     private final LeadPreferredLocalityRepository preferredLocalities;
+    private final LeadPhoneChallengeRepository phoneChallenges;
     private final LeadSourceEventRepository sourceEvents;
     private final LeadActivityRepository activities;
     private final LeadCommandReceiptRepository receipts;
@@ -119,6 +122,7 @@ public class LeadService {
 
     public LeadService(LeadRoutingQueueRepository leads,
                        LeadPreferredLocalityRepository preferredLocalities,
+                       LeadPhoneChallengeRepository phoneChallenges,
                        LeadSourceEventRepository sourceEvents,
                        LeadActivityRepository activities,
                        LeadCommandReceiptRepository receipts,
@@ -139,6 +143,7 @@ public class LeadService {
                        UserRepository users) {
         this.leads = leads;
         this.preferredLocalities = preferredLocalities;
+        this.phoneChallenges = phoneChallenges;
         this.sourceEvents = sourceEvents;
         this.activities = activities;
         this.receipts = receipts;
@@ -343,14 +348,14 @@ public class LeadService {
                         actorId, operationId, "LEAD_CAPTURE")
                 .orElse(null);
         if (existing != null) {
-            if (!existing.getPayloadHash().equals(payloadHash)) {
-                throw new VisitOperationsConflictException(
-                        "This idempotency key was already used with a different Lead payload");
-            }
             LeadRoutingQueue replay = leads.findById(parseLeadReference(existing.getResultReference()))
                     .orElseThrow(LeadService::hidden);
             LeadAccessContext replayContext = leadAccess.context(actorId);
             leadAccess.requireReadable(replayContext, replay, actorId);
+            if (!existing.getPayloadHash().equals(payloadHash)) {
+                throw new VisitOperationsConflictException(
+                        "This idempotency key was already used with a different Lead payload");
+            }
             LeadSourceEvent replayEvent = sourceEvents
                     .findFirstByProviderAndProviderAccountIdAndExternalEventIdOrderByReceivedAtDesc(
                             "MANUAL", String.valueOf(actorId), operationId.toString())
@@ -724,17 +729,19 @@ public class LeadService {
         UUID operationId = parseOperationId(operationKey);
         String payloadHash = payloadHash(leadId, command);
         lockOperation(actorId, operationId, "LEAD_SOURCE_ATTACH");
+        requireReadableLead(actorId, leadId);
         LeadCommandReceipt existingReceipt = receipts.findByActorIdAndOperationIdAndAction(
                 actorId, operationId, "LEAD_SOURCE_ATTACH").orElse(null);
         if (existingReceipt != null) {
-            if (!existingReceipt.getPayloadHash().equals(payloadHash)) {
-                throw new VisitOperationsConflictException(
-                        "This idempotency key was already used with a different source decision");
-            }
             LeadRoutingQueue replay = leads.findById(parseLeadReference(
                     existingReceipt.getResultReference())).orElseThrow(LeadService::hidden);
             LeadAccessContext replayContext = leadAccess.context(actorId);
             leadAccess.requireReadable(replayContext, replay, actorId);
+            if (!existingReceipt.getPayloadHash().equals(payloadHash)) {
+                throw new VisitOperationsConflictException(
+                        "This idempotency key was already used with a different source decision");
+            }
+            if (!leadId.equals(replay.getId())) throw hidden();
             return detail(replay);
         }
         LeadRoutingQueue lead = lockLead(leadId);
@@ -1008,6 +1015,7 @@ public class LeadService {
             if (matches.isEmpty()) {
                 return new LeadCommandReceiptView("NOT_RECORDED", null, null, null);
             }
+            for (LeadCommandReceipt match : matches) requireReadableReceipt(actorId, match);
             if (matches.size() > 1) {
                 throw new VisitOperationsConflictException(
                         "This operation ID has more than one command type; specify action");
@@ -1020,34 +1028,40 @@ public class LeadService {
                 return new LeadCommandReceiptView("NOT_RECORDED", action, null, null);
             }
         }
+        requireReadableReceipt(actorId, receipt);
+        return new LeadCommandReceiptView("RECORDED", receipt.getAction(),
+                receipt.getResultReference(), receipt.getCompletedAt());
+    }
+
+    private void requireReadableReceipt(Long actorId, LeadCommandReceipt receipt) {
         if ("LEAD_CAPTURE".equals(receipt.getAction())
                 || "LEAD_SOURCE_ATTACH".equals(receipt.getAction())) {
             LeadRoutingQueue lead = leads.findById(parseLeadReference(receipt.getResultReference()))
                     .orElseThrow(LeadService::hidden);
             leadAccess.requireReadable(leadAccess.context(actorId), lead, actorId);
         } else if ("LEAD_SHARE_PREPARE".equals(receipt.getAction())) {
+            UUID shareId = parseStoredShareReference(receipt.getResultReference());
             Long shareLeadId;
             try {
                 shareLeadId = jdbc.queryForObject(
-                        "select lead_id from lead_shares where id = ?::uuid", Long.class,
-                        receipt.getResultReference());
-            } catch (RuntimeException exception) {
+                        "select lead_id from lead_shares where id = ?", Long.class, shareId);
+            } catch (org.springframework.dao.EmptyResultDataAccessException exception) {
                 throw hidden();
             }
-            if (shareLeadId == null) throw hidden();
+            if (shareLeadId == null || shareLeadId <= 0) throw hidden();
             LeadAccessContext context = leadAccess.context(actorId);
             LeadRoutingQueue lead = visibleLead(actorId, context, shareLeadId);
             leadAccess.requireReadable(context, lead, actorId);
         } else if ("LEAD_SHORTLIST_CREATE".equals(receipt.getAction())) {
+            Long shortlistId = parseLeadReference(receipt.getResultReference());
             Long shortlistLeadId;
             try {
                 shortlistLeadId = jdbc.queryForObject(
-                        "select lead_id from lead_shortlists where id = ?", Long.class,
-                        parseLeadReference(receipt.getResultReference()));
-            } catch (RuntimeException exception) {
+                        "select lead_id from lead_shortlists where id = ?", Long.class, shortlistId);
+            } catch (org.springframework.dao.EmptyResultDataAccessException exception) {
                 throw hidden();
             }
-            if (shortlistLeadId == null) throw hidden();
+            if (shortlistLeadId == null || shortlistLeadId <= 0) throw hidden();
             LeadAccessContext context = leadAccess.context(actorId);
             LeadRoutingQueue lead = visibleLead(actorId, context, shortlistLeadId);
             leadAccess.requireReadable(context, lead, actorId);
@@ -1060,9 +1074,9 @@ public class LeadService {
             LeadAccessContext context = leadAccess.context(actorId);
             LeadRoutingQueue lead = visibleLead(actorId, context, preference.getLead().getId());
             leadAccess.requireReadable(context, lead, actorId);
+        } else {
+            throw hidden();
         }
-        return new LeadCommandReceiptView("RECORDED", receipt.getAction(),
-                receipt.getResultReference(), receipt.getCompletedAt());
     }
 
     private LeadRoutingQueue visibleLead(Long actorId, LeadAccessContext context, Long leadId) {
@@ -1213,17 +1227,14 @@ public class LeadService {
             communicationPrerequisites.add("AGREED_DESTINATION");
         }
         List<String> conversionPrerequisites = new ArrayList<>();
-        if (lead.getSupportedCity() == null) conversionPrerequisites.add("CITY");
-        if (lead.getContactPhoneNormalized() == null) conversionPrerequisites.add("CONTACT");
-        if (lead.getBudgetMin() == null && lead.getBudgetMax() == null) conversionPrerequisites.add("BUDGET");
-        if (lead.getPropertyType() == null) conversionPrerequisites.add("PROPERTY_TYPE");
-        conversionPrerequisites.add("CUSTOMER_ACCOUNT_PAIRING_PROOF");
+        conversionPrerequisites.add("CUSTOMER_AUTHENTICATED_VISIT_REQUEST");
         return new LeadDetailView(summary(lead, lastActivityAt), lead.getCustomerSaid(), lead.getPropertyType(), lead.getBhk(),
                 lead.getBudgetMin(), lead.getBudgetMax(), lead.getCurrency(), lead.getTargetMoveInDate(),
                 lead.getFurnishing(), lead.getTenantProfile(), lead.getParkingRequired(),
                 lead.getPetsAllowed(), lead.getLiftRequired(), lead.getFloorRequirement(), localityIds,
                 sourceAttributions, communicationPrerequisites, conversionPrerequisites,
-                lead.getLinkedUser() != null, lead.getLegacyProvenance(), captureOutcome);
+                lead.getLinkedUser() != null, lead.getLegacyProvenance(), captureOutcome,
+                lead.getContactPhoneRevision());
     }
 
     private void applyPatch(LeadRoutingQueue lead, Map<String, Object> changes) {
@@ -1232,6 +1243,16 @@ public class LeadService {
         }
         if (changes.containsKey("contactPhone")) {
             String normalized = LeadContract.normalizePhone(asString(changes.get("contactPhone")));
+            if (!Objects.equals(normalized, lead.getContactPhoneNormalized())) {
+                long nextRevision = lead.getContactPhoneRevision() == null
+                        ? 1L : lead.getContactPhoneRevision() + 1L;
+                if (nextRevision <= 0) {
+                    throw new VisitOperationsConflictException(
+                            "The contact-phone revision cannot be advanced safely");
+                }
+                lead.setContactPhoneRevision(nextRevision);
+                phoneChallenges.cancelPendingForLead(lead.getId(), databaseClock.now());
+            }
             lead.setContactPhoneNormalized(normalized);
             lead.setPhoneNumber(normalized);
         }
@@ -1403,11 +1424,33 @@ public class LeadService {
         }
     }
 
-    private static Long parseLeadReference(String value) {
+    static Long parseLeadReference(String value) {
+        return parseStoredPositiveLongReference(value);
+    }
+
+    static Long parseStoredPositiveLongReference(String value) {
+        if (value == null || !STORED_LEAD_REFERENCE.matcher(value).matches()) throw hidden();
         try {
-            return Long.parseLong(value);
-        } catch (Exception exception) {
-            throw new IllegalStateException("Stored Lead receipt is invalid");
+            long id = Long.parseLong(value);
+            if (id <= 0) throw hidden();
+            return id;
+        } catch (NumberFormatException exception) {
+            throw hidden();
+        }
+    }
+
+    static UUID parseStoredShareReference(String value) {
+        return parseStoredUuidReference(value);
+    }
+
+    static UUID parseStoredUuidReference(String value) {
+        if (value == null) throw hidden();
+        try {
+            UUID id = UUID.fromString(value);
+            if (!id.toString().equalsIgnoreCase(value)) throw hidden();
+            return id;
+        } catch (IllegalArgumentException exception) {
+            throw hidden();
         }
     }
 

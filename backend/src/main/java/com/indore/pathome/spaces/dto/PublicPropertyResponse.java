@@ -29,8 +29,13 @@ public record PublicPropertyResponse(
         BigDecimal monthlyRent,
         BigDecimal securityDeposit,
         BigDecimal maintenanceCharge,
+        BigDecimal brokerageAmount,
+        Integer brokerageDays,
+        Integer securityDepositMonths,
         Boolean bachelorAllowed,
         String preferredTenant,
         LocalDateTime availableFrom,
+        Long listingVersion,
+        LocalDateTime lastContentPublishedAt,
         List<PublicPropertyMediaResponse> media
 ) {}

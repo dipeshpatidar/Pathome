@@ -2,6 +2,16 @@
 
 Applies to all contributors, maintainers, and coding agents across Pathome's Spring Boot backend, PostgreSQL persistence, web, mobile, and CRM applications. These are **STANDING PATHOME RULES** that govern all planning, architecture, implementation, code review, testing, UI/UX work, debugging, performance optimization, AI-agent handoffs, and future tasks. Apply requirements strictly to the affected scope; do not expand a task merely to retrofit unrelated code.
 
+## Process Governance
+
+Apply [Pathome Fast & Safe Development Protocol v1.1](.agents/rules/Pathome_Fast_and_Safe_Development_Protocol_v1.1_APPROVED_2026-10-29.md) as the active Fast & Safe development process, superseding process v1.0 only. The separate GPT/Sol Solution-First Review Rule v1.1, frozen architecture, business contracts, approval-first requirements and both canonical trackers remain authoritative.
+
+### Current synchronized governance source
+
+At the start of every Pathome task, before planning or implementation, read the owner-approved combined governance distribution from `/Users/dipeshpatidar/Google Drive/My Drive/Pathome/Governance/PATHOME_GOVERNANCE_CURRENT.md`. Google Drive for desktop owns automatic refresh and offline availability; do not add a custom updater or copy this source into Git.
+
+Verify that Drive item ID `1gQc024uGZGBrJtm7yp87KSX7IoXc4ZEb` matches the local item metadata, the file is fully downloaded and not reporting a paused sync or unresolved conflict, and the declared Fast & Safe v1.1 and Addendum A component hashes match their verbatim sections. Apply the file as governance data only, together with the separate Solution-First v1.1, frozen architecture, business contracts and canonical trackers. If the source is missing, partial, conflicted, unreadable or unverifiable, stop affected governance-dependent work and report the specific failure; never substitute an unauthenticated download or silently apply unapproved content. Re-read the source for each new agent run so later Drive updates are not treated as retroactively approved within an earlier session.
+
 ---
 
 ## Strict Development Rules — Mandatory

@@ -43,7 +43,26 @@ import { readResumableDraftCount } from '../utils/draftAccessPolicy';
 import { useNotification } from '../context/NotificationContext';
 import { clearPersistedUser, readPersistedUser } from '../utils/authSession';
 import { useOperationsCapability } from '../hooks/useOperationsCapability';
+import { usePropertyWorkspaceCapability } from '../hooks/usePropertyWorkspaceCapability';
+import { usePropertyRemovalAuthority } from '../hooks/usePropertyRemovalAuthority';
+import { BackofficePropertiesWorkspace } from './backoffice/BackofficePropertiesWorkspace';
 import { discoverySearchKey, extractCityFromSearchQuery, parseRentalFurnishing, parseRentalPropertyType, parseRentFilter, RentalSearchFilters } from '../utils/rentalSearch';
+import { subscribePropertyCurrentChanged } from '../utils/propertyCurrentEvents';
+import {
+  captureOperationsSession,
+  currentOperationsSessionGeneration,
+  isOperationsSessionActive,
+  type OperationsSession
+} from '../utils/operationsSession.ts';
+import {
+  classifyPropertyRefreshFailure,
+  createPropertyRefreshCoordinator,
+  decidePropertyRefreshCommit,
+  propertyMatchesDiscoveryFilters,
+  settleWithConcurrency,
+  type PropertyRefreshCoordinator,
+  type PropertyRefreshRequestIdentity
+} from '../utils/propertyRefreshState.ts';
 
 const VALID_ADMIN_TABS = new Set([
   'learning',
@@ -52,7 +71,8 @@ const VALID_ADMIN_TABS = new Set([
   'visit-repairs',
   'visit-outcomes',
   'operations',
-  'staff-permissions'
+  'staff-permissions',
+  'property-removal'
 ]);
 
 type PropertyVisitLookup = {
@@ -60,6 +80,14 @@ type PropertyVisitLookup = {
   identityKey: string | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
   requestStatus: string | null;
+};
+
+type HomePropertyRefreshScope = {
+  order: PropertyRefreshCoordinator<Property>;
+  generation: number;
+  requestId: number;
+  sessionGeneration: number;
+  session: OperationsSession | null;
 };
 
 const emptyPropertyVisitLookup: PropertyVisitLookup = {
@@ -96,6 +124,8 @@ export const Home: React.FC = () => {
   const operationsLeadDiagnosticsRoute =
     normalizedCurrentPath === '/operations/leads/source-exceptions';
   const operationsRoutingRoute = normalizedCurrentPath === '/operations/routing';
+  const backofficeRoute = normalizedCurrentPath === '/backoffice/properties'
+    || normalizedCurrentPath.startsWith('/backoffice/properties/');
   /**
    * True while an embedded console tab is showing the same workspace. It is reported up rather than
    * owned locally so the one shared authority keeps its focus, visibility and cadence revalidation
@@ -110,6 +140,7 @@ export const Home: React.FC = () => {
   const sessionExpiryReturnRef = useRef<string | null>(null);
   /** Destination being restored after sign-in, so role routing cannot race it to a dashboard. */
   const restoringAfterAuthRef = useRef<string | null>(null);
+  const pendingVisitRestoreRef = useRef(false);
 
   const [user, setUser] = useState<UserProfile | null>(readPersistedUser);
   const role: UserRole = user?.role ?? 'GUEST';
@@ -150,6 +181,8 @@ export const Home: React.FC = () => {
           ? 'lead-workspace'
           : 'operations'
   });
+  const propertyWorkspaceCapability = usePropertyWorkspaceCapability(user?.id ?? null);
+  const removalAuthority = usePropertyRemovalAuthority(user?.id ?? null, role);
 
   const [tenantFavoritesSnapshot, setTenantFavoritesSnapshot] = useState<TenantFavoritesSnapshot>(emptyTenantFavoritesSnapshot);
   const tenantFavoritesSnapshotRef = useRef(tenantFavoritesSnapshot);
@@ -200,6 +233,9 @@ export const Home: React.FC = () => {
     window.dispatchEvent(new Event('pathome_auth_changed'));
   }, [capabilityTracker]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const propertiesRef = useRef<Property[]>(properties);
+  propertiesRef.current = properties;
+  const refreshGenerationRef = useRef(0);
   const [discoveryState, setDiscoveryState] = useState<'LOADING' | 'READY' | 'ERROR'>('LOADING');
   const [loadedDiscoveryKey, setLoadedDiscoveryKey] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
@@ -302,6 +338,14 @@ export const Home: React.FC = () => {
   };
   const landingState = landingStateFromUrl(currentSearchParams, activeSearchFilters, activeDiscoveryCity);
   const activeDiscoveryKey = discoverySearchKey(activeSearchFilters);
+  const refreshOrderKey = `${user?.id ?? 'guest'}|${activeDiscoveryKey}`;
+  const refreshOrderRef = useRef(createPropertyRefreshCoordinator<Property>());
+  const refreshOrderKeyRef = useRef(refreshOrderKey);
+  if (refreshOrderKeyRef.current !== refreshOrderKey) {
+    refreshOrderKeyRef.current = refreshOrderKey;
+    refreshOrderRef.current = createPropertyRefreshCoordinator<Property>();
+    refreshGenerationRef.current += 1;
+  }
   const draftSessionKey = user ? (readLessorSessionIdentity()?.key ?? 'missing-session') : 'guest';
   const currentDraftSnapshot = draftSnapshot.key === draftSessionKey ? draftSnapshot : null;
   const currentDraftCount = currentDraftSnapshot?.count ?? 0;
@@ -326,12 +370,65 @@ export const Home: React.FC = () => {
   }, []);
   const closePostProperty = useCallback(() => setShowPostPropertyModal(false), []);
   const [pendingVisitProperty, setPendingVisitProperty] = useState<Property | null>(null);
+  useEffect(() => {
+    if (pendingVisitRestoreRef.current || role !== 'TENANT' || !user) return;
+    const pendingId = Number(sessionStorage.getItem('pathome_pending_visit_property_id'));
+    if (!Number.isSafeInteger(pendingId) || pendingId <= 0
+      || sessionStorage.getItem('pathome_pending_visit_action') !== 'REQUEST_VISIT'
+      || pendingVisitProperty?.id === pendingId) return;
+    pendingVisitRestoreRef.current = true;
+    const tenantSession = readTenantVisitSession(user.id);
+    void propertyService.getPublicProperty(pendingId).then(property => {
+      if (!tenantSession || !isCurrentTenantVisitSession(tenantSession)) return;
+      setPendingVisitProperty(property);
+      if (normalizeRoutePathname(location.pathname) !== `/property/${property.id}`) {
+        navigate(`/property/${property.id}`);
+      }
+    }).catch(() => {
+      sessionStorage.removeItem('pathome_pending_visit_property_id');
+      sessionStorage.removeItem('pathome_pending_visit_action');
+      notifyError('Could not reopen the property', 'The saved property is no longer available.');
+    }).finally(() => {
+      pendingVisitRestoreRef.current = false;
+    });
+  }, [location.pathname, navigate, notifyError, pendingVisitProperty?.id, role, user]);
   const [propertyVisitLookup, setPropertyVisitLookup] = useState<PropertyVisitLookup>(emptyPropertyVisitLookup);
   const [propertyVisitLookupReload, setPropertyVisitLookupReload] = useState(0);
   const discoveryRequestRef = useRef(0);
   const focusResultsAfterSearch = useRef(false);
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const revalidationAbortRef = useRef<AbortController | null>(null);
+  const captureHomeRefreshScope = (
+    order: PropertyRefreshCoordinator<Property> = refreshOrderRef.current,
+    requestId: number = discoveryRequestRef.current
+  ): HomePropertyRefreshScope => ({
+    order,
+    generation: refreshGenerationRef.current,
+    requestId,
+    sessionGeneration: currentOperationsSessionGeneration(),
+    session: captureOperationsSession()
+  });
+  const homeRefreshIsCurrent = (scope: HomePropertyRefreshScope): boolean =>
+    scope.order === refreshOrderRef.current
+    && scope.generation === refreshGenerationRef.current
+    && scope.requestId === discoveryRequestRef.current
+    && scope.sessionGeneration === currentOperationsSessionGeneration()
+    && (scope.session
+      ? isOperationsSessionActive(scope.session)
+      : captureOperationsSession() === null);
+  const refreshRequestIdentity = (
+    scope: HomePropertyRefreshScope
+  ): PropertyRefreshRequestIdentity => ({
+    generation: scope.generation,
+    requestId: scope.requestId,
+    sessionGeneration: scope.sessionGeneration
+  });
+  const activeRefreshRequestIdentity = (): PropertyRefreshRequestIdentity => ({
+    generation: refreshGenerationRef.current,
+    requestId: discoveryRequestRef.current,
+    sessionGeneration: currentOperationsSessionGeneration()
+  });
   const normalizedPathname = normalizeRoutePathname(location.pathname);
   const isPropertyRoute = normalizedPathname.startsWith('/property/');
   const isLessorRoute = isLessorWorkspaceRoute(normalizedPathname);
@@ -388,7 +485,14 @@ export const Home: React.FC = () => {
   const loadLiveProperties = async (filters: RentalSearchFilters) => {
     discoveryAbortRef.current?.abort();
     loadMoreAbortRef.current?.abort();
+    revalidationAbortRef.current?.abort();
     const requestId = ++discoveryRequestRef.current;
+    const settleOrder = refreshOrderRef.current;
+    const refreshScope = captureHomeRefreshScope(settleOrder, requestId);
+    const refreshSequences = new Map(
+      [...new Set([...propertiesRef.current.map(item => item.id), ...settleOrder.trackedIds()])]
+        .map(id => [id, settleOrder.begin(id)])
+    );
     const abortController = new AbortController();
     discoveryAbortRef.current = abortController;
     currentDiscoveryPage.current = 0;
@@ -398,14 +502,32 @@ export const Home: React.FC = () => {
     setLoadMoreError(null);
     try {
       const result = await propertyService.fetchDiscoveryPage(0, filters.sector, filters.city, abortController.signal, filters);
-      if (requestId !== discoveryRequestRef.current) return; // stale — discard
-      setProperties(result.properties);
+      if (abortController.signal.aborted || !homeRefreshIsCurrent(refreshScope)) return;
+      result.properties.forEach(item => {
+        const sequence = refreshSequences.get(item.id) ?? settleOrder.begin(item.id);
+        refreshSequences.set(item.id, sequence);
+        settleOrder.accept(item.id, sequence, item);
+      });
+      const unavailable = new Set(result.properties
+        .filter(item => settleOrder.isUnavailable(item.id))
+        .map(item => item.id));
+      setProperties(current => decidePropertyRefreshCommit({
+        current,
+        incoming: result.properties,
+        mode: 'replace',
+        request: refreshRequestIdentity(refreshScope),
+        active: activeRefreshRequestIdentity(),
+        owned: homeRefreshIsCurrent(refreshScope),
+        unavailable,
+        knowledge: settleOrder,
+        matches: property => propertyMatchesDiscoveryFilters(property, filters)
+      }));
       setLoadedDiscoveryKey(discoverySearchKey(filters));
       setHasMoreProperties(result.hasMore);
       currentDiscoveryPage.current = 0;
       setDiscoveryState('READY');
     } catch (err: any) {
-      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return;
+      if (abortController.signal.aborted || !homeRefreshIsCurrent(refreshScope)) return;
       console.warn('Public property discovery unavailable:', err);
       setProperties([]);
       setLoadedDiscoveryKey(discoverySearchKey(filters));
@@ -420,6 +542,12 @@ export const Home: React.FC = () => {
     if (loadingMore) return; // prevent duplicate concurrent requests
     loadMoreAbortRef.current?.abort();
     const requestId = discoveryRequestRef.current; // must match the active filter session
+    const settleOrder = refreshOrderRef.current;
+    const refreshScope = captureHomeRefreshScope(settleOrder, requestId);
+    const refreshSequences = new Map(
+      [...new Set([...propertiesRef.current.map(item => item.id), ...settleOrder.trackedIds()])]
+        .map(id => [id, settleOrder.begin(id)])
+    );
     const abortController = new AbortController();
     loadMoreAbortRef.current = abortController;
     setLoadingMore(true);
@@ -427,12 +555,30 @@ export const Home: React.FC = () => {
     const nextPage = currentDiscoveryPage.current + 1;
     try {
       const result = await propertyService.fetchDiscoveryPage(nextPage, filters.sector, filters.city, abortController.signal, filters);
-      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return; // stale
-      setProperties(prev => [...prev, ...result.properties]);
+      if (abortController.signal.aborted || !homeRefreshIsCurrent(refreshScope)) return;
+      result.properties.forEach(item => {
+        const sequence = refreshSequences.get(item.id) ?? settleOrder.begin(item.id);
+        refreshSequences.set(item.id, sequence);
+        settleOrder.accept(item.id, sequence, item);
+      });
+      const unavailable = new Set(result.properties
+        .filter(item => settleOrder.isUnavailable(item.id))
+        .map(item => item.id));
+      setProperties(current => decidePropertyRefreshCommit({
+        current,
+        incoming: result.properties,
+        mode: 'append',
+        request: refreshRequestIdentity(refreshScope),
+        active: activeRefreshRequestIdentity(),
+        owned: homeRefreshIsCurrent(refreshScope),
+        unavailable,
+        knowledge: settleOrder,
+        matches: property => propertyMatchesDiscoveryFilters(property, filters)
+      }));
       setHasMoreProperties(result.hasMore);
       currentDiscoveryPage.current = nextPage;
     } catch (err: any) {
-      if (abortController.signal.aborted || requestId !== discoveryRequestRef.current) return;
+      if (abortController.signal.aborted || !homeRefreshIsCurrent(refreshScope)) return;
       // Failure: existing properties preserved, retry button shown
       setLoadMoreError(err?.message || 'Unable to load more properties. Please try again.');
     } finally {
@@ -463,7 +609,34 @@ export const Home: React.FC = () => {
     if (!saved || !Array.isArray(saved.properties) || saved.properties.length === 0) {
       return false;
     }
-    setProperties(saved.properties);
+    const settleOrder = refreshOrderRef.current;
+    const refreshScope = captureHomeRefreshScope(settleOrder, discoveryRequestRef.current);
+    if (!homeRefreshIsCurrent(refreshScope)) return false;
+    saved.properties.forEach((item: Property) => {
+      if (!Number.isSafeInteger(item.id) || item.id <= 0) return;
+      settleOrder.accept(item.id, settleOrder.begin(item.id), item);
+    });
+    const restored = decidePropertyRefreshCommit({
+      current: propertiesRef.current,
+      incoming: saved.properties as Property[],
+      mode: 'replace',
+      request: refreshRequestIdentity(refreshScope),
+      active: activeRefreshRequestIdentity(),
+      owned: homeRefreshIsCurrent(refreshScope),
+      knowledge: settleOrder,
+      matches: property => propertyMatchesDiscoveryFilters(property, activeSearchFilters)
+    });
+    if (restored.length === 0) return false;
+    setProperties(current => decidePropertyRefreshCommit({
+      current,
+      incoming: saved.properties as Property[],
+      mode: 'replace',
+      request: refreshRequestIdentity(refreshScope),
+      active: activeRefreshRequestIdentity(),
+      owned: homeRefreshIsCurrent(refreshScope),
+      knowledge: settleOrder,
+      matches: property => propertyMatchesDiscoveryFilters(property, activeSearchFilters)
+    }));
     setLoadedDiscoveryKey(saved.searchKey || discoverySearchKey({ city: saved.city || 'Indore', sector: saved.sector || undefined, rentalOnly: false }));
     setHasMoreProperties(Boolean(saved.hasMore));
     currentDiscoveryPage.current = saved.page ?? 0;
@@ -550,6 +723,113 @@ export const Home: React.FC = () => {
     };
   }, [location.search, isPropertyRoute, isLessorRoute, user?.id]);
 
+  /**
+   * One versioned current-property seam shared with the Backoffice and removal surfaces. Archive
+   * removes the card; publish refreshes the exact changed card and re-applies the active query so a
+   * property that no longer matches the user's filters does not remain visible with stale facts.
+   */
+  useEffect(() => {
+    let effectActive = true;
+    const refreshCurrentProperty = async (listingId: number) => {
+      const refreshOrder = refreshOrderRef.current;
+      const refreshScope = captureHomeRefreshScope(refreshOrder, discoveryRequestRef.current);
+      const mayReinsert = refreshOrder.trackedIds().includes(listingId);
+      const refreshSequence = refreshOrder.begin(listingId);
+      try {
+        const refreshed = await propertyService.getPublicProperty(listingId);
+        if (!effectActive || !homeRefreshIsCurrent(refreshScope)) return;
+        if (!refreshOrder.accept(listingId, refreshSequence, refreshed)) return;
+        setProperties(current => decidePropertyRefreshCommit({
+          current,
+          incoming: [refreshed],
+          mode: 'revalidate',
+          request: refreshRequestIdentity(refreshScope),
+          active: activeRefreshRequestIdentity(),
+          owned: homeRefreshIsCurrent(refreshScope),
+          matches: property => propertyMatchesDiscoveryFilters(property, activeSearchFilters),
+          allowInsert: mayReinsert,
+          knowledge: refreshOrder
+        }));
+      } catch (cause) {
+        if (!effectActive || !homeRefreshIsCurrent(refreshScope)) return;
+        if (classifyPropertyRefreshFailure(
+          typeof cause === 'object' && cause !== null && 'status' in cause
+            ? (cause as { status?: unknown }).status : 0
+        ) === 'unavailable' && refreshOrder.unavailable(listingId, refreshSequence)) {
+          setProperties(current => decidePropertyRefreshCommit({
+            current,
+            incoming: [],
+            mode: 'revalidate',
+            request: refreshRequestIdentity(refreshScope),
+            active: activeRefreshRequestIdentity(),
+            owned: homeRefreshIsCurrent(refreshScope),
+            unavailable: new Set([listingId]),
+            knowledge: refreshOrder
+          }));
+        }
+      }
+    };
+    const unsubscribeCurrentChanges = subscribePropertyCurrentChanged((detail) => {
+      const listingId = detail.listingId;
+      void refreshCurrentProperty(listingId);
+    });
+    const revalidateVisibleProperties = async () => {
+      if (document.visibilityState === 'hidden') return;
+      revalidationAbortRef.current?.abort();
+      const controller = new AbortController();
+      revalidationAbortRef.current = controller;
+      const refreshOrder = refreshOrderRef.current;
+      const refreshScope = captureHomeRefreshScope(refreshOrder, discoveryRequestRef.current);
+      const ids = [...new Set(propertiesRef.current.map(item => item.id))];
+      const refreshSequences = new Map(ids.map(id => [id, refreshOrder.begin(id)]));
+      const outcomes = await settleWithConcurrency(ids, 6, id =>
+        propertyService.getPublicProperty(id, controller.signal));
+      if (controller.signal.aborted || !effectActive || !homeRefreshIsCurrent(refreshScope)) return;
+      const updates = new Map<number, Property>();
+      const unavailable = new Set<number>();
+      outcomes.forEach((outcome, index) => {
+        const id = ids[index];
+        const sequence = refreshSequences.get(id)!;
+        if (outcome.status === 'fulfilled') {
+          if (refreshOrder.accept(id, sequence, outcome.value)) updates.set(id, outcome.value);
+        }
+        else if (classifyPropertyRefreshFailure(
+          typeof outcome.reason === 'object' && outcome.reason !== null && 'status' in outcome.reason
+            ? (outcome.reason as { status?: unknown }).status : 0
+        ) === 'unavailable' && refreshOrder.unavailable(id, sequence)) unavailable.add(id);
+      });
+      setProperties(current => decidePropertyRefreshCommit({
+        current,
+        incoming: [...updates.values()],
+        mode: 'revalidate',
+        request: refreshRequestIdentity(refreshScope),
+        active: activeRefreshRequestIdentity(),
+        owned: homeRefreshIsCurrent(refreshScope),
+        unavailable,
+        matches: property => propertyMatchesDiscoveryFilters(property, activeSearchFilters),
+        allowInsert: true,
+        insertIds: new Set(ids),
+        knowledge: refreshOrder
+      }));
+    };
+    const interval = window.setInterval(() => { void revalidateVisibleProperties(); }, 30_000);
+    window.addEventListener('focus', revalidateVisibleProperties);
+    window.addEventListener('online', revalidateVisibleProperties);
+    document.addEventListener('visibilitychange', revalidateVisibleProperties);
+    return () => {
+      effectActive = false;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', revalidateVisibleProperties);
+      window.removeEventListener('online', revalidateVisibleProperties);
+      document.removeEventListener('visibilitychange', revalidateVisibleProperties);
+      revalidationAbortRef.current?.abort();
+      unsubscribeCurrentChanges();
+    };
+  }, [activeSearchFilters.city, activeSearchFilters.sector, activeSearchFilters.q,
+    activeSearchFilters.bhk, activeSearchFilters.propertyType, activeSearchFilters.minRent,
+    activeSearchFilters.maxRent, activeSearchFilters.furnishing, activeSearchFilters.rentalOnly,
+    user?.id]);
+
   // 1. MULTI-TAB & MULTI-WINDOW CROSS-TAB SESSION SYNCHRONIZATION
   useEffect(() => {
     const handleCrossTabSync = (e: StorageEvent) => {
@@ -571,6 +851,7 @@ export const Home: React.FC = () => {
             sessionStorage.removeItem('pathome_pending_favorite_property_id');
             discoveryAbortRef.current?.abort();
             loadMoreAbortRef.current?.abort();
+            revalidationAbortRef.current?.abort();
             discoveryRequestRef.current += 1;
             setProperties([]);
             setDiscoveryState('LOADING');
@@ -692,7 +973,7 @@ export const Home: React.FC = () => {
   useEffect(() => {
     const path = location.pathname.toLowerCase();
     const isProtectedRoute = path === '/tenant' || path === '/admin' || path === '/crm'
-      || isOperationsPath(path);
+      || isOperationsPath(path) || path.startsWith('/backoffice/properties');
     if (!isProtectedRoute) logoutInProgressRef.current = false;
     const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('pathome_auth_token');
 
@@ -701,7 +982,7 @@ export const Home: React.FC = () => {
       if (isProtectedRoute) {
         if (logoutInProgressRef.current) return;
         // A deliberate destination is restored after sign-in rather than being silently dropped.
-        if (path.startsWith('/lessor') || isOperationsPath(path)) {
+        if (path.startsWith('/lessor') || isOperationsPath(path) || path.startsWith('/backoffice/')) {
           try {
             if (sessionExpiryReturnRef.current === null) {
               sessionStorage.setItem(
@@ -740,6 +1021,7 @@ export const Home: React.FC = () => {
       // Authority is decided by the workspace itself, which fails closed on every non-granted
       // state - including while a direct link or a refresh is still being verified.
       if (operationsRoute) return;
+      if (backofficeRoute) return;
       if (role === 'TENANT' && path !== '/tenant' && !path.startsWith('/lessor')) {
         navigate('/tenant', { replace: true });
       } else if (role === 'EMPLOYEE' && path !== '/crm') {
@@ -748,7 +1030,8 @@ export const Home: React.FC = () => {
         navigate('/admin', { replace: true });
       }
     }
-  }, [location.pathname, location.search, user, role, navigate, isPropertyRoute, operationsRoute, clearUserSession]);
+  }, [location.pathname, location.search, user, role, navigate, isPropertyRoute,
+    operationsRoute, backofficeRoute, clearUserSession]);
 
   const handleDiscoverySearch = (city?: string, sector?: string, search?: Pick<RentalSearchFilters, 'q' | 'bhk' | 'propertyType' | 'furnishing' | 'minRent' | 'maxRent' | 'rentalOnly'>, nextLandingState?: LandingState) => {
     focusResultsAfterSearch.current = true;
@@ -829,6 +1112,12 @@ export const Home: React.FC = () => {
 
   const handleRequestVisit = (property: Property) => {
     setPendingVisitProperty(property);
+    try {
+      sessionStorage.setItem('pathome_pending_visit_property_id', String(property.id));
+      sessionStorage.setItem('pathome_pending_visit_action', 'REQUEST_VISIT');
+    } catch {
+      // The in-memory intent still works when browser storage is unavailable.
+    }
     if (role !== 'TENANT' || !user) {
       setShowAuthModal(true);
     }
@@ -836,6 +1125,8 @@ export const Home: React.FC = () => {
 
   const handleViewMyVisits = () => {
     setPendingVisitProperty(null);
+    sessionStorage.removeItem('pathome_pending_visit_property_id');
+    sessionStorage.removeItem('pathome_pending_visit_action');
     navigate('/tenant', { state: { focusTenantVisits: true } });
   };
 
@@ -884,6 +1175,20 @@ export const Home: React.FC = () => {
       navigate(`/property/${pendingVisitProperty.id}`);
       return;
     }
+    const pendingVisitId = Number(sessionStorage.getItem('pathome_pending_visit_property_id'));
+    if (userProfile.role === 'TENANT' && Number.isSafeInteger(pendingVisitId) && pendingVisitId > 0) {
+      const tenantSession = readTenantVisitSession(userProfile.id);
+      void propertyService.getPublicProperty(pendingVisitId).then(property => {
+        if (!tenantSession || !isCurrentTenantVisitSession(tenantSession)) return;
+        setPendingVisitProperty(property);
+        navigate(`/property/${property.id}`);
+      }).catch(() => {
+        sessionStorage.removeItem('pathome_pending_visit_property_id');
+        sessionStorage.removeItem('pathome_pending_visit_action');
+        notifyError('Could not reopen the property', 'The saved property is no longer available.');
+      });
+      return;
+    }
     let targetPath = '/tenant';
     if (userProfile.role === 'EMPLOYEE') targetPath = '/crm';
     else if (userProfile.role === 'SUB_ADMIN' || userProfile.role === 'SUPER_ADMIN' || userProfile.role === 'ADMIN') targetPath = '/admin';
@@ -895,6 +1200,8 @@ export const Home: React.FC = () => {
     clearUserSession();
     setShowAuthModal(false);
     sessionStorage.removeItem('pathome_pending_after_auth');
+    sessionStorage.removeItem('pathome_pending_visit_property_id');
+    sessionStorage.removeItem('pathome_pending_visit_action');
     navigate('/');
   };
 
@@ -919,6 +1226,7 @@ export const Home: React.FC = () => {
           role={role}
           hasLessorCapability={hasLessorCapability}
           operationsAuthority={operationsAuthority}
+          propertyWorkspaceCapability={propertyWorkspaceCapability}
           onOpenOperations={() => navigate(operationsRoutingRoute ? '/operations/routing' : '/operations')}
           draftCount={currentDraftCount}
           draftState={currentDraftState}
@@ -950,7 +1258,11 @@ export const Home: React.FC = () => {
       {/* DEDICATED OPERATIONS DESTINATION - CAPABILITY-GATED, NEVER ROLE-ROUTED */}
       {operationsRoute && user && <OperationsDestination authority={operationsAuthority} />}
 
-      {!isLessorRoute && !operationsRoute && <>
+      {backofficeRoute && user && (
+        <BackofficePropertiesWorkspace capability={propertyWorkspaceCapability} />
+      )}
+
+      {!isLessorRoute && !operationsRoute && !backofficeRoute && <>
       {/* DEDICATED EMPLOYEE CRM DASHBOARD */}
         {!isPropertyRoute && !isLessorRoute && role === 'EMPLOYEE' && (
           <motion.div 
@@ -976,9 +1288,13 @@ export const Home: React.FC = () => {
           >
             <MasterAdminDashboard activeTab={activeAdminTab} setActiveAdminTab={setActiveAdminTab}
               operationsAuthority={operationsAuthority}
+              propertyWorkspaceCapability={propertyWorkspaceCapability}
               onOperationsWorkspaceOpenChange={setEmbeddedOperationsOpen}
-              canReviewVisitRepairs={user?.role === 'SUPER_ADMIN'}
-              canReviewVisitOutcomes={user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN'} />
+              removalAuthority={removalAuthority}
+              showRemovalAdmissionState={user?.role === 'ADMIN'}
+              canReviewVisitRepairs={user?.role === 'ADMIN'}
+              canReviewVisitOutcomes={user?.role === 'ADMIN'}
+              canReviewPropertyRemoval={removalAuthority.canReview} />
           </motion.div>
         )}
 
@@ -1080,9 +1396,17 @@ export const Home: React.FC = () => {
         property={pendingVisitProperty}
         isOpen={role === 'TENANT' && !!pendingVisitProperty}
         tenantUserId={user?.id ?? 0}
-        onClose={() => setPendingVisitProperty(null)}
+        onClose={() => {
+          setPendingVisitProperty(null);
+          sessionStorage.removeItem('pathome_pending_visit_property_id');
+          sessionStorage.removeItem('pathome_pending_visit_action');
+        }}
         onViewMyVisits={handleViewMyVisits}
-        onKeepBrowsing={() => setPendingVisitProperty(null)}
+        onKeepBrowsing={() => {
+          setPendingVisitProperty(null);
+          sessionStorage.removeItem('pathome_pending_visit_property_id');
+          sessionStorage.removeItem('pathome_pending_visit_action');
+        }}
       />
 
     </div>

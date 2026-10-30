@@ -2,6 +2,7 @@ import type {
   StaffCapabilities,
   StaffCapabilitySummary
 } from './operationsWorkspacePresentation';
+import type { Property } from '../types';
 
 export type LeadStatus =
   | 'NEW'
@@ -86,6 +87,7 @@ export interface LeadDetail extends LeadSummary {
   linkedCustomerAccount: boolean;
   provenance: string | null;
   captureOutcome: LeadCaptureOutcome | null;
+  contactPhoneRevision: number;
 }
 
 export interface LeadPage {
@@ -542,7 +544,9 @@ export const toLeadDetail = (value: unknown): LeadDetail => {
     conversionPrerequisites: stringArray(item.conversionPrerequisites),
     linkedCustomerAccount: item.linkedCustomerAccount === true,
     provenance: textOf(item.provenance),
-    captureOutcome
+    captureOutcome,
+    contactPhoneRevision: Number.isSafeInteger(item.contactPhoneRevision)
+      ? Number(item.contactPhoneRevision) : 0
   };
 };
 
@@ -968,6 +972,56 @@ export const whatsappUrl = (
 };
 
 export const shareLinksText = (links: string[]): string => links.join('\n');
+
+const isSafePublicHttpsUrl = (value: string | null | undefined): value is string => {
+  if (!value?.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password
+      || url.search || url.hash) return false;
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.toLowerCase();
+    return host !== 'localhost'
+      && !host.endsWith('.local')
+      && !path.includes('/private/')
+      && !path.includes('/authenticated/')
+      && !path.includes('/raw/upload/')
+      && !path.includes('/draft/')
+      && !path.includes('/staging/')
+      && !path.includes('..');
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Resolves only the exact public detail shape emitted by the existing share service.
+ * A query, fragment, credentials, alternate route or non-HTTPS origin is not a preview target.
+ */
+export const publicPropertyIdFromLink = (value: string | null | undefined): number | null => {
+  if (!isSafePublicHttpsUrl(value)) return null;
+  try {
+    const url = new URL(value.trim());
+    const match = /^\/property\/([1-9]\d*)$/.exec(url.pathname);
+    if (!match) return null;
+    const id = Number(match[1]);
+    return Number.isSafeInteger(id) ? id : null;
+  } catch {
+    return null;
+  }
+};
+
+export const publicPropertyCoverImage = (
+  property: Pick<Property, 'images' | 'taggedMedia'>
+): string | null => {
+  const primary = property.taggedMedia?.find((item) =>
+    item.mediaType === 'IMAGE'
+    && item.isPrimaryCover === true
+    && isSafePublicHttpsUrl(item.mediaUrl)
+  )?.mediaUrl;
+  if (primary) return primary;
+  return property.images.find(isSafePublicHttpsUrl) ?? null;
+};
 
 export const sourceRetryAllowed = (
   event: LeadSourceException,

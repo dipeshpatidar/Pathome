@@ -7,6 +7,7 @@ import com.indore.pathome.spaces.dto.lessor.LandlordDraftResponse;
 import com.indore.pathome.spaces.entity.ListingWorkflowStatus;
 import com.indore.pathome.spaces.service.LandlordManagementService;
 import com.indore.pathome.spaces.service.LandlordPortfolioService;
+import com.indore.pathome.spaces.service.PropertyRemovalService;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,10 +24,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class LandlordPortfolioController {
     private final LandlordPortfolioService portfolio;
     private final LandlordManagementService management;
+    private final PropertyRemovalService removals;
 
-    public LandlordPortfolioController(LandlordPortfolioService portfolio, LandlordManagementService management) {
+    public LandlordPortfolioController(LandlordPortfolioService portfolio, LandlordManagementService management,
+                                       PropertyRemovalService removals) {
         this.portfolio = portfolio;
         this.management = management;
+        this.removals = removals;
     }
 
     @GetMapping
@@ -51,9 +55,9 @@ public class LandlordPortfolioController {
     }
 
     @PostMapping("/{listingId}/archive")
-    public LandlordListingAction archive(Authentication auth, @PathVariable Long listingId,
-                                          @RequestHeader("If-Match") Long version) {
-        return management.changeStatus(auth.getName(), listingId, version, ListingWorkflowStatus.ARCHIVED);
+    public void archive(Authentication auth, @PathVariable Long listingId,
+                        @RequestHeader("If-Match") Long version) {
+        removals.legacyArchiveDenied(StaffAuthentication.userId(auth), listingId);
     }
 
     @PostMapping("/{listingId}/resume-review")

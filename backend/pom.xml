@@ -12,6 +12,20 @@
     <version>1.0.0-SNAPSHOT</version>
     <name>Pathome Spaces Backend</name>
     <properties><java.version>17</java.version></properties>
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>../frontend-web/dist</directory>
+                <includes>
+                    <include>index.html</include>
+                </includes>
+                <targetPath>static/property-shell</targetPath>
+            </resource>
+        </resources>
+    </build>
     <dependencies>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>

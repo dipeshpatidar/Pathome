@@ -5,6 +5,7 @@ import com.indore.pathome.spaces.entity.LeadIntent;
 import com.indore.pathome.spaces.entity.Listing;
 import com.indore.pathome.spaces.entity.ListingStatus;
 import com.indore.pathome.spaces.entity.ListingType;
+import com.indore.pathome.spaces.entity.ListingWorkflowStatus;
 import com.indore.pathome.spaces.entity.Locality;
 import com.indore.pathome.spaces.entity.RentalDetails;
 import com.indore.pathome.spaces.exception.VisitOperationsConflictException;
@@ -102,7 +103,9 @@ public class LeadPublicPropertyService {
         Map<Long, EligibleProperty> result = new HashMap<>();
         for (Long listingId : ids) {
             Listing listing = byId.get(listingId);
-            if (listing == null || listing.getListingType() != ListingType.RENT
+            if (listing == null || listing.getStatus() != ListingStatus.ACTIVE
+                    || listing.getWorkflowStatus() != ListingWorkflowStatus.PUBLISHED
+                    || listing.getListingType() != ListingType.RENT
                     || !(listing instanceof RentalDetails rental)
                     || listing.getCanonicalLocalityId() == null) {
                 continue;
@@ -112,9 +115,15 @@ public class LeadPublicPropertyService {
                     || !lead.getSupportedCity().getId().equals(locality.getSupportedCity().getId())) {
                 continue;
             }
-            result.put(listingId, new EligibleProperty(listing.getId(), listing.getTitle(),
-                    listing.getCity() + " / " + listing.getSector(), listing.getBhkCount(),
-                    rental.getMonthlyRent(), listing.getVersion()));
+            result.put(listingId, new EligibleProperty(listing.getId(),
+                    PublicPropertyDisclosurePolicy.safeCanonicalTitle(listing, locality,
+                            locality.getSupportedCity()),
+                    publicLocation(locality),
+                    PublicPropertyDisclosurePolicy.canonicalLocalityLabel(locality),
+                    PublicPropertyDisclosurePolicy.canonicalCityLabel(
+                            locality.getSupportedCity(), locality),
+                    PublicPropertyDisclosurePolicy.safeBhk(listing.getBhkCount()),
+                    rental.getMonthlyRent(), listing.getTotalAreaSqFt(), listing.getVersion()));
         }
         if (announceMissing && result.size() != ids.size()) {
             Long missing = ids.stream().filter(id -> !result.containsKey(id)).findFirst().orElse(null);
@@ -128,8 +137,27 @@ public class LeadPublicPropertyService {
             Long listingId,
             String title,
             String location,
+            String locality,
+            String city,
             String bhk,
             BigDecimal monthlyRent,
+            Double totalAreaSqFt,
             Long listingVersion) {
+        /**
+         * Compatibility constructor for callers that only need the original public facts.
+         * New share composition always uses the full canonical location and area projection.
+         */
+        public EligibleProperty(Long listingId, String title, String location, String bhk,
+                                BigDecimal monthlyRent, Long listingVersion) {
+            this(listingId, title, location, null, null, bhk, monthlyRent, null, listingVersion);
+        }
+    }
+
+    private static String publicLocation(Locality locality) {
+        String localityLabel = PublicPropertyDisclosurePolicy.canonicalLocalityLabel(locality);
+        String cityLabel = PublicPropertyDisclosurePolicy.canonicalCityLabel(
+                locality.getSupportedCity(), locality);
+        if (cityLabel == null) return localityLabel;
+        return localityLabel == null ? cityLabel : localityLabel + ", " + cityLabel;
     }
 }

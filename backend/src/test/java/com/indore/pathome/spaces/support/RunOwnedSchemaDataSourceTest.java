@@ -20,7 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -243,6 +246,49 @@ class RunOwnedSchemaDataSourceTest {
             assertGuardedCursor(keys, statement);
         }
         verify(generatedKeys).close();
+    }
+
+    @Test
+    void strictPolicyChecksBorrowAndEveryStatementAndRejectsAlternateCredentials()
+            throws Exception {
+        DataSource delegate = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        ResultSet rows = mock(ResultSet.class);
+        FreshIntegrationTarget.ConnectionPolicy policy =
+                mock(FreshIntegrationTarget.ConnectionPolicy.class);
+        when(delegate.getConnection()).thenReturn(connection);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.getConnection()).thenReturn(connection);
+        when(statement.executeQuery(anyString())).thenReturn(rows);
+
+        RunOwnedSchemaDataSource guarded = new RunOwnedSchemaDataSource(delegate, policy);
+        try (Connection borrowed = guarded.getConnection();
+             Statement borrowedStatement = borrowed.createStatement();
+             ResultSet result = borrowedStatement.executeQuery("select 1")) {
+            assertInstanceOf(ResultSet.class, result);
+        }
+
+        verify(policy).prepare(connection);
+        verify(policy, atLeast(2)).beforeStatement(connection);
+        SQLException alternate = assertThrows(SQLException.class,
+                () -> guarded.getConnection("other", "secret"));
+        assertTrue(alternate.getMessage().contains("alternate credential"));
+        verify(delegate, never()).getConnection(anyString(), anyString());
+    }
+
+    @Test
+    void strictPolicyRefusalClosesBorrowedConnectionBeforeUse() throws Exception {
+        DataSource delegate = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        FreshIntegrationTarget.ConnectionPolicy policy =
+                mock(FreshIntegrationTarget.ConnectionPolicy.class);
+        when(delegate.getConnection()).thenReturn(connection);
+        doThrow(new SQLException("mismatch")).when(policy).prepare(connection);
+
+        RunOwnedSchemaDataSource guarded = new RunOwnedSchemaDataSource(delegate, policy);
+        assertThrows(SQLException.class, guarded::getConnection);
+        verify(connection).close();
     }
 
     private static void assertGuardedCursor(ResultSet cursor, Statement expectedStatement)

@@ -73,6 +73,8 @@ type PublicMediaPayload = {
   mediaType?: unknown;
   roomTag?: unknown;
   primaryCover?: unknown;
+  caption?: unknown;
+  sortOrder?: unknown;
 };
 
 const isVideoMedia = (media: PublicMediaPayload): boolean => {
@@ -101,6 +103,11 @@ const mapPublicProperty = (item: any): Property => {
     monthlyRent: item.monthlyRent ? Number(item.monthlyRent) : 0,
     securityDeposit: parseSecurityDeposit(item.securityDeposit),
     maintenanceCharge: item.maintenanceCharge ? Number(item.maintenanceCharge) : undefined,
+    brokerageAmount: item.brokerageAmount === null || item.brokerageAmount === undefined
+      ? null : Number(item.brokerageAmount),
+    brokerageDays: typeof item.brokerageDays === 'number' ? item.brokerageDays : null,
+    securityDepositMonths: typeof item.securityDepositMonths === 'number'
+      ? item.securityDepositMonths : null,
     askingPrice: item.askingPrice ? Number(item.askingPrice) : undefined,
     totalAreaSqFt: item.totalAreaSqFt ? Number(item.totalAreaSqFt) : 0,
     images: imageUrls,
@@ -110,10 +117,16 @@ const mapPublicProperty = (item: any): Property => {
       mediaUrl: entry.mediaUrl as string,
       mediaType: entry.mediaType as any,
       roomTag: entry.roomTag as RoomTag,
-      isPrimaryCover: Boolean(entry.primaryCover)
+      isPrimaryCover: Boolean(entry.primaryCover),
+      caption: typeof entry.caption === 'string' ? entry.caption : undefined,
+      sortOrder: typeof entry.sortOrder === 'number' ? entry.sortOrder : null
     })),
     verified: true,
     description: item.description || undefined,
+    // Private presentation-address fields are intentionally absent from the public projection.
+    landmark: null,
+    colony: null,
+    pincode: null,
     furnishingStatus: item.furnishingStatus || undefined,
     amenities: item.amenities || undefined,
     bathroomCount: typeof item.bathroomCount === 'number' ? item.bathroomCount : null,
@@ -123,7 +136,9 @@ const mapPublicProperty = (item: any): Property => {
     floor: typeof item.floorNumber === 'number' ? item.floorNumber : (typeof item.floor === 'number' ? item.floor : null),
     totalFloors: typeof item.totalFloors === 'number' ? item.totalFloors : null,
     preferredTenant: item.preferredTenant || null,
-    updatedAt: item.updatedAt ? String(item.updatedAt) : null
+    updatedAt: item.updatedAt ? String(item.updatedAt) : null,
+    listingVersion: Number.isSafeInteger(item.listingVersion) ? item.listingVersion : null,
+    lastContentPublishedAt: item.lastContentPublishedAt ? String(item.lastContentPublishedAt) : null
   };
 };
 
@@ -161,7 +176,9 @@ export const mapDiscoveryProperty = (item: any): Property => ({
   // Carry mediaCount and hasVideo for badge display in the card
   _mediaCount: typeof item.mediaCount === 'number' ? item.mediaCount : undefined,
   _hasVideo: typeof item.hasVideo === 'boolean' ? item.hasVideo : false,
-  updatedAt: item.updatedAt ? String(item.updatedAt) : null
+  updatedAt: item.updatedAt ? String(item.updatedAt) : null,
+  listingVersion: Number.isSafeInteger(item.listingVersion) ? item.listingVersion : null,
+  lastContentPublishedAt: item.lastContentPublishedAt ? String(item.lastContentPublishedAt) : null
 } as any);
 
 export const createStableUploadRequestId = (

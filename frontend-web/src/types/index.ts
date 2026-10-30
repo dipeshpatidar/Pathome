@@ -50,6 +50,7 @@ export interface PropertyMediaAsset {
   roomTag: RoomTag;
   caption?: string;
   isPrimaryCover?: boolean;
+  sortOrder?: number | null;
   sector?: string;
   city?: string;
   priceTag?: string;
@@ -93,6 +94,9 @@ export interface Property {
   monthlyRent: number;
   securityDeposit: number | null;
   maintenanceCharge?: number;
+  brokerageAmount?: number | null;
+  brokerageDays?: number | null;
+  securityDepositMonths?: number | null;
   askingPrice?: number;
   totalAreaSqFt: number;
   images: string[];
@@ -100,6 +104,9 @@ export interface Property {
   taggedMedia?: PropertyMediaAsset[];
   videoUrl?: string;
   description?: string;
+  landmark?: string | null;
+  colony?: string | null;
+  pincode?: string | null;
   furnishingStatus?: string;
   amenities?: string;
   bathroomCount?: number | null;
@@ -117,4 +124,6 @@ export interface Property {
   _mediaCount?: number;
   _hasVideo?: boolean;
   updatedAt?: string | null;
+  listingVersion?: number | null;
+  lastContentPublishedAt?: string | null;
 }

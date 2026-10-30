@@ -1,9 +1,9 @@
 # G10 Lead integration — genuine browser verification
 
 This suite drives the production Vite build in Chromium against a random-port Spring Boot instance
-and a UUID-owned schema in the approved disposable PostgreSQL database. It is launched by
-`LeadHttpPostgresTest#genuineBrowserLeadJourneyUsesSpringPostgresAndProductionBuild`; it is not a
-standalone stub-only suite.
+and the approved disposable PostgreSQL target. It is launched by the genuine Lead browser tests,
+including `DbA01LeadOwnerAuthorizationHttpPostgresTest#genuineConnectedChromiumPreservesOwnerIntakeAndSessionBoundaries`;
+it is not a standalone stub-only suite.
 
 ```bash
 PATHOME_VISIT_OPERATIONS_POSTGRES_TEST=true \
@@ -19,8 +19,13 @@ mvn -q -f backend/pom.xml \
   -Dtest='LeadHttpPostgresTest#genuineBrowserLeadJourneyUsesSpringPostgresAndProductionBuild' test
 ```
 
-Run `npm --prefix frontend-web run build` first. The test seeds only synthetic City/Team/public-listing
-data inside its disposable schema and drops that schema in `@AfterAll`.
+Run `npm --prefix frontend-web run build` first. The test seeds only synthetic
+City/Team/public-listing data inside the isolated target. The DB-A01 target is preserved rather than
+dropped.
+
+`PATHOME_BROWSER_STRICT_GENUINE=true` selects the strict genuine path used by the DB-A01 browser
+test. That mode registers no API request interception and keeps only the local `wa.me` navigation
+fulfilment. Omitting it preserves the controlled timing mode used by the broader browser harness.
 
 ## Controlled asynchronous correction suite
 

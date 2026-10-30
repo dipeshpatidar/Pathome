@@ -60,8 +60,8 @@ public class ListingWorkflowService {
         }
         return current == ListingWorkflowStatus.CHANGES_REQUIRED && target == ListingWorkflowStatus.SUBMITTED
                 || current == ListingWorkflowStatus.PUBLISHED
-                    && (target == ListingWorkflowStatus.PAUSED || target == ListingWorkflowStatus.ARCHIVED)
+                    && target == ListingWorkflowStatus.PAUSED
                 || current == ListingWorkflowStatus.PAUSED
-                    && (target == ListingWorkflowStatus.SUBMITTED || target == ListingWorkflowStatus.ARCHIVED);
+                    && target == ListingWorkflowStatus.SUBMITTED;
     }
 }

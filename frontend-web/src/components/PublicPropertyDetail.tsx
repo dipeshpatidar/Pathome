@@ -13,11 +13,21 @@ import { buildCloudinaryUrl, deriveVideoPosterUrl } from '../utils/mediaTransfor
 import { getMediaTagIcon, getMediaTagLabel, getTaggedAreas } from '../utils/mediaTags';
 import { resolvePropertyDetailBackTarget } from '../utils/propertyDetailRecovery';
 import { PropertyDetailErrorState } from './PropertyDetailErrorState';
+import { VisitInvitationBanner } from './VisitInvitationBanner';
 import { favoriteService } from '../services/favoriteService';
 import { notifyTenantFavoriteChanged } from '../utils/tenantFavorites';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import { getQuickViewMedia } from '../utils/quickViewMedia';
 import { landingPropertyTitle } from '../utils/landingPropertyData';
+import { subscribePropertyCurrentChanged } from '../utils/propertyCurrentEvents';
+import {
+  resetPublicPropertyMetadata,
+  syncPublicPropertyMetadata
+} from '../utils/publicPropertyMetadata';
+import {
+  classifyPropertyRefreshFailure,
+  reconcileActiveMediaIndex
+} from '../utils/propertyRefreshState.ts';
 
 type GalleryMedia = { url: string; type: 'IMAGE' | 'VIDEO'; tagLabel: string | null; roomTag?: string | null };
 
@@ -327,10 +337,14 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
 }) => {
   const navigate = useNavigate();
   const [property, setProperty] = useState<Property | null>(null);
+  const propertyRef = useRef<Property | null>(null);
+  propertyRef.current = property;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [activeMedia, setActiveMedia] = useState(0);
+  const previousMediaRef = useRef<GalleryMedia[]>([]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
@@ -342,6 +356,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLDivElement>(null);
   const detailGestureRef = useRef<{ x: number; y: number } | null>(null);
+  const lastSyncedMetadataPropertyIdRef = useRef<number | null>(null);
 
   // Track fullscreen state changes (including browser Esc key)
   useEffect(() => {
@@ -418,16 +433,69 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
       return;
     }
     let active = true;
-    setLoading(true);
-    setIsVideoPlaying(false);
-    setError(null);
-    setProperty(null);
+    const hasCurrentProperty = propertyRef.current?.id === propertyId;
+    if (!hasCurrentProperty) {
+      setLoading(true);
+      setProperty(null);
+      setError(null);
+    }
+    setRefreshNotice(null);
     propertyService.getPublicProperty(propertyId)
-      .then((result) => { if (active) { setProperty(result); setActiveMedia(0); } })
-      .catch((requestError: any) => { if (active) setError(requestError?.message || 'Unable to load this property.'); })
+      .then((result) => {
+        if (!active) return;
+        setProperty(result);
+        setError(null);
+      })
+      .catch((requestError: any) => {
+        if (!active) return;
+        const failure = classifyPropertyRefreshFailure(requestError?.status);
+        if (failure === 'unavailable') {
+          setProperty(null);
+          setError(requestError?.message || 'Unable to load this property.');
+        } else if (!hasCurrentProperty) {
+          setProperty(null);
+          setError(requestError?.message || 'Unable to load this property.');
+        } else {
+          setRefreshNotice('Current details are still shown. We could not refresh them just now.');
+        }
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [propertyId, retryCount]);
+
+  useEffect(() => {
+    if (property && property.id === propertyId) {
+      syncPublicPropertyMetadata(property);
+      lastSyncedMetadataPropertyIdRef.current = property.id;
+    } else if (lastSyncedMetadataPropertyIdRef.current !== null
+      || (!loading && Boolean(error))) {
+      resetPublicPropertyMetadata();
+      lastSyncedMetadataPropertyIdRef.current = null;
+    }
+    return () => {
+      resetPublicPropertyMetadata();
+      lastSyncedMetadataPropertyIdRef.current = null;
+    };
+  }, [property, propertyId, loading, error]);
+
+  useEffect(() => {
+    if (propertyId === null) return undefined;
+    const refresh = () => {
+      if (document.visibilityState !== 'hidden') setRetryCount(value => value + 1);
+    };
+    const unsubscribe = subscribePropertyCurrentChanged((detail) => {
+      if (detail.listingId === propertyId) refresh();
+    });
+    const interval = window.setInterval(refresh, 30_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(interval);
+      unsubscribe();
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [propertyId]);
 
   const media = useMemo(() => {
     if (!property) return [] as GalleryMedia[];
@@ -436,6 +504,11 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
       roomTag: property.taggedMedia?.find(tagged => tagged.mediaUrl?.trim() === entry.url)?.roomTag ?? null
     }));
   }, [property]);
+
+  useEffect(() => {
+    setActiveMedia(current => reconcileActiveMediaIndex(previousMediaRef.current, media, current));
+    previousMediaRef.current = media;
+  }, [media]);
 
   useEffect(() => {
     if (propertyId === null || !favoriteSession) {
@@ -525,7 +598,7 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
     setActiveMedia((prev) => (media.length > 0 ? (prev + 1) % media.length : 0));
   }, [media.length]);
 
-  if (loading) {
+  if (loading && !property) {
     return (
       <main className="mx-auto w-full max-w-7xl px-4 pt-3 pb-28 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10" aria-label="Loading property details" aria-busy="true">
         {/* Navigation placeholder: exact height to prevent layout shift */}
@@ -602,6 +675,10 @@ export const PublicPropertyDetail: React.FC<PublicPropertyDetailProps> = ({
         />
       )}
       <main className="tenant-v0-detail mx-auto w-full max-w-[1440px] bg-[#f8f7f4] px-4 pt-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-slate-950 sm:px-6 sm:pt-4 sm:pb-8 lg:px-8 lg:pb-10">
+        <VisitInvitationBanner propertyId={property.id} />
+        {refreshNotice && <p role="status" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          {refreshNotice}
+        </p>}
         {/* Dependable High-Contrast Floating Back Navigation */}
         <div className="mb-4 flex h-11 items-center justify-between">
           <button

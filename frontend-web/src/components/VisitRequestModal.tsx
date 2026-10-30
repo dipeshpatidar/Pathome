@@ -3,6 +3,13 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowRight, CalendarDays, CheckCircle2, Clock3, MapPin, Send, X } from 'lucide-react';
 import { Property } from '../types';
 import { propertyService } from '../services/propertyService';
+import {
+  leadAssistanceService,
+  newClientOperationId,
+  type VisitHandoff
+} from '../services/leadAssistanceService';
+import { captureOperationsSession, isOperationsSessionActive } from '../utils/operationsSession';
+import { ApiRequestError } from '../services/apiError';
 import { isCurrentTenantVisitSession, readTenantVisitSession } from '../utils/tenantVisitSession';
 import { tenantVisitAcknowledgement } from '../utils/tenantVisitView';
 import {
@@ -12,6 +19,7 @@ import {
   tenantAvailabilityErrorCopy,
   tenantVisitMinimumDate
 } from '../utils/tenantAvailability';
+import { canUseCanonicalTenantVisitCommand } from '../utils/tenantVisitCommand';
 
 interface VisitRequestModalProps {
   property: Property | null;
@@ -60,11 +68,17 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [acknowledgeExisting, setAcknowledgeExisting] = useState(false);
+  const [acknowledgedRequestVersion, setAcknowledgedRequestVersion] = useState<number | null>(null);
+  const [associationConsent, setAssociationConsent] = useState(false);
+  const [handoffContext, setHandoffContext] = useState<VisitHandoff | null>(null);
   const [acknowledgement, setAcknowledgement] = useState<{ title: string; detail: string } | null>(null);
+  const [declinedInvitation, setDeclinedInvitation] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const inFlightRef = useRef(false);
+  const operationIdRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const minDate = tenantVisitMinimumDate(visitZone);
 
@@ -79,9 +93,30 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     setVisitZone(TENANT_VISIT_ZONE);
     setNote('');
     setError('');
+    setAcknowledgeExisting(false);
+    setAcknowledgedRequestVersion(null);
+    setAssociationConsent(false);
+    setHandoffContext(null);
     setAcknowledgement(null);
+    setDeclinedInvitation(false);
     inFlightRef.current = false;
+    operationIdRef.current = null;
   }, [property, isOpen]);
+
+  useEffect(() => {
+    if (!property || !isOpen) return undefined;
+    const controller = new AbortController();
+    const session = captureOperationsSession();
+    if (!session) return undefined;
+    void leadAssistanceService.currentVisitContext(controller.signal).then(context => {
+      if (controller.signal.aborted || !isOperationsSessionActive(session)
+        || context?.property.id !== property.id) return;
+      setHandoffContext(context);
+    }).catch(() => {
+      // Invitation context is optional; an ordinary self-service Request remains available.
+    });
+    return () => controller.abort();
+  }, [isOpen, property]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -142,11 +177,12 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
       setError('Your sign-in session changed. Please sign in again to send this request.');
       return;
     }
+    const operationsSession = captureOperationsSession();
 
     inFlightRef.current = true;
     setSubmitting(true);
     try {
-      const result = await propertyService.createVisitRequest(property.id, {
+      const payload = {
         budgetMin: minimum,
         budgetMax: maximum,
         preferredAreas,
@@ -157,14 +193,82 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
         availabilityZoneId: availability.command.availabilityZoneId,
         preferredAt: availability.command.preferredAt,
         note: note.trim() || undefined
-      });
+      };
+      const canUseCanonicalCommand = canUseCanonicalTenantVisitCommand(
+        Boolean(operationsSession && isOperationsSessionActive(operationsSession)),
+        property.listingVersion
+      );
+      let result: { status: string; created: boolean; message?: string; requiresAcknowledgement?: boolean };
+      if (canUseCanonicalCommand && operationsSession) {
+        operationIdRef.current ??= newClientOperationId();
+        const command = await leadAssistanceService.createOwnVisitRequest(
+          property,
+          payload,
+          {
+            session: operationsSession,
+            handoffContext,
+            associateEnquiry: Boolean(handoffContext) && associationConsent,
+            consentWordingVersion: handoffContext && associationConsent
+              ? 'VISIT_INVITATION_ENQUIRY_ASSOCIATION_V1'
+              : null,
+            acknowledgeExistingRequest: acknowledgeExisting,
+            expectedRequestVersion: acknowledgedRequestVersion,
+            operationId: operationIdRef.current
+          }
+        );
+        if (command.requiresAcknowledgement) {
+          operationIdRef.current = null;
+          setError(`You already have a Visit Request for this property (${command.status.replace(/_/g, ' ').toLowerCase()}). Confirm that you want to keep the existing request below.`);
+          setAcknowledgeExisting(false);
+          setAcknowledgedRequestVersion(command.requestVersion);
+          inFlightRef.current = false;
+          return;
+        }
+        setAcknowledgedRequestVersion(null);
+        operationIdRef.current = null;
+        result = {
+          status: command.status,
+          created: command.created,
+          message: command.message
+        };
+      } else {
+        const legacy = await propertyService.createVisitRequest(property.id, payload);
+        result = { status: legacy.status, created: legacy.created };
+      }
       if (!isCurrentTenantVisitSession(requestSession)) return;
-      setAcknowledgement(tenantVisitAcknowledgement(result.status, result.created));
+      setAcknowledgement(result.message
+        ? { title: result.created ? 'Visit Request recorded' : 'Your Visit Request is current', detail: result.message }
+        : tenantVisitAcknowledgement(result.status, result.created));
       inFlightRef.current = false;
       window.dispatchEvent(new Event('pathome_visit_request_created'));
-    } catch {
+    } catch (cause) {
       if (isCurrentTenantVisitSession(requestSession)) {
-        setError('We couldn’t send your visit request. Please try again.');
+        const status = cause instanceof ApiRequestError ? cause.status : undefined;
+        if (operationsSession && operationIdRef.current
+          && (status === undefined || status === 408 || status >= 500)) {
+          try {
+            const receipt = await leadAssistanceService.ownVisitCommandStatus(
+              operationIdRef.current, operationsSession
+            );
+            if (receipt.state === 'RECORDED' && receipt.resultReference
+              && isCurrentTenantVisitSession(requestSession)) {
+              setAcknowledgement({
+                title: 'Visit Request recorded',
+                detail: 'The server confirmed the earlier command. Open My Visits for the current request status. Enquiry association may remain pending separately.'
+              });
+              operationIdRef.current = null;
+              inFlightRef.current = false;
+              window.dispatchEvent(new Event('pathome_visit_request_created'));
+              return;
+            }
+          } catch {
+            // Keep the explicit unknown outcome below.
+          }
+        }
+        if (status !== undefined && status < 500 && status !== 408) operationIdRef.current = null;
+        setError(cause instanceof Error && cause.message
+          ? cause.message
+          : 'We couldn’t send your visit request. Please try again.');
         inFlightRef.current = false;
       }
     } finally {
@@ -181,7 +285,8 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     if (event.key !== 'Tab' || !dialogRef.current) return;
     const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary, [href], [tabindex]:not([tabindex="-1"])'
-    )).filter(element => element.offsetParent !== null);
+    )).filter(element => element.getClientRects().length > 0
+      && (!element.closest('details:not([open])') || element.matches('summary')));
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -194,6 +299,43 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
     }
   };
 
+  const declineInvitation = async () => {
+    if (!handoffContext || inFlightRef.current) return;
+    const session = captureOperationsSession();
+    if (!session || !isOperationsSessionActive(session)) {
+      setError('Your sign-in session changed. Sign in again to respond to this invitation.');
+      return;
+    }
+    inFlightRef.current = true;
+    setSubmitting(true);
+    setError('');
+    try {
+      const result = await leadAssistanceService.respondToVisitProposal(
+        handoffContext.contextId,
+        {
+          response: 'DECLINED',
+          requestId: null,
+          expectedResponseVersion: null,
+          associateEnquiry: false,
+          explicitEnquiryOwnershipConsent: false,
+          consentWordingVersion: null
+        },
+        session
+      );
+      if (!isOperationsSessionActive(session)) return;
+      setAcknowledgement({ title: 'Invitation declined', detail: result.message });
+      setDeclinedInvitation(true);
+      inFlightRef.current = false;
+    } catch (cause) {
+      if (isOperationsSessionActive(session)) {
+        setError(cause instanceof Error ? cause.message : 'The invitation response could not be saved.');
+        inFlightRef.current = false;
+      }
+    } finally {
+      if (isOperationsSessionActive(session)) setSubmitting(false);
+    }
+  };
+
   return (
     <AnimatePresence>
       <motion.div
@@ -201,11 +343,10 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
         animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="fixed inset-0 z-[10000] flex items-end justify-center overflow-y-auto bg-slate-950/55 px-0 pt-6 backdrop-blur-sm sm:items-center sm:p-4"
         onClick={closeIfIdle}
-        onKeyDown={handleDialogKeyDown}
       >
         <motion.section
           role="dialog" aria-modal="true" aria-labelledby="visit-request-title" aria-describedby="visit-request-description"
-          ref={dialogRef} tabIndex={-1}
+          ref={dialogRef} tabIndex={-1} onKeyDown={handleDialogKeyDown}
           initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 28 }}
           animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24 }}
           transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
@@ -236,9 +377,15 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
                 <p className="mt-3 text-xs leading-5 text-slate-600">Your preferred date and time are requests, not a confirmed appointment.</p>
               </div>
               <div className="mt-5 grid gap-2 sm:grid-cols-2">
-                <button type="button" onClick={onViewMyVisits} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-emerald-800 px-5 text-sm font-semibold text-white transition hover:bg-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2">
-                  View My Visits <ArrowRight size={16} aria-hidden="true" />
-                </button>
+                {declinedInvitation ? (
+                  <button type="button" onClick={onKeepBrowsing} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2">
+                    Continue browsing
+                  </button>
+                ) : (
+                  <button type="button" onClick={onViewMyVisits} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-emerald-800 px-5 text-sm font-semibold text-white transition hover:bg-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2">
+                    View My Visits <ArrowRight size={16} aria-hidden="true" />
+                  </button>
+                )}
                 <button type="button" onClick={onKeepBrowsing} className="min-h-12 rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2">Keep Browsing</button>
               </div>
             </div>
@@ -253,6 +400,43 @@ export const VisitRequestModal: React.FC<VisitRequestModalProps> = ({
                     <p className="mt-1 text-sm font-semibold text-slate-900">{formatRupees(property.monthlyRent)}{property.monthlyRent > 0 ? ' / month' : ''}</p>
                   </div>
                 </div>
+
+                <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
+                  <label className="flex min-h-11 items-start gap-2.5 text-sm leading-5 text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={acknowledgeExisting}
+                      disabled={acknowledgedRequestVersion == null}
+                      onChange={event => {
+                        setAcknowledgeExisting(event.target.checked);
+                        if (!event.target.checked) setAcknowledgedRequestVersion(null);
+                      }}
+                      className="mt-0.5 h-5 w-5 shrink-0 accent-emerald-800"
+                    />
+                    <span>If this property already has my Visit Request, keep that existing request instead of creating a duplicate.</span>
+                  </label>
+                  {handoffContext ? (
+                    <label className="flex min-h-11 items-start gap-2.5 text-sm leading-5 text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={associationConsent}
+                        onChange={event => setAssociationConsent(event.target.checked)}
+                        className="mt-0.5 h-5 w-5 shrink-0 accent-emerald-800"
+                      />
+                      <span>I consent to Pathome reviewing whether the property enquiry from my invitation belongs to my Pathome account. This review is optional and must be confirmed by an authorized coordinator.</span>
+                    </label>
+                  ) : null}
+                </div>
+                {handoffContext ? (
+                  <button
+                    type="button"
+                    onClick={() => void declineInvitation()}
+                    disabled={submitting}
+                    className="min-h-11 text-left text-sm font-semibold text-slate-600 underline underline-offset-2 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 disabled:opacity-55"
+                  >
+                    This invitation isn’t for my enquiry
+                  </button>
+                ) : null}
 
                 <p className="text-sm leading-5 text-slate-600">Tell us when you’d prefer to visit. We’ll confirm availability before scheduling.</p>
 
